@@ -777,6 +777,34 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
     assert settings.agents.planner_final_max_tokens == 65536
 
 
+def test_writer_reader_length_and_authority_floor_default(config_path: Path) -> None:
+    """D11/D6-D7: the writer's reader-length fallback and authority floor."""
+    settings = load_config(str(config_path))
+
+    assert settings.agents.report_target_words == 2000
+    assert settings.agents.writer_authority_floor == 0.4
+
+
+def test_agents_report_target_words_environment_override(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path,
+) -> None:
+    monkeypatch.setenv("AGENTS_REPORT_TARGET_WORDS", "1500")
+
+    settings = load_config(str(config_path))
+
+    assert settings.agents.report_target_words == 1500
+
+
+def test_agents_writer_authority_floor_environment_override(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path,
+) -> None:
+    monkeypatch.setenv("AGENTS_WRITER_AUTHORITY_FLOOR", "0.6")
+
+    settings = load_config(str(config_path))
+
+    assert settings.agents.writer_authority_floor == 0.6
+
+
 def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
     config_path: Path,
 ) -> None:
@@ -800,6 +828,13 @@ def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
     assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
+
+
+def test_the_shipped_config_file_carries_the_writer_reader_length_and_authority_floor() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["report_target_words"] == 2000
+    assert raw["agents"]["writer_authority_floor"] == 0.4
 
 
 def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
@@ -862,6 +897,8 @@ def test_every_shipped_output_budget_but_the_re_extraction_is_the_global_cap() -
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
         ("judge_max_tokens", 0),
+        ("report_target_words", 0),
+        ("writer_authority_floor", -0.1),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(

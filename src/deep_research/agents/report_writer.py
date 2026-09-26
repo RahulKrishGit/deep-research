@@ -126,9 +126,11 @@ REPORT_WRITER_NAME = "report_writer"
 # title instead of printing unchecked.
 MAX_POINT_CHARS = 1200
 MAX_BOTTOM_LINE_SENTENCES = 4
+MAX_BOTTOM_LINE_SENTENCE_WORDS = 60
 _SECTION_TITLE_CHARS = 80
 _MARK_SPAN_CHARS = 80
 CONTEXT_ONLY_RELEVANCE = 0.5
+DEFAULT_WRITER_AUTHORITY_FLOOR = 0.4
 # Spec §17 Q6 chose 7 (= max_sub_topics) so every part starts at once; a
 # controller override for this build raised it to 10 (at least the part
 # count; the target provider allows far higher concurrency) -- see
@@ -200,16 +202,22 @@ SECTION_INSTRUCTION = (
     "- Every judgement, ranking or recommendation is attributed to the source that made "
     "it, as the finding names it; where findings disagree, state each; never a pick, "
     "ranking, verdict or criterion of your own.\n"
-    "- State every answer the listed findings carry for this part's targets, required "
-    "targets first in the listed order, each in the form its evidence takes: a figure "
-    "with its period and its organisation; a forecast with its issuer and release; items "
-    "with their attributes, grouped or ordered on a basis the question or the findings "
-    "give, and stated as the findings state them; reasons, mechanisms or provisions as the "
-    "cited findings state them. Every required target a listed finding answers is stated "
-    "by a point citing that finding; a point never announces an absence of its own -- an "
-    "unanswered target is code's to disclose, not yours. A target marked \"(through its "
-    "sub-topic only)\" is answered by a finding matched to its sub-topic, not bound to "
-    "that target explicitly; state it the same as any other answer.\n"
+    "- When two findings give different values or dates for the same thing, state both "
+    "in one point, say that they differ, and name which source dates or documents its "
+    "value.\n"
+    "- State each distinct fact the listed findings carry for this part's targets once, "
+    "in one point citing together every finding that states it, required targets first "
+    "in the listed order, each in the form its evidence takes: a figure with its period "
+    "and its organisation; a forecast with its issuer and release; items with their "
+    "attributes, grouped or ordered on a basis the question or the findings give, and "
+    "stated as the findings state them; reasons, mechanisms or provisions as the cited "
+    "findings state them. State an optional target's answer only where it adds a fact "
+    "the required targets' points do not carry. Every required target a listed finding "
+    "answers is still stated by a point citing that finding; a point never announces an "
+    "absence of its own -- an unanswered target is code's to disclose, not yours. A "
+    "target marked \"(through its sub-topic only)\" is answered by a finding matched to "
+    "its sub-topic, not bound to that target explicitly; state it the same as any other "
+    "answer.\n"
     f"- Keep every point under {MAX_POINT_CHARS} characters. A longer point is split "
     "at a sentence boundary and every piece kept with the same citations, so a "
     "sentence that long on its own is refused: write one fact per point.\n"
@@ -287,6 +295,10 @@ BOTTOM_LINE_SYSTEM_PROMPT = (
 BOTTOM_LINE_INSTRUCTION = (
     "Rules:\n"
     "- The most direct answer first, then the question's parts in order.\n"
+    "- For a question asking why or how, give the mechanism as ordered steps: each "
+    "sentence states one step, a cause and its effect, and the sources that state it. "
+    "Where several listed statements state the same step, say so and cite them all; "
+    "agreement among the findings is a fact of the findings, not a verdict of your own.\n"
     "- Cite by label only: every sentence lists in finding_labels the labels it "
     "rests on, and every label must be one the listed statements cite -- never a "
     "label a listed statement does not carry.\n"
@@ -308,6 +320,7 @@ BOTTOM_LINE_INSTRUCTION = (
     "does: name, verdict, picked, and by when the sentence cites more than one "
     "site.\n"
     f"- Keep every sentence under {MAX_POINT_CHARS} characters.\n"
+    f"- Keep every sentence under {MAX_BOTTOM_LINE_SENTENCE_WORDS} words.\n"
     "- On a redraft, minimal edits: return your previous bottom line with only the "
     "edits the listed defects need."
 )
@@ -371,6 +384,14 @@ class ReportWriterTask(AgentTask):
     name; every caller in this codebase keys it by sub-topic). Spec §6.7's
     ``unreachable`` is built from each required sub-topic's own
     ``denied_urls`` and ``candidate_records`` here."""
+    target_words: int = 2000
+    """D11: the reader-length point budget's word count -- the frozen
+    contract's own ``requested_word_limit`` when the question asked for
+    one, else ``agents.report_target_words`` (spec §6.3)."""
+    authority_floor: float = 0.4
+    """D6/D7: ``agents.writer_authority_floor`` -- a bound finding below
+    this authority is context-only once a finding at or above it answers
+    one of the same targets (``is_context_only``)."""
 
 
 class WrittenReport(ContractModel):
@@ -573,22 +594,49 @@ def sources_by_url(sources: Sequence[ScoredSource]) -> dict[str, ScoredSource]:
     return {normalize_source_url(source.url): source for source in sources}
 
 
-def is_context_only(finding: Finding, sources: Mapping[str, ScoredSource]) -> bool:
-    """D16 (spec §6.2): unbound, and from a low-relevance or low-confidence source.
+def is_context_only(
+    finding: Finding, sources: Mapping[str, ScoredSource], *,
+    answered: Mapping[str, Sequence[str]] | None = None,
+    findings_by_id: Mapping[str, Finding] | None = None,
+    authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR,
+) -> bool:
+    """D16 (spec §6.2) plus D6/D7's authority floor.
 
-    Context-only findings are listed under a part's ``# Context only``
-    heading rather than its verified-findings registry, and a point resting
-    only on them is refused (mechanical rule 3). A bound finding is never
-    context-only, whatever its source's score.
+    Unbound and from a low-relevance or low-confidence source, as before. A
+    *bound* finding is also context-only when its own source is
+    low-confidence or its authority is below ``authority_floor``, and
+    another finding at or above the floor answers one of the same targets
+    (``answered``, ``findings_by_id``) -- so a target answered only by weak
+    sources still gets its answer unchanged (D6: "nothing changes").
     """
-    if finding.target_ids:
-        return False
     source = sources.get(normalize_source_url(finding.source_url))
     if source is None:
         return False
-    if source.low_confidence:
-        return True
-    return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
+    if not finding.target_ids:
+        if source.low_confidence:
+            return True
+        return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
+    weak = source.low_confidence or (
+        source.authority_score is not None and source.authority_score < authority_floor
+    )
+    if not weak:
+        return False
+    answered = answered or {}
+    findings_by_id = findings_by_id or {}
+    own_id = finding_fingerprint(finding)
+    for target_id in finding.target_ids:
+        for other_id in answered.get(target_id, []):
+            if other_id == own_id:
+                continue
+            other = findings_by_id.get(other_id)
+            if other is None:
+                continue
+            other_source = sources.get(normalize_source_url(other.source_url))
+            if other_source is None or other_source.low_confidence:
+                continue
+            if other_source.authority_score is not None and other_source.authority_score >= authority_floor:
+                return True
+    return False
 
 
 # --- §6.3/§6.6: the section and bottom-line requests ------------------------
@@ -613,6 +661,12 @@ class PartJob:
     redraft: bool
     """Whether this part's call runs at all: ``False`` means carried over
     unchanged from ``previous`` (spec §6.9), no call made."""
+    drafted_part_count: int = 1
+    """D11: how many of this report's parts have any citable finding at all
+    -- the reader-length point budget's own denominator, computed once
+    across every ``PartJob`` a report builds (spec §6.3). Defaults to 1 so
+    a caller that builds one ``PartJob`` directly (a unit test) still gets
+    a sane budget."""
 
 
 def _answer_form_line(task: ReportWriterTask) -> str:
@@ -720,6 +774,33 @@ def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
     return "\n".join(lines)
 
 
+def _required_targets_answered(job: PartJob, task: ReportWriterTask, own_finding_ids: set[str]) -> int:
+    return sum(
+        1 for target in job.targets
+        if target.required
+        and any(fid in own_finding_ids for fid in task.answered.get(target.target_id, []))
+    )
+
+
+def _point_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
+    """D11's reader-length point budget (spec §6.3): an instruction to the
+    model only -- code never truncates or drops a checked point for
+    exceeding it. ``max`` of the part's own required-target count, the
+    report's word budget divided evenly across its drafted parts at ~45
+    words per point, and 3 (never fewer)."""
+    parts = max(job.drafted_part_count, 1)
+    length_budget = round(task.target_words / parts / 45)
+    return max(_required_targets_answered(job, task, own_finding_ids), length_budget, 3)
+
+
+def _point_budget_line(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> str:
+    budget = _point_budget(task, job, own_finding_ids)
+    return (
+        f"Write at most {budget} points for this part: the facts that best answer "
+        "the question and this part's targets. The evidence log keeps every finding."
+    )
+
+
 def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
     """One part's section request (spec §6.3): static-first, so every part
     shares a cacheable prefix."""
@@ -741,6 +822,9 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
         f"# Answer form\n{_answer_form_line(task)}",
         f"# This part of the question\n{job.sub_topic_title}\n{targets_block}",
     ]
+    material.append(
+        f"# Point budget\n{_point_budget_line(task, job, own_finding_ids)}"
+    )
     if job.defects:
         material.append(f"# Your previous section\n{_rendered_previous_section(job.previous)}")
         material.append(f"# Defects to fix\n{_defect_lines(job.defects)}")
@@ -1662,6 +1746,12 @@ def _page_credit(
     read = reads.get(finding.read_id) if finding is not None else None
     publisher = page_owner(read) if read is not None else publisher_identity(url)
     if read is not None:
+        # D8: a page's own later update outranks its original publication --
+        # credited with the existing "(updated YYYY-MM-DD)" rendering, so a
+        # reader is never told a page updated since is decades stale by its
+        # creation date alone.
+        if read.page_published and read.page_updated and read.page_updated > read.page_published:
+            return PageCredit(publisher=publisher, date=read.page_updated, date_kind="updated")
         if read.page_published:
             return PageCredit(publisher=publisher, date=read.page_published, date_kind="published")
         if read.page_updated:
@@ -1786,10 +1876,22 @@ async def compose_written_report(
     else:
         routed_coverage_ids, defects_by_coverage = set(), {}
 
+    findings_by_id = {finding_fingerprint(f): f for f in citable}
+    part_findings: list[tuple[PartPlacement, list[Finding], list[Finding]]] = []
+    for placement in placements:
+        regular: list[Finding] = []
+        context: list[Finding] = []
+        for finding in placement.findings:
+            bucket = context if is_context_only(
+                finding, src_by_url, answered=task.answered, findings_by_id=findings_by_id,
+                authority_floor=task.authority_floor,
+            ) else regular
+            bucket.append(finding)
+        part_findings.append((placement, regular, context))
+    drafted_part_count = max(1, sum(1 for _, regular, _ in part_findings if regular))
+
     jobs: list[PartJob] = []
-    for order, placement in enumerate(placements):
-        regular = [f for f in placement.findings if not is_context_only(f, src_by_url)]
-        context = [f for f in placement.findings if is_context_only(f, src_by_url)]
+    for order, (placement, regular, context) in enumerate(part_findings):
         targets_here = [t for t in task.targets if t.coverage_id == placement.coverage_id]
         previous_section = previous_sections_by_coverage.get(placement.coverage_id)
         if not is_redraft:
@@ -1802,6 +1904,7 @@ async def compose_written_report(
             coverage_id=placement.coverage_id, sub_topic_title=placement.sub_topic_title,
             order=order, targets=targets_here, findings=regular, context_findings=context,
             previous=previous_section, defects=defects_here, redraft=redraft_this,
+            drafted_part_count=drafted_part_count,
         ))
 
     section_gate = asyncio.Semaphore(max(1, section_concurrency))
@@ -1985,6 +2088,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         answered = answered_target_ids(citable, targets, sub_topics=state.sub_topics)
         src_by_url = sources_by_url(state.evaluated_sources)
         findings_by_id = {finding_fingerprint(f): f for f in citable}
+        authority_floor = self.config.writer_authority_floor
         # §6.13: the Not-found computation excludes context-only answers, so
         # a required target answered only that way reads as unconfirmed; the
         # gate's own ``answered`` (below, unfiltered) still accounts for it.
@@ -1992,10 +2096,21 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         for target_id, finding_ids in answered.items():
             kept = [
                 fid for fid in finding_ids
-                if fid not in findings_by_id or not is_context_only(findings_by_id[fid], src_by_url)
+                if fid not in findings_by_id or not is_context_only(
+                    findings_by_id[fid], src_by_url, answered=answered,
+                    findings_by_id=findings_by_id, authority_floor=authority_floor,
+                )
             ]
             if kept:
                 answered_for_report[target_id] = kept
+        # D11: the frozen contract's own requested length when the question
+        # asked for one, else the config's reader-length default -- the
+        # per-part point budget's own word count (section_messages).
+        budget_words = (
+            state.answer_contract.requested_word_limit
+            if state.answer_contract and state.answer_contract.requested_word_limit is not None
+            else self.config.report_target_words
+        )
         return ReportWriterTask(
             instruction=state.original_question,
             session_id=state.session_id,
@@ -2019,6 +2134,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             defects=material_defects(state.report_review) if _is_redraft_hop(state) else [],
             previous=state.composition if _is_redraft_hop(state) else None,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
+            target_words=budget_words,
+            authority_floor=authority_floor,
         )
 
     async def _compose_result(self, task: ReportWriterTask) -> WrittenReport:

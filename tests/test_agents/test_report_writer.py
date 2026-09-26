@@ -19,6 +19,7 @@ from deep_research.agents.report_writer import (
     BOTTOM_LINE_SYSTEM_PROMPT,
     CONTEXT_ONLY_RELEVANCE,
     MAX_BOTTOM_LINE_SENTENCES,
+    MAX_BOTTOM_LINE_SENTENCE_WORDS,
     MAX_POINT_CHARS,
     REPORT_WRITER_NAME,
     SECTION_INSTRUCTION,
@@ -46,6 +47,7 @@ from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     AcquisitionState,
+    AnswerContract,
     BottomLineDraft,
     CandidateRecord,
     FindingVerification,
@@ -112,6 +114,14 @@ def _low_relevance_source(url: str, *, low_confidence: bool = False, relevance: 
         url=url, title="A page", authority_score=0.8, recency_score=0.8,
         relevance_score=relevance, overall_score=0.5,
         rationale="Weakly related to the sub-topic.", low_confidence=low_confidence,
+    )
+
+
+def _authority_source(url: str, *, authority: float, low_confidence: bool = False) -> ScoredSource:
+    return ScoredSource(
+        url=url, title="A page", authority_score=authority, recency_score=0.8,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="Scored for authority.", low_confidence=low_confidence,
     )
 
 
@@ -276,6 +286,38 @@ def test_is_context_only_true_for_a_low_confidence_source_regardless_of_relevanc
     assert is_context_only(finding, sources_by_url([source])) is True
 
 
+def test_is_context_only_true_for_a_bound_low_authority_finding_when_a_stronger_finding_answers_the_same_target():
+    """D6/D7: a bound finding still becomes context-only once a higher-
+    authority finding answers one of the same targets."""
+    weak = _statement_finding("https://weak.test/1", "A weak claim.",
+                              target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim.",
+                                target_ids=["topic-01-target-01"])
+    sources = sources_by_url([_authority_source("https://weak.test/1", authority=0.2),
+                              _authority_source("https://strong.test/1", authority=0.9)])
+    findings_by_id = {finding_fingerprint(weak): weak, finding_fingerprint(strong): strong}
+    answered = {"topic-01-target-01": [finding_fingerprint(weak), finding_fingerprint(strong)]}
+
+    assert is_context_only(weak, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is True
+    assert is_context_only(strong, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is False
+
+
+def test_is_context_only_false_for_a_bound_low_authority_finding_when_no_stronger_finding_answers_its_target():
+    """D6: when no source for the target reaches the floor, nothing
+    changes -- a question answered only by weak sources still gets its
+    answer."""
+    weak = _statement_finding("https://weak.test/1", "A weak claim.",
+                              target_ids=["topic-01-target-01"])
+    sources = sources_by_url([_authority_source("https://weak.test/1", authority=0.2)])
+    findings_by_id = {finding_fingerprint(weak): weak}
+    answered = {"topic-01-target-01": [finding_fingerprint(weak)]}
+
+    assert is_context_only(weak, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is False
+
+
 # --- registry_lines: D5's content: and passage: lines ----------------------
 
 
@@ -382,6 +424,53 @@ def test_section_messages_list_context_only_findings_under_their_own_heading():
 
     assert "# Context only" in body
     assert "Background chatter." in body
+
+
+def test_section_messages_state_a_point_budget_for_this_part():
+    """D11: the reader-length budget divides ``target_words`` across the
+    report's own drafted-part count, never fewer than 3 or fewer than the
+    part's own required-target count."""
+    task = _one_target_task()
+    task = task.model_copy(update={"target_words": 900})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=2)
+
+    body = section_messages(task, job)[-1].content
+
+    assert "# Point budget" in body
+    assert "Write at most 10 points for this part" in body
+    assert "The evidence log keeps every finding." in body
+
+
+def test_point_budget_never_drops_below_three():
+    from deep_research.agents.report_writer import _point_budget
+    task = _one_target_task()
+    task = task.model_copy(update={"target_words": 100, "answered": {}})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=[], findings=[], context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=10)
+
+    assert _point_budget(task, job, set()) == 3
+
+
+def test_point_budget_uses_the_required_targets_floor_when_it_exceeds_the_length_budget():
+    from deep_research.agents.report_writer import _point_budget
+    targets = [make_target(f"topic-01-target-{n:02d}", coverage_id="topic-01", required=True)
+              for n in range(1, 6)]
+    findings = [_statement_finding(f"https://a.test/{n}", f"Fact {n}.", target_ids=[t.target_id])
+               for n, t in enumerate(targets, start=1)]
+    task = _one_target_task()
+    task = task.model_copy(update={
+        "targets": targets, "findings": findings, "target_words": 45,
+        "answered": {t.target_id: [finding_fingerprint(f)] for t, f in zip(targets, findings)},
+    })
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=targets, findings=findings, context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=1)
+    own_finding_ids = {finding_fingerprint(f) for f in findings}
+
+    assert _point_budget(task, job, own_finding_ids) == 5
 
 
 # --- bottom_line_messages ---------------------------------------------------
@@ -496,6 +585,21 @@ def test_section_instruction_names_the_new_target_answering_rule():
     assert "a point never announces an absence" in SECTION_INSTRUCTION
 
 
+def test_section_instruction_states_one_point_per_distinct_fact():
+    assert "State each distinct fact" in SECTION_INSTRUCTION
+    assert "in one point citing together every finding that states it" in SECTION_INSTRUCTION
+
+
+def test_section_instruction_limits_an_optional_targets_answer_to_a_new_fact():
+    assert ("State an optional target's answer only where it adds a fact the "
+           "required targets' points do not carry") in SECTION_INSTRUCTION
+
+
+def test_section_instruction_states_the_differing_values_rule():
+    assert ("state both in one point, say that they differ, and name which "
+           "source dates or documents its value") in SECTION_INSTRUCTION
+
+
 def test_section_instruction_states_the_unnamed_subject_guard():
     assert "bare pronoun" in SECTION_INSTRUCTION
 
@@ -545,6 +649,18 @@ def test_bottom_line_instruction_forbids_a_pick_of_its_own():
 def test_bottom_line_instruction_forbids_stating_a_pages_own_date():
     assert "Never state a page's own date" in BOTTOM_LINE_INSTRUCTION
     assert "a forecast's release is not a page date and stays" in BOTTOM_LINE_INSTRUCTION
+
+
+def test_bottom_line_instruction_states_the_mechanism_rule_for_why_and_how_questions():
+    assert "give the mechanism as ordered steps" in BOTTOM_LINE_INSTRUCTION
+    assert "a cause and its effect" in BOTTOM_LINE_INSTRUCTION
+    assert "not a verdict of your own" in BOTTOM_LINE_INSTRUCTION
+
+
+def test_bottom_line_instruction_states_the_sentence_word_cap():
+    assert MAX_BOTTOM_LINE_SENTENCE_WORDS == 60
+    assert f"under {MAX_BOTTOM_LINE_SENTENCE_WORDS} words" in BOTTOM_LINE_INSTRUCTION
+    assert f"under {MAX_POINT_CHARS} characters" in BOTTOM_LINE_INSTRUCTION
 
 
 # --- generality (D10): no domain or probe wording in model-read text -------
@@ -716,6 +832,47 @@ async def test_a_point_resting_only_on_context_only_findings_is_refused(writer, 
     assert composition.sections == []
     assert composition.rejected_points[0].reason == "rests only on context-only findings"
     assert checker.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_bound_weak_authority_findings_point_is_refused_when_a_stronger_finding_answers_the_same_target(
+    writer, checker,
+) -> None:
+    """D6/D7: once a higher-authority finding answers the same required
+    target, the writer's authority floor moves the weaker finding to
+    Context only, so a point resting on it alone is refused."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                         unit_dimension=None)
+    weak = _statement_finding("https://weak.test/1", "A weak claim about the topic.",
+                              target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim about the topic.",
+                                target_ids=["topic-01-target-01"])
+    weak_source = _authority_source("https://weak.test/1", authority=0.2)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[weak, strong],
+                          evaluated_sources=[weak_source, strong_source])
+    task = writer.build_task(state)
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="A weak claim about the topic.",
+                             finding_labels=[label_by_url[weak.source_url]]),
+            WriterPointDraft(text="A strong claim about the topic.",
+                             finding_labels=[label_by_url[strong.source_url]]),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="A strong claim about the topic.", finding_labels=[label_by_url[strong.source_url]])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    section_texts = [point.text for section in composition.sections for point in section.points]
+    bottom_line_texts = [point.text for point in composition.summary]
+    assert "A strong claim about the topic." in section_texts + bottom_line_texts
+    assert "A weak claim about the topic." not in section_texts
+    assert any(r.reason == "rests only on context-only findings" for r in composition.rejected_points)
 
 
 @pytest.mark.asyncio
@@ -1261,7 +1418,86 @@ async def test_build_task_excludes_a_context_only_answer_from_the_not_found_comp
     assert any(nf.target_id == target.target_id for nf in task.not_found)
 
 
+def test_build_task_resolves_the_reader_length_from_the_config_default(writer) -> None:
+    """D11: with no frozen word limit, the config default feeds the point budget."""
+    state = _one_part_state()
+
+    task = writer.build_task(state)
+
+    assert task.target_words == 2000
+
+
+def test_build_task_resolves_the_reader_length_from_the_contracts_word_limit(
+    tracker: Tracker, tmp_path: Path,
+) -> None:
+    """D11: a frozen requested word limit overrides the config default."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "The EIA reported 10.4 GW in 2024.", "10.4", "GW",
+                       organisation=EIA)
+    topic = _topic("topic-01", "Capacity added", [target])
+    contract = AnswerContract(
+        question="Q?", scope_statement="Answered for the United States as of 2026-09-24.",
+        geographic_scope="United States", as_of_date="2026-09-24",
+        evidence_period_requirement="the period the question names",
+        assumptions=[], answer_kind="factual", requested_word_limit=500,
+    )
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding], answer_contract=contract)
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+
+    task = agent.build_task(state)
+
+    assert task.target_words == 500
+
+
+def test_build_task_resolves_the_authority_floor_from_config(
+    tracker: Tracker, tmp_path: Path,
+) -> None:
+    """D6/D7: the writer's authority floor comes from ``agents.writer_authority_floor``."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path),
+                    config=AgentRuntimeConfig(max_iterations=2, tool_budget=0, writer_authority_floor=0.6))
+
+    task = agent.build_task(_one_part_state())
+
+    assert task.authority_floor == 0.6
+
+
 # --- T4 compose (spec §6.7): the table, page credits, unreachable ----------
+
+
+def test_page_credit_prefers_a_later_updated_date_over_the_published_date():
+    """D8: when a page's own updated date is later than its published date,
+    credit the updated date, rendered as such."""
+    from deep_research.agents.report_writer import _page_credit
+    read = make_read("Text.", url="https://a.test/1")
+    read = read.model_copy(update={"page_published": "2001-09-26", "page_updated": "2026-08-11"})
+    finding = _statement_finding("https://a.test/1", "Text.", target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"read_id": read.read_id})
+    normalized = normalize_source_url("https://a.test/1")
+
+    credit = _page_credit(normalized, findings_by_url={normalized: finding},
+                          reads={read.read_id: read}, sources=[])
+
+    assert credit.date == "2026-08-11"
+    assert credit.date_kind == "updated"
+
+
+def test_page_credit_keeps_the_published_date_when_it_is_the_later_one():
+    """D8: the existing precedence stays when the published date is not
+    older than the updated date."""
+    from deep_research.agents.report_writer import _page_credit
+    read = make_read("Text.", url="https://a.test/1")
+    read = read.model_copy(update={"page_published": "2026-01-05", "page_updated": "2020-01-01"})
+    finding = _statement_finding("https://a.test/1", "Text.", target_ids=["topic-01-target-01"])
+    finding = finding.model_copy(update={"read_id": read.read_id})
+    normalized = normalize_source_url("https://a.test/1")
+
+    credit = _page_credit(normalized, findings_by_url={normalized: finding},
+                          reads={read.read_id: read}, sources=[])
+
+    assert credit.date == "2026-01-05"
+    assert credit.date_kind == "published"
+
 
 
 @pytest.mark.asyncio

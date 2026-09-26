@@ -124,6 +124,12 @@ agents:
   # ruling for this build (2026-09-25, "no strong limits"): 10, equal to
   # max_sub_topics, so every part of the plan starts drafting at once.
   writer_section_concurrency: 10
+  # D11's reader-length point budget fallback: used only when the frozen
+  # answer contract carries no explicit requested_word_limit.
+  report_target_words: 2000
+  # D6/D7: a bound finding below this source authority is context-only once
+  # another finding at or above the floor answers one of the same targets.
+  writer_authority_floor: 0.4
   source_evaluator:
     # Score new canonical URLs in bounded provider batches, while retaining a
     # complete explicit record for every source beyond the run cap.

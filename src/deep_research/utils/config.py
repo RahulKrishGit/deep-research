@@ -324,6 +324,15 @@ class AgentRuntimeConfig(BaseModel):
     build ("no strong limits"); spec §17 Q6 chose 7 when max_sub_topics was
     7. Lower it if a live run's telemetry reports rate limits
     (``observability.run_telemetry``)."""
+    report_target_words: int = Field(default=2000, ge=1)
+    """D11's reader-length point budget fallback: the writer's per-part
+    point budget uses this only when the frozen answer contract's own
+    ``requested_word_limit`` is ``None`` (``AGENTS_REPORT_TARGET_WORDS``)."""
+    writer_authority_floor: float = Field(default=0.4, ge=0.0, le=1.0)
+    """D6/D7: a bound finding whose source is ``low_confidence`` or whose
+    ``authority_score`` is below this floor is context-only once another
+    finding at or above the floor answers one of the same targets
+    (``report_writer.is_context_only``, ``AGENTS_WRITER_AUTHORITY_FLOOR``)."""
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.
@@ -570,6 +579,8 @@ _ENVIRONMENT_OVERRIDES = {
     ),
     "AGENTS_PROMPT_CONTEXT_ENTRIES": ("agents", "prompt_context_entries"),
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
+    "AGENTS_REPORT_TARGET_WORDS": ("agents", "report_target_words"),
+    "AGENTS_WRITER_AUTHORITY_FLOOR": ("agents", "writer_authority_floor"),
     # Spec §7.3's concurrency bounds (D9/PD-27, S6).
     "AGENTS_SUB_TOPIC_CONCURRENCY": ("agents", "sub_topic_concurrency"),
     "AGENTS_SOURCE_SCORING_CONCURRENCY": (
