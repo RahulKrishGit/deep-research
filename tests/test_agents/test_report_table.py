@@ -675,6 +675,174 @@ def test_choice_rule_one_row_gives_no_table() -> None:
 
 
 # =============================================================================
+# (2b) D10: an explanation/constraints answer's findings table only counts
+# rows that answer a quantity target (an EvidenceTarget with unit_dimension
+# set) -- being cited, or bound to a qualitative target (even a required
+# one), no longer qualifies a row for these two answer kinds.
+# =============================================================================
+
+
+def test_explanation_ignores_figures_bound_to_qualitative_required_targets() -> None:
+    """D10: run 4's incidental rows were each bound to a *required* but
+    qualitative target (no ``unit_dimension``); for an explanation answer
+    that binding no longer qualifies a row for the findings table."""
+    row_a, finding_a = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["t-01"],
+        finding_target_ids=["t-01"],
+    )
+    row_b, finding_b = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["t-02"],
+        finding_target_ids=["t-02"],
+    )
+    composition = _composition(
+        answer_kind="explanation",
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="t-01",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="t-02",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding_a, finding_b],
+        fact_rows=[row_a, row_b],
+    )
+    assert build_table(composition) is None
+
+
+def test_explanation_builds_table_for_quantity_target_figures() -> None:
+    """D10: a target with ``unit_dimension`` set asks for a quantity, so two
+    figures answering it still qualify for an explanation answer's table."""
+    row_a, finding_a = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["t-01"],
+        finding_target_ids=["t-01"],
+    )
+    row_b, finding_b = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["t-01"],
+        finding_target_ids=["t-01"],
+    )
+    composition = _composition(
+        answer_kind="explanation",
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="t-01",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                        unit_dimension="power",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding_a, finding_b],
+        fact_rows=[row_a, row_b],
+    )
+    table = build_table(composition)
+    assert table is not None
+    assert table.shape == "findings"
+
+
+def test_factual_kind_keeps_qualitative_required_target_figures() -> None:
+    """D10 only restricts explanation/constraints answers: a factual
+    answer's findings table still qualifies rows bound to a required
+    qualitative target, exactly as before."""
+    row_a, finding_a = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        target_ids=["t-01"],
+        finding_target_ids=["t-01"],
+    )
+    row_b, finding_b = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["t-02"],
+        finding_target_ids=["t-02"],
+    )
+    composition = _composition(
+        answer_kind="factual",
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="t-01",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="t-02",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding_a, finding_b],
+        fact_rows=[row_a, row_b],
+    )
+    table = build_table(composition)
+    assert table is not None
+    assert table.shape == "findings"
+
+
+
+# =============================================================================
 # (3) Marks on unchecked statements are ignored.
 # =============================================================================
 

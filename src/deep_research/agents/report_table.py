@@ -54,6 +54,12 @@ MAX_FULL_PAGES_PER_CELL = 2
 MAX_FINDING_ROWS = 12
 
 _KEPT_VERDICTS = frozenset({"consistent", "corrected"})
+
+# D10: for these answer kinds the question plans no figure target of its
+# own -- a figure the researcher happens to find is evidence inside a
+# finding, not an obligation -- so a findings-table row only qualifies when
+# it answers a target that itself asks for a quantity (§4.3).
+_QUANTITY_ONLY_ANSWER_KINDS = frozenset({"explanation", "constraints"})
 _OPTIONS_COLUMNS_HEAD = "Option"
 _RECOMMENDED_BY_COLUMN = "Recommended by"
 _FINDINGS_COLUMNS = [
@@ -595,14 +601,32 @@ def _explicitly_answers_required(
     return False
 
 
+def _quantity_target_ids(composition: ReportComposition) -> set[str]:
+    """D10: targets that ask for a quantity -- an ``EvidenceTarget`` with
+    ``unit_dimension`` set; ``None`` marks a qualitative target."""
+    return {
+        target.target_id
+        for topic in composition.sub_topics
+        for target in topic.evidence_targets
+        if target.unit_dimension is not None
+    }
+
+
 def _row_eligible(
     row: FactRow,
     finding_by_id: Mapping[str, Finding],
     required_target_ids: set[str],
     cited: set[str],
+    quantity_target_ids: set[str] | None = None,
 ) -> bool:
     if row.context_unchecked:
         return False
+    if quantity_target_ids is not None:
+        # D10: for explanation/constraints answers, a row qualifies only
+        # when it answers a target that asks for a quantity -- being cited,
+        # or bound to a qualitative target (even a required one), no longer
+        # qualifies it for these kinds.
+        return _explicitly_answers_required(row, finding_by_id, quantity_target_ids)
     if _explicitly_answers_required(row, finding_by_id, required_target_ids):
         return True
     return bool(_row_and_duplicate_ids(row) & cited)
@@ -831,11 +855,18 @@ def findings_table(composition: ReportComposition) -> ReportTable | None:
     finding_by_id = _finding_by_id(composition)
     cited = _cited_finding_ids(composition)
     bottom_line_cited = _cited_finding_ids(composition, bottom_line_only=True)
+    quantity_target_ids = (
+        _quantity_target_ids(composition)
+        if composition.answer_kind in _QUANTITY_ONLY_ANSWER_KINDS
+        else None
+    )
 
     eligible = [
         row
         for row in composition.fact_rows
-        if _row_eligible(row, finding_by_id, required_target_ids, cited)
+        if _row_eligible(
+            row, finding_by_id, required_target_ids, cited, quantity_target_ids
+        )
     ]
     if len(eligible) < 2:
         return None
