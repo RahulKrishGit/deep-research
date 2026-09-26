@@ -19,10 +19,7 @@ from deep_research.agents.evidence_verifier import (
     StatementVerdictDraft,
 )
 from deep_research.agents.report import collapse_mirror_urls
-from deep_research.agents.report_writer import (
-    ReportWriterDraft,
-    WriterPointDraft,
-)
+from deep_research.utils.types import SectionDraft, WriterPointDraft
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import (
     EXPECTED_CONTROLLED_CASE_IDS,
@@ -55,7 +52,7 @@ GATES = (
     "no_false_publication_claim",
 )
 
-_READER_URL_PATTERN = re.compile(r"^(\d+)\.\s+.*?\s+—\s+(\S+)\s*$", re.M)
+_READER_URL_PATTERN = re.compile(r"^(\d+)\.\s+.*?\s+—\s+\[.*?\]\((\S+?)\)", re.M)
 
 
 def _case(case_id: str, tier: str = "controlled"):
@@ -205,7 +202,7 @@ def test_the_complete_case_names_its_unanswered_target(
 
     composition = _composition(output)
     assert [row["target_id"] for row in composition["not_found"]] == [unanswered]
-    assert "## Not found" in output.result["markdown"]
+    assert "## What we couldn't confirm" in output.result["markdown"]
     assert unanswered in str(composition)
 
     mutated = output.model_copy(
@@ -256,7 +253,7 @@ def test_a_dropped_finding_is_published_with_its_reason(
 
     evidence = output.result["evidence_markdown"]
     assert f"dropped ({expected_reason})" in evidence
-    assert "1 dropped" in output.result["markdown"]
+    assert "1 dropped" in output.result["evidence_markdown"]
     assert _gates(output, case)["refusals_logged"] is True
 
 
@@ -274,7 +271,7 @@ def test_a_refused_sentence_is_published_in_full_with_its_reason(
         del schema
         statements = []
         for label, sentence in re.findall(
-            r"## (S\d+)\nsentence: (.*)", messages[-1].content
+            r"## ((?:P\d+\.|B)\d+)\nsentence: (.*)", messages[-1].content
         ):
             verdict = (
                 "inconsistent"
@@ -292,8 +289,9 @@ def test_a_refused_sentence_is_published_in_full_with_its_reason(
             )
         return StatementCheckDraft(statements=statements)
 
-    draft = ReportWriterDraft(
-        executive_summary=[
+    section = SectionDraft(
+        title="Findings",
+        points=[
             WriterPointDraft(
                 text="The EIA expects 19.6 GW of utility-scale additions in 2025.",
                 finding_labels=["F01"],
@@ -307,9 +305,8 @@ def test_a_refused_sentence_is_published_in_full_with_its_reason(
             ),
             WriterPointDraft(text=conflated, finding_labels=["F01", "F02"]),
         ],
-        sections=[],
     )
-    output = report_writer_output_for(case, draft=draft, checker=checker)
+    output = report_writer_output_for(case, section=section, checker=checker)
 
     composition = _composition(output)
     [refused] = composition["rejected_points"]
@@ -392,12 +389,11 @@ def test_the_reader_report_renders_its_structural_sections(
         report = output.result["markdown"]
         assert report.startswith(f"# {case.state.original_question}"), case_id
         for heading in (
-            "## Executive summary",
-            "## Key facts",
+            "## Bottom line",
             "## Sources",
         ):
             assert heading in report, case_id
-        assert "As of" in report, case_id
+        assert "Evidence as of" in report, case_id
 
 
 def test_every_printed_statement_cites_a_known_label(

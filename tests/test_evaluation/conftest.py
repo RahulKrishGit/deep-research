@@ -31,10 +31,8 @@ from deep_research.agents.planner import (
 from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     ReportWriterAgent,
-    ReportWriterDraft,
-    WriterPointDraft,
-    WriterSectionDraft,
 )
+from deep_research.utils.types import BottomLineDraft, Finding, SectionDraft, WriterPointDraft
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
 from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.cases import (
@@ -868,7 +866,7 @@ class ReportWriterOutput(TargetOutput):
         report = str(result.get("markdown") or "")
         head = report.split("## Sources")[0].rstrip()
         listed = "\n".join(
-            f"{index}. Reference {index} — {url}"
+            f"{index}. Reference {index} — [Reference {index}]({url})"
             for index, url in enumerate(urls, start=1)
         )
         report = f"{head}\n\n## Sources\n\n{listed}"
@@ -2974,12 +2972,13 @@ async def _run_evidence_verifier(
     )
 
 
-def _writer_draft(case: EvaluationCase, tools: Sequence[object]) -> ReportWriterDraft:
-    """One drafted point per citable label, in the summary and in a section.
-
-    The points quote their own finding's content, which is what makes the
-    Statement Check's input — and the fact rows a point restates — real
-    rather than empty.
+def _writer_registry(
+    case: EvaluationCase, tools: Sequence[object]
+) -> list[tuple[str, Finding]]:
+    """The task's citable-finding registry, built the same way the real
+    agent would for this case: the default section reply quotes each
+    finding's own content, which is what makes the Statement Check's input —
+    and the fact rows a point restates — real rather than empty.
     """
     agent = ReportWriterAgent(
         provider=ScriptedCompleter(),
@@ -2987,21 +2986,19 @@ def _writer_draft(case: EvaluationCase, tools: Sequence[object]) -> ReportWriter
         scratchpad=_scripted_scratchpad(case, REPORT_WRITER_NAME),
         tools=tools,
     )
-    registry = agent.build_task(case.fresh_state()).registry
-    points = [
-        WriterPointDraft(text=finding.content, finding_labels=[label])
-        for label, finding in registry
-    ]
-    return ReportWriterDraft(
-        executive_summary=list(points),
-        sections=[WriterSectionDraft(title="Findings", points=list(points))],
-    )
+    return agent.build_task(case.fresh_state()).registry
 
 
 def _statement_check_reply(messages, schema) -> StatementCheckDraft:
-    """Answer one batch of the Statement Check by the labels it lists."""
+    """Answer one batch of the Statement Check by the labels it lists.
+
+    A label is a flight key -- ``P{part:02d}.{n}`` for a section's own batch,
+    ``B{n}`` for the bottom line's (spec §6.7) -- renumbered to the reader's
+    ``S001…`` only after every check finishes, so the check itself never
+    sees an ``S`` label from the real writer's own pass.
+    """
     del schema
-    labels = re.findall(r"## (S\d+)", messages[-1].content)
+    labels = re.findall(r"(?m)^## ((?:P\d+\.|B)\d+)$", messages[-1].content)
     return StatementCheckDraft(
         statements=[
             StatementVerdictDraft(
@@ -3014,24 +3011,86 @@ def _statement_check_reply(messages, schema) -> StatementCheckDraft:
     )
 
 
-class _ScriptedWriterProvider:
-    """Answers the Report Writer's two structured calls, however many batches.
+def _material_block(text: str, header: str) -> str:
+    """The material section's own text, up to the next top-level ``# ``
+    header (or the end of the request).
 
-    The writer drafts once and then sends every candidate sentence to the
-    Statement Check, which batches at ``CONTEXT_CHECK_BATCH_SIZE``: a provider
-    that served one queued reply per call would need the test to know the
-    candidate count in advance, so this one answers the draft once and derives
-    each Statement Check batch from the request it is handed.
+    Mirrors ``e2e_evaluation.replay``'s own helper: a sub-header (``## F01``)
+    never matches ``^# ``, which is what lets this stay a simple line scan --
+    every request this codebase builds nests its detail under ``## ``, never
+    a second top-level ``# ``.
+    """
+    headers = list(re.finditer(r"(?m)^# .*$", text))
+    for index, match in enumerate(headers):
+        if match.group().strip() == f"# {header}":
+            end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+            return text[match.end():end]
+    return ""
+
+
+class _ScriptedWriterProvider:
+    """Answers the Report Writer's per-part and bottom-line calls, however
+    many Statement Check batches they send.
+
+    The parallel writer makes one call per plan part plus one bottom-line
+    call (spec §6), so a single static draft can no longer answer every
+    ``SectionDraft`` request the way the old single-call writer's could: the
+    default section reply restates each of *that part's own* registry
+    findings (one point per finding, quoting its content, read from the
+    request's own ``# Verified findings for this part`` block) and the
+    default bottom-line reply restates up to 4 of the checked section
+    statements the request's own ``# Checked statements`` block lists.
+    ``section``/``bottom_line`` override the default for every call of that
+    schema, for a test that needs one particular section or bottom line.
     """
 
     def __init__(
         self,
-        draft: ReportWriterDraft,
+        registry: Sequence[tuple[str, Finding]],
         checker: Callable[[Sequence[object], object], StatementCheckDraft],
+        *,
+        section: SectionDraft | None = None,
+        bottom_line: BottomLineDraft | None = None,
     ) -> None:
-        self._draft = draft
+        self._registry_by_label = dict(registry)
         self._checker = checker
+        self._section_override = section
+        self._bottom_line_override = bottom_line
         self.calls: list[tuple[str, list[object]]] = []
+
+    def _default_section(self, text: str) -> SectionDraft:
+        title_block = _material_block(text, "This part of the question")
+        title = (
+            title_block.strip().splitlines()[0].strip()
+            if title_block.strip() else "Findings"
+        )
+        block = _material_block(text, "Verified findings for this part")
+        labels = re.findall(r"(?m)^## (F\d+):", block)
+        points = [
+            WriterPointDraft(text=self._registry_by_label[label].content, finding_labels=[label])
+            for label in labels
+            if label in self._registry_by_label
+        ]
+        return SectionDraft(title=title, points=points)
+
+    def _default_bottom_line(self, text: str) -> BottomLineDraft:
+        block = _material_block(text, "Checked statements")
+        sentences: list[WriterPointDraft] = []
+        for line in block.splitlines():
+            if not line.startswith("- "):
+                continue
+            match = re.match(r"^(.*) \(cites ([^;()]*)(?:; options: .*)?\)$", line[2:])
+            if match is None:
+                continue
+            point_text, cites = match.group(1), match.group(2)
+            labels = (
+                [] if cites.strip() == "nothing"
+                else [label.strip() for label in cites.split(",")]
+            )
+            sentences.append(WriterPointDraft(text=point_text, finding_labels=labels))
+            if len(sentences) == 4:
+                break
+        return BottomLineDraft(sentences=sentences)
 
     async def complete_structured(
         self,
@@ -3044,8 +3103,15 @@ class _ScriptedWriterProvider:
     ):
         del agent_name, max_tokens, reasoning_effort
         self.calls.append((schema.__name__, list(messages)))
-        if schema is ReportWriterDraft:
-            return self._draft
+        text = "\n".join(message.content for message in messages)
+        if schema is SectionDraft:
+            if self._section_override is not None:
+                return self._section_override
+            return self._default_section(text)
+        if schema is BottomLineDraft:
+            if self._bottom_line_override is not None:
+                return self._bottom_line_override
+            return self._default_bottom_line(text)
         return self._checker(list(messages), schema)
 
     async def complete_react(self, *args: object, **kwargs: object):
@@ -3056,11 +3122,13 @@ async def _run_report_writer(
     case: EvaluationCase,
     *,
     tools: Sequence[object],
-    draft: ReportWriterDraft | None = None,
+    section: SectionDraft | None = None,
+    bottom_line: BottomLineDraft | None = None,
     checker: Callable[[Sequence[object], object], StatementCheckDraft] | None = None,
 ) -> "ReportWriterOutput":
     completer = _ScriptedWriterProvider(
-        draft or _writer_draft(case, tools), checker or _statement_check_reply
+        _writer_registry(case, tools), checker or _statement_check_reply,
+        section=section, bottom_line=bottom_line,
     )
     agent = ReportWriterAgent(
         provider=completer,
@@ -3181,7 +3249,8 @@ def invented_evidence_output(invented_evidence_case) -> "EvidenceVerifierOutput"
 def report_writer_output_for(tracker, tmp_path):
     """Build the writer's repetition for any registered controlled case.
 
-    ``draft`` replaces the fixture's own summary-and-findings draft and
+    ``section`` replaces the fixture's own registry-restating section reply
+    and ``bottom_line`` replaces its own checked-statement bottom line;
     ``checker`` replaces the permissive default Statement Check, so a case
     test can stage a sentence the check has to refuse. The agent is built with
     the two tools it declares — the real ``WriteDocumentTool`` under
@@ -3192,7 +3261,8 @@ def report_writer_output_for(tracker, tmp_path):
     def factory(
         case: EvaluationCase,
         *,
-        draft: ReportWriterDraft | None = None,
+        section: SectionDraft | None = None,
+        bottom_line: BottomLineDraft | None = None,
         checker: Callable[[Sequence[object], object], StatementCheckDraft]
         | None = None,
     ) -> "ReportWriterOutput":
@@ -3200,7 +3270,9 @@ def report_writer_output_for(tracker, tmp_path):
             tracker, output_root=tmp_path / case.case_id
         )
         return asyncio.run(
-            _run_report_writer(case, tools=tools, draft=draft, checker=checker)
+            _run_report_writer(
+                case, tools=tools, section=section, bottom_line=bottom_line, checker=checker
+            )
         )
 
     return factory
