@@ -1437,13 +1437,14 @@ _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
 # "St.", "Inc." are not sentence ends, so "according to the U.S. EIA",
 # "according to Dr. Vale" and "Acme Inc. said ..." keep crediting. A
 # closing quote or paren right after the mark does not hide a sentence end
-# either (ReRevV4 follow-up): "According to team." Beta grew fast." must
+# either (ReRevV4 follow-ups): "According to team." Beta grew fast." must
 # not credit Beta, whether the mark is followed directly by the next
-# sentence's capital or by one closing quote/paren first.
+# sentence's capital or by a run of closing quotes/parens first (a quote
+# nested in a quote closes with two).
 _ATTRIBUTION_CUE_REACH = 15
 _SENTENCE_END_MARK = re.compile(r"[.!?]")
 _SENTENCE_CONTINUATION = re.compile(r"\s+[\"'\u2018\u201c(]?[A-Z]")
-_CLOSING_QUOTE_OR_PAREN = re.compile(r"[\"'\u2019\u201d)\]]")
+_CLOSING_QUOTES_OR_PARENS = re.compile(r"[\"'\u2019\u201d)\]]+")
 _PRECEDING_TOKEN = re.compile(r"([A-Za-z]+)$")
 _SINGLE_CAPITAL_INITIAL = re.compile(r"^[A-Z]$")
 _SENTENCE_ABBREVIATIONS = frozenset({
@@ -1468,14 +1469,14 @@ def _is_abbreviation_mark(phrase: str, mark_index: int) -> bool:
 
 def _gap_crosses_a_sentence_end(phrase: str, start: int, end: int) -> bool:
     """Whether a genuine sentence end -- not an abbreviation's own mark --
-    falls inside ``phrase[start:end]``. At most one closing quote or paren
+    falls inside ``phrase[start:end]``. A run of closing quotes or parens
     right after the mark is skipped before looking for the continuation, so
-    a quoted sentence's own closing mark does not hide the sentence end.
+    a quoted sentence's own closing marks do not hide the sentence end.
     """
     for mark in _SENTENCE_END_MARK.finditer(phrase, start, end):
         if _is_abbreviation_mark(phrase, mark.start()):
             continue
-        closing = _CLOSING_QUOTE_OR_PAREN.match(phrase, mark.end())
+        closing = _CLOSING_QUOTES_OR_PARENS.match(phrase, mark.end())
         continuation_start = closing.end() if closing else mark.end()
         if _SENTENCE_CONTINUATION.match(phrase, continuation_start):
             return True

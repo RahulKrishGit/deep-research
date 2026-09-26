@@ -3292,6 +3292,17 @@ def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_straight_qu
     assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Beta")
 
 
+def test_a_cue_does_not_reach_across_a_sentence_end_behind_nested_closing_quotes() -> None:
+    """D11a follow-up (ReRevV4 P2): a quote nested in a quote closes with two
+    marks in a row -- 'According to team.'" Beta grew fast.' must not credit
+    Beta either."""
+    snippet = "According to team.'\" Beta grew fast in 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Beta")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of
