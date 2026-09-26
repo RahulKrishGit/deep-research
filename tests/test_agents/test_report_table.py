@@ -2327,3 +2327,389 @@ def test_earlier_edition_with_no_known_finding_prints_no_date_and_no_vintage() -
     result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
     assert result == "10 GW; earlier: 9 GW"
     assert "January 2024 Preliminary Inventory" not in result
+
+
+# =============================================================================
+# Whole-branch review: P1-1 (relay credit), P3-1 (dropped_marks dedup),
+# P3-3 (name the period_resolved_from basis).
+# =============================================================================
+
+
+def test_options_table_credits_the_relayed_bodys_judgement_not_the_relay_alone() -> (
+    None
+):
+    bi_url = "https://businessinsider.com/best-headphones"
+    other_url = "https://other.test/page"
+    text = (
+        "According to Wirecutter, as reported by Business Insider, the Sony "
+        "WH-1000XM6 is the best overall pick."
+    )
+    read = make_read(text, url=bi_url, title="Best Headphones")
+    finding = make_finding(read, text, attributed_issuer="Wirecutter")
+    other_finding = _finding_for_url(other_url)
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[finding, other_finding],
+        page_credits={bi_url: PageCredit(publisher="Business Insider")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        text,
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="the best overall pick",
+                                picked=True,
+                                source_url=bi_url,
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(finding)],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site B says Model B is fine.",
+                        items=[
+                            ItemMark(
+                                name="Model B", verdict="fine", source_url=other_url
+                            )
+                        ],
+                        findings_by_url={other_url: other_finding},
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    sound_cell, recommended = xm6_row[1], xm6_row[-1]
+    assert (
+        sound_cell.entries[0].text == "the best overall pick, according to Wirecutter"
+    )
+    assert recommended.entries[0].text == "Wirecutter, reported by Business Insider"
+    # never credit the relay alone: "Business Insider" must not stand in for the picker
+    assert recommended.entries[0].text != "Business Insider"
+
+
+def test_options_table_credits_the_pages_own_pick_unchanged() -> None:
+    url = "https://cnet.com/best-headphones"
+    findings_by_url = {url: _finding_for_url(url)}
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=list(findings_by_url.values()),
+        page_credits={url: PageCredit(publisher="CNET")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _backed_stmt(
+                        "S1",
+                        "CNET picks the Sony WH-1000XM6 as the best overall.",
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="the best overall",
+                                picked=True,
+                                source_url=url,
+                            )
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "CNET says Model B is fine.",
+                        items=[
+                            ItemMark(name="Model B", verdict="fine", source_url=url)
+                        ],
+                        findings_by_url=findings_by_url,
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    sound_cell, recommended = xm6_row[1], xm6_row[-1]
+    assert sound_cell.entries[0].text == "the best overall"
+    assert recommended.entries[0].text == ""
+
+
+def test_options_table_credits_the_relayed_body_from_verified_figure_context() -> None:
+    """A finding with no ``attributed_issuer`` can still be a relay: its own
+    kept figure's Context Check already found ``attribution == "relayed"``."""
+    relay_url = "https://relay.test/page"
+    text = "Example Wire reports the Sony WH-1000XM6 costs $390, its lab's own pick."
+    read = make_read(text, url=relay_url, title="Relay page")
+    finding = make_finding(read, text, figures=[figure("390", "USD")])
+    result = FigureResult(
+        figure=finding.figures[0],
+        matched=True,
+        evidence_words=text,
+        context=FigureContext(
+            attribution="relayed", organisation="Example Wire", kind="actual"
+        ),
+    )
+    finding = finding.model_copy(
+        update={
+            "verification": FindingVerification(
+                status="verified", figure_results=[result]
+            )
+        }
+    )
+    other_finding = _finding_for_url("https://other.test/page")
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[finding, other_finding],
+        page_credits={relay_url: PageCredit(publisher="Relay Host")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        text,
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="its lab's own pick",
+                                picked=True,
+                                source_url=relay_url,
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(finding)],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site B says Model B is fine.",
+                        items=[
+                            ItemMark(
+                                name="Model B",
+                                verdict="fine",
+                                source_url="https://other.test/page",
+                            )
+                        ],
+                        findings_by_url={"https://other.test/page": other_finding},
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    recommended = xm6_row[-1]
+    assert recommended.entries[0].text == "Example Wire, reported by Relay Host"
+
+
+def test_dropped_marks_are_not_duplicated_across_repeated_calls() -> None:
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "Site A says Model A is great.",
+                        items=[
+                            ItemMark(
+                                name="Model A",
+                                verdict="great",
+                                source_url="https://anywhere.test/x",
+                            )
+                        ],
+                        finding_ids=[],
+                    )
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1"),
+    )
+    options_table(composition)
+    options_table(composition)
+    matching = [
+        msg
+        for msg in composition.dropped_marks
+        if "Model A" in msg
+        and "the statement cites no finding this report carries" in msg
+    ]
+    assert len(matching) == 1
+
+
+def test_period_resolved_from_names_the_release_date_as_basis() -> None:
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        period="2025",
+        period_resolved_from="2025-06-10",
+        subject="Battery storage capacity",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+        release_date="2025-06-10",
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding, other_finding],
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
+    assert "counted from the release date, 2025-06-10" in what
+    assert "counted from the page's date" not in what
+
+
+def test_period_resolved_from_names_the_statement_date_as_basis() -> None:
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        period="2025",
+        period_resolved_from="2025-03-12",
+        subject="Battery storage capacity",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+        statement_date="2025-03-12",
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding, other_finding],
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
+    assert "counted from the statement date, 2025-03-12" in what
+
+
+def test_period_resolved_from_falls_back_to_the_pages_date() -> None:
+    row, finding = _row(
+        "K001",
+        url="https://a.test/x",
+        value="10",
+        unit="GW",
+        period="2026",
+        period_resolved_from="2026-02-20",
+        subject="Battery storage capacity",
+        target_ids=["req-a"],
+        finding_target_ids=["req-a"],
+    )
+    other_row, other_finding = _row(
+        "K002",
+        url="https://b.test/y",
+        value="20",
+        unit="GW",
+        target_ids=["req-b"],
+        finding_target_ids=["req-b"],
+    )
+    composition = _composition(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-x",
+                title="t",
+                rationale="r",
+                search_queries=["q"],
+                success_criteria=["c"],
+                priority=1,
+                evidence_targets=[
+                    EvidenceTarget(
+                        target_id="req-a",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                    EvidenceTarget(
+                        target_id="req-b",
+                        coverage_id="topic-x",
+                        question="q",
+                        required=True,
+                        measure="m",
+                    ),
+                ],
+            )
+        ],
+        findings=[finding, other_finding],
+        fact_rows=[row, other_row],
+    )
+    table = findings_table(composition)
+    assert table is not None
+    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
+    assert "counted from the page's date, 2026-02-20" in what

@@ -140,9 +140,42 @@ class _ResolvedMark(NamedTuple):
     mark: ItemMark
     parts: frozenset[str]
     order: int
+    relay: tuple[str, str] | None
+    """(credited_body, relay_publisher) when the mark's backing finding reports
+    another body's judgement through this page; ``None`` when the page speaks
+    for itself (P1-1)."""
 
 
-def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
+def _relay_credit(
+    finding: Finding | None, page_credits: Mapping[str, PageCredit], url: str
+) -> tuple[str, str] | None:
+    """P1-1: (credited_body, relay_publisher) when ``finding`` reports another
+    body's judgement relayed through ``url``'s page; ``None`` when the page
+    speaks for itself. Never credits the relay alone: a page whose own words
+    hand a pick or verdict to a named body ('according to Wirecutter, as
+    reported by Business Insider') must credit that body, with the relay
+    named beside it.
+    """
+    if finding is None:
+        return None
+    page_publisher = _page_publisher(page_credits, url) or publisher_identity(url)
+    attributed = (finding.attributed_issuer or "").strip()
+    if attributed and not same_organisation(attributed, page_publisher):
+        return attributed, page_publisher
+    if finding.verification is not None:
+        for result in finding.verification.figure_results:
+            if not result.kept or result.context is None:
+                continue
+            if result.context.attribution == "relayed" and not same_organisation(
+                result.context.organisation, page_publisher
+            ):
+                return result.context.organisation, page_publisher
+    return None
+
+
+def _resolve_marks(
+    composition: ReportComposition,
+) -> tuple[list[_ResolvedMark], list[str]]:
     """Kept statements' valid marks, in report order, each tied to its own part(s).
 
     Three checks before a mark counts (§4.2 last bullet): the statement is
@@ -152,9 +185,10 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
     statement cites — a mark cannot credit a page the sentence never rested
     on, and a statement that cites no known finding at all fails this check
     too (a mark trusts nothing it cannot check against). A mark failing
-    either source check is dropped and recorded in
-    ``composition.dropped_marks``, so a mismatch is visible in the evidence
-    log rather than silently invisible.
+    either source check is dropped; the drop messages are returned rather
+    than written to ``composition.dropped_marks`` directly (P3-1), so a
+    caller invoked more than once on the same composition merges instead of
+    duplicating them.
 
     A section statement's marks count toward its own section's part. A
     bottom-line statement can cite findings from more than one part; a mark
@@ -164,7 +198,9 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
     """
     part_by_finding = _part_by_finding(composition)
     finding_url = _finding_source_urls(composition)
+    finding_by_url = {_norm(f.source_url): f for f in composition.findings}
     resolved: list[_ResolvedMark] = []
+    dropped: list[str] = []
     order = 0
     for statement, own_section in _placed_statements(composition):
         verdict = composition.statement_verdicts.get(statement.statement_id, "")
@@ -180,13 +216,13 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
                 continue
             mark_url = _norm(mark.source_url)
             if not cited_urls:
-                composition.dropped_marks.append(
+                dropped.append(
                     f"{statement.statement_id}: '{mark.name}' credits a page, but "
                     "the statement cites no finding this report carries"
                 )
                 continue
             if mark_url not in cited_urls:
-                composition.dropped_marks.append(
+                dropped.append(
                     f"{statement.statement_id}: '{mark.name}' credits a page "
                     "the statement does not cite"
                 )
@@ -199,9 +235,24 @@ def _resolve_marks(composition: ReportComposition) -> list[_ResolvedMark]:
                     for fid in statement.finding_ids
                     if fid in part_by_finding and finding_url.get(fid) == mark_url
                 )
-            resolved.append(_ResolvedMark(statement.statement_id, mark, parts, order))
+            relay = _relay_credit(
+                finding_by_url.get(mark_url), composition.page_credits, mark_url
+            )
+            resolved.append(
+                _ResolvedMark(statement.statement_id, mark, parts, order, relay)
+            )
             order += 1
-    return resolved
+    return resolved, dropped
+
+
+def _merge_dropped_marks(
+    composition: ReportComposition, dropped: Sequence[str]
+) -> None:
+    """P3-1: merge without duplicating, so calling a builder twice on the same
+    composition cannot double-record the same drop."""
+    for message in dropped:
+        if message not in composition.dropped_marks:
+            composition.dropped_marks.append(message)
 
 
 def _required_part_option_counts(
@@ -232,7 +283,8 @@ def build_table(composition: ReportComposition) -> ReportTable | None:
     ultimately qualified as columns), this falls through to the findings
     table instead of publishing a near-empty options table.
     """
-    resolved_marks = _resolve_marks(composition)
+    resolved_marks, dropped = _resolve_marks(composition)
+    _merge_dropped_marks(composition, dropped)
     required = _required_coverage_ids(composition)
     per_part = _required_part_option_counts(resolved_marks, required)
     if any(len(keys) >= 2 for keys in per_part.values()):
@@ -287,20 +339,24 @@ def _cell_pages(
     resolved_marks: Sequence[_ResolvedMark],
     part_cid: str,
     option_key: str,
-) -> tuple["OrderedDict[str, list[str]]", list[str]]:
+) -> tuple["OrderedDict[str, list[str]]", dict[str, tuple[str, str] | None], list[str]]:
     pages: OrderedDict[str, list[str]] = OrderedDict()
+    relays: dict[str, tuple[str, str] | None] = {}
     statement_ids: list[str] = []
     for resolved in resolved_marks:
         if part_cid not in resolved.parts:
             continue
         if _option_key(resolved.mark.name) != option_key:
             continue
-        pages.setdefault(_norm(resolved.mark.source_url), []).append(
-            resolved.mark.verdict
-        )
+        url = _norm(resolved.mark.source_url)
+        pages.setdefault(url, []).append(resolved.mark.verdict)
+        if resolved.relay is not None:
+            relays[url] = resolved.relay
+        else:
+            relays.setdefault(url, None)
         if resolved.statement_id not in statement_ids:
             statement_ids.append(resolved.statement_id)
-    return pages, statement_ids
+    return pages, relays, statement_ids
 
 
 def _part_cell(
@@ -308,14 +364,19 @@ def _part_cell(
     part_cid: str,
     option_key: str,
 ) -> TableCell:
-    pages, statement_ids = _cell_pages(resolved_marks, part_cid, option_key)
-    entries = [
-        TableEntry(
-            text=_dedup_join(verdicts) if index < MAX_FULL_PAGES_PER_CELL else "",
-            source_url=url,
-        )
-        for index, (url, verdicts) in enumerate(pages.items())
-    ]
+    pages, relays, statement_ids = _cell_pages(resolved_marks, part_cid, option_key)
+    entries: list[TableEntry] = []
+    for index, (url, verdicts) in enumerate(pages.items()):
+        if index >= MAX_FULL_PAGES_PER_CELL:
+            entries.append(TableEntry(text="", source_url=url))
+            continue
+        text = _dedup_join(verdicts)
+        relay = relays.get(url)
+        if relay is not None and text:
+            # P1-1: never credit the relay alone — name the body whose
+            # judgement this is, with the relay page still cited by its marker.
+            text = f"{text}, according to {relay[0]}"
+        entries.append(TableEntry(text=text, source_url=url))
     return TableCell(entries=entries, statement_ids=statement_ids)
 
 
@@ -324,21 +385,25 @@ def _recommended_by_cell(
     option_key: str,
     page_credits: Mapping[str, PageCredit],
 ) -> TableCell:
-    pages: OrderedDict[str, None] = OrderedDict()
+    pages: OrderedDict[str, tuple[str, str] | None] = OrderedDict()
     statement_ids: list[str] = []
     for resolved in resolved_marks:
         if _option_key(resolved.mark.name) != option_key or not resolved.mark.picked:
             continue
-        pages.setdefault(_norm(resolved.mark.source_url), None)
+        url = _norm(resolved.mark.source_url)
+        if resolved.relay is not None:
+            pages[url] = resolved.relay
+        else:
+            pages.setdefault(url, None)
         if resolved.statement_id not in statement_ids:
             statement_ids.append(resolved.statement_id)
     entries = [
         TableEntry(
-            text="",
+            text=f"{relay[0]}, reported by {relay[1]}" if relay is not None else "",
             source_url=url,
             date=page_credits[url].date if url in page_credits else None,
         )
-        for url in pages
+        for url, relay in pages.items()
     ]
     return TableCell(entries=entries, statement_ids=statement_ids)
 
@@ -432,7 +497,9 @@ def options_table(composition: ReportComposition) -> ReportTable:
     at all lives in :func:`build_table` (§4.1); this function only shapes
     whatever marks exist.
     """
-    return _build_options_table(_resolve_marks(composition), composition)
+    resolved_marks, dropped = _resolve_marks(composition)
+    _merge_dropped_marks(composition, dropped)
+    return _build_options_table(resolved_marks, composition)
 
 
 # =============================================================================
@@ -625,6 +692,21 @@ def _has_rival(row: FactRow, table_rows: Sequence[FactRow]) -> bool:
     return False
 
 
+def _period_resolved_from_basis(row: FactRow, finding: Finding | None) -> str:
+    """P3-3: name the actual basis a relative period was resolved from, rather
+    than always saying "the page's date" — a resolved period may specifically
+    be counted from the finding's own admitted release or statement date."""
+    if finding is not None and row.period_resolved_from:
+        if finding.release_date and row.period_resolved_from == finding.release_date:
+            return "the release date"
+        if (
+            finding.statement_date
+            and row.period_resolved_from == finding.statement_date
+        ):
+            return "the statement date"
+    return "the page's date"
+
+
 def _what_was_measured(row: FactRow, finding: Finding | None, rival: bool) -> str:
     subject = (row.subject or "").strip()
     starts_with_pronoun = (
@@ -637,7 +719,8 @@ def _what_was_measured(row: FactRow, finding: Finding | None, rival: bool) -> st
         text = f"{text} ({row.scope})"
     if row.period:
         if row.period_resolved_from:
-            text = f"{text}, {row.period} (counted from the page's date, {row.period_resolved_from})"
+            basis = _period_resolved_from_basis(row, finding)
+            text = f"{text}, {row.period} (counted from {basis}, {row.period_resolved_from})"
         elif not _words_present(row.period, text):
             text = f"{text}, {row.period}"
     return text
