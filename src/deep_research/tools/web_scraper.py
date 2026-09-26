@@ -654,13 +654,21 @@ def _json_ld_node_types(node: Mapping[str, object]) -> set[str]:
 
 
 def _first_json_ld_date(nodes: list[Mapping[str, object]], key: str) -> str | None:
+    """The date every node in ``nodes`` agrees on for ``key``, or ``None``.
+
+    Collected from every node rather than the first match: two article-
+    shaped nodes on one page that disagree on ``datePublished`` are not
+    resolved by letting the first one win -- the same agreement rule
+    microdata already applies (WholeBranchReview P3-3).
+    """
+    found: set[str] = set()
     for node in nodes:
         value = node.get(key)
         if isinstance(value, str) and value.strip():
             normalized = _normalize_page_date(value)
             if normalized is not None:
-                return normalized
-    return None
+                found.add(normalized)
+    return found.pop() if len(found) == 1 else None
 
 
 def _json_ld_candidate_nodes(

@@ -3436,6 +3436,124 @@ def test_a_cue_less_date_with_no_matching_page_date_is_refused(
 
 
 # ---------------------------------------------------------------------------
+# WholeBranchReview P1-2: a publication cue must govern the date it labels,
+# not merely sit somewhere in the same paragraph; "updated"/"modified" never
+# govern a publication claim; a proposal that disagrees with the page's own
+# captured metadata loses to that metadata.
+# ---------------------------------------------------------------------------
+
+
+def test_a_products_own_release_date_is_not_the_pages_publication_date() -> None:
+    """WholeBranchReview P1-2 repro: 'released' so commonly labels a product
+    or a report, not the page itself, that it is dropped from the
+    publication cues entirely rather than guessed apart from a real page
+    label."""
+    read = _dated(
+        "Grid Storage Outlook. Sony released the WH-1000XM6 on May 15, 2025. "
+        "Battery storage capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2025-05-15", "Sony released the WH-1000XM6 on May 15, 2025"
+        ),
+        status="current",
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
+
+
+def test_a_cue_less_bare_year_near_an_unrelated_release_mention_is_refused() -> None:
+    """WholeBranchReview P1-2 repro: a cue-less bare year must not ride in on
+    an unrelated 'released' mention merely because it sits nearby."""
+    read = _dated(
+        "Grid Storage Outlook. Sony released the WH-1000XM6 on May 15, 2025. "
+        "Battery storage capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read, publication_date=_claim("2025", "2025"), status="current"
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
+
+
+def test_a_published_byline_label_is_still_admitted() -> None:
+    """A genuine 'Published:' label still governs its date."""
+    read = _dated(
+        "Grid Storage Outlook. Published: 2025-06-10. Battery storage "
+        "capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read, publication_date=_claim("2025-06-10", "Published: 2025-06-10"),
+        status="current",
+    )
+
+    assert dated.publication_date == "2025-06-10"
+    assert dated.status == "current"
+
+
+def test_an_updated_label_never_governs_a_publication_claim() -> None:
+    """WholeBranchReview P1-2: 'Updated'/'modified' label an edit, never a
+    first publication -- this contract carries no separate field to route
+    an edit date to, so a claim only an update label governs is refused for
+    ``publication_date`` rather than printed as though it were one."""
+    read = _dated(
+        "Grid Storage Outlook. Updated June 12, 2025. Battery storage "
+        "capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim("2025-06-12", "Updated June 12, 2025"),
+        status="current",
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
+
+
+def test_a_governed_proposal_that_disagrees_with_page_metadata_loses() -> None:
+    """WholeBranchReview P1-2: the page's own captured metadata date is more
+    reliable than a model's proposal, even a genuinely cue-governed one. A
+    wrong date is worse than none, so disagreement refuses the proposal
+    rather than printing whichever date happened to be labelled in the
+    excerpt the Source Evaluator saw."""
+    read = _dated(
+        "Grid Storage Outlook. Published: 2025-05-15. Battery storage "
+        "capacity grew across every region this year."
+    ).model_copy(update={"page_published": "2026-09-17"})
+
+    dated = validated_temporal(
+        read, publication_date=_claim("2025-05-15", "Published: 2025-05-15"),
+        status="current",
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
+
+
+def test_a_governed_proposal_that_agrees_with_page_metadata_is_admitted() -> None:
+    """The disagreement rule never blocks a proposal the metadata confirms."""
+    read = _dated(
+        "Grid Storage Outlook. Published: 2026-09-17. Battery storage "
+        "capacity grew across every region this year."
+    ).model_copy(update={"page_published": "2026-09-17"})
+
+    dated = validated_temporal(
+        read, publication_date=_claim("2026-09-17", "Published: 2026-09-17"),
+        status="current",
+    )
+
+    assert dated.publication_date == "2026-09-17"
+    assert dated.status == "current"
+
+
+# ---------------------------------------------------------------------------
 # The live pre-flight's Defect A (review-01): the page's own sentence credits a
 # body inside a reporting phrase, which the relay cue list did not read.
 # ---------------------------------------------------------------------------

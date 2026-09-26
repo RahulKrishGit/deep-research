@@ -2232,13 +2232,21 @@ def _quoted_date(read: ReadRecord | None, claimed: object, *,
     return stated
 
 
-# A page states its own publication date with one of these words: "Published
-# 2026-02-20", "Updated 2026-02-20", "Last modified 2026-02-20". An "as of" is
-# not one of them — it dates a data series, which is what ``data_period`` is
-# for — and neither is a copyright year.
+# A page states its own publication with one of these words directly
+# labelling the date: "Published: 2026-02-20", "Published by Example
+# Institute on 2026-02-20", "Posted 2026-02-20". "released"/"issued" are
+# deliberately absent, and "updated"/"modified"/"last modified" are kept out
+# of this set too: a probe of an earlier cut of this rule found "Sony
+# released the WH-1000XM6 on May 15, 2025" admitted as the page's own
+# publication date -- "released" so commonly labels a PRODUCT or a report,
+# never the page itself, that no general (non-domain) rule can tell the two
+# apart -- and found "Updated May 15, 2025" printed as though it were a
+# first publication, although it names an edit (WholeBranchReview P1-2).
+# This contract carries no separate "last updated" field to route an edit
+# date to, so a claim only such a word governs is refused here rather than
+# let an edit date stand in for a publication date.
 _PUBLICATION_CUES = re.compile(
-    r"(?<![A-Za-z0-9])(?:publish(?:es|ed)?|releases?|released|updates?|updated|"
-    r"last\s+modified|modified|posted|issued)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])(?:publish(?:es|ed)?|posted)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 # How much page either side of the date may carry the cue: a caption or a
@@ -2247,32 +2255,53 @@ _PUBLICATION_CUES = re.compile(
 _PUBLICATION_CUE_CHARS = 200
 
 
+def _dates_agree(first: str, second: str) -> bool:
+    """True when two page dates are consistent: equal, or one is a coarser
+    reading of the other ("2025" agrees with a page dated "2025-05-15")."""
+    return (
+        first == second
+        or first.startswith(f"{second}-")
+        or second.startswith(f"{first}-")
+    )
+
+
 def _states_it_as_the_publication_date(
     read: ReadRecord, quote: str, stated: str | None = None
 ) -> bool:
     """True when the page states the quoted date as its own publication date.
 
-    The cue may sit in the quote itself, or beside the date on the page, which
-    is where a model that quotes only the date leaves it. A cue-less quote is
-    admitted only when it names exactly the date the page's own metadata
-    already captured (D14, ``ReadRecord.page_published``) -- coarser than the
-    captured date is also admitted (a cue-less "2026" beside a captured
-    "2026-09-17" is still that page's year), but never merely because a
-    day-precision date sits early in the page's text. A first cut of this
-    rule read *position* alone as the cue and admitted an event date, a
-    data-period date, an effective date, and a related article's own date the
-    same way it admitted a real byline (RevDatesR3 P0) -- so position is not
-    a substitute for what the page's own metadata actually states.
+    A publication cue -- "Published", "Posted" -- may sit in the quote
+    itself or beside the date on the page, which is where a model that
+    quotes only the date leaves it. A cue-less quote is admitted only when
+    it names exactly the date the page's own metadata already captured (D14,
+    ``ReadRecord.page_published``) -- coarser than the captured date is also
+    admitted (a cue-less "2026" beside a captured "2026-09-17" is still that
+    page's year), but never merely because a day-precision date sits early
+    in the page's text (RevDatesR3 P0).
+
+    Whenever the page's own metadata carries a publication date, a proposal
+    that disagrees with it is refused even when a real cue governs it: the
+    page's own captured date is the more reliable fact, and a wrong date is
+    worse than none (WholeBranchReview P1-2).
     """
-    if _PUBLICATION_CUES.search(quote):
-        return True
-    window = _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
-    if _PUBLICATION_CUES.search(window):
-        return True
     page_published = read.page_published
-    if page_published is None or stated is None:
+    cue_governs = bool(
+        _PUBLICATION_CUES.search(quote)
+        or _PUBLICATION_CUES.search(
+            _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
+        )
+    )
+    if not cue_governs:
+        if page_published is None or stated is None:
+            return False
+        return stated == page_published or page_published.startswith(f"{stated}-")
+    if (
+        page_published is not None
+        and stated is not None
+        and not _dates_agree(stated, page_published)
+    ):
         return False
-    return stated == page_published or page_published.startswith(f"{stated}-")
+    return True
 
 
 def _temporal_claim(claimed: object) -> TemporalClaim | None:

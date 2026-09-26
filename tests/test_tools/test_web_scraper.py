@@ -1586,3 +1586,29 @@ async def test_the_generic_date_and_dcterms_date_names_are_never_read(
     result = await _read_served_page(tracker, page)
 
     assert "page_published" not in result.data
+
+
+@pytest.mark.asyncio
+async def test_two_disagreeing_article_json_ld_nodes_give_no_date_at_all(
+    tracker,
+) -> None:
+    """WholeBranchReview P3-3: JSON-LD requires the same agreement microdata
+    already does -- two article-shaped nodes with different ``datePublished``
+    values are not resolved by letting the first one win; the page's own
+    date is not established, so neither is recorded."""
+    ld_json = json.dumps(
+        [
+            {"@type": "NewsArticle", "datePublished": "2026-09-17"},
+            {"@type": "Article", "datePublished": "2025-01-01"},
+        ]
+    )
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{ld_json}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
