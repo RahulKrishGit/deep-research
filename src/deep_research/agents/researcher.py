@@ -1085,14 +1085,16 @@ def extraction_messages(
         "condition label a page prints beside a name: "
         "a label reading \"(test conditions)\" states how or where something "
         "was measured, not a judgement of it, and reporting that label as a "
-        "verdict is the same error as reporting page furniture. Nor is the "
-        "summary box shown beside or above an article, including one a page "
-        "generates rather than an author writes; nor an episode or course "
-        "blurb, a table of contents, or a reader comment posted below the "
-        "content. That box may still be used, but only where the passages "
-        "shown include the body and it states the same thing too. A "
-        "document's own abstract, executive summary or key-findings "
-        "section, stating its results in its own voice, is the page's own "
+        "verdict is the same error as reporting page furniture. Nor is a "
+        "summary or key-takeaways box a page shows beside, above or below "
+        "an article, including one the page generates rather than an "
+        "author writes; nor an episode or course blurb, a table of "
+        "contents, or a reader comment posted below the content. Where "
+        "the article's body is among the passages shown and states what "
+        "such a box states, the finding is the body's: snippet the "
+        "body's sentence, never the box's. A document's own abstract, "
+        "executive summary or key-findings section, written by its "
+        "author as part of the document's own text, is the page's own "
         "statement, not a box beside it.\n"
         "- Every finding MUST copy read_id and locator exactly as the "
         "# Retrieved evidence section below prints them, and MUST carry a "
@@ -1200,7 +1202,9 @@ def extraction_messages(
             "planned target asks for.",
         ]
         if owed_targets:
-            owed_lines.append("The unanswered obligations are:")
+            owed_lines.append(
+                "The required questions this page has not answered are:"
+            )
             owed_lines.append(
                 render_planned_targets(
                     owed_targets, coverage_titles=coverage_titles
@@ -1907,14 +1911,18 @@ def bound_sub_topic_findings(
     *publisher* — not by URL — ranked by their strongest finding and then
     taken round-robin, so one verbose publisher cannot fill the whole
     allowance and push an independent second source out of the report.
-    Within a publisher a finding bound to this sub-topic's own obligations
-    goes first, one bound to an obligation that is also required ahead of
-    that, and confidence orders the rest and breaks every tie; duplicates
+    Within a publisher a finding bound to this sub-topic's own required
+    obligation goes first. One bound to *any* required obligation — this
+    sub-topic's own or another's, which is the shape a cross-sub-topic
+    sweep's finding takes — ranks next, ahead of a finding bound only to
+    this sub-topic's own non-required obligation: a required answer must
+    never be the first thing the ordinary cap drops merely for arriving on
+    a read the model scored less directly. A finding bound to neither ranks
+    last, and confidence orders the rest and breaks every tie; duplicates
     keep their highest confidence, and the retained list comes back ranked
-    the same way. ``own_target_ids`` names those obligations — this
-    sub-topic's own evidence targets, required or not — so a finding bound
-    to another sub-topic's target cannot outrank this sub-topic's own
-    answer merely because the model scored it more directly.
+    the same way. ``own_target_ids`` names this sub-topic's own evidence
+    targets, required or not; ``required_target_ids`` names every required
+    target the plan carries, whichever sub-topic owns it.
 
     Grouping by URL did not do that, whatever this docstring said: four pages
     from one publisher were four groups, so they could take all four of
@@ -1958,21 +1966,27 @@ def bound_sub_topic_findings(
     ]
     own = set(own_target_ids)
 
-    def _cap_rank(finding: Finding) -> tuple[bool, bool, float]:
+    def _cap_rank(finding: Finding) -> tuple[bool, bool, bool, float]:
         """How ``finding`` ranks for the ordinary, non-exempt cap.
 
-        A finding bound to this sub-topic's own obligations outranks one
-        that is not, whatever the model's confidence score says: a page's
-        own paragraphs must not lose their slot to another sub-topic's
-        price or spec row the model scored more directly. One bound to an
-        obligation that is both this sub-topic's own and required ranks
-        first of those, because that is the answer the run was sent to
-        get. Confidence still orders findings that tie on both.
+        A finding bound to *any* required obligation outranks one that is
+        not, whatever the model's confidence score says and whichever
+        sub-topic owns the obligation: the cross-sub-topic sweep exists to
+        bind a required target from a read another sub-topic made, and a
+        rank that put this sub-topic's own optional row ahead of it would
+        make the sweep's own answer the first thing the ordinary cap drops.
+        Within that tier, one bound to this sub-topic's own obligation --
+        required or not -- outranks one that is not, so a page's own
+        paragraphs still do not lose their slot to another sub-topic's row
+        merely because the model scored it more directly. Confidence orders
+        the rest and breaks every tie.
         """
         bound = set(finding.target_ids)
         bound_to_own = bool(bound & own)
+        bound_to_required = bool(bound & required)
         return (
-            bound_to_own and bool(bound & required),
+            bound_to_own and bound_to_required,
+            bound_to_required,
             bound_to_own,
             finding.confidence,
         )

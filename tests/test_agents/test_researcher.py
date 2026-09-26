@@ -860,7 +860,10 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
     unbound ones. Without a ceiling the exemption keeps every one of them
     and the per-sub-topic cap bounds nothing, which is not an exemption but
     a hole in the cap: two is the ceiling, the two most confident are the
-    answer, and the rest are evidence like any other, ranked by the caps.
+    answer, and the rest are evidence like any other -- ranked ahead of the
+    six unbound findings whatever their confidence, because a required
+    binding outranks one that is not, and bounded by the ordinary source
+    cap the same as anything else.
     """
     bound_count = MAX_FINDINGS_PER_SUB_TOPIC + 10
     bound = [
@@ -891,13 +894,17 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
         [*bound, *others], required_target_ids=[PLANNED_TARGET_ID]
     )
 
-    # Exempt: the two most confident bound findings. Ordinary pool: the six
-    # independent sources plus the six next-most-confident bound findings,
-    # the source cap's own limit once the two exempt slots are set aside.
+    # Exempt: the two most confident bound findings. Ordinary pool: the
+    # twelve next-most-confident bound findings, the source cap's own limit
+    # -- a required binding outranks the six unbound sources regardless of
+    # their higher confidence, so none of the six takes a slot.
     assert budget.findings_retained == 14
     assert {
         finding.content for finding in budget.retained if finding.target_ids
-    } == {f"Bound {index}." for index in range(bound_count - 7, bound_count + 1)}
+    } == {f"Bound {index}." for index in range(bound_count - 13, bound_count + 1)}
+    assert not any(
+        finding.content.startswith("Other") for finding in budget.retained
+    )
     assert budget.dropped_cap == len(bound) + len(others) - 14
 
 
@@ -907,7 +914,10 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
     Three findings bind each of two required obligations, and enough
     independent sources to exceed the source cap on their own. A ceiling of
     two overall would let the first target's evidence use up the second's;
-    the guarantee is per obligation, so each keeps its own strongest two.
+    the guarantee is per obligation, so each keeps its own strongest two --
+    and, since a required binding outranks unbound evidence, each
+    obligation's third, non-exempt finding also outranks every one of the
+    independent sources, however more confidently scored they are.
     """
     others_count = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 6
     findings = [
@@ -953,8 +963,8 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
         }
         for target_id in (PLANNED_TARGET_ID, OTHER_TARGET_ID)
     } == {
-        PLANNED_TARGET_ID: {"A1.", "A2."},
-        OTHER_TARGET_ID: {"B1.", "B2."},
+        PLANNED_TARGET_ID: {"A1.", "A2.", "A3."},
+        OTHER_TARGET_ID: {"B1.", "B2.", "B3."},
     }
     assert budget.dropped_cap == len(findings) - 16
 
@@ -1032,6 +1042,63 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
     retained_content = {finding.content for finding in budget.retained}
     assert "Own obligation, third." in retained_content
     assert f"Other-target row {other_count}." not in retained_content
+
+
+def test_a_cross_topic_required_finding_outranks_the_own_optional_overflow() -> None:
+    """Fable's risk note: the cross-topic sweep's own answer must not be the
+    first thing an over-the-cap sub-topic drops.
+
+    Two of another sub-topic's required-target findings escape the cap
+    entirely (the exemption ceiling); its third-most-confident does not.
+    Under the old rank that third finding ranked below this sub-topic's own
+    optional-bound finding whatever its confidence, because the ordinary
+    cap ranked "this sub-topic's own" ahead of "any required". Now any
+    required binding -- this sub-topic's own or another's, the shape a
+    cross-sub-topic sweep's finding takes -- outranks an own-but-optional
+    one, so the required target's overflow finding keeps the sub-topic's
+    one remaining slot instead of losing it to a same-page paragraph that
+    answers nothing the plan requires.
+    """
+    cross_required_exempt_a = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Cross-topic required, first.",
+        confidence=0.9,
+    ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+    cross_required_exempt_b = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Cross-topic required, second.",
+        confidence=0.85,
+    ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+    cross_required_overflow = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Cross-topic required, third.",
+        confidence=0.3,
+    ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+    own_optional = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Own optional finding.",
+        confidence=0.99,
+    ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+
+    budget = bound_sub_topic_findings(
+        [
+            cross_required_exempt_a,
+            cross_required_exempt_b,
+            cross_required_overflow,
+            own_optional,
+        ],
+        required_target_ids=[OTHER_TARGET_ID],
+        own_target_ids=[PLANNED_TARGET_ID],
+        max_findings=1,
+    )
+
+    retained_content = {finding.content for finding in budget.retained}
+    assert "Cross-topic required, third." in retained_content
+    assert "Own optional finding." not in retained_content
 
 
 def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None:
