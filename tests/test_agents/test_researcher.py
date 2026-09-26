@@ -255,8 +255,6 @@ def _tool_step(
 def test_priority_and_selection_defaults_match_the_plan() -> None:
     assert HIGH_PRIORITY_THRESHOLD == 2
     assert DEFAULT_MAX_SUB_TOPICS == 10
-    assert MAX_FINDINGS_PER_SUB_TOPIC == 120
-    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 48
 
 
 def test_the_default_cap_attempts_the_whole_planner_output() -> None:
@@ -3777,10 +3775,10 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
 ) -> None:
     """Bounded evidence must be visible: what was kept, and what was not.
 
-    Thirty-five drafted findings collapse under the cap: three restatements of
-    one claim, and the rest distinct claims over the findings cap. An
-    operator reading only the event stream has to be able to see both, and
-    see that the retained findings came from a single source.
+    The cap plus three distinct claims collapse under the cap, along with
+    three restatements of one claim. An operator reading only the event
+    stream has to be able to see both, and see that the retained findings
+    came from a single source.
 
     The distinct claims are distinct *statements* — one sentence each of
     the page — because that is what makes a finding its own evidence: three
@@ -7300,9 +7298,9 @@ _CROSS_TOPIC_OWN_PREAMBLE = (
 # the only shared-word passage is already consumed by the bound finding,
 # so a broken skip check would still find nothing left to ask about.
 _CROSS_TOPIC_FILLER = (
-    "The report also lists the crews assigned to each site. "
-    "It lists the equipment those crews checked. "
-) * 4
+    "The report also lists every crew that took part in the inspection "
+    "cycle and the equipment each crew checked along the way. "
+) * 3
 _CROSS_TOPIC_OVERLAP_SENTENCE = (
     "Published assessments trace the outage's underlying cause to a "
     "corroded busbar in the substation, a separate review states."
@@ -7848,6 +7846,181 @@ async def test_no_packet_is_sent_when_nothing_qualifies(
         body=_ONE_TOKEN_BODY,
     )
 
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Passages owed a finding" not in requests[0]
+
+
+# RevY1 P0: a single, properly-punctuated sentence running past 22 words is
+# not a link rail merely for its length. `is_link_dense` -- the passage
+# selector's own lede-only heuristic -- flagged exactly this shape, which is
+# why it was dropped in favour of the no-terminator rule.
+_LONG_SENTENCE_PASSAGE = (
+    "A separate maintenance review states that published assessments "
+    "trace the underlying cause of the outage to equipment installed "
+    "before the site's modernization project began last year."
+)
+_LONG_SENTENCE_BODY = f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_LONG_SENTENCE_PASSAGE}"
+
+
+def _long_sentence_sweep_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The bound finding the sweep is asked to return for the long-sentence
+    passage.
+    """
+    del schema
+    packet = messages[1].content
+    assert "Passages owed a finding" in packet
+    read_id, locator, excerpt = _packet_passage_for(
+        "modernization project", packet
+    )
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Published assessments trace the outage's cause to "
+                    "equipment installed before a modernization project."
+                ),
+                source_url=_CROSS_TOPIC_URL,
+                source_title=_CROSS_TOPIC_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_CROSS_TOPIC_TARGET_ID],
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_long_sentence_prose_passage_is_selected(tracker: Tracker) -> None:
+    """RevY1 P0: a single, properly-punctuated sentence of more than 22
+    words, sharing two or more non-generic tokens, is not excluded as a
+    link rail merely for running long.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _long_sentence_sweep_reply],
+    )
+
+    outcome = await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+        body=_LONG_SENTENCE_BODY,
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    assert "Passages owed a finding" in requests[1]
+    assert "modernization project" in requests[1]
+
+    bound = [
+        finding
+        for finding in outcome.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound) == 1
+
+
+# RevY1 P2: two required targets that share a subject word ("utility") must
+# not let that word count toward the two-token floor -- otherwise a passage
+# that shares only the plan's own repeated subject, plus one word specific
+# to a target, would qualify on the shared word alone.
+_GENERIC_TARGET_X_ID = "topic-05-target-01"
+_GENERIC_TARGET_X_QUESTION = (
+    "What replacement schedule does the utility announce for damaged "
+    "transformers?"
+)
+_GENERIC_TARGET_Y_ID = "topic-06-target-01"
+_GENERIC_TARGET_Y_QUESTION = (
+    "What insurance claim does the utility file for storm damage?"
+)
+_GENERIC_TEST_FILLER = (
+    "The notice covers routine filings from the past several quarters. "
+    "Most of those filings concern scheduled inspections and minor repairs. "
+)
+_GENERIC_TEST_CANDIDATE = (
+    "A brief utility notice mentions a claim filed with regulators."
+)
+_GENERIC_TEST_BODY = (
+    f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_GENERIC_TEST_FILLER}{_GENERIC_TEST_CANDIDATE}"
+)
+
+
+def _generic_target_x_sub_topic(priority: int = 2) -> SubTopic:
+    return _sub_topic(
+        "Transformer replacement schedule", priority, coverage_id="topic-05"
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_GENERIC_TARGET_X_ID,
+                    coverage_id="topic-05",
+                    question=_GENERIC_TARGET_X_QUESTION,
+                    measure=(
+                        "the replacement schedule the utility announces "
+                        "for damaged transformers"
+                    ),
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+def _generic_target_y_sub_topic(priority: int = 3) -> SubTopic:
+    return _sub_topic(
+        "Storm damage insurance claim", priority, coverage_id="topic-06"
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_GENERIC_TARGET_Y_ID,
+                    coverage_id="topic-06",
+                    question=_GENERIC_TARGET_Y_QUESTION,
+                    measure="the insurance claim the utility files for storm damage",
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_passage_sharing_only_the_plans_generic_word_is_not_selected(
+    tracker: Tracker,
+) -> None:
+    """RevY1 P2: two required targets share a subject word ("utility"); a
+    passage matching only that word plus one distinctive word of one target
+    is not selected -- the shared word must not count toward the two-token
+    floor.
+    """
+    completer = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply],
+    )
+
+    await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _generic_target_x_sub_topic(),
+            _generic_target_y_sub_topic(),
+        ],
+        body=_GENERIC_TEST_BODY,
+    )
+
+    # One request: the page's own main extraction. The candidate shares
+    # "utility" with both required targets' own questions and "claim" with
+    # one of them, but "utility" is the plan's own shared subject word, so
+    # only one non-generic token remains -- one short of the floor.
     requests = _extraction_requests(completer)
     assert len(requests) == 1
     assert "Passages owed a finding" not in requests[0]

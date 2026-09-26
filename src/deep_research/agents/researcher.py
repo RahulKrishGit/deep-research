@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -72,7 +73,7 @@ from deep_research.providers import (
 )
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
-from deep_research.tools.passage_selection import _tokens, is_link_dense
+from deep_research.tools.passage_selection import _tokens
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     _ENERGY_UNIT,
@@ -94,6 +95,8 @@ from deep_research.utils.types import (
     SubTopic,
     counted_evidence_targets,
 )
+
+_logger = logging.getLogger(__name__)
 
 RESEARCHER_NAME = "researcher"
 HIGH_PRIORITY_THRESHOLD = 2
@@ -909,9 +912,20 @@ def _own_words(target: EvidenceTarget) -> frozenset[str]:
 
 
 _CAPITALIZED_WORD = re.compile(r"[A-Za-z]+")
-_YEAR_IN_PARENTHESES = re.compile(r"\(\s*\d{3,4}\s*\)")
-_BIBLIOGRAPHY_CAPITALIZED_RATIO = 0.5
-_BIBLIOGRAPHY_MIN_YEAR_CITATIONS = 3
+_SENTENCE_TERMINATOR = re.compile(r"[.!?](?=\s|$)")
+_RAIL_CAPITALIZED_RATIO = 0.5
+_RAIL_MIN_WORDS = 22
+# Question and reporting words no plan's own stop-word list drops (RevY1
+# P2): "do", "does", "state" and the rest name the act of asking or
+# reporting, never the plan's own subject, so a passage sharing only one
+# of them with a required question is no likelier to answer it than a page
+# that shares nothing. Kept local to the cross-topic sweep -- the global
+# ``_STOP_WORDS`` list (``tools.passage_selection``) is shared with every
+# other selector in the codebase, and widening it is out of this sweep's
+# blast radius.
+_CROSS_TOPIC_GENERIC_WORDS = frozenset(
+    {"do", "did", "does", "who", "why", "what", "which", "how", "state", "states"}
+)
 
 
 def _generic_plan_tokens(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
@@ -925,35 +939,69 @@ def _generic_plan_tokens(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
     so what is left of a target's own words is what actually distinguishes
     its question from the plan's other targets'. Fewer than two targets
     share nothing meaningfully, so the intersection is empty rather than
-    one target's whole vocabulary.
+    one target's whole vocabulary. :data:`_CROSS_TOPIC_GENERIC_WORDS` is
+    excluded either way, whether the plan carries one target or many.
     """
     questions = [set(_tokens(target.question)) for target in targets]
-    if len(questions) < 2:
-        return frozenset()
-    return frozenset(set.intersection(*questions))
+    shared = set.intersection(*questions) if len(questions) >= 2 else set()
+    return frozenset(shared | _CROSS_TOPIC_GENERIC_WORDS)
+
+
+def _cross_topic_target_words(
+    target: EvidenceTarget, generic: frozenset[str]
+) -> frozenset[str]:
+    """One target's own words for the cross-topic sweep, generic tokens
+    stripped -- unless stripping would leave fewer than
+    :data:`MIN_CROSS_TOPIC_SHARED_TOKENS`, in which case the target's full
+    own words stand instead (RevY1 P2). Two narrow questions on the same
+    subject can share most of their own words ("the capacity of Model A",
+    "the price of Model A"): stripping every shared word can leave a target
+    with only one word of its own, which the floor would then make
+    permanently unsweepable. The fallback is logged, not silent: a target
+    this thin is worth an operator's look, even though its own words are
+    still what a candidate passage is judged against.
+    """
+    own = _own_words(target)
+    stripped = own - generic
+    if len(stripped) < MIN_CROSS_TOPIC_SHARED_TOKENS:
+        _logger.debug(
+            "cross-topic sweep: target %s's non-generic words %s are under "
+            "the %d-token floor; using its full own words instead",
+            target.target_id,
+            sorted(stripped),
+            MIN_CROSS_TOPIC_SHARED_TOKENS,
+        )
+        return own
+    return stripped
 
 
 def _is_chrome_or_bibliography(text: str) -> bool:
-    """True when ``text`` reads as page chrome or a reference list, not prose.
+    """True when ``text`` reads as a page's own link rail, not prose.
 
-    The passage selector's own navigation classifier (:func:`is_link_dense`)
-    catches a menu or link rail; nothing in this codebase already classes a
-    bibliography, so a reference list is caught by its own shape instead:
-    more than half its words are capitalised (a run of author surnames), or
-    it carries three or more "(YEAR)" citations. Fable's audit of run 6
-    found both shapes filling cross-topic packets: a site's own section
-    menu ("The Republic ... The Decline The Collapse") and a page's
-    reference list (surnames and publication years), neither a passage a
-    finding can be made from.
+    Not :func:`is_link_dense` (RevY1 P0): that is the passage selector's
+    own lede-only heuristic, and it flags any ordinary paragraph that
+    merely contains one sentence of 22 words or more among several -- the
+    run-6 D2 historiography paragraph and the D11 archaeology caveat both
+    read as chrome under it, and so did 32 of the 44 units that actually
+    yielded a finding across three real traces. A genuine rail -- a run of
+    link labels -- carries no sentence terminator anywhere in it, however
+    many words it strings together; an ordinary paragraph breaks into
+    sentences long before any one of them runs this long. The rule here
+    only ever fires on a passage with no terminator at all, and even then
+    only when more than half its words are capitalised, so a long run-on
+    clause of ordinary lower-case prose still is not read as one. Dropped
+    the year-citation rule entirely (RevY1 P2): a paragraph summarising
+    several dated studies is often exactly how a disagreement is stated,
+    and the pattern also matched plain parenthetical numbers that name no
+    year at all.
     """
-    if is_link_dense(text):
-        return True
+    if _SENTENCE_TERMINATOR.search(text):
+        return False
     words = _CAPITALIZED_WORD.findall(text)
-    if words:
-        capitalized = sum(1 for word in words if word[0].isupper())
-        if capitalized / len(words) > _BIBLIOGRAPHY_CAPITALIZED_RATIO:
-            return True
-    return len(_YEAR_IN_PARENTHESES.findall(text)) >= _BIBLIOGRAPHY_MIN_YEAR_CITATIONS
+    if len(words) < _RAIL_MIN_WORDS:
+        return False
+    capitalized = sum(1 for word in words if word[0].isupper())
+    return capitalized / len(words) > _RAIL_CAPITALIZED_RATIO
 
 
 def _units_owing_cross_topic_words(
@@ -3512,7 +3560,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     if not owed_here:
                         continue
                     non_generic_words = {
-                        target.target_id: _own_words(target) - generic_tokens
+                        target.target_id: _cross_topic_target_words(
+                            target, generic_tokens
+                        )
                         for target in owed_here
                     }
                     candidates = _units_owing_cross_topic_words(
