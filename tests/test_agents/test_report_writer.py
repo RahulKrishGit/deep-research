@@ -467,7 +467,8 @@ def test_bottom_line_instruction_forbids_stating_a_sources_date():
 # --- generality (D10): no domain or probe wording in model-read text -------
 
 
-_FORBIDDEN_WORDS = ("headphone", "battery", "electoral", "kettle", "sony", "eia")
+_FORBIDDEN_WORDS = ("headphone", "battery", "electoral", "kettle", "sony", "eia",
+                    "buds", "earbud", "headset", "valorant", "semaglutide")
 
 
 @pytest.mark.parametrize("text", [SECTION_SYSTEM_PROMPT, SECTION_INSTRUCTION,
