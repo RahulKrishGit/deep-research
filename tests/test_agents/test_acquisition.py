@@ -652,9 +652,11 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
     ]
 
 
-def test_a_navigation_lede_is_never_forced_into_selection() -> None:
-    """Fix-round P0: a link-dense opening passage is never admitted as the
-    lede, on the real shape of the audited run's own reads.
+def test_a_navigation_lede_is_never_forced_to_the_front_of_selection() -> None:
+    """Fix-round P0/RevSelectionR3 P2: a link-dense opening passage is never
+    forced to the front as the lede, on the real shape of the audited run's
+    own reads -- but whole-page admission still admits it in its normal fill
+    position, exactly like any other passage the query matched nothing in.
 
     The lede rule exists for a wire release's own headline (see
     :func:`select_passages_with_lede`), but the audited run's reads open on
@@ -662,12 +664,13 @@ def test_a_navigation_lede_is_never_forced_into_selection() -> None:
     all five real chunk-0s (SoundGuys, CNET, What Hi-Fi, Business Insider,
     Tom's Hardware) -- and the old rule forced that navigation into every
     packet regardless of relevance. A lede this link-dense is never forced
-    in; an ordinary prose opening still is
+    to the front; an ordinary prose opening still is
     (``test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones``).
-    Whole-page admission fills the unrelated third passage in behind the
-    matched one (neither took part in the query), but the link-dense nav
-    still never becomes a unit at all -- that exclusion is not a query
-    mismatch a generic fill could paper over.
+    Excluding it from admission entirely -- rather than just from the front
+    -- mislabelled it ``deferred_capacity`` when capacity was never the
+    reason, and forced a continuation batch to admit it anyway; ``is_link_dense``
+    decides only the front-of-packet guarantee, never whether the passage
+    becomes a unit at all.
     """
     navigation = (
         "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
@@ -691,10 +694,53 @@ def test_a_navigation_lede_is_never_forced_into_selection() -> None:
     )
 
     assert admission is not None
+    # The matched verdict is admitted first (ranked); the link-dense nav is
+    # never forced ahead of it, but still fills in behind it in reader
+    # order, same as the unrelated passage neither rule placed.
     assert [unit.locator for unit in admission.evidence.values()] == [
         "page-1-chunk-1",
+        "page-1-chunk-0",
         "page-1-chunk-2",
     ]
+    assert [item.item_id for item in admission.dispositions] == []
+
+
+
+def test_an_is_link_dense_misfire_on_prose_is_still_admitted() -> None:
+    """RevSelectionR3 P2: a genuine misfire never costs a disposition.
+
+    ``is_link_dense`` can misfire on ordinary prose (a long, unpunctuated
+    run of words after a short opening sentence, with few digits) -- the
+    reviewer measured this on a two-sentence paragraph and a legal article.
+    Whatever ``is_link_dense`` says about a lede that matches no query term,
+    the passage is still admitted through the whole-page fill, and is never
+    recorded as ``deferred_capacity``: capacity was never why it was left
+    out, and it never was left out at all.
+    """
+    from deep_research.tools.passage_selection import is_link_dense
+
+    opener = (
+        "Overview. This paragraph continues for quite a long stretch "
+        "describing many different topics one after another without any "
+        "full stop appearing anywhere near here at all"
+    )
+    assert is_link_dense(opener), "fixture must reproduce the misfire"
+    unrelated = "Shipping resumes on Monday after the regional holiday."
+    result = _chunked_document_result(opener, unrelated)
+
+    admission = admit_read_result(
+        result,
+        session_id="session-1",
+        query="microphone call quality noise cancelling",
+        admission_chars=2000,
+    )
+
+    assert admission is not None
+    assert {unit.locator for unit in admission.evidence.values()} == {
+        "page-1-chunk-0",
+        "page-1-chunk-1",
+    }
+    assert [item.item_id for item in admission.dispositions] == []
 
 
 _FIX_ROUND_QUERY = (
@@ -923,6 +969,69 @@ def test_the_packet_orders_a_reads_passage_dump_by_rank_when_a_query_is_given() 
 
     assert ranked.index("locator=chunk-1") < ranked.index("locator=chunk-0")
     assert unranked.index("locator=chunk-0") < unranked.index("locator=chunk-1")
+
+
+def test_a_decision_packet_keeps_every_candidate_row_when_units_overflow_it() -> None:
+    """RevSelectionR3 P1: whole-page units must never crowd every candidate
+    row out of the decision packet.
+
+    A single read's admitted units alone exceed the 24,000-character decision
+    budget as soon as one page is read under whole-page admission, so a
+    decision packet built the same way as the extraction packet (state, then
+    reads, then every unit, then findings, then candidates) drops every
+    candidate row after the first read -- the routing turn then sees only
+    the bare ``candidate_urls=`` state line, with no title, target ids or
+    status for any of them. ``for_decision=True`` gives the decision packet
+    its own row plan: candidates and recorded rows before units, so a
+    routing choice never starves for the one thing it needs.
+    """
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/long-page",
+        resolved_url="https://example.test/long-page",
+        title="Long page",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="x" * 60000,
+        passages={f"chunk-{i}": "x" * 600 for i in range(100)},
+        extraction_complete=True,
+    )
+    units = {
+        f"ev-{i}": EvidenceUnit(
+            evidence_id=f"ev-{i}",
+            read_id=read.read_id,
+            source_url=read.resolved_url,
+            source_title=read.title,
+            locator=f"chunk-{i}",
+            excerpt="x" * 600,
+            target_ids=["topic-01"],
+            origin="researcher",
+        )
+        for i in range(100)
+    }
+    candidate = CandidateRecord(
+        candidate_id="candidate-1",
+        url="https://example.test/other-source",
+        title="Another source",
+        discovered_via="search",
+        target_ids=["topic-01"],
+    )
+    state = AcquisitionState(
+        target_id="topic-01",
+        remaining_calls=3,
+        candidate_urls=["https://example.test/other-source"],
+        candidate_records={"https://example.test/other-source": candidate},
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {read.read_id: read},
+        units,
+        limit=24000,
+        for_decision=True,
+    )
+
+    assert "candidate_id=candidate-1" in packet
 
 
 def _chunked_document_result(*chunks: str) -> ToolResult:
@@ -2752,6 +2861,46 @@ def test_a_selected_passage_is_not_marked_used_by_a_sibling_passage() -> None:
     )
     assert used not in reasons
     assert reasons[unused] == "irrelevant"
+
+
+def test_a_packet_overflow_unit_is_deferred_capacity_not_irrelevant() -> None:
+    """RevSelectionR3 P2: a unit the extraction packet never carried is a
+    capacity fact, not a relevance one.
+
+    Both chunks of this page are selected, but the packet's own budget only
+    fits one of them: the extraction call never saw the second at all, so it
+    cannot have judged it beside the point. It must be disposed of as
+    ``deferred_capacity``, never ``irrelevant`` -- crediting the model with
+    rejecting text it was never shown.
+    """
+    policy = _policy()
+    policy.after_action(
+        _document_step(_paged_result(2, text="queue delay commissioning"))
+    )
+    locators = sorted(policy.evidence)
+    assert len(locators) == 2
+
+    # The packet built for extraction: only one of the two units fits.
+    packet = policy.context(limit=1500)
+    packed_in = next(
+        evidence_id
+        for evidence_id in policy.evidence
+        if f"evidence_id={evidence_id}" in packet
+    )
+    overflowed = next(
+        evidence_id for evidence_id in policy.evidence if evidence_id != packed_in
+    )
+    assert f"evidence_id={overflowed}" not in packet
+
+    policy.record_extraction_dispositions([])
+
+    reasons = {
+        item.item_id: item.reason
+        for item in policy.dispositions
+        if item.stage == "extraction"
+    }
+    assert reasons[packed_in] == "irrelevant"
+    assert reasons[overflowed] == "deferred_capacity"
 
 
 @pytest.mark.asyncio

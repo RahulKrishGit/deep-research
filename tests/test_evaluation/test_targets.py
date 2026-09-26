@@ -15,7 +15,7 @@ from deep_research.agents.planner import (
     ResearchPlanDraft,
     SubTopicDraft,
 )
-from deep_research.agents.steps import ReActDecision
+from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     build_controlled_dependencies,
@@ -26,6 +26,7 @@ from deep_research.evaluation.targets import (
     RepetitionCounter,
     _classify_failure,
     _redact_source_urls,
+    _trajectory_from_steps,
     build_target,
     correlation_metadata,
     trace_tags,
@@ -351,6 +352,52 @@ def test_a_url_deep_inside_a_long_observation_is_still_redacted() -> None:
     ).hexdigest()
     assert f"source:{expected}" in redacted
     assert redacted[:1900] == padding
+
+
+def test_a_scheme_free_url_is_also_redacted() -> None:
+    """A length bound is not the only place a URL can hide.
+
+    ``www.host/path`` and ``//host/path`` name a source exactly as plainly
+    as ``https://host/path`` does; the redaction boundary must not depend
+    on the model having spelled out a scheme.
+    """
+    text = (
+        "See www.example.com/sodium-ion-energy-density and also "
+        "//example.com/sodium-ion-energy-density for details."
+    )
+
+    redacted = _redact_source_urls(text)
+
+    assert "www.example.com/sodium-ion-energy-density" not in redacted
+    assert "//example.com/sodium-ion-energy-density" not in redacted
+
+
+def test_a_researchers_thought_is_also_redacted() -> None:
+    """RevSelectionR3 P2: the clamp covers observations and thoughts alike.
+
+    ``thought`` is cut with the same clamp as ``observation_summary`` but,
+    before this fix, was never redacted first: a model thought naming the
+    exact source URL in full ("Next I will read https://...") survived once
+    the clamp grew past its length. The live-tier researcher harness always
+    synthesizes a fixed placeholder thought for its own reasons (native
+    tool-calling carries no free-text thought at all), so this is exercised
+    directly against the trajectory builder with a step whose ``thought``
+    is real free text, exactly the shape a free-text ReAct loop produces.
+    """
+    url = "https://example.com/sodium-ion-energy-density"
+    step = ReActStep(
+        iteration=1,
+        thought=f"Next I will read {url} to confirm the figure",
+        action="finish",
+        final_answer="Done.",
+    )
+
+    trajectory = _trajectory_from_steps([step], limit=2000)
+
+    assert len(trajectory) == 1
+    assert url not in trajectory[0].thought
+    expected = sha256(url.encode("utf-8")).hexdigest()
+    assert f"source:{expected}" in trajectory[0].thought
 
 
 @pytest.mark.asyncio

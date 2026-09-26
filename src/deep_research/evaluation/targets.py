@@ -294,7 +294,7 @@ def _minimal_output(
     )
 
 
-_SOURCE_URL_PATTERN = re.compile(r"https?://[^\s\"'<>]+")
+_SOURCE_URL_PATTERN = re.compile(r"(?:https?://|www\.|//)[^\s\"'<>]+")
 
 
 def _redact_source_urls(text: str) -> str:
@@ -308,7 +308,10 @@ def _redact_source_urls(text: str) -> str:
     redacted text: the boundary holds whatever the clamp is, rather than
     depending on the URL falling past it by luck. A URL that cannot carry a
     fingerprint (not an absolute HTTP(S) URL) is replaced with a generic
-    marker instead of leaking the raw text unredacted.
+    marker instead of leaking the raw text unredacted. The pattern also
+    catches a scheme-free source (``www.host/path``, ``//host/path``): a
+    model names a source exactly as plainly without spelling out ``https://``,
+    and the boundary must not depend on it having done so.
     """
 
     def _replace(match: re.Match[str]) -> str:
@@ -317,6 +320,35 @@ def _redact_source_urls(text: str) -> str:
         return f"source:{fingerprint}" if fingerprint else "[redacted-url]"
 
     return _SOURCE_URL_PATTERN.sub(_replace, text)
+
+
+def _trajectory_from_steps(
+    steps: Sequence[Any], *, limit: int
+) -> list[TrajectoryStep]:
+    """One run's typed steps, as the trajectory's own redacted, clamped rows.
+
+    RevSelectionR3 P2: a model's ``thought`` is exactly as free-text as an
+    observation, and just as capable of naming a source URL in full ("Next
+    I will read https://...") -- the clamp that bounds its length is not a
+    privacy boundary either, so it is redacted before the same clamp
+    ``observation_summary`` already goes through.
+    """
+    return [
+        TrajectoryStep(
+            iteration=step.iteration,
+            thought=_redact_source_urls(step.thought)[:limit],
+            tool_name=step.tool_name,
+            succeeded=(
+                None if step.observation is None else step.observation.success
+            ),
+            observation_summary=(
+                _redact_source_urls(step.observation.summary)[:limit]
+                if step.observation is not None
+                else ""
+            ),
+        )
+        for step in steps
+    ]
 
 
 def _finish(
@@ -606,22 +638,7 @@ def _success_output(
         }
     )
 
-    trajectory = [
-        TrajectoryStep(
-            iteration=step.iteration,
-            thought=step.thought[:limit],
-            tool_name=step.tool_name,
-            succeeded=(
-                None if step.observation is None else step.observation.success
-            ),
-            observation_summary=(
-                _redact_source_urls(step.observation.summary)[:limit]
-                if step.observation is not None
-                else ""
-            ),
-        )
-        for step in run.react.steps
-    ]
+    trajectory = _trajectory_from_steps(run.react.steps, limit=limit)
 
     return TargetOutput(
         case_id=case.case_id,

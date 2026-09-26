@@ -685,29 +685,32 @@ def select_passages_with_lede(
     run's reads routinely opened on the site's own navigation bar, not a
     headline, and the old unconditional rule forced that navigation into
     every packet regardless of relevance (D1). A lede :func:`is_link_dense`
-    is never added on top; it only ever appears when the ranking itself
-    puts it there.
+    is never *forced to the front*; it still takes its normal position in
+    the whole-page fill below, exactly like any other passage the ranking
+    left unmatched -- ``is_link_dense`` decides only the front-of-packet
+    guarantee, never whether the passage is admitted at all. Excluding it
+    from admission entirely mislabelled a passage that scores nothing on a
+    query it doesn't match as ``deferred_capacity`` (capacity was never the
+    reason) and forced a continuation batch to admit it anyway.
 
     ``lede`` is the read's own first locator, not necessarily the first key of
     ``passages``: a caller selecting from a subset (a continuation batch) must
     not mistake the subset's first entry for the read's opening passage.
 
-    Whole-page admission: once the ranked matches and the lede guarantee are
-    settled, whatever the query matched nothing in still fills the budget
-    that remains, in reader order, after both -- the header keeps its place
-    at the front and the ranked matches keep theirs, and only the passages
-    neither rule placed are ordered by where the page put them.
+    Whole-page admission: once the ranked matches and the front-of-packet
+    lede guarantee are settled, whatever the query matched nothing in still
+    fills the budget that remains, in reader order -- the header keeps its
+    place at the front only when a genuine header earned it, and every
+    other passage neither rule placed at the front is ordered by where the
+    page put it, a dense lede included.
     """
     ranked = select_passages_by_budget(passages, query, budget, admit_unmatched=False)
-    dense_lede = lede in passages and lede not in ranked and is_link_dense(passages[lede])
-    selected = [lede, *ranked] if (lede in passages and lede not in ranked and not dense_lede) else ranked
+    lede_is_header = (
+        lede in passages and lede not in ranked and not is_link_dense(passages[lede])
+    )
+    selected = [lede, *ranked] if lede_is_header else ranked
     used = sum(len(passages[locator]) for locator in selected)
     filled = set(selected)
-    if dense_lede:
-        # A link-dense lede is never admitted at all: not forced to the
-        # front, and not picked up again by the generic fill below just
-        # because it also happens to share no term with the query.
-        filled.add(lede)
     for locator, text in passages.items():
         if locator in filled:
             continue
@@ -1155,6 +1158,9 @@ class AcquisitionPolicy:
     _cache: dict[str, ReadRecord] = field(default_factory=dict, init=False)
     _document_fallback_urls: set[str] = field(default_factory=set, init=False)
     _read_titles: dict[str, str] = field(default_factory=dict, init=False)
+    _packet_overflow_evidence_ids: set[str] = field(
+        default_factory=set, init=False
+    )
     _passage_batches: dict[str, int] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
@@ -1266,10 +1272,18 @@ class AcquisitionPolicy:
         own unit carries the sharper fact). A unit the bounded packets never
         asked about is not named here: the reason says the extraction was asked
         again over that passage, and only a packet that carried it can say so.
+
+        A unit ``build_acquisition_context`` itself packed out of the
+        extraction call's own packet (``self._packet_overflow_evidence_ids``,
+        RevSelectionR3 P2) is disposed of as ``deferred_capacity``, never
+        ``irrelevant``: the extraction never saw it at all, so it cannot have
+        judged it beside the point. Capacity, not relevance, is why it is
+        unaccounted for.
         """
         used = {(read_id, locator) for read_id, locator in admitted}
         unmined_quantities = set(unmined_quantity_ids)
         unmined_targets = set(unmined_target_ids)
+        overflowed = self._packet_overflow_evidence_ids
         target_id = self.target_id
         known = {(item.stage, item.item_id) for item in self.dispositions}
         for evidence_id, unit in self.evidence.items():
@@ -1283,6 +1297,8 @@ class AcquisitionPolicy:
                 reason = UNMINED_QUANTITY_REASON
             elif evidence_id in unmined_targets:
                 reason = UNMINED_TARGET_REASON
+            elif evidence_id in overflowed:
+                reason = "deferred_capacity"
             else:
                 reason = "irrelevant"
             self.dispositions.append(
@@ -2188,8 +2204,9 @@ class AcquisitionPolicy:
         elif step.tool_name in {"web_scraper", "document_reader"}:
             self._read_observed(result, parsed)
 
-    def context(self, *, limit: int) -> str:
-        return build_acquisition_context(
+    def context(self, *, limit: int, for_decision: bool = False) -> str:
+        omitted: list[str] = []
+        text = build_acquisition_context(
             self.state,
             self.reads,
             self.evidence,
@@ -2198,7 +2215,11 @@ class AcquisitionPolicy:
             dispositions=self.dispositions,
             findings=self.findings,
             query=self.query,
+            for_decision=for_decision,
+            omitted_evidence_ids=omitted,
         )
+        self._packet_overflow_evidence_ids = set(omitted)
+        return text
 
 
 def _recorded_statement(finding: Finding) -> str:
@@ -2259,6 +2280,8 @@ def build_acquisition_context(
     focus_ids: Sequence[str] = (),
     findings: Sequence[Finding] = (),
     query: str | None = None,
+    for_decision: bool = False,
+    omitted_evidence_ids: list[str] | None = None,
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2288,6 +2311,23 @@ def build_acquisition_context(
     in document order, exactly as before. A locator with its own unit row is
     never *also* dumped: doubling every admitted passage is exactly what
     made whole-page admission blow the packet's budget on its own duplicate.
+
+    ``for_decision=True`` gives a ReAct decision turn's own packet a
+    different row plan from an extraction packet's: candidates and recorded
+    findings before reads, and a read's units as one-line stubs (no excerpt
+    text) rather than full passage dumps. Whole-page admission means a
+    single read's units alone can exceed the whole decision budget, and a
+    routing choice needs a candidate's title, target ids and status far
+    more than it needs the page text an extraction call already has; the
+    extraction packet (``for_decision=False``, the default) keeps today's
+    order and full excerpts unchanged.
+
+    ``omitted_evidence_ids`` is an out-parameter (RevSelectionR3 P2): when a
+    caller passes a list, every evidence unit that did not fit this packet's
+    own budget has its evidence id appended to it, in packing order. A unit
+    the extraction call never saw is a capacity fact, not a relevance one --
+    a caller that records a disposition for it must not call it
+    ``irrelevant`` when the model was never shown it to judge at all.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2387,7 +2427,46 @@ def build_acquisition_context(
         # Owed re-extraction: focus rows are the whole packet. The rest of
         # this function's rows would resend the full read set an earlier,
         # unbounded extraction call already saw.
-        return _packed_rows(rows, limit)
+        return _packed_rows(rows, limit)[0]
+    if for_decision:
+        # A ReAct decision turn's own row plan: candidates and recorded
+        # findings ahead of reads, and units as one-line stubs with no
+        # excerpt. Whole-page admission means one read's units alone can
+        # exceed the whole decision budget (D1 fix-round 2), so the
+        # candidate rows a routing choice actually needs must never sit
+        # behind them in the greedy pack.
+        for candidate in state.candidate_records.values():
+            rows.append(
+                (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
+            )
+        recorded_ids: set[str] = set()
+        for finding in findings:
+            if finding.read_id not in selected_reads:
+                continue
+            identifier = f"recorded:{finding.read_id}/{finding.locator or '-'}"
+            if identifier in recorded_ids:
+                continue
+            recorded_ids.add(identifier)
+            rows.append(
+                (
+                    identifier,
+                    f"recorded finding read_id={finding.read_id} "
+                    f"locator={finding.locator or '-'} "
+                    f"statement={_recorded_statement(finding)}",
+                )
+            )
+        for read_id, read in selected_reads.items():
+            rows.append((f"read:{read_id}", _render_read(read)))
+        for evidence_id, unit in selected_evidence.items():
+            targets = ",".join(unit.target_ids) or "-"
+            rows.append(
+                (
+                    f"evidence:{evidence_id}",
+                    f"evidence_id={evidence_id} read_id={unit.read_id} "
+                    f"locator={unit.locator} targets={targets}",
+                )
+            )
+        return _packed_rows(rows, limit)[0]
     # The reads the selected evidence came from are rendered immediately
     # ahead of that evidence, because ``build_findings`` requires every
     # finding to copy its read's own resolved_url and title verbatim: a
@@ -2463,7 +2542,12 @@ def build_acquisition_context(
                     f"passage read_id={read_id} locator={locator} text={text}",
                 )
             )
-    return _packed_rows(rows, limit)
+    text, omitted = _packed_rows(rows, limit)
+    if omitted_evidence_ids is not None:
+        for identifier in omitted:
+            if identifier.startswith("evidence:"):
+                omitted_evidence_ids.append(identifier[len("evidence:") :])
+    return text
 
 
 # How many omitted ids the continuation line names outright before it
@@ -2473,8 +2557,15 @@ def build_acquisition_context(
 _CONTINUATION_IDS_SHOWN = 20
 
 
-def _packed_rows(rows: Sequence[tuple[str, str]], limit: int) -> str:
-    """Greedily pack ``rows`` into ``limit`` characters, atomic per row."""
+def _packed_rows(
+    rows: Sequence[tuple[str, str]], limit: int
+) -> tuple[str, list[str]]:
+    """Greedily pack ``rows`` into ``limit`` characters, atomic per row.
+
+    Returns the rendered text and the identifiers of every row that did not
+    fit -- a caller marking the units a downstream call never saw needs to
+    know which ones those were, never just that some were omitted.
+    """
     lines: list[str] = []
     used = 0
     omitted: list[str] = []
@@ -2495,7 +2586,7 @@ def _packed_rows(rows: Sequence[tuple[str, str]], limit: int) -> str:
             lines.append(continuation)
         else:
             lines.append("- " + _CONTEXT_OVERFLOW)
-    return "\n".join(lines)
+    return "\n".join(lines), omitted
 
 __all__ = [
     "AcquisitionAction",
