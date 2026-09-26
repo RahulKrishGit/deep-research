@@ -314,6 +314,29 @@ class ReplaySource:
 
 
 @dataclass(frozen=True)
+class ExtraEvidenceTarget:
+    """One additional obligation of a topic that already has a primary one.
+
+    A plan sub-topic can carry more than one evidence target (the writer
+    places every citable finding into exactly one part by its *first*
+    matching target, spec §6.1), and a part with one target already answered
+    and a second one still missing on the opening pass is what
+    ``scoped-redraft-after-a-named-defect``'s sibling case (the P0-1
+    extra-pass regression) needs: the part already has a section before the
+    extra pass runs.
+    """
+
+    question: str
+    measure: str
+    unit_dimension: str = ""
+    period: str = ""
+    kind: str = ""
+    required: bool = True
+    geography: str = ""
+    organisation: str = ""
+
+
+@dataclass(frozen=True)
 class ReplayTopic:
     """One planned sub-topic and the obligations it carries."""
 
@@ -348,6 +371,11 @@ class ReplayTopic:
     # names words its own pages state — the composer repairs an unattested cell
     # to ``not stated``, which would leave the row with nothing to answer.
     answer_labels: tuple[str, str] = ("", "")
+    # Further evidence targets this same part carries, beyond the primary
+    # one above -- a part with two, one answered on the opening pass and one
+    # still missing, so it already has a section before the extra pass its
+    # missing target buys (D4, §6.5) ever runs.
+    extra_targets: tuple[ExtraEvidenceTarget, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -964,7 +992,20 @@ class ReplayCompleter(AgentCompleter):
                             kind=topic.kind,
                             geography=topic.geography,
                             organisation=topic.organisation,
-                        )
+                        ),
+                        *[
+                            EvidenceTargetDraft(
+                                question=extra.question,
+                                required=extra.required,
+                                measure=extra.measure,
+                                unit_dimension=extra.unit_dimension,
+                                period=extra.period,
+                                kind=extra.kind,
+                                geography=extra.geography,
+                                organisation=extra.organisation,
+                            )
+                            for extra in topic.extra_targets
+                        ],
                     ],
                 )
                 for position, topic in enumerate(
@@ -3311,6 +3352,43 @@ def _invariant_scoped_review_fallback_used(run: ReplayRun) -> str | None:
         return "the final review's rationale does not record the scoped fallback"
     return None
 
+def _invariant_extra_pass_redrafts_the_gaining_part(run: ReplayRun) -> str | None:
+    """A part that gains a new finding on the extra pass is written fresh,
+    never silently carried over from the opening pass's composition.
+
+    P0-1: the extra-pass writer must not run in redraft mode off the
+    previous pass's own review -- topic-02 already has a section on pass 0
+    (its first target answered), and topic-02-target-02 is answered only by
+    the extra pass the missing target buys (D4, §6.5). A composition that
+    still marks topic-02 ``carried_over``, or whose topic-02 section does
+    not cite the new finding, is exactly the bug this case exists to catch.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    part = next((p for p in composition.parts if p.coverage_id == "topic-02"), None)
+    if part is None:
+        return "the composition has no topic-02 part"
+    if part.status != "written":
+        return f"topic-02's status is {part.status!r}, expected 'written'"
+    section = next(
+        (s for s in composition.sections if s.coverage_id == "topic-02"), None
+    )
+    if section is None:
+        return "topic-02 printed no section"
+    cites_new_target = any(
+        "topic-02-target-02" in point.statement.target_ids
+        for point in section.points
+        if point.statement is not None
+    )
+    if not cites_new_target:
+        return (
+            "topic-02's section does not cite the new finding for "
+            "topic-02-target-02"
+        )
+    return None
+
+
 
 
 _REPLAY_INVARIANTS: dict[str, Any] = {
@@ -3360,6 +3438,9 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "scoped_review_used": _invariant_scoped_review_used,
     "count_period_binds_obligation": _invariant_count_period_binds_obligation,
     "scoped_review_fallback_used": _invariant_scoped_review_fallback_used,
+    "extra_pass_redrafts_the_gaining_part": (
+        _invariant_extra_pass_redrafts_the_gaining_part
+    ),
 }
 
 

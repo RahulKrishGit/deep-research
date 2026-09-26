@@ -1,4 +1,4 @@
-"""The versioned offline matrix: thirty-four real-agent scenarios.
+"""The versioned offline matrix: thirty-five real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
@@ -29,6 +29,7 @@ from typing import Literal
 
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
+    ExtraEvidenceTarget,
     ReplayReviewDefect,
     ReplayScenario,
     ReplaySource,
@@ -36,7 +37,13 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 7
+REPLAY_CASE_MANIFEST_VERSION = 8
+# Bumped to 8 for the whole-branch review's P0-1 row:
+# ``extra-pass-redrafts-the-gaining-part`` guards the extra-pass writer
+# against running in redraft mode off the previous pass's own review (a
+# 35-row inventory must not be read as the 34-row one recorded under
+# version 7).
+#
 # Bumped to 7 for RevFormatT6's fix round: the new row
 # ``scoped-review-invalid-reply-falls-back`` exercises the T5 addendum's
 # scoped-review fallback (a 34-row inventory must not be read as the 33-row
@@ -231,7 +238,7 @@ def _topic(
     *,
     labels: tuple[str, str] | None = None,
     follow_up_queries: tuple[str, ...] = (),
-    **target_fields: str,
+    **target_fields: object,
 ) -> ReplayTopic:
     """One planned sub-topic, with the labels its answer row will carry.
 
@@ -2194,9 +2201,13 @@ def _comparison_target_names_both_products() -> ReplayScenario:
                 # identity (page_owner, spec §8): neither host here confirms
                 # its fixture's "Example ..." issuer name against itself, so
                 # both cells fall back to the host, verified against a real
-                # replay of this case.
+                # replay of this case. FormatT2Table's P1-1 fix (6de7273): a
+                # relaying page's cell also names the body it credits
+                # ("{verdict}, according to {body} — {publisher}"), so the
+                # relayed K2 row reads that way and only the K1 row (whose
+                # page speaks for itself) keeps the plain shape.
                 "40 percent — tester.example.test",
-                "40 percent — news.example.test",
+                "40 percent, according to Example Tester — news.example.test",
             ),
             required_invariants=("subjects_stay_apart",),
         ),
@@ -2980,6 +2991,151 @@ def _scoped_review_invalid_reply_falls_back() -> ReplayScenario:
         ),
     )
 
+def _extra_pass_redrafts_the_gaining_part() -> ReplayScenario:
+    """A part that gains a new finding on the extra pass is redrafted, not
+    carried over (P0-1: the extra-pass writer must not run in redraft mode
+    off the previous pass's own review).
+
+    Two required parts. Part 1 already carries a material review defect on
+    pass 0. Part 2 has two targets: one answered on the opening pass (so
+    the part already has a section) and one still missing -- six refused
+    registers exhaust the opening round's turn budget before the page that
+    answers it, reachable only by the follow-up query, can be read. Code
+    buys the one extra pass the missing target justifies (D4, §6.5); the
+    bug this guards is a writer that treats that extra-pass hop as a redraft
+    of pass 0's *review* (routing only Part 1, the defect's own part, and
+    leaving Part 2 -- which just gained a brand new finding -- silently
+    carried over from a composition that could not have cited it).
+    """
+    adoption_claim = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
+    export_claim = (
+        "the Acme widget export volume in the United States was 3.4 million "
+        "units in 2024"
+    )
+    capacity_claim = (
+        "the Acme widget production capacity in the United States was 8 "
+        "million units in 2025"
+    )
+    registers = tuple(
+        _page(
+            f"capregister{position}.example.test",
+            f"record-{position}",
+            f"Capacity register {position}",
+            "the capacity register lists a title and a publication date and "
+            "states no measured value",
+            issuer=f"Acme Registry {position}",
+            status=403,
+        )
+        for position in range(1, 7)
+    )
+    return ReplayScenario(
+        case_id="extra-pass-redrafts-the-gaining-part",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "What were the Acme widget adoption rate and export volume in "
+            "the United States in 2024, and its production capacity in 2025?"
+        ),
+        max_extra_passes=1,
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                _pair(1, "adoption-2024c", "Adoption survey", adoption_claim),
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _topic(
+                2,
+                "Export volume",
+                "What was the Acme widget export volume in the United States in 2024?",
+                "value",
+                "Acme widget export volume United States 2024",
+                (
+                    _page(
+                        "exportsurvey.example.test",
+                        "export-2024c",
+                        "Export survey",
+                        export_claim,
+                        issuer="Acme Institute",
+                    ),
+                    *registers,
+                    _page(
+                        "capacitysurvey.example.test",
+                        "capacity-2024",
+                        "Capacity survey",
+                        capacity_claim,
+                        issuer="Acme Institute",
+                        discovered=2,
+                    ),
+                ),
+                labels=("Acme widget", "export volume"),
+                follow_up_queries=(
+                    "Acme widget production capacity United States 2024",
+                ),
+                extra_targets=(
+                    ExtraEvidenceTarget(
+                        question=(
+                            "What was the Acme widget production capacity in "
+                            "the United States in 2025?"
+                        ),
+                        measure="capacity",
+                        unit_dimension="count",
+                        period="2025",
+                        kind="actual",
+                    ),
+                ),
+            ),
+        ),
+        review_defect=ReplayReviewDefect(
+            target_ids=("topic-01-target-01",),
+            kind="presentation",
+            severity="major",
+            problem=(
+                "The adoption-rate section restates the figure without "
+                "naming its own subject plainly; redraft it."
+            ),
+        ),
+        # This case tests the D4 extra-pass mechanism itself: it needs the
+        # six refused registers to exhaust the opening pass's whole turn
+        # budget for topic-02 (whose first read, the export survey, already
+        # spends one), so it pins the researcher's own budget and the
+        # decision-turn cap rather than drifting with config.yaml's limits.
+        agent_overrides={
+            "tool_budget_overrides": {"researcher": 20},
+            "max_iterations": 8,
+        },
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=(
+                "topic-01-target-01",
+                "topic-02-target-01",
+                "topic-02-target-02",
+            ),
+            allowed_failure_classes=(
+                "error:agent_tool_failed",
+                # The extra pass's own extraction packet plans only the
+                # missing target; re-extracting the export survey's already-
+                # read page under that narrower plan is what drops its own
+                # (correct, pass-0) target id as "unplanned" here -- a
+                # harness-side artifact of a part with two targets, the first
+                # this matrix exercises, never a defect in the finding kept.
+                "error:researcher_unplanned_target",
+            ),
+            required_report_phrases=(
+                "40 percent",
+                "3.4 million units",
+                "8 million units",
+            ),
+            required_invariants=("extra_pass_redrafts_the_gaining_part",),
+        ),
+    )
+
+
 
 
 
@@ -3395,6 +3551,20 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "is one fresh full review, never a scoped-derived result"
         ),
         build=_scoped_review_invalid_reply_falls_back,
+    ),
+    ReplayCaseEntry(
+        case_id="extra-pass-redrafts-the-gaining-part",
+        version=REPLAY_CASE_VERSION,
+        title="A part that gains a finding on the extra pass is rewritten",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The part with the missing target already has a pass-0 section; "
+            "after the extra pass answers it, that part's status is "
+            "'written', not 'carried_over', and its section cites the new "
+            "finding, never silently dropping evidence the extra pass just "
+            "bought"
+        ),
+        build=_extra_pass_redrafts_the_gaining_part,
     ),
 )
 
