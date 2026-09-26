@@ -294,8 +294,10 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "names them by their registry labels, whose snippets and figure labels "
     "are below — and against the verified labels of the figures it states. "
     "Those labels are built by code from the verified figure, not by the "
-    "writer, and are not printed beside the sentence: the reader sees their "
-    "provenance in the table and the sources instead. A relay must read as "
+    "writer, and are not printed beside the sentence: unless a findings "
+    "table prints them, the sentence itself is the only place the reader "
+    "learns who issued a figure and whether it is a forecast; the sources "
+    "list names only the page's publisher. A relay must read as "
     "relayed from the organisation its verified figure names, an actual must "
     "read as an actual, a forecast must carry its issuer and its release, and "
     "no period, scope, kind or organisation in the prose may contradict a "
@@ -2342,7 +2344,8 @@ SCOPED_REPORT_REVIEW_INSTRUCTION = (
     "target or a fact row -- is never restricted this way.\n"
     "- rationale: why the report scores as it does now.\n"
     "Every id you cite must be one this request showed you. A changed "
-    "statement you leave without a disposition is recorded not_reviewed."
+    "statement you leave without a disposition is recorded not_reviewed. "
+    "A disposition you return for an unchanged id is ignored."
 )
 
 
@@ -2370,7 +2373,8 @@ def _render_scoped_defect_contract(scoped: ScopedReportReviewInput) -> str:
         "- A new defect naming only unchanged statement ids is refused; one "
         "naming no statement at all -- scoped only to a target, a fact row, "
         "or the report as a whole -- is never refused for that reason, and "
-        "the D11 coverage floor still applies to it.\n"
+        "a coverage defect naming a required target is still treated as "
+        "major or worse.\n"
         f"- Return at most {review_defect_limit(scoped.base)} new defects in "
         "total, on top of the previous defects you are resolving."
     )
@@ -2649,7 +2653,20 @@ async def _review_scoped_packet(
                 f"more than the {limit} this request states; a reply beyond "
                 "the bound is refused whole, never cut."
             )
-        changed_dispositions = _dispositions(reply.statement_dispositions, packet=packet)
+        # A disposition the reply returns for an unchanged id is dropped
+        # here, never allowed to overwrite the carried reading below: the
+        # scoped prompt's own promise is that an unchanged id is "not being
+        # asked again," and the base prompt's "leave no statement id out"
+        # is a rule about the ids this call is judging, not about every id
+        # the whole-report packet merely shows for context.
+        changed = set(scoped.changed_statement_ids)
+        changed_dispositions = {
+            statement_id: disposition
+            for statement_id, disposition in _dispositions(
+                reply.statement_dispositions, packet=packet
+            ).items()
+            if statement_id in changed
+        }
     except ReportReviewContractViolation as violation:
         return _failed_review(packet, str(violation), status="incomplete")
 

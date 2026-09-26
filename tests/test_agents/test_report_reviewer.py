@@ -2411,6 +2411,43 @@ async def test_a_resolved_defect_is_recorded_as_resolved_and_an_unresolved_one_a
 
 
 @pytest.mark.asyncio
+async def test_a_disposition_returned_for_an_unchanged_id_does_not_overwrite_the_carried_one() -> (
+    None
+):
+    """Fable prompt review: an unchanged id is "not being asked again" -- the
+    scoped prompt's own promise -- so a reply that judges one anyway (a model
+    that answered beyond its scope) must not move that id's carried
+    disposition; the carried reading stands."""
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    assert scoped.carried_dispositions["S011"] == "supported"
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+            StatementDispositionDraft(statement_id="S011", disposition="unsupported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True, note="Fixed."),
+        ],
+        new_defects=[],
+        rationale="Re-checked the report as it now stands.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    assert review.per_statement_dispositions["S011"] == "supported"
+
+
+@pytest.mark.asyncio
 async def test_a_new_defect_in_a_changed_part_is_accepted() -> None:
     old, new, previous_review = _redraft_fixture()
     remapped = remap_review_for_redraft(
