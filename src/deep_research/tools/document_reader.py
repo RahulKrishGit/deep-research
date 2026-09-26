@@ -468,12 +468,22 @@ _HEADING_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
 _RUNNING_HEADER_PATTERN = re.compile(r"\b(?:Vol|pp|No)\.", re.IGNORECASE)
 _SKIPPED_LINE_PREFIXES = ("\u00a9", "copyright", "downloaded from")
 
-# A heading is one clause: a line carrying a period (or "!"/"?") followed by
-# another sentence is a paragraph a PDF's own layout never broke onto its
-# own line, not a title. A synthetic or single-block PDF whose whole body is
-# one such line has no real heading, and must fall through to the
-# URL/search-candidate title path rather than adopt its first sentence.
-_MULTI_SENTENCE_PATTERN = re.compile(r"[.!?]\s+[A-Z0-9]")
+# A heading is one clause, or occasionally two ("Chapter 3. Results", "Fig.
+# 1. Overview"): what separates a genuine compound heading from a run-on
+# paragraph (ReRevW5) is not whether a line contains a second sentence at
+# all, but how much of one it strings together. A line only fails this
+# check when it carries at least two sentence breaks (three-plus clauses),
+# or when a single embedded break sits in a line already too long to be a
+# heading rather than a caption.
+_SENTENCE_BREAK_PATTERN = re.compile(r"[.!?]\s+[A-Z0-9]")
+_RUN_ON_LENGTH_THRESHOLD = 120
+
+
+def _is_run_on_paragraph(line: str) -> bool:
+    breaks = len(_SENTENCE_BREAK_PATTERN.findall(line))
+    if breaks >= 2:
+        return True
+    return breaks == 1 and len(line) > _RUN_ON_LENGTH_THRESHOLD
 
 
 def _is_skippable_heading_line(line: str) -> bool:
@@ -486,7 +496,7 @@ def _is_skippable_heading_line(line: str) -> bool:
         return True
     if _RUNNING_HEADER_PATTERN.search(line):
         return True
-    return bool(_MULTI_SENTENCE_PATTERN.search(line))
+    return _is_run_on_paragraph(line)
 
 
 def _heading_line(text: str) -> str | None:

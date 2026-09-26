@@ -603,3 +603,39 @@ async def test_reader_returns_no_title_when_the_only_line_is_several_sentences(
         report.unlink()
 
     assert result.data["title"] == ""
+
+
+@pytest.mark.asyncio
+async def test_reader_keeps_a_compound_heading_with_one_sentence_break(
+    monkeypatch, tracker
+) -> None:
+    """RevW5Titles P2 (ReRevW5): a short two-clause heading -- a chapter or
+    figure caption with one embedded full stop -- is not a run-on
+    paragraph, and must still become the title."""
+
+    class Page:
+        def extract_text(self):
+            return "Chapter 3. Results\nBody text follows here."
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == "Chapter 3. Results"
