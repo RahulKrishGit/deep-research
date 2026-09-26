@@ -1846,3 +1846,37 @@ async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
     result = await _read_served_page(tracker, page)
 
     assert result.data["title"] == "Real headline about filings"
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_to_h2_after_the_existing_chain(tracker) -> None:
+    """D10: after the existing chain (og:title, twitter:title, h1) is
+    exhausted -- here, the raw title is generic apart from its own site
+    segment and no h1 exists -- the first h2 stands in."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        "</head><body><h2>Example Author, Collected Works</h2>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Example Author, Collected Works"
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_to_dc_title_when_there_is_no_h2(tracker) -> None:
+    """D10: with no h1 or h2 either, a ``DC.title`` meta name stands in."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta name="DC.title" content="Example Author, Collected Works">'
+        "</head><body><p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Example Author, Collected Works"

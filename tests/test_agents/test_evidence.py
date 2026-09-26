@@ -3135,6 +3135,37 @@ def test_a_source_line_is_an_attribution_cue() -> None:
     assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Wood Mackenzie")
 
 
+
+def test_a_to_quote_cue_credits_the_quoted_author() -> None:
+    """D8: 'To quote X' introduces a quoted author or work the same way
+    'according to X' introduces a relayed figure -- the quoted name is
+    creditable as the passage's own originator, so a page that block-quotes
+    a source without quotation marks (as text extraction often leaves it)
+    still credits that source."""
+    snippet = (
+        "To quote Example Author (Notes 2.19), the council could not act "
+        "without a majority present."
+    )
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
+
+
+def test_a_parenthetical_citation_then_colon_credits_the_named_work() -> None:
+    """D8: 'X (Work N.N):' credits X with what follows the colon, the same
+    way a reporting verb right after the name does -- the shape a page's
+    own inline citation of a quoted or excerpted work takes."""
+    snippet = (
+        "Example Author (Notes 2.19): the council could not act without a "
+        "majority present."
+    )
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of

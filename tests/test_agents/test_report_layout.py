@@ -1106,6 +1106,40 @@ def test_two_revision_editions_show_their_own_release_and_label() -> None:
     assert "forecast (released 2025-02-14)" in log
 
 
+
+def test_a_fact_row_value_that_spells_its_own_unit_is_not_doubled() -> None:
+    """D15: a spelled duration value ('a century') already carries its own
+    unit; the fact-row table must not repeat it ('a century years')."""
+    base = _composition()
+    doubled_row = base.fact_rows[0].model_copy(update={"value": "a century years"})
+    composition = base.model_copy(update={"fact_rows": [doubled_row, base.fact_rows[1]]})
+
+    log = render_finding_log(composition)
+
+    assert "| a century |" in log
+    assert "a century years" not in log
+
+
+def test_a_kept_figures_spelled_value_is_not_doubled_with_its_unit() -> None:
+    """D15: the same rule applies to a kept figure's own line under the
+    evidence log's Findings section, where value and unit are separate
+    fields on the figure rather than one already-combined string."""
+    finding = _finding(
+        "https://example-register.test/notes",
+        "The review found effects lasting about a century.",
+        "a century", "years", organisation="Example Institute",
+    )
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding], fact_rows=[],
+        finding_labels={"F01": finding_fingerprint(finding)},
+    )
+
+    log = render_finding_log(composition)
+
+    assert "a century: kept" in log
+    assert "a century years: kept" not in log
+
+
 def test_the_evidence_log_about_block_carries_scope_counts_and_parts() -> None:
     composition = _composition().model_copy(update={
         "generated_on": "2026-09-25",

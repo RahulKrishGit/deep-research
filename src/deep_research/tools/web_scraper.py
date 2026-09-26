@@ -413,27 +413,48 @@ def _meta_name_content(soup: BeautifulSoup, name: str) -> str | None:
 
 # A banner or logo heading names the site, not the page: a theme's
 # ``<header><h1 class="site-title">...</h1></header>`` or a ``<nav>``
-# heading is never a headline (RevW5Titles P2), so it is excluded before the
-# first ``h1`` is read as a fallback title candidate.
-_BANNER_H1_ANCESTORS = ("header", "nav")
-_BANNER_H1_CLASSES = frozenset({"site-title", "logo"})
+# heading is never a headline (RevW5Titles P2), so it is excluded before
+# the first ``h1`` or ``h2`` is read as a fallback title candidate.
+_BANNER_HEADING_ANCESTORS = ("header", "nav")
+_BANNER_HEADING_CLASSES = frozenset({"site-title", "logo"})
 
 
-def _is_banner_h1(heading: Tag) -> bool:
-    if heading.find_parent(_BANNER_H1_ANCESTORS) is not None:
+def _is_banner_heading(heading: Tag) -> bool:
+    if heading.find_parent(_BANNER_HEADING_ANCESTORS) is not None:
         return True
     classes = heading.get("class") or []
-    return any(str(cls).casefold() in _BANNER_H1_CLASSES for cls in classes)
+    return any(str(cls).casefold() in _BANNER_HEADING_CLASSES for cls in classes)
 
 
-def _first_usable_h1_text(soup: BeautifulSoup) -> str | None:
-    for heading in soup.find_all("h1"):
-        if _is_banner_h1(heading):
+def _first_usable_heading_text(soup: BeautifulSoup, name: str) -> str | None:
+    for heading in soup.find_all(name):
+        if _is_banner_heading(heading):
             continue
         text = heading.get_text(strip=True)
         if text:
             return text
     return None
+
+
+def _first_usable_h1_text(soup: BeautifulSoup) -> str | None:
+    return _first_usable_heading_text(soup, "h1")
+
+
+def _first_usable_h2_text(soup: BeautifulSoup) -> str | None:
+    return _first_usable_heading_text(soup, "h2")
+
+
+# D10: the leading clause of a page's own description meta -- up to its
+# first sentence-ending mark -- when nothing else names the page: "Appian,
+# The Civil Wars, translated by Horace White" from a longer DC.description
+# still names the work, without the rest of the description's own prose.
+_CLAUSE_END_PATTERN = re.compile(r"[.;:]")
+
+
+def _leading_clause(text: str) -> str | None:
+    match = _CLAUSE_END_PATTERN.search(text)
+    clause = (text[: match.start()] if match else text).strip()
+    return clause or None
 
 
 # A generic single-word title names no page at all -- a template's default
@@ -541,14 +562,15 @@ def _is_unhelpful_title(value: str, site_name: str | None, host_label: str) -> b
 
 
 def _page_title(soup: BeautifulSoup, url: str) -> str:
-    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3).
+    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3, D10).
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
     name only the site, a generic placeholder, or a title that is generic
     apart from its own site segment; only then does ``og:title``,
-    ``twitter:title`` or a non-banner ``h1`` stand in for it, in that
-    order, skipping any of those that are themselves unhelpful while a
-    later, differing one remains.
+    ``twitter:title``, a non-banner ``h1`` or ``h2``, ``DC.title``,
+    ``citation_title``, or the leading clause of ``DC.description`` stand
+    in for it, in that order, skipping any of those that are themselves
+    unhelpful while a later, differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
     host_label = _host_label(url)
@@ -559,10 +581,15 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
         and not _is_unhelpful_title(raw_title, site_name, host_label)
     ):
         return raw_title
+    description = _meta_name_content(soup, "DC.description")
     candidates: list[str | None] = [
         _meta_property_content(soup, "og:title"),
         _meta_name_content(soup, "twitter:title"),
         _first_usable_h1_text(soup),
+        _first_usable_h2_text(soup),
+        _meta_name_content(soup, "DC.title"),
+        _meta_name_content(soup, "citation_title"),
+        _leading_clause(description) if description else None,
     ]
     for index, candidate in enumerate(candidates):
         if not candidate:

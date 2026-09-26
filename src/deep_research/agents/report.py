@@ -63,10 +63,10 @@ from deep_research.utils.types import (
     Citation,
     EvidenceTarget,
     FactRow,
-    FigureAttribution,
     FigureContext,
     FigureKind,
     Finding,
+    FindingFigure,
     PageCredit,
     ReadRecord,
     RejectedDraftPoint,
@@ -1635,6 +1635,54 @@ def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | 
     return pairs
 
 
+# D15: a spelled duration value ("a century", "sixteen years or more")
+# already states its own unit; appending "years" beside it, or a fact
+# row's own already-combined value string repeating it, restates what the
+# value already says ("a century years"). Both shapes -- a figure's
+# separate value/unit pair, and a fact row's already-fused value string --
+# are checked the same way: whether a duration word appears more than
+# once across value and unit together.
+_DURATION_WORDS = frozenset({
+    "day", "days", "week", "weeks", "month", "months",
+    "decade", "decades", "century", "centuries", "year", "years",
+})
+
+
+def _is_duration_word(word: str) -> bool:
+    return word.casefold() in _DURATION_WORDS
+
+
+def _value_already_spells_a_unit(value: str, unit: str) -> bool:
+    """Whether ``value`` already spells a duration, making a duration
+    ``unit`` appended after it redundant."""
+    if not _is_duration_word(unit.strip()):
+        return False
+    return any(_is_duration_word(word) for word in value.split())
+
+
+def _figure_value_text(figure: FindingFigure) -> str:
+    """``figure``'s value with its unit appended, unless the value already
+    spells the same kind of unit (D15)."""
+    if _value_already_spells_a_unit(figure.value, figure.unit):
+        return figure.value
+    return f"{figure.value} {figure.unit}"
+
+
+def _deduplicated_fact_value(value: str) -> str:
+    """``value`` -- a fact row's already-combined "value unit" string -- with
+    a trailing unit word dropped when the value it follows already spells
+    that same kind of unit (D15): 'a century years' -> 'a century'.
+    """
+    words = value.split()
+    if len(words) < 2:
+        return value
+    unit_candidate = words[-1]
+    value_part = " ".join(words[:-1])
+    if _value_already_spells_a_unit(value_part, unit_candidate):
+        return value_part
+    return value
+
+
 def _finding_label_map(composition: ReportComposition) -> dict[str, str]:
     """Each finding id to its first-registered label (§9's Verified figures
     Source column prints labels, not citation markers)."""
@@ -1671,7 +1719,8 @@ def _verified_figures_lines(composition: ReportComposition) -> list[str]:
         source = ", ".join(
             id_to_label[fingerprint] for fingerprint in _row_finding_ids(row) if fingerprint in id_to_label
         ) or "not stated"
-        cells = [organisation, *subject, row.measure, row.period or "not stated", row.value,
+        cells = [organisation, *subject, row.measure, row.period or "not stated",
+                 _deduplicated_fact_value(row.value),
                  row.kind + (" (unchecked context)" if row.context_unchecked else ""),
                  row.scope or "not stated", release, source]
         lines.append("| " + " | ".join(_table_cell(cell) for cell in cells) + " |")
@@ -1832,7 +1881,7 @@ def render_finding_log(composition: ReportComposition) -> str:
             lines.append(f'- Passage: "{passage}"')
         lines.append(f"- Verification: {status}")
         for result in verification.figure_results if verification else []:
-            text = f"{result.figure.value} {result.figure.unit}"
+            text = _figure_value_text(result.figure)
             if result.kept and result.context is not None:
                 context = result.context
                 line = (f"  - {text}: kept; period {context.period or 'not stated'}; scope "

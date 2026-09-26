@@ -1355,9 +1355,16 @@ def _passage_index(boundaries: Sequence[int], offset: int) -> int:
 # word: :func:`attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
 # the same way. A "Data source: ..." caption line credits its originator the
 # same way a sentence does.
+# D8: a page that introduces a block quotation names its author or work the
+# same way it names a relay's issuer -- "To quote X", "In the words of X",
+# "X writes:", "X puts it" (as in "As X put it") -- and a blockquote's own
+# quotation marks are lost in text extraction, so the introducing phrase is
+# the only cue that survives.
 ATTRIBUTION_CUE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
-    r"data\s+from|report(?:s|ed|ing)?\s+from|estimates?\s+from|sources?\s*:|per|said)"
+    r"data\s+from|report(?:s|ed|ing)?\s+from|estimates?\s+from|sources?\s*:|per|said|"
+    r"to\s+quote|quotes?|quoting|quoted|writes|wrote|puts?\s+it|"
+    r"in\s+the\s+words\s+of)"
     r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
@@ -1397,6 +1404,10 @@ _SOURCE_NOUN_CUE_PATTERN = re.compile(
 # battery storage capacity to reach 30 GW") credits that body for what the
 # title states, the same claim "according to EIA" makes about a sentence.
 _TITLE_CUE_MARK = re.compile(r"^\s*:\s")
+# D8: a parenthetical citation right after the matched name, followed by a
+# colon, credits that name with what follows exactly as "X writes:" does --
+# "Example Author (Notes 2.19): the council could not act ...".
+_CITATION_COLON_MARK = re.compile(r"^\s*\([^()]{0,60}\)\s*:")
 # A possessive immediately after the matched name: "Wood Mackenzie's" names
 # an owner of what follows exactly as "according to Wood Mackenzie" does.
 _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
@@ -1422,6 +1433,7 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
         _POSSESSIVE_MARK.match(tail)
         or _REPORTING_CUE_PATTERN.match(tail)
         or _SOURCE_NOUN_CUE_PATTERN.match(tail)
+        or _CITATION_COLON_MARK.match(tail)
         or (not phrase[: name_match.start()].strip() and _TITLE_CUE_MARK.match(tail))
     ):
         return True
