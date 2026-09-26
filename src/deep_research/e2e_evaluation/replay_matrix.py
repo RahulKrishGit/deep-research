@@ -770,9 +770,10 @@ def _relay_labelled_as_relay() -> ReplayScenario:
     Acme Institute as the body that measured the figure. The Context Check
     proposes the relay and code confirms it against the page's own cue, so the
     reader's label has to name both: the site that relays, and the organisation
-    the words credit. A run that resolved the figure to the site that published
-    the article would print "Wire Service's own figure", which is the exact
-    phrase this row forbids.
+    the words credit. A run that resolved the figure to the site that
+    published the article would record a fact row with no relayed
+    attribution, which is the exact structural fact the
+    ``relay_labelled_as_relay`` invariant forbids.
 
     Two shapes have to be right for the target to be answered at all, and both
     are properties of the prose rather than of the harness: the clause must
@@ -909,10 +910,12 @@ def _relay_labelled_as_relay() -> ReplayScenario:
             required_target_ids=tuple(
                 f"topic-{index:02d}-target-01" for index in range(1, 5)
             ),
-            forbidden_assertions=(
-                "Wire Service's own figure",
-                "independently corroborated",
-            ),
+            # "Wire Service's own figure" was the code label the old renderer
+            # printed on a mis-attributed row; the new renderer prints no such
+            # label anywhere, so the structured check is what is left: the
+            # already-required ``relay_labelled_as_relay`` invariant fails
+            # outright when no fact row is recorded ``relayed``.
+            forbidden_assertions=("independently corroborated",),
             # The two halves of the honesty rule: the label names the relaying
             # site and the organisation the page credits, and the figure the
             # report rests on carries a resolved context rather than a
@@ -1953,6 +1956,14 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
             ),
             allowed_failure_classes=(
                 "error:evidence_verifier_statement_check_failed",
+                # The parallel writer (spec §6.6): the bottom line is fed
+                # only checked, kept section statements, so when every
+                # statement everywhere came back unchecked (this scenario's
+                # whole premise) there is nothing to write it from -- a fact
+                # the writer records against the same non-recoverable error
+                # type it uses when every part's own draft fails, though here
+                # every part drafted and printed its sentences fine.
+                "error:report_writer_provider_error",
             ),
             required_report_phrases=("40 percent", "12 million dollars"),
             required_invariants=("statement_failure_keeps_sentences",),
@@ -2027,11 +2038,11 @@ def _two_subjects_one_value() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
-            # The Subject column exists because these rows need it, and both
-            # subjects are printed in it: the phrase is the table cell, which
+            # The Option column exists because these rows need it, and both
+            # options are printed in it: the phrase is the table cell, which
             # no other part of the report writes, so a row that lost one fails
             # here rather than passing on the summary sentence alone.
-            required_report_phrases=("| Subject |", "| Kettle K1 |", "| Kettle K2 |"),
+            required_report_phrases=("| Option |", "| Kettle K1 |", "| Kettle K2 |"),
             required_invariants=("subjects_stay_apart",),
         ),
     )
@@ -2049,9 +2060,9 @@ def _comparison_target_names_both_products() -> ReplayScenario:
     line, and the writer refused the K2 sentence as a restatement of K1's row
     (``restates K001``). The two figures are equal in value, organisation,
     period and kind, so their subjects are the whole of what tells them apart,
-    and this row asserts the reader's side of it: two Key facts rows with both
-    subjects, both summary sentences, and each sentence carrying its own row's
-    label.
+    and this row asserts the reader's side of it: two options table rows with
+    both option names, both section sentences, and each sentence carrying its
+    own row's mark.
 
     The value is a percent rather than the neighbouring row's "4.5 out of 5"
     because the labels and the restatement guard both reach only quantities the
@@ -2111,20 +2122,28 @@ def _comparison_target_names_both_products() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
-            # Both rows, and each row's own label on the sentence that names
-            # it: the sentences are written subject-first, so the K1 sentence
-            # carries K1's label and the K2 sentence K2's, and the two labels
-            # differ (the tester's own figure against the news relay of it), so
-            # a run that folded the two figures -- or that let a sentence carry
-            # the rival row's label -- cannot state both.
+            # Both rows, and each row's own option cell on the part column:
+            # the sentences are written subject-first, so the K1 sentence
+            # carries K1's mark and the K2 sentence K2's, and the two cells
+            # differ (the tester's own figure against the news relay of it),
+            # so a run that folded the two figures -- or that let a mark carry
+            # the rival row's option -- cannot state both.
             required_report_phrases=(
-                "| Subject |",
+                "| Option |",
                 "| Kettle K1 |",
                 "| Kettle K2 |",
-                "Kettle K1: Example Tester reports 40 percent for 2026.",
-                "Kettle K2: Example Tester reports 40 percent for 2026.",
-                "Example Tester's own figure; actual",
-                "relayed by news.example.test from Example Tester; actual",
+                # No trailing stop: the marker moves before the sentence's own
+                # final stop (spec §3.1 rule 3), so the printed text reads
+                # "...for 2026 [1]." rather than "...for 2026. [1]".
+                "Kettle K1: Example Tester reports 40 percent for 2026",
+                "Kettle K2: Example Tester reports 40 percent for 2026",
+                # The options-table cell credits the page's own resolved
+                # identity (page_owner, spec §8): neither host here confirms
+                # its fixture's "Example ..." issuer name against itself, so
+                # both cells fall back to the host, verified against a real
+                # replay of this case.
+                "40 percent — tester.example.test",
+                "40 percent — news.example.test",
             ),
             required_invariants=("subjects_stay_apart",),
         ),
@@ -2266,10 +2285,11 @@ def _prose_only_question() -> ReplayScenario:
 
     A qualitative obligation (empty unit dimension and kind) is answered by a
     finding that names it, and three reasons are three such findings. Nothing
-    in the run produces a figure, so the reader's Key facts section has to say
-    so rather than print an empty table -- and the Statement Check is shown the
-    figureless citation lines (``snippet:`` and the body it is ``attributed
-    to:``), which the double's own format check holds it to.
+    in the run produces a figure, so the reader's report prints no table at
+    all rather than an empty one (spec §4.1 rule 3) -- and the Statement
+    Check is shown the figureless citation lines (``snippet:`` and the body
+    it is ``attributed to:``), which the double's own format check holds it
+    to.
     """
     question = "Why did Acme widget adoption rise in the United States in 2024?"
 
@@ -2341,7 +2361,11 @@ def _prose_only_question() -> ReplayScenario:
                 "topic-02-target-01",
                 "topic-03-target-01",
             ),
-            required_report_phrases=("No figure passed the Evidence Verifier.",),
+            # "No figure passed the Evidence Verifier." was the placeholder
+            # sentence the old table printed in its own absence; the new
+            # table is simply omitted (spec §3.1 rule 4), so the structured
+            # check is that ``composition.table`` is ``None``.
+            required_invariants=("no_table_printed",),
         ),
     )
 
@@ -2428,9 +2452,10 @@ def _count_unit_period() -> ReplayScenario:
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
             # The period is what keeps the two counts apart: a run that bound
             # the 2024 count to a 2025 obligation would print the answered
-            # obligation's measure beside the 2024 period, which is the row
-            # this phrase forbids.
-            forbidden_assertions=("| the number of Kettle units shipped | 2024 |",),
+            # obligation's measure beside the 2024 period, which is the
+            # findings table's merged "What was measured" cell this phrase
+            # forbids.
+            forbidden_assertions=("The number of Kettle units shipped, 2024",),
             allowed_failure_classes=("missing_required_target",),
             required_invariants=("extra_pass_finds_nothing",),
         ),
@@ -2558,7 +2583,11 @@ def _relative_period_resolved() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
-            required_report_phrases=("period resolved from the page date 2026-02-20",),
+            # The old label text ("period resolved from the page date …") was
+            # the code label the report cut (spec §3.1 rule 9); with a single
+            # eligible row no table forms to carry it either, so the
+            # structural ``period_resolved_from_page_date`` invariant below is
+            # what is left to pin the date the period was resolved from.
             required_invariants=("period_resolved_from_page_date",),
         ),
     )
@@ -2626,12 +2655,17 @@ def _unattributed_relay_prose() -> ReplayScenario:
             exit_code=0,
             required_target_ids=("topic-01-target-01",),
             forbidden_assertions=("according to Example Institute",),
-            # The credit the reader has to see on the unattributed figure's own
-            # row: the site that carries it, and the statement that the page
-            # attributes it to nobody.
+            # The credit the reader has to see on the unattributed figure's
+            # own row: the site that carries it, credited by name (the old
+            # "(source does not attribute it)" suffix was the code label the
+            # report cut, spec §3.1 rule 9; with a single eligible row no
+            # table forms to carry a Who cell either, so the publisher's own
+            # name is what is left to pin, through the corrected sentence
+            # that names it). No trailing stop on the sentence itself: the
+            # marker moves before the final stop (spec §3.1 rule 3).
             required_report_phrases=(
-                corrected,
-                "Example News (source does not attribute it)",
+                corrected.removesuffix("."),
+                "Example News",
             ),
         ),
     )
@@ -2679,10 +2713,14 @@ def _maker_notes_vs_relay() -> ReplayScenario:
     """The maker's own figure and a news relay of another one of them.
 
     Honesty rule 1 (D7): a relay is never presented as the issuer, and the
-    maker's own page is. Both rows carry the label the reader needs -- "Example
-    Games's own figure" and "relayed by news.example.test from Example Games" --
-    so a run that credited the relay site with the maker's figure, or the maker
-    with the relay's summary, fails the phrases this row asserts.
+    maker's own page is. Both rows carry the credit the reader needs -- the
+    findings table's Who cell reads "Example Games" for the maker's own row
+    and "Example Games, reported by news.example.test" for the relayed row
+    (neither page's fixture issuer name confirms against its own host, so
+    the relay's own credit falls back to it, verified against a real replay
+    of this case) -- so a run that credited the relay site with the maker's
+    figure, or the maker with the relay's summary, fails the phrases this
+    row asserts.
     """
     return ReplayScenario(
         case_id="maker-notes-vs-relay",
@@ -2744,8 +2782,8 @@ def _maker_notes_vs_relay() -> ReplayScenario:
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-02-target-01"),
             required_report_phrases=(
-                "Example Games's own figure",
-                "relayed by news.example.test from Example Games",
+                "Example Games",
+                "Example Games, reported by news.example.test",
             ),
             required_invariants=("relay_labelled_as_relay", "no_false_verification"),
         ),

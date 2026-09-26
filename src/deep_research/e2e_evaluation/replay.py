@@ -59,10 +59,7 @@ from deep_research.agents.report_reviewer import (
     ReviewDimensionScores,
     StatementDispositionDraft,
 )
-from deep_research.agents.report_writer import (
-    ReportWriterDraft,
-    WriterPointDraft,
-)
+from deep_research.agents.report_writer import WriterPointDraft
 from deep_research.agents.researcher import (
     FindingDraft,
     FindingFigureDraft,
@@ -88,7 +85,14 @@ from deep_research.providers.contracts import ProviderError
 from deep_research.runtime.assembly import build_runtime
 from deep_research.tools.base import ToolResult
 from deep_research.utils.config import ConfigSettings
-from deep_research.utils.types import REVIEW_DIMENSIONS, ReadRecord, ResearchState
+from deep_research.utils.types import (
+    REVIEW_DIMENSIONS,
+    BottomLineDraft,
+    ItemMarkDraft,
+    ReadRecord,
+    ResearchState,
+    SectionDraft,
+)
 
 # The public progress summary stays at its shipped length. A scenario may ask
 # for a different one to prove a case cannot pass by enlarging logs, but the
@@ -1163,7 +1167,13 @@ class ReplayCompleter(AgentCompleter):
             # anything else would test the harness rather than the product.
             raise ProviderError("the statement check was not made")
         drafts: list[StatementVerdictDraft] = []
-        for label, body in _packet_blocks(text, "S"):
+        # The production writer's own flight keys (spec §6.7): ``P{part:02d}.``
+        # for a section's own batch, ``B`` for the bottom line's, both
+        # renumbered to the reader's ``S001…`` only after every check
+        # finishes, so the check itself never sees an ``S`` label from that
+        # path -- but a test that calls this double directly still builds its
+        # own items with plain ``S00n`` labels, which stay accepted too.
+        for label, body in _packet_blocks(text, r"(?:S|P\d+\.|B)"):
             sentence = _printed_line(body, "sentence")
             self._require_cited_findings(body, label)
             override = self._statement_override(sentence)
@@ -1265,38 +1275,68 @@ class ReplayCompleter(AgentCompleter):
                 return source.statement
         return {}
 
-    def _reply_ReportWriterDraft(self, text: str) -> ReportWriterDraft:
-        """One summary point per figure line the writer's own request lists.
+    def _material_block(self, text: str, header: str) -> str:
+        """The material section's own text, up to the next top-level ``# ``
+        header (or the end of the request).
 
-        The line is the registry's own format (``F01 | figure 1: 10.4 GW |
-        period 2024 | kind actual | organisation Wood Mackenzie | label: ...``),
-        so the draft states the figure its verified finding carries, and the
-        code-built reader label carries what the sentence does not say (who the
-        figure is credited to, and whether it is a forecast). Nothing here
-        invents a sentence about a page the registry does not list, and a
-        packet that lists no figure is a contract violation rather than an
-        empty draft, because the writer is only ever called with a registry.
+        A sub-header (``## F01: ...``) never matches ``^# ``, which is what
+        lets this stay a simple line scan instead of a nested parser: every
+        request this harness builds nests its detail under ``## ``/``### ``,
+        never a second top-level ``# ``.
         """
+        headers = list(re.finditer(r"(?m)^# .*$", text))
+        for index, match in enumerate(headers):
+            if match.group().strip() == f"# {header}":
+                end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+                return text[match.end():end]
+        return ""
+
+    def _reply_SectionDraft(self, text: str) -> SectionDraft:
+        """One point per figure line of this part's own registry block.
+
+        Scoped to ``# Verified findings for this part`` alone, never
+        ``# Context only``: a context-only finding is listed for the writer to
+        read, not to cite (spec §6.4 rule 3), and a double that drafted from it
+        would cite a label the real writer is refused for citing. The line is
+        the registry's own format (``F01 | figure 1: 10.4 GW | period 2024 |
+        kind actual | organisation Wood Mackenzie | label: ...``), so the
+        draft states the figure its verified finding carries, and the
+        code-built reader label carries what the sentence does not say (who
+        the figure is credited to, and whether it is a forecast). A figure
+        line that names a subject (D11) is also marked as an option: the
+        subject is the mark's name and the value-and-unit span is its verdict,
+        both verbatim spans of the drafted sentence (spec §6.4 rule 8), so the
+        options table (§4.2) has real cells to build from a replay run.
+        """
+        title_block = self._material_block(text, "This part of the question")
+        title = title_block.strip().splitlines()[0].strip() if title_block.strip() else "Findings"
+        block = self._material_block(text, "Verified findings for this part")
         index = self._registry_index(text)
         points: list[WriterPointDraft] = []
-        for label, _title, _host, snippet, figures in _registry_entries(text):
+        for label, _title, _host, snippet, figures in _registry_entries(block):
             source = index.get(label)
             if figures:
-                drafted = [
-                    _written_sentence(*figure) for figure in figures
+                drafted: list[tuple[str, list[ItemMarkDraft]]] = [
+                    (
+                        _written_sentence(*figure),
+                        [ItemMarkDraft(name=figure[-1], verdict=f"{figure[0]} {figure[1]}", by=label)]
+                        if figure[-1] else [],
+                    )
+                    for figure in figures
                 ]
             else:
                 # A finding whose page stated no figure. It is a registry row
                 # production prints, so the draft restates the finding itself
                 # rather than refusing the pass.
-                drafted = [_snippet_sentence(snippet)]
+                drafted = [(_snippet_sentence(snippet), [])]
             if self.invented_prose and not points and drafted:
                 # The case's own fault: a writer dressing a verified figure in
                 # prose no page states. The Statement Check is what refuses it
                 # now, so the draft carries the words and the checker's script
                 # reads them.
-                drafted[0] = f"{drafted[0]} This is because {self.invented_prose}."
-            for sentence in drafted:
+                sentence, items = drafted[0]
+                drafted[0] = (f"{sentence} This is because {self.invented_prose}.", items)
+            for sentence, items in drafted:
                 if not sentence:
                     continue
                 if source is not None:
@@ -1304,13 +1344,42 @@ class ReplayCompleter(AgentCompleter):
                         " ".join(sentence.split()), []
                     ).append(source)
                 points.append(
-                    WriterPointDraft(text=sentence, finding_labels=[label])
+                    WriterPointDraft(text=sentence, finding_labels=[label], items=items)
                 )
         if not points:
             raise ReplayContractError(
-                "the writer packet listed no finding to draft from"
+                "the section packet listed no finding to draft from"
             )
-        return ReportWriterDraft(executive_summary=points)
+        return SectionDraft(title=title, points=points)
+
+    _BOTTOM_LINE_STATEMENT = re.compile(r"^(.*) \(cites ([^;()]*)(?:; options: .*)?\)$")
+
+    def _reply_BottomLineDraft(self, text: str) -> BottomLineDraft:
+        """Up to 4 of the checked section statements' own texts, with their
+        labels (spec §11.3): a bottom line built only from what a part's own
+        draft already had verified, never inventing new prose. ``cites
+        nothing`` (a statement with no finding label) carries no label."""
+        block = self._material_block(text, "Checked statements")
+        sentences: list[WriterPointDraft] = []
+        for line in block.splitlines():
+            if not line.startswith("- "):
+                continue
+            match = self._BOTTOM_LINE_STATEMENT.match(line[2:])
+            if match is None:
+                continue
+            point_text, cites = match.group(1), match.group(2)
+            labels = (
+                [] if cites.strip() == "nothing"
+                else [label.strip() for label in cites.split(",")]
+            )
+            sentences.append(WriterPointDraft(text=point_text, finding_labels=labels))
+            if len(sentences) == 4:
+                break
+        if not sentences:
+            raise ReplayContractError(
+                "the bottom-line packet listed no checked statement"
+            )
+        return BottomLineDraft(sentences=sentences)
 
     def _registry_index(self, text: str) -> dict[str, ReplaySource]:
         """The page each registry label cites, from the request's own headings."""
@@ -2944,6 +3013,24 @@ def _invariant_mechanism_obligation_stays_unanswered(
     return None
 
 
+def _invariant_no_table_printed(run: ReplayRun) -> str | None:
+    """No question-shaped table when nothing qualifies (spec §4.1 rule 3).
+
+    A run whose findings state no figure and mark no option builds neither an
+    options table nor a findings table; the choice rule is structural (§4.1),
+    so this reads the composition's own ``table`` field rather than pattern
+    matching the report for the old placeholder sentence the table used to
+    print in its place ("No figure passed the Evidence Verifier.", cut by
+    spec §3.1 rule 4).
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    if composition.table is not None:
+        return f"a {composition.table.shape} table printed when none should qualify"
+    return None
+
+
 _REPLAY_INVARIANTS: dict[str, Any] = {
     "relay_labelled_as_relay": _invariant_relay_labelled_as_relay,
     "no_false_verification": _invariant_no_false_verification,
@@ -2986,6 +3073,7 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "mechanism_obligation_stays_unanswered": (
         _invariant_mechanism_obligation_stays_unanswered
     ),
+    "no_table_printed": _invariant_no_table_printed,
 }
 
 
