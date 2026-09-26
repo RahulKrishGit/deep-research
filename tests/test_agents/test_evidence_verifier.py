@@ -1048,6 +1048,64 @@ async def test_a_blank_corrected_text_is_treated_as_inconsistent() -> None:
     assert results["S01"].verdict == "inconsistent"
 
 
+def _forecast_finding_with_release(release_date: str) -> Finding:
+    """A verified forecast finding whose figure line the block must show a release for."""
+    finding = _bare_finding(
+        "Example Institute projects 64.9 units by 2026.",
+        figures=[figure("64.9", "units", "2026", "forecast")],
+        release_date=release_date,
+    )
+    context = FigureContext(period="2026", scope=None, attribution="relayed",
+                            organisation="Example Institute", kind="forecast")
+    result = FigureResult(figure=finding.figures[0], matched=True,
+                          evidence_words="64.9 units", context=context)
+    return finding.model_copy(update={
+        "verification": FindingVerification(status="verified", figure_results=[result])
+    })
+
+
+def test_the_statement_check_shows_a_forecasts_release_on_its_figure_line() -> None:
+    """High (Fable's final prompt review): a forecast's release never reached
+    the block, so a sentence correctly stating it could be judged
+    inconsistent, or a correction could drop it."""
+    finding = _forecast_finding_with_release("2025-06-10")
+    body = statement_check_messages(
+        [StatementCheckItem(label="S001",
+                            text="Example Institute projects 64.9 units by 2026.",
+                            findings=[finding], labels=["F01"])],
+        question="What does Example Institute project?",
+    )[1].content
+
+    assert "release released 2025-06-10" in body
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_stating_a_forecasts_release_is_kept_consistent() -> None:
+    """High (Fable's final prompt review): with the release now on the
+    block, a scripted 'consistent' verdict for a sentence stating it
+    survives unchanged -- nothing in code second-guesses a release the
+    block itself shows."""
+    finding = _forecast_finding_with_release("2025-06-10")
+    text = ("Example Institute projects 64.9 units by 2026, in its report "
+            "released 2025-06-10.")
+    item = _statement_item("S01", text, finding)
+
+    def reply(messages: list, schema: type) -> StatementCheckDraft:
+        del messages, schema
+        return StatementCheckDraft(statements=[
+            StatementVerdictDraft(label="S01", verdict="consistent",
+                                  reason="States the release the block shows."),
+        ])
+
+    completer = ScriptedCompleter(outputs=[reply])
+
+    results, errors = await check_statements(completer, [item], question="What does Example Institute project?")
+
+    assert errors == []
+    assert results["S01"].verdict == "consistent"
+
+
+
 @pytest.mark.asyncio
 async def test_a_failed_statement_batch_gives_none_and_an_error() -> None:
     finding = _statement_finding("18.9", "GW")
@@ -1249,7 +1307,7 @@ def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
     assert any(
         line.startswith(
             "  F01: 7 percent | period 2025 | scope none | subject none | kind actual | "
-            "relayed (Example Institute) | evidence: "
+            "relayed (Example Institute) | release none | evidence: "
         )
         for line in lines
     )
@@ -1411,7 +1469,7 @@ def test_a_statement_check_figure_line_names_its_subject() -> None:
     assert any(
         line.startswith(
             "  F01: 4.5 out of 5 | period none | scope none | subject Model B | kind actual | "
-            "own (Example Test Lab) | evidence: "
+            "own (Example Test Lab) | release none | evidence: "
         )
         for line in body.splitlines()
     )

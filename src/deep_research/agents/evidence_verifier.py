@@ -70,6 +70,7 @@ from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
     _period_stated_in,
     claimed_organisation,
+    release_text,
     resolve_relative_period,
     same_organisation,
     same_period,
@@ -1080,37 +1081,39 @@ STATEMENT_CHECK_INSTRUCTION = (
     "cited findings, not against what you think the question should cover. For "
     "each sentence give:\n"
     "- verdict: consistent when the sentence states only the numbers, "
-    "dates, subject, scope, organisation, forecast-vs-actual distinction, "
-    "and the conditions, exceptions and object a rule it reports attaches "
-    "to, that its cited findings' figures, snippets and passages actually "
-    "state, and keeps every qualifier the words carry (\"about\", \"nearly\", "
-    "\"more than\"), every criterion a judgement was measured by, and every "
-    "body the words credit — never presenting the page it was read on as the "
-    "author of a document that page reproduces, while a document a cited page's "
-    "own title names may be named as that title names it; corrected when a minimal "
-    "rewording from the cited words would make it so; inconsistent when it "
-    "states a number, date, subject, scope, organisation, forecast/actual "
-    "distinction, condition, exception or object those figures and words do "
-    "not support, presents the page it was read on as the author of a document "
-    "that page reproduces, or invents anything. A sentence that drops a "
-    "qualifier or a criterion their words carry, or states a conditional rule "
-    "as unconditional, is not consistent either, and the rule below decides "
-    "which of the two it gets. One rule "
+    "dates, subject, scope, organisation, release, forecast-vs-actual "
+    "distinction, and the conditions, exceptions and object a rule it reports "
+    "attaches to, that its cited findings' figures, snippets and passages "
+    "actually state, and keeps every qualifier the words carry (\"about\", "
+    "\"nearly\", \"more than\"), every criterion a judgement was measured by, "
+    "and every body the words credit — never presenting the page it was read "
+    "on as the author of a document that page reproduces, while a document a "
+    "cited page's own title names may be named as that title names it; "
+    "corrected when a minimal rewording from the cited words would make it so; "
+    "inconsistent when it states a number, date, subject, scope, organisation, "
+    "forecast/actual distinction, condition, exception or object those figures "
+    "and words do not support, presents the page it was read on as the author "
+    "of a document that page reproduces, or invents anything. A sentence that "
+    "drops a qualifier or a criterion their words carry, or states a "
+    "conditional rule as unconditional, is not consistent either, and the rule "
+    "below decides which of the two it gets. One rule "
     "decides between those two: a sentence is corrected when the cited words "
-    "state what it should have said — a condition, an exception, a qualifier, a "
-    "criterion or an issuer it dropped, or the number, date, kind or body it "
-    "misstated — and inconsistent when it states a fact the cited words neither "
-    "state nor can replace. A judgement, ranking or recommendation stated as fact "
-    "rather than as the judgement of the source that made it is not supported "
-    "as written: correct it by attributing it to that source. A page's "
-    "caption, player title or condition label is not a judgement the page "
-    "makes; a sentence presenting one as a rating is not supported.\n"
+    "state what it should have said — a condition, an exception, a qualifier, "
+    "a criterion, an issuer or a forecast's release it dropped, or the number, "
+    "date, kind or body it misstated — and inconsistent when it states a fact "
+    "the cited words neither state nor can replace. A judgement, ranking or "
+    "recommendation stated as fact rather than as the judgement of the source "
+    "that made it is not supported as written: correct it by attributing it to "
+    "that source. A page's caption, an embedded video's or audio player's "
+    "title, or a condition label is not a judgement the page makes; a sentence "
+    "presenting one as a rating is not supported.\n"
     "- corrected_text: for corrected, the minimally reworded sentence, built "
     "only from the cited findings' own words (snippets, evidence words, "
-    "passages) and a document name as the page line's title names it, and no "
-    f"more than {MAX_POINT_CHARS} characters; a longer correction is "
-    "refused whole, so mark such a sentence inconsistent instead; otherwise "
-    "empty.\n"
+    "passages), the organisation its figure line or attributed-to line names, "
+    "the site its page line names, and a document name as that title names "
+    f"it, and no more than {MAX_POINT_CHARS} characters; a longer correction "
+    "is refused whole, so mark such a sentence inconsistent instead; "
+    "otherwise empty.\n"
     "- reason: one short sentence.\n"
     "Never invent a number, date, subject, scope, organisation, condition, "
     "exception, qualifier or object the cited findings do not state, and never "
@@ -1192,7 +1195,11 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
     that made a statement. A finding whose figure the Context Check kept does
     not repeat the extraction-time issuer: its figure line already carries the
     verdict (``own``/``relayed``/``unattributed`` and the organisation named for
-    it), so one page states its attribution once.
+    it), so one page states its attribution once. Each kept figure's own line
+    also carries its ``release`` (Fable's final prompt review, High): a
+    forecast's release is part of the honesty rule "a forecast carries its
+    issuer and release", so a sentence that states it correctly must be able
+    to survive the check, and a correction must be able to recover it.
     """
     lines: list[str] = []
     for finding, label in zip(item.findings, item.labels):
@@ -1207,6 +1214,7 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
                         f"{ctx.period or 'none'} | scope {ctx.scope or 'none'} | "
                         f"subject {ctx.subject or 'none'} | "
                         f"kind {ctx.kind} | {_cited_attribution(ctx, finding)} | "
+                        f"release {release_text(finding) or 'none'} | "
                         f"evidence: {result.evidence_words or ''}"
                     )
         body = "; ".join(figures) if figures else "(no kept figures)"
