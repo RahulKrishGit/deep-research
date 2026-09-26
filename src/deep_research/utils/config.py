@@ -329,10 +329,12 @@ class AgentRuntimeConfig(BaseModel):
     point budget uses this only when the frozen answer contract's own
     ``requested_word_limit`` is ``None`` (``AGENTS_REPORT_TARGET_WORDS``)."""
     writer_authority_floor: float = Field(default=0.4, ge=0.0, le=1.0)
-    """D6/D7: a bound finding whose source is ``low_confidence`` or whose
-    ``authority_score`` is below this floor is context-only once another
-    finding at or above the floor answers one of the same targets
-    (``report_writer.is_context_only``, ``AGENTS_WRITER_AUTHORITY_FLOOR``)."""
+    """The bottom line's per-statement floor
+    (``report_writer._statement_meets_authority_floor``): a checked statement
+    whose findings all come from sources at or below this authority, or marked
+    ``low_confidence``, is withheld from the bottom line once any statement
+    rests on a source above it. A bound finding is never context-only
+    (``AGENTS_WRITER_AUTHORITY_FLOOR``)."""
     planner_final_max_tokens: int = Field(default=65536, ge=1)
     report_review_max_tokens: int = Field(default=65536, ge=1)
     """Output headroom for the report reviewer's one request per review.

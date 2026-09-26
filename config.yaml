@@ -127,8 +127,10 @@ agents:
   # D11's reader-length point budget fallback: used only when the frozen
   # answer contract carries no explicit requested_word_limit.
   report_target_words: 2000
-  # D6/D7: a bound finding below this source authority is context-only once
-  # another finding at or above the floor answers one of the same targets.
+  # The bottom line's per-statement filter: a checked statement whose findings
+  # all come from sources at or below this authority is withheld from the
+  # bottom line once any statement rests on a source above it. A bound finding
+  # is never context-only.
   writer_authority_floor: 0.4
   source_evaluator:
     # Score new canonical URLs in bounded provider batches, while retaining a

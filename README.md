@@ -589,17 +589,20 @@ The writer also computes the run's quality snapshot (`compute_report_quality`)
 over the composition it composed, which is what the terminal gates and the
 extra-pass router read.
 
-Each part's section request carries a point budget: "Write at most N points
-for this part". N is the larger of the number of required targets the part's
-findings answer and the reader length spread over the drafted parts at about
-45 words a point, and it is never fewer than 3. The reader length is the
-question's own word limit, else `agents.report_target_words` (2000). The
-budget is an instruction only: code drops no checked point, and the evidence
-log keeps every finding. A bound finding counts as context only (never cited)
-when its source's authority score is below `agents.writer_authority_floor`
-(0.4) or the Source Evaluator marks it low-confidence, and a finding from a
-source at or above the floor answers one of the same targets. With no stronger
-source for the target, the weaker finding stays citable.
+Each part's section request carries a point and word budget: "Write at most N
+points for this part, about W words in total". A part that owns a required
+target has weight 3 and every other part weight 1, and each part gets its
+weighted share of the reader length. N is the largest of three numbers: the
+required targets the part's findings answer, that share at about 45 words a
+point, and 3. The reader length is the question's own word limit, else
+`agents.report_target_words` (2000). The budget is an instruction only: code
+drops no checked point, and the evidence log keeps every finding. A bound
+finding is never context-only. The section rules tell the writer to cite the
+stronger of two sources that state the same fact, and to name a weak page's
+kind in the words its source line uses. `agents.writer_authority_floor` (0.4)
+applies only to the bottom line. There, a checked statement whose findings all
+come from sources at or below the floor (or marked low-confidence) is withheld
+once any statement rests on a source above it.
 
 `ReportReviewer` makes the single quality judgement. The packet holds every
 printed statement with its own label and its cited findings' snippets and

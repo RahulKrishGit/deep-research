@@ -463,7 +463,7 @@ class ReportWriterTask(AgentTask):
     """D11: the reader-length point budget's word count -- the frozen
     contract's own ``requested_word_limit`` when the question asked for
     one, else ``agents.report_target_words`` (spec §6.3)."""
-    authority_floor: float = 0.4
+    authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR
     """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
     per-statement floor filter (``_statement_meets_authority_floor``): a
     checked statement resting only on below-floor findings is dropped from

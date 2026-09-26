@@ -286,26 +286,6 @@ def test_is_context_only_true_for_a_low_confidence_source_regardless_of_relevanc
     assert is_context_only(finding, sources_by_url([source])) is True
 
 
-def test_is_context_only_false_for_a_bound_weak_authority_finding_even_when_a_stronger_finding_answers_the_same_target():
-    """Y2.1 (audit D3, CODE 4): reverted, run-6 wave -- a bound finding is
-    never made context-only because a stronger finding answers the same
-    target. The run-4/5 gate erased distinct facts wholesale whenever one
-    higher-authority finding merely touched the same target (14 of 16
-    civil-war findings lost on one run); citing the stronger source when
-    both state the same fact is now the model's own job (the section rule
-    "cite the stronger"), not code's to enforce by hiding the weaker
-    finding."""
-    weak = _statement_finding("https://weak.test/1", "A weak claim.",
-                              target_ids=["topic-01-target-01"])
-    strong = _statement_finding("https://strong.test/1", "A strong claim.",
-                                target_ids=["topic-01-target-01"])
-    sources = sources_by_url([_authority_source("https://weak.test/1", authority=0.2),
-                              _authority_source("https://strong.test/1", authority=0.9)])
-
-    assert is_context_only(weak, sources) is False
-    assert is_context_only(strong, sources) is False
-
-
 @pytest.mark.asyncio
 async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer(writer, checker) -> None:
     """Y2.1 regression: a weak source's own distinct fact is still written
