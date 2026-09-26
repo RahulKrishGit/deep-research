@@ -1742,6 +1742,24 @@ def test_planner_regression_plan_instruction_permits_real_search_terms() -> None
         assert phrase in PLAN_INSTRUCTION
 
 
+def test_plan_instruction_kind_forecasts_only_a_dated_future_outcome() -> None:
+    """D4: the same tense anchor as the extraction contract's ``kind`` field
+    -- a past plan, proposal, law, limit or provision is actual; forecast
+    only when the question asks for an outcome dated after the run's as-of
+    date. ``EvidenceTargetDraft.kind`` shares this vocabulary, mirrored here
+    at plan time before any page is read."""
+    assert (
+        "forecast only when the question asks for an outcome dated after "
+        "the run's as-of date"
+        in PLAN_INSTRUCTION
+    )
+    assert (
+        "a past plan, proposal, law, limit or provision, enacted or not, "
+        "is actual"
+        in PLAN_INSTRUCTION
+    )
+
+
 def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -> None:
     """Balanced coverage is asked for when the question asks for it, and only then.
 

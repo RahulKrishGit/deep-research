@@ -16,6 +16,7 @@ from deep_research.agents.evidence_verifier import (
     _page_date_basis,
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
+    CONTEXT_CHECK_INSTRUCTION,
     EVIDENCE_VERIFIER_NAME,
     ContextCheckDraft,
     ContextItem,
@@ -1660,6 +1661,51 @@ def test_a_statement_date_the_page_does_not_state_is_no_basis() -> None:
     assert "page date: not stated" in context_check_messages([item])[1].content.splitlines()
     dropped = _check(item, period="2031", kind="forecast", verdict="correct")
     assert dropped.dropped_reason == "correction_not_on_page"
+
+
+def test_context_check_instruction_kind_forecasts_only_a_dated_future_outcome() -> None:
+    """D4: a tense anchor on ``kind`` -- a past plan, proposal, law, limit or
+    provision is actual; forecast requires the page to date the outcome
+    after its own date, or the run's as-of date when it gives none. The
+    audited run's Context Check kept a 133 BC provision as a forecast."""
+    assert (
+        "forecast only when the page dates the outcome after the page's "
+        "own date, or after the run's as-of date when the page gives none"
+        in CONTEXT_CHECK_INSTRUCTION
+    )
+    assert (
+        "a past plan, proposal, law, limit or provision, enacted or not, "
+        "is actual"
+        in CONTEXT_CHECK_INSTRUCTION
+    )
+
+
+def test_context_check_kind_anchor_reaches_the_rendered_batch() -> None:
+    """The rule is not only defined, it renders into the request the model reads."""
+    item = _figure_item(
+        "A 2019 regulation set a proposed limit of 40 units.",
+        figure("40", "units"),
+    )
+    body = context_check_messages([item])[1].content
+
+    assert (
+        "forecast only when the page dates the outcome after the page's "
+        "own date"
+        in body
+    )
+
+
+_CONTEXT_CHECK_FORBIDDEN_WORDS = (
+    "roman", "republic", "gracchi", "sallust", "sulla", "augustus", "rome",
+    "headphone", "climate", "semaglutide", "valorant", "drug",
+)
+
+
+def test_context_check_instruction_names_no_domain_word() -> None:
+    """D10/D11: the kind rule is general text, never a probe subject."""
+    lowered = CONTEXT_CHECK_INSTRUCTION.lower()
+    for word in _CONTEXT_CHECK_FORBIDDEN_WORDS:
+        assert word not in lowered, word
 
 
 @pytest.mark.asyncio

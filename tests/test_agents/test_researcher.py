@@ -2062,6 +2062,115 @@ def test_extraction_contract_requires_the_registry_copy_it_checks() -> None:
     assert "not to drop the reader's own markers" in body
 
 
+def test_extraction_contract_treats_a_disputing_passage_as_a_finding() -> None:
+    """D1: a passage that disputes, qualifies or dates a target's reason,
+    mechanism, provision or figure is a finding for that target too, not only
+    a passage that states the mechanism outright. The audited run's read held
+    a later source disputing an early claim and produced no finding for it.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+
+    assert (
+        "disputes, qualifies or dates a reason, mechanism, provision or "
+        "figure a target asks about is also a finding for that target"
+        in body
+    )
+    assert (
+        "Later field surveys found the effect much smaller than the early "
+        "accounts claimed"
+        in body
+    )
+
+
+def test_extraction_contract_kind_forecasts_only_a_dated_future_outcome() -> None:
+    """D4: a tense anchor on ``kind`` -- a past plan, proposal, law, limit or
+    provision is actual; forecast requires the page to date the outcome
+    after its own date, or the run's as-of date when it gives none. The
+    audited run read a provision's own words as a future target.
+    """
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+
+    assert (
+        "forecast only when the page dates the outcome after the page's "
+        "own date, or after the run's as-of date when the page gives none"
+        in body
+    )
+    assert (
+        "a past plan, proposal, law, limit or provision, enacted or not, "
+        "is actual"
+        in body
+    )
+
+
+_EXTRACTION_CONTRACT_FORBIDDEN_WORDS = (
+    "roman", "republic", "gracchi", "sallust", "sulla", "augustus", "rome",
+    "headphone", "climate", "semaglutide", "valorant", "drug",
+)
+
+
+def test_extraction_contract_names_no_domain_word() -> None:
+    """D10/D11: the extraction contract is general text, never a probe subject."""
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.",
+        sub_topic=_sub_topic("Alpha"),
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+
+    body = extraction_messages(
+        task,
+        run,
+        evidence_chars=200,
+        acquisition_context="- evidence_id=ev-1 read_id=read-1 locator=chunk-0",
+        planned_targets=_forecast_plan_targets(),
+    )[1].content
+    lowered = body.lower()
+
+    for word in _EXTRACTION_CONTRACT_FORBIDDEN_WORDS:
+        assert word not in lowered, word
+
+
 def test_extraction_names_every_planned_target_a_read_may_serve() -> None:
     """The extraction request carries the whole plan, not one sub-topic.
 
