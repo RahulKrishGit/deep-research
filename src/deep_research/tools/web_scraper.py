@@ -459,27 +459,54 @@ def _is_just_site_name(raw_title: str, site_name: str | None) -> bool:
     return len(segments) == 1 and segments[0] == site_name
 
 
+def _is_generic_apart_from_site(value: str, site_name: str | None) -> bool:
+    """Whether every segment of ``value`` other than the site's own is a
+    generic placeholder word (D3, run 5 follow-up): 'Work - Example
+    Register' names nothing once the site segment is set aside, even
+    though neither the whole title nor any one segment alone is the bare
+    site name.
+
+    When the site's name is not known, the site's own segment is
+    conventionally the first or the last one, so either removal is tried.
+    """
+    segments = title_segments(value)
+    if len(segments) < 2:
+        return False
+    if site_name is not None and site_name in segments:
+        remaining = [segment for segment in segments if segment != site_name]
+        return all(_is_generic_placeholder(segment) for segment in remaining)
+    return all(_is_generic_placeholder(segment) for segment in segments[:-1]) or all(
+        _is_generic_placeholder(segment) for segment in segments[1:]
+    )
+
+
 def _is_unhelpful_title(value: str, site_name: str | None) -> bool:
-    """Whether ``value`` names nothing useful: the site's own bare name, or
-    a generic single-word placeholder (D3, run 5)."""
-    return value == site_name or _is_generic_placeholder(value)
+    """Whether ``value`` names nothing useful: the site's own bare name, a
+    generic single-word placeholder, or a title that is generic apart from
+    its own site segment (D3, run 5)."""
+    return (
+        value == site_name
+        or _is_generic_placeholder(value)
+        or _is_generic_apart_from_site(value, site_name)
+    )
 
 
 def _page_title(soup: BeautifulSoup) -> str:
     """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3).
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
-    name only the site or a generic placeholder; only then does
-    ``og:title``, ``twitter:title`` or a non-banner ``h1`` stand in for it,
-    in that order, skipping any of those that are themselves unhelpful
-    while a later, differing one remains.
+    name only the site, a generic placeholder, or a title that is generic
+    apart from its own site segment; only then does ``og:title``,
+    ``twitter:title`` or a non-banner ``h1`` stand in for it, in that
+    order, skipping any of those that are themselves unhelpful while a
+    later, differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
     raw_title = soup.title.get_text(strip=True) if soup.title else ""
     if (
         raw_title
         and not _is_just_site_name(raw_title, site_name)
-        and not _is_generic_placeholder(raw_title)
+        and not _is_unhelpful_title(raw_title, site_name)
     ):
         return raw_title
     candidates: list[str | None] = [

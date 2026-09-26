@@ -429,21 +429,30 @@ def _extended_through_qualifier(text: str, full_text: str) -> str:
     """``text``, extended through a trailing sentence that begins with a
     contrastive connective (D5), within ``CONTEXT_PASSAGE_CHARS``.
 
-    The connective's own sentence can already be dangling at ``text``'s own
-    end (a passage cut right after "However,"), so the continuation is
-    found in ``full_text`` -- the read's complete text, in order -- rather
-    than assumed to start the very next sentence.
+    The connective can already be dangling at ``text``'s own end (a passage
+    cut right after "However,"), in which case its continuation is found in
+    ``full_text`` -- the read's complete text, in order. It can just as
+    well be the whole of the very next sentence, when ``text`` itself ends
+    cleanly and the qualifier starts fresh in the following passage.
     """
-    tail = text[_last_sentence_end(text):].strip()
-    if not tail or not _CONTRASTIVE_START_PATTERN.match(tail):
-        return text
     offset = full_text.find(text)
     if offset == -1:
         return text
     remainder = full_text[offset + len(text):]
-    end_match = _SENTENCE_END_PATTERN.search(remainder)
-    extension = remainder if end_match is None else remainder[: end_match.end()]
-    extended = text + extension
+    tail = text[_last_sentence_end(text):].strip()
+    if tail:
+        if not _CONTRASTIVE_START_PATTERN.match(tail):
+            return text
+        end_match = _SENTENCE_END_PATTERN.search(remainder)
+        extension = remainder if end_match is None else remainder[: end_match.end()]
+        extended = text + extension
+    else:
+        following = remainder.lstrip()
+        if not following or not _CONTRASTIVE_START_PATTERN.match(following):
+            return text
+        end_match = _SENTENCE_END_PATTERN.search(following)
+        extension = following if end_match is None else following[: end_match.end()]
+        extended = f"{text} {extension}"
     return extended if len(extended) <= CONTEXT_PASSAGE_CHARS else text
 
 
@@ -458,7 +467,8 @@ def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) 
     bounded = text[start : start + CONTEXT_PASSAGE_CHARS]
     if start + len(bounded) < len(text):
         cut = _last_sentence_end(bounded)
-        if cut:
+        snippet_end = anchor - start + len(snippet or "")
+        if cut and cut >= snippet_end:
             bounded = bounded[:cut]
     return bounded
 

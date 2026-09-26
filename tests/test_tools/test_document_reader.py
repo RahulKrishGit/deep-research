@@ -721,3 +721,87 @@ async def test_reader_joins_a_heading_wrapped_onto_the_next_line(
         "The Effect of a New Filing Rule on the Growth of the "
         "Regional Housing Market"
     )
+
+
+@pytest.mark.asyncio
+async def test_reader_does_not_join_a_heading_ending_in_a_capitalised_word(
+    monkeypatch, tracker
+) -> None:
+    """D3 (run 5 follow-up): a heading ending in a capitalised word that
+    happens to spell a function word ('Appendix A') is complete; only a
+    bare lower-case function word signals a genuine line wrap."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "Appendix A\n"
+                "The committee met on three occasions during the year and "
+                "reviewed each filing in turn."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == "Appendix A"
+
+
+@pytest.mark.asyncio
+async def test_reader_joins_a_heading_whose_continuation_starts_lower_case(
+    monkeypatch, tracker
+) -> None:
+    """D3 (run 5 follow-up): a heading with no terminal punctuation is
+    joined with its continuation whenever that next line starts lower
+    case, even when the first line's last word is not a bare function
+    word."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "The Effect of a New Filing Rule on the Decline\n"
+                "of the Regional Housing Market\n"
+                "Body text follows here."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == (
+        "The Effect of a New Filing Rule on the Decline "
+        "of the Regional Housing Market"
+    )

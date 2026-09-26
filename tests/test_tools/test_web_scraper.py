@@ -1763,6 +1763,27 @@ async def test_scraper_falls_back_from_a_generic_one_word_title(tracker) -> None
 
 
 @pytest.mark.asyncio
+async def test_scraper_falls_back_when_the_titles_own_segment_is_generic(
+    tracker,
+) -> None:
+    """D3 (run 5 follow-up): 'Work - Example Register' names nothing once
+    its site segment is set aside; the next candidate is used even though
+    the raw title, as a whole, is neither the bare site name nor a
+    single-word placeholder."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        "</head><body><h1>A summary of recent filings and their outcomes</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "A summary of recent filings and their outcomes"
+
+
+@pytest.mark.asyncio
 async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
     """D3 (run 5): a generic single-word ``og:title`` is skipped the same
     way a title equal to the site's own name is, while a later, differing

@@ -505,18 +505,33 @@ def _is_skippable_heading_line(line: str) -> bool:
     return _is_run_on_paragraph(line)
 
 
-# A heading cut off mid-phrase by a PDF's own line wrap ends on a bare
-# function word, never on terminal punctuation (D3, run 5): "... in the
-# Decline of the" continues as "Roman Republic" on the next line. Ending on
-# one of these words -- and nothing else -- is what tells a wrapped heading
-# apart from a short, complete one ("Chapter 3. Results").
+# A heading cut off mid-phrase by a PDF's own line wrap ends on a bare,
+# lower-case function word, never on terminal punctuation (D3, run 5):
+# "... in the Decline of the" continues as "Roman Republic" on the next
+# line. The match is case-sensitive: a title-cased heading capitalises its
+# own last word ("Appendix A", "What We Work For"), while a genuine wrap
+# leaves the word in running, lower case ("... of the").
 _INCOMPLETE_HEADING_ENDING_PATTERN = re.compile(
-    r"\b(?:the|a|an|of|in|on|for|to|and|or|by|with|at|from)$", re.IGNORECASE
+    r"\b(?:the|a|an|of|in|on|for|to|and|or|by|with|at|from)$"
 )
+
+# A heading with no terminal punctuation whose continuation starts in lower
+# case is also a wrap (D3, run 5 follow-up): "... in the Decline" continuing
+# as "of the Late Republic" breaks after a content word, not a bare
+# function word, so the ending alone cannot tell it apart from a complete
+# heading -- the next line's own case is what does.
+_HEADING_TERMINAL_PUNCTUATION = (".", "!", "?", ":")
+_LOWERCASE_START_PATTERN = re.compile(r"^[a-z]")
 
 
 def _looks_incomplete(heading: str) -> bool:
     return bool(_INCOMPLETE_HEADING_ENDING_PATTERN.search(heading))
+
+
+def _continues_lower_case(heading: str, continuation: str) -> bool:
+    return not heading.endswith(
+        _HEADING_TERMINAL_PUNCTUATION
+    ) and bool(_LOWERCASE_START_PATTERN.match(continuation))
 
 
 def _next_heading_line(lines: list[str], start: int) -> str | None:
@@ -549,12 +564,14 @@ def _heading_line(text: str) -> str | None:
         if _is_skippable_heading_line(stripped):
             continue
         heading = stripped
-        if _looks_incomplete(heading):
-            continuation = _next_heading_line(lines, index + 1)
-            if continuation is not None:
-                joined = f"{heading} {continuation}"
-                if len(joined) <= _HEADING_MAX_CHARS:
-                    heading = joined
+        continuation = _next_heading_line(lines, index + 1)
+        if continuation is not None and (
+            _looks_incomplete(heading)
+            or _continues_lower_case(heading, continuation)
+        ):
+            joined = f"{heading} {continuation}"
+            if len(joined) <= _HEADING_MAX_CHARS:
+                heading = joined
         return heading
     return None
 

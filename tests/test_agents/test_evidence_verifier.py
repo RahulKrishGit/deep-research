@@ -240,6 +240,48 @@ def test_context_passage_cuts_a_truncated_window_at_a_sentence_end() -> None:
     assert target_sentence in window
 
 
+def test_context_passage_extends_when_the_next_passage_opens_with_a_connective() -> None:
+    """D5 P1: the extension must also fire when the snippet's own passage
+    ends cleanly (a full stop) and the qualifier is the whole of the next
+    passage, not just when the connective word is already dangling at the
+    first passage's own tail."""
+    passage_a = (
+        "The panel concluded that the new proposal would reduce costs "
+        "significantly."
+    )
+    passage_b = "However, no independent analysis has confirmed this estimate."
+    snippet = "the new proposal would reduce costs significantly"
+    read = make_read(
+        f"{passage_a} {passage_b}",
+        url="https://example.test/clean-qualifier-passage",
+        passages={"chunk-a": passage_a, "chunk-b": passage_b},
+    )
+
+    window = context_passage(read, "chunk-a", snippet)
+
+    assert "However, no independent analysis has confirmed this estimate." in window
+
+
+def test_context_passage_keeps_the_snippet_after_a_sentence_end_cut() -> None:
+    """D5 P2: the sentence-end cut must never drop the snippet itself out of
+    the window. A run of text with no further full stop after the snippet
+    keeps its raw character-bounded window instead of cutting back past it.
+    """
+    intro = "Filler sentence about an unrelated matter entirely. " * 200
+    rows = " ".join(f"row {i} value {i * 3} units" for i in range(400))
+    text = intro + rows
+    snippet = "row 5 value 15 units"
+    read = make_read(
+        text,
+        url="https://example.test/long-table",
+        passages={"chunk-a": text},
+    )
+
+    window = context_passage(read, "chunk-a", snippet)
+
+    assert snippet in window
+
+
 def _reply(**overrides: object) -> FigureCheckDraft:
     fields = dict(finding="F01", figure=1, period="2025", scope=None, attribution="own",
                   organisation="Wood Mackenzie", kind="actual",
