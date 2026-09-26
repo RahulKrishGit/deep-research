@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -227,7 +227,8 @@ SECTION_INSTRUCTION = (
     "state that disagreement in the first points for the target it concerns, before "
     "that target's other facts (required targets still come first, in the listed "
     "order): who holds which view, and where they agree. A point that states it "
-    "cites the findings on each side, and mark such a point disputes: true.\n"
+    "cites the findings on each side, and mark such a point disputes: true; do not "
+    "mark a point that only reports an incidental date variance.\n"
     "- When two findings give different values or dates for the same thing, state both "
     "in one point, say that they differ, and, where a cited finding shows it, name "
     "which source dates its value or names the document it rests on. Only values or "
@@ -1186,55 +1187,160 @@ def _has_unnamed_subject(text: str) -> bool:
 
 #: Audit D1 fix (a): a point that states a fact but names no one behind it
 #: (run 7's S043, credited to nobody one line after its own refutation).
-#: These are given literally, not stemmed: the writer's own citation
-#: convention is present tense ("X states that ..."). Includes the
-#: forecast verbs the section rule already asks for ("projects",
-#: "expects", "forecasts") -- a forecast sentence credits its issuer
-#: through that verb, not a separate one.
-_CREDIT_VERBS = (
-    "states", "reports", "says", "writes", "argues", "notes", "records",
-    "finds", "dates", "gives", "according to", "as quoted by", "carries",
-    "relates", "describes", "projects", "expects", "forecasts",
+#: RevZ2 P2-b: matched case-sensitively -- these are the writer's own
+#: lowercase, mid-sentence citation verbs ("Example Register states
+#: that ..."); capitalised ("States", "Records") is a sentence-initial
+#: common word or a proper noun ("United States"), never a credit.
+#: RevZ2 P2-a: past-tense and plural forms added, plus the forecast
+#: verbs the section rule already asks for ("projects", "expects",
+#: "forecasts") -- a forecast sentence credits its issuer through that
+#: verb, not a separate one.
+_CREDIT_VERB_WORDS = (
+    "states", "state", "reports", "report", "says", "said", "writes", "wrote",
+    "argues", "argued", "notes", "noted", "records", "record", "finds", "found",
+    "dates", "dated", "gives", "gave", "carries", "relates", "describes",
+    "projects", "expects", "forecasts", "stated", "reported", "counted",
+    "estimated", "per",
 )
-_CREDIT_VERB = re.compile(
-    r"\b(?:" + "|".join(re.escape(verb) for verb in _CREDIT_VERBS) + r")\b",
+_CREDIT_VERB_WORD = re.compile(
+    r"\b(?:" + "|".join(re.escape(word) for word in _CREDIT_VERB_WORDS) + r")\b"
+)
+
+#: Multi-word attribution openers -- used sentence-initially and
+#: capitalised in the writer's own reply examples ("According to Example
+#: Institute, ..."), so kept case-insensitive: unlike the single verbs
+#: above, no common capitalised word collides with them.
+_CREDIT_PHRASES = ("according to", "as quoted by")
+_CREDIT_PHRASE = re.compile(
+    r"\b(?:" + "|".join(re.escape(phrase) for phrase in _CREDIT_PHRASES) + r")\b",
     re.IGNORECASE,
 )
 
+#: RevZ2 P2-b, generalised after the run-7 probe: "state(s)" is the
+#: codebase's own primary crediting verb ("Wikipedia states the crisis
+#: was..."), so it stays in the verb list above, but a determiner can
+#: never sit directly in front of a verb -- "the [Adjective] state(s)"
+#: is always the geopolitical noun ("the United States", "the Roman
+#: state", run 7's S043), never a credited claim, whichever determiner
+#: introduces it and whether or not one capitalised modifier (a
+#: nationality or proper adjective) sits between them. "member states"
+#: is the one common exception with no determiner at all. Stripped
+#: before the verb match runs, so neither ever counts as a credit by
+#: accident; a lower-case common noun before "state(s)" ("the report
+#: states", "the findings state") is left alone, since a genuine
+#: subject sits between the determiner and the verb.
+_MULTIWORD_NAME_EXCLUSION = re.compile(
+    r"\b(?i:the|a|an|this|that|these|those|its|his|her|their|our|your|each|every|such)\s+"
+    r"(?:[A-Z][\w-]*\s+)?(?i:states?)\b"
+    r"|\b(?i:member)\s+(?i:states?)\b"
+)
 
-def _significant_tokens(text: str) -> set[str]:
-    """Words of at least four letters, or an all-capitals acronym of two
-    or more ("EIA", "IMF") -- coarse enough to catch a name a point's own
-    text repeats from a finding's title or publisher, including the short
-    initialisms most organisation names actually go by; a stray common
-    word matching by accident is harmless here, since it only ever adds a
-    name a credit verb could also have supplied."""
-    return {
-        word.lower() for word in re.findall(r"[A-Za-z]+", text)
-        if len(word) >= 4 or (len(word) >= 2 and word.isupper())
-    }
+#: RevZ2 P1-a: the separators a page's own `<title>` uses between its
+#: article headline and its site name.
+_TITLE_SEPARATORS = (" | ", " - ", " « ", " — ")
+
+
+def _site_name_segment(title: str) -> str:
+    """The site-name segment of a page title -- the text after the last
+    of the common title/site separators (" | ", " - ", " « ", " — "), so
+    "Article Headline | Example Register" names "Example Register", not
+    every word the headline shares with an unrelated point about the
+    same subject."""
+    best_end = -1
+    for separator in _TITLE_SEPARATORS:
+        index = title.rfind(separator)
+        if index != -1:
+            end = index + len(separator)
+            if end > best_end:
+                best_end = end
+    return title[best_end:].strip() if best_end >= 0 else title.strip()
+
+
+def _host_site_name(url: str) -> str:
+    """The host's own site-name label, its "www." and its TLD stripped --
+    "en.wikipedia.org" and "www.bbc.co.uk" both name "wikipedia" and
+    "bbc", the whole name a point actually uses."""
+    identity = publisher_identity(url)
+    if identity.startswith("www."):
+        identity = identity[len("www."):]
+    return identity.split(".")[0]
+
+
+#: RevZ2 S005 follow-up: name particles a primary-source title's author
+#: segment may carry ("Erasmus of Rotterdam", "Ludwig von Mises").
+_NAME_PARTICLES = frozenset({"de", "von", "van", "of", "the"})
+
+
+def _title_author_segment(title: str) -> str | None:
+    """The author's name in a primary source's own "Author, Work" title
+    ("Sallust, Catiline's War 5-16" names "Sallust") -- run 7's S005: a
+    page hosting a primary text usually carries no ``attributed_issuer``
+    of its own, and the page's title names the author instead. The first
+    comma-delimited segment counts only when every word in it is
+    capitalised or a name particle, at least one word is capitalised (a
+    segment of only particles, or of one lower-case word -- an ordinary
+    sentence-shaped title's opening clause -- never counts), and it is
+    at most four words: long enough for a full name, short enough to
+    exclude an ordinary title's opening clause."""
+    first, comma, _ = title.partition(",")
+    if not comma:
+        return None
+    words = first.split()
+    if not words or len(words) > 4:
+        return None
+    has_capitalised = False
+    for word in words:
+        if word.lower() in _NAME_PARTICLES:
+            continue
+        if not word[:1].isupper():
+            return None
+        has_capitalised = True
+    return first.strip() if has_capitalised else None
+
+
+def _source_name_phrases(finding: Finding) -> list[str]:
+    """Every whole name a point could credit this finding to (audit D1
+    fix (a), RevZ2 P1-a): never a single shared word, since a page's
+    title always shares the subject's own words with any point about it
+    -- run 7's S043 passed the old token-overlap guard on "roman" and
+    "bce" alone, refusing 0 of 46 statements. The page's own site-name
+    segment, its host's site name, its title's own "Author, Work" author
+    segment (run 7's S005: a primary-source page usually carries no
+    ``attributed_issuer`` of its own), its attributed issuer (an
+    admitted figure issuer or a quoted author -- the same field carries
+    both, W1's rule), and every kept figure's own organisation (RevZ2
+    P2-a: the registry line's own "organisation ..." clause)."""
+    phrases = [
+        _site_name_segment(finding.source_title),
+        _host_site_name(finding.source_url),
+        _title_author_segment(finding.source_title),
+    ]
+    if finding.attributed_issuer:
+        phrases.append(finding.attributed_issuer)
+    if finding.verification is not None:
+        for result in finding.verification.figure_results:
+            if result.kept and result.context is not None and result.context.organisation:
+                phrases.append(result.context.organisation)
+    return [phrase for phrase in phrases if phrase]
 
 
 def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
     """Audit D1 fix (a): does this point name the source it rests on --
-    by a credit verb, or by a name its cited findings' own registry lines
-    would print (publisher identity, page-title tokens, the attributed
-    issuer, or a quoted author -- the same field carries both)? A point
-    that states a fact naming neither is refused: a fact with no one
-    behind it is not what any finding actually verified.
+    by a credit verb or attribution phrase, or by a whole name its cited
+    findings actually carry? A point that states a fact naming neither
+    is refused: a fact with no one behind it is not what any finding
+    actually verified. A phrase under three letters (a ``.test`` fixture
+    host's own bare label can be one letter, "a.test" -> "a") is never
+    checked -- a single letter is a substring of almost any sentence.
     """
-    if _CREDIT_VERB.search(text):
+    verb_search_text = _MULTIWORD_NAME_EXCLUSION.sub("", text)
+    if _CREDIT_PHRASE.search(text) or _CREDIT_VERB_WORD.search(verb_search_text):
         return True
     lowered = text.lower()
-    tokens = _significant_tokens(text)
     for finding in findings:
-        publisher = publisher_identity(finding.source_url)
-        if publisher and publisher.lower() in lowered:
-            return True
-        if finding.attributed_issuer and finding.attributed_issuer.lower() in lowered:
-            return True
-        if _significant_tokens(finding.source_title) & tokens:
-            return True
+        for phrase in _source_name_phrases(finding):
+            if len(phrase) >= 3 and phrase.lower() in lowered:
+                return True
     return False
 
 
@@ -1431,27 +1537,16 @@ def _consider_section_point(
 #: Audit D1 fix (b): a bottom-line sentence that touches a disputed target
 #: must say so -- run 7's D1 (the disputed step carried into the bottom
 #: line with no dispute) and D7 (the dispute rule with no materiality
-#: test). Given literally, not stemmed, matching the brief.
-_DIFFERENCE_MARKERS = (
-    "differ", "disagree", "dispute", "contested", "challenged", "question",
-    "reject", "while others", "but", "however", "though", "although",
-    "others argue",
-)
+#: test). RevZ2 P1-b: matched as stems, not exact words -- the old
+#: exact-word list missed "disputes", "disputed", "differently",
+#: "rejected", "questioned" and every other inflection, so it refused
+#: exactly the sentences the disagreement-first rule asks the writer to
+#: produce.
 _DIFFERENCE_MARKER = re.compile(
-    r"\b(?:" + "|".join(re.escape(marker) for marker in _DIFFERENCE_MARKERS) + r")\b",
+    r"\b(?:differ\w*|disagree\w*|disput\w*|contest\w*|challeng\w*|question\w*|"
+    r"reject\w*|however|although|though|but|while|others argue)\b",
     re.IGNORECASE,
 )
-
-
-def _disputed_target_ids(findings: Iterable[Finding]) -> set[str]:
-    """Audit D1 fix (b): every target id at least one disputing finding
-    binds -- the bottom line's own "a disputes statement exists for that
-    target" test."""
-    ids: set[str] = set()
-    for finding in findings:
-        if finding.disputes:
-            ids.update(finding.target_ids)
-    return ids
 
 
 def _consider_bottom_line_point(
@@ -1745,9 +1840,14 @@ class _PartOutcome:
     dropped_marks: list[tuple[str, str]] = field(default_factory=list)
     disputed_target_ids: frozenset[str] = frozenset()
     """Z1/Z2 item 4: the target ids of every *kept* point this part wrote
-    with ``disputes: true`` -- ``_run_bottom_line`` unions this across every
-    part (with the finding-level signal, ``_disputed_target_ids``) before
-    the bottom line ever runs."""
+    with ``disputes: true`` -- ``_run_bottom_line`` unions this across
+    every part before the bottom line ever runs (RevZ2 P2-c: the writer's
+    own kept marks are the whole signal now, not a finding-level one)."""
+    disputed_statement_ids: frozenset[str] = frozenset()
+    """RevZ2 P1-c: the statement ids of the same kept, writer-marked
+    points -- which *specific* point in this part was the mark, so the
+    §6.8 fallback can prefer it over a naive first pick that only touches
+    the disputed target without stating the dispute."""
 
 
 async def _run_part(
@@ -1810,6 +1910,7 @@ async def _run_part(
     verdict_map: dict[str, str] = {}
     points: list[ReportPoint] = []
     disputed_target_ids: set[str] = set()
+    disputed_statement_ids: set[str] = set()
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
             candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
@@ -1823,6 +1924,7 @@ async def _run_part(
                 disputed_target_ids.update(
                     target_id for finding in candidate.findings for target_id in finding.target_ids
                 )
+                disputed_statement_ids.add(point.statement_id)
 
     title = _section_title(draft.title, job.sub_topic_title)
     section = ReportSection(title=title, points=points, coverage_id=job.coverage_id) if points else None
@@ -1834,11 +1936,13 @@ async def _run_part(
     return _PartOutcome(job=job, section=section, status=status,
                         errors=[*draft_errors, *check_errors], verdicts=verdict_map,
                         rejected=rejected, dropped_marks=dropped_marks,
-                        disputed_target_ids=frozenset(disputed_target_ids))
+                        disputed_target_ids=frozenset(disputed_target_ids),
+                        disputed_statement_ids=frozenset(disputed_statement_ids))
 
 
 def _bottom_line_fallback(
     outcomes: Sequence[_PartOutcome], required_coverage_ids: set[str],
+    disputed_target_ids: frozenset[str] = frozenset(),
 ) -> tuple[list[ReportPoint], dict[str, str], set[str]]:
     """§6.8: up to ``MAX_BOTTOM_LINE_SENTENCES`` kept checked points, the
     first of each part with a required target then the first of the other
@@ -1846,7 +1950,15 @@ def _bottom_line_fallback(
     flight keys and the source statement's real verdict, never a section's
     own id and never a hard-coded "consistent" (P1-a). Returns the fallback
     points, their verdicts, and the source statement ids to remove from
-    their sections (spec's "move": a sentence is printed once)."""
+    their sections (spec's "move": a sentence is printed once).
+
+    RevZ2 P1-c: the naive first kept point of a part can itself be silent
+    about a dispute its own target carries -- the fallback existing only
+    to stand in for an unchecked bottom line must not then print a
+    disputed step as settled. When the naive pick touches a disputed
+    target but is not itself the part's marked ``disputes: true`` point,
+    the marked point (when kept) is preferred instead.
+    """
     with_required: list[_PartOutcome] = []
     others: list[_PartOutcome] = []
     for outcome in outcomes:
@@ -1864,6 +1976,7 @@ def _bottom_line_fallback(
         section = outcome.section
         if section is None:
             continue
+        kept: list[tuple[ReportPoint, str, str]] = []
         for source_point in section.points:
             if source_point.statement is None:
                 continue
@@ -1871,12 +1984,21 @@ def _bottom_line_fallback(
             verdict = outcome.verdicts.get(source_id, "unchecked")
             if verdict not in ("consistent", "corrected"):
                 continue
-            new_id = f"B{next(numbers):02d}"
-            new_statement = source_point.statement.model_copy(update={"statement_id": new_id})
-            points.append(source_point.model_copy(update={"statement": new_statement}))
-            verdicts[new_id] = verdict
-            moved.add(source_id)
-            break
+            kept.append((source_point, source_id, verdict))
+        if not kept:
+            continue
+        chosen_point, chosen_id, chosen_verdict = kept[0]
+        chosen_targets = set(chosen_point.statement.target_ids) if chosen_point.statement else set()
+        if (chosen_targets & disputed_target_ids) and chosen_id not in outcome.disputed_statement_ids:
+            for candidate_point, candidate_id, candidate_verdict in kept:
+                if candidate_id in outcome.disputed_statement_ids:
+                    chosen_point, chosen_id, chosen_verdict = candidate_point, candidate_id, candidate_verdict
+                    break
+        new_id = f"B{next(numbers):02d}"
+        new_statement = chosen_point.statement.model_copy(update={"statement_id": new_id})
+        points.append(chosen_point.model_copy(update={"statement": new_statement}))
+        verdicts[new_id] = chosen_verdict
+        moved.add(chosen_id)
     return points, verdicts, moved
 
 
@@ -1919,10 +2041,11 @@ async def _check_and_finalize_bottom_line(
     and a "consistent" or "corrected" verdict for every one of them (P1-2):
     the re-ask adopts its own result only then, so a check outage or a
     partial refusal never swaps a checked bottom line for unchecked text.
-    ``disputed_target_ids`` (audit D1 fix (b)) is the caller's own combined
-    finding-level and writer-marked set (``_run_bottom_line``); a caller
-    with none in hand (the re-ask, which reuses the first attempt's own
-    checked candidates) leaves it empty and no sentence is guarded twice.
+    ``disputed_target_ids`` (audit D1 fix (b)) is the caller's own set,
+    scoped to the writer's own kept ``disputes: true`` points (RevZ2
+    P2-c); ``_run_bottom_line`` passes the same set to the D1/D2 re-ask
+    too, so a re-asked sentence is guarded exactly as the first attempt's
+    was.
     """
     numbers = iter(range(1, 100))
     rejected: list[RejectedDraftPoint] = []
@@ -1969,6 +2092,16 @@ async def _check_and_finalize_bottom_line(
             verdict_obj = verdicts.get(candidate.key)
             if verdict_obj is not None and verdict_obj.verdict == "inconsistent":
                 refusals.append((candidate.text, verdict_obj.reason))
+
+    # RevZ2 P1-c: a sentence the disputed-target guard refused (never
+    # reaching the Statement Check at all) must feed the one re-ask the
+    # same way a Statement Check refusal does -- otherwise the step it
+    # was guarding is simply dropped, the exact loss D1/D2's re-ask
+    # exists to prevent.
+    refusals.extend(
+        (entry.text, entry.reason) for entry in rejected
+        if entry.reason == "states a disputed step without its dispute"
+    )
 
     fully_checked = (
         bool(candidates) and not check_errors and not rejected
@@ -2040,9 +2173,13 @@ async def _run_bottom_line(
                     cited_by_sections[label] = dict(task.registry)[label]
 
     required_coverage = {t.coverage_id for t in task.targets if t.required}
-    disputed_target_ids = frozenset(_disputed_target_ids(cited_by_sections.values())).union(
-        *(outcome.disputed_target_ids for outcome in outcomes)
-    )
+    # RevZ2 P2-c: scoped to the writer's own kept ``disputes: true`` marks
+    # only, not every ``Finding.disputes`` -- that field still reaches the
+    # writer on the registry line ("disputes: yes"), but folding it into
+    # this set too let the materiality rule and the guard disagree (a
+    # finding can date or qualify a step the writer correctly judged
+    # immaterial to the bottom line and so never marked).
+    disputed_target_ids = frozenset().union(*(outcome.disputed_target_ids for outcome in outcomes))
 
     if not checked_sections:
         # P1-b(i): a part whose draft succeeded but whose Statement Check
@@ -2096,7 +2233,9 @@ async def _run_bottom_line(
     )
 
     if draft is None:
-        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(outcomes, required_coverage)
+        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
+            outcomes, required_coverage, disputed_target_ids=disputed_target_ids,
+        )
         error = agent_error(
             agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
             message="The bottom-line draft failed twice; kept section points stand in for it.",
@@ -2156,7 +2295,9 @@ async def _run_bottom_line(
         # (every sentence refused by the label-subset rule, the Statement
         # Check, or rule 5) still gets the §6.8 fallback, not a silent
         # empty summary.
-        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(outcomes, required_coverage)
+        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
+            outcomes, required_coverage, disputed_target_ids=disputed_target_ids,
+        )
         if fallback_points:
             error = agent_error(
                 agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",

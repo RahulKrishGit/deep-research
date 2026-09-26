@@ -263,7 +263,8 @@ def test_a_refused_sentence_is_published_in_full_with_its_reason(
     """§6.1 item 7 and D8: the check's refusal reaches the reader's log."""
     case = _case("conflict-and-limitations")
     conflated = (
-        "Both forecasters expect 19.6 GW of battery storage additions in 2025."
+        "According to both the EIA and Wood Mackenzie, 19.6 GW of battery "
+        "storage additions are expected in 2025."
     )
     refused_reason = "states one forecaster's figure as both forecasters'"
 

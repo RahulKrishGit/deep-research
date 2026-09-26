@@ -136,8 +136,8 @@ WRITTEN_SENTENCES = {
         "United States in 2024."
     ),
     "S002": (
-        "Battery storage was the second-largest source of new generating "
-        "capacity that year."
+        "The EIA reports battery storage was the second-largest source of "
+        "new generating capacity that year."
     ),
     "S003": (
         "Capacity growth from battery storage could set a record in 2025."

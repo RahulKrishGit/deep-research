@@ -782,11 +782,16 @@ _COMPOSITION = build_case(
         verified_findings=(
             verified(
                 finding(
-                    _EIA_ACTUAL_SNIPPET,
+                    "The EIA reports that generators added 10.4 gigawatts "
+                    "(GW) of new battery storage capacity in 2024",
                     url=_EIA_URL,
                     title=_EIA_TITLE,
                     sub_topic_title="U.S. battery storage capacity additions",
-                    snippet=_EIA_ACTUAL_SNIPPET,
+                    snippet=(
+                        "The EIA reports that generators added 10.4 "
+                        "gigawatts (GW) of new battery storage capacity in "
+                        "2024"
+                    ),
                     read_id=_COMPOSITION_EIA_READ.read_id,
                     locator="body",
                     figures=(figure("10.4", "GW", period="2024", kind="actual"),),
@@ -904,16 +909,17 @@ _CANONICAL_REPRINT_PAGE = (
     "Reprinted from the trials network."
 )
 _CANONICAL_META_PAGE = (
-    "A meta-analysis of 48 trials estimates a mean nitrate leaching reduction "
-    "of 24 percent from cover crops."
+    "AgMeta Analysis estimates a mean nitrate leaching reduction of 24 "
+    "percent from cover crops, from a meta-analysis of 48 trials."
 )
 _CANONICAL_MONITOR_PAGE = (
-    "Catchment monitoring recorded a 19 percent fall in nitrate concentration "
-    "after cover crops were established."
+    "Water Authority recorded a 19 percent fall in nitrate concentration "
+    "after cover crops were established, from its catchment monitoring."
 )
 _CANONICAL_GUIDE_PAGE = (
-    "Establishment timing dominates cover-crop performance; late sowing loses "
-    "roughly a third of the potential nitrogen uptake."
+    "Farm Inputs states that establishment timing dominates cover-crop "
+    "performance; late sowing loses roughly a third of the potential "
+    "nitrogen uptake."
 )
 
 _CANONICAL_TRIALS_READ = read_record(

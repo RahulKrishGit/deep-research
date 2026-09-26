@@ -956,8 +956,8 @@ async def test_one_non_empty_part_makes_one_section_call_and_one_bottom_line_cal
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
@@ -1383,8 +1383,8 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
     task = writer.build_task(state)
     writer.provider._outputs.extend([
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
-        BottomLineDraft(sentences=[WriterPointDraft(text="According to the source, The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
     ])
 
     await compose_written_report(task, provider=writer.provider, concurrency=3, section_concurrency=7)
@@ -1435,6 +1435,160 @@ def test_consider_section_point_keeps_a_credited_point_with_the_same_facts():
     assert len(candidates) == 1
     assert candidates[0].text == "According to the source, a bare fact with nobody behind it."
     assert rejected == []
+
+
+def test_consider_section_point_refuses_a_point_sharing_only_topic_words_with_the_title():
+    """RevZ2 P1-a: run 7's S043 shape -- a page's title always shares the
+    subject's own words with a point about it (Fable's audit found the
+    old token-overlap guard refused 0 of 46 real statements on exactly
+    this: a shared word like "roman" or "bce" used to count as crediting).
+    Sharing topic words is not naming a source; the point still credits
+    nobody."""
+    from deep_research.agents.report_writer import _consider_section_point
+    read = make_read("Economic policy changed after new regional reform measures took effect.",
+                     url="https://a.test/1", title="Economic reform and regional policy change")
+    finding = make_finding(read, "Economic policy changed after new regional reform measures took effect.",
+                           target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(
+        text="Economic policy changed after new regional reform measures took effect.",
+        finding_labels=["F01"],
+    )
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
+
+
+def test_names_a_source_accepts_past_tense_and_per_forms():
+    """RevZ2 P2-a: past-tense and "per" credit verbs, added after the
+    audit found "The EIA reported ...", "The EIA said ...", "The EIA
+    counted ..." and "..., per the EIA." all wrongly refused by the
+    present-tense-only list."""
+    from deep_research.agents.report_writer import _names_a_source
+    assert _names_a_source("The EIA reported 10.4 GW in 2024.", [])
+    assert _names_a_source("The EIA said capacity grew by 10.4 GW.", [])
+    assert _names_a_source("The EIA counted 10.4 GW of additions.", [])
+    assert _names_a_source("Capacity grew by 10.4 GW, per the EIA.", [])
+
+
+def test_names_a_source_accepts_the_kept_figures_organisation():
+    """RevZ2 P2-a: a kept figure's own organisation (the registry line's
+    own "organisation ..." clause) names its source, even with no credit
+    verb and no title or host overlap."""
+    from deep_research.agents.report_writer import _names_a_source
+    finding = _checked("https://a.test/1", "A claim.", "10.4", "GW", organisation="Example Institute")
+    assert _names_a_source("Example Institute's own figure was 10.4 GW.", [finding])
+
+
+def test_names_a_source_accepts_the_titles_own_author_work_segment():
+    """RevZ2 S005: run 7's exact shape -- a primary-source page's title
+    follows the "Author, Work" convention and carries no
+    ``attributed_issuer`` of its own; the title's first comma-delimited
+    segment names the author when it looks like a name (each word
+    capitalised or a particle, at most four words)."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A field account.", url="https://a.test/1",
+                     title="Jordan Vale, Field Notes on Coastal Erosion")
+    finding = make_finding(read, "A field account.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert _names_a_source(
+        "Jordan Vale observed an unusual erosion pattern near the estuary after storms in 2019.",
+        [finding],
+    )
+
+
+def test_names_a_source_refuses_a_titles_lower_case_opening_word_as_an_author():
+    """RevZ2 S005 guard: a first segment of one lower-case word (an
+    ordinary title's own opening clause, not a name) never counts, the
+    same way run 7's S043 stayed refused."""
+    from deep_research.agents.report_writer import _names_a_source
+    read = make_read("A summary.", url="https://a.test/1",
+                     title="overview, a summary of regional findings")
+    finding = make_finding(read, "A summary.", target_ids=[])
+    finding = finding.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert not _names_a_source(
+        "The overview reached no firm conclusion about the trend.", [finding],
+    )
+
+
+def test_consider_section_point_refuses_a_point_naming_only_the_united_states():
+    """RevZ2 P2-b: case-insensitive matching let "States" inside "United
+    States" pass as the verb "states"; case-sensitive matching (plus the
+    explicit exclusion) refuses a point that names no real source."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="The United States added 10 units in 2024.", finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
+
+
+def test_consider_section_point_refuses_a_sentence_initial_capitalised_common_noun():
+    """RevZ2 P2-b: case-insensitive matching also let a sentence-initial
+    capitalised common noun ("Records show ...") pass as the credit verb
+    "records"; case-sensitive matching refuses it, since nobody is
+    actually credited."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="Records show output rose by 10 units in 2024.", finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
+
+
+def test_consider_section_point_refuses_a_point_naming_only_the_political_state():
+    """Found by the run-7 probe (a follow-on to RevZ2 P1-a/P2-b): "state"
+    is the writer's own primary crediting verb ("Wikipedia states the
+    crisis was..."), so it must stay in the verb list, but a determiner
+    never sits directly in front of a verb -- "the state" is always the
+    geopolitical noun, credited to nobody, run 7's S043 shape exactly
+    ("... had to be paid by the Roman state.")."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    part_labels = {"F01": finding}
+    point = WriterPointDraft(text="Citizens were paid a stipend by the state.", finding_labels=["F01"])
+    rejected: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.",
+    )
+
+    assert candidates == []
+    assert rejected[0].reason == "states a fact without crediting the source that states it"
+
+
+def test_names_a_source_still_accepts_a_named_source_using_states():
+    """The generalised exclusion above must not swallow the genuine verb
+    usage it sits beside: a named source followed directly by "states"
+    is still credited."""
+    from deep_research.agents.report_writer import _names_a_source
+    assert _names_a_source("Example Institute states the total was 10.4 GW.", [])
 
 
 # --- D12: no finding labels leak into point text ----------------------------
@@ -1552,6 +1706,49 @@ def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_with_a_diff
     assert rejected == []
 
 
+def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_disputes():
+    """RevZ2 P1-b: the marker regex matches stems, so "disputes" (not
+    only bare "dispute") counts as a difference marker."""
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
+    cited_by_sections = {"F01": finding}
+    point = WriterPointDraft(
+        text="According to the source, a later account disputes the earlier figure of 10.4 GW.",
+        finding_labels=["F01"],
+    )
+    rejected: list = []
+
+    candidates = _consider_bottom_line_point(
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        disputed_target_ids={"topic-01-target-01"},
+        numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+    )
+
+    assert len(candidates) == 1
+    assert rejected == []
+
+
+def test_consider_bottom_line_point_keeps_a_disputed_target_sentence_using_differently():
+    """RevZ2 P1-b: "differently" (not only bare "differ") counts too."""
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
+    cited_by_sections = {"F01": finding}
+    point = WriterPointDraft(
+        text="According to the source, accounts date the event differently.",
+        finding_labels=["F01"],
+    )
+    rejected: list = []
+
+    candidates = _consider_bottom_line_point(
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        disputed_target_ids={"topic-01-target-01"},
+        numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+    )
+
+    assert len(candidates) == 1
+    assert rejected == []
+
+
 def test_bottom_line_messages_lists_a_statement_under_disputed_steps_when_its_target_disputes():
     """Audit D1 fix (b): a checked statement bound to a disputed target is
     listed again under its own heading, so the bottom line can state both
@@ -1584,11 +1781,13 @@ def test_bottom_line_messages_omit_the_disputed_steps_heading_when_nothing_dispu
 
 @pytest.mark.asyncio
 async def test_a_writer_marked_disputing_point_guards_the_bottom_line(writer, checker) -> None:
-    """Z1/Z2 items 3-4 end to end: a section point the writer marks
-    ``disputes: true`` makes its own target's bottom-line sentence need a
-    difference marker, even though the underlying finding carries no
-    ``Finding.disputes`` of its own -- the writer's own marking (item 3)
-    is read by the bottom line (item 4), not only the dissent re-ask's."""
+    """Z1/Z2 items 3-4 end to end, and RevZ2 P1-c: a section point the
+    writer marks ``disputes: true`` makes its own target's bottom-line
+    sentence need a difference marker; a first draft with none is
+    refused, which triggers the one re-ask, and the re-ask's own marked
+    sentence is adopted (the same loss D1/D2's re-ask was built to
+    prevent, this time from the disputed-step guard rather than the
+    Statement Check)."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
                        target_ids=["topic-01-target-01"])
@@ -1604,12 +1803,17 @@ async def test_a_writer_marked_disputing_point_guards_the_bottom_line(writer, ch
         ]),
         BottomLineDraft(sentences=[WriterPointDraft(
             text="According to the source, the figure was 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, the figure differs from an earlier account, at 10.4 GW in 2024.",
+            finding_labels=["F01"])]),
     ])
 
     composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
 
     bottom_line_texts = [point.text for point in composition.summary]
     assert "According to the source, the figure was 10.4 GW in 2024." not in bottom_line_texts
+    assert ("According to the source, the figure differs from an earlier account, at 10.4 GW in 2024."
+           in bottom_line_texts)
     assert any(
         r.reason == "states a disputed step without its dispute" for r in composition.rejected_points
     )
@@ -1870,8 +2074,9 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
     """Spec §6.13: a statement's target_ids are explicit bindings only."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
                          question="How much battery storage capacity was added in the United States in 2024?")
-    read = make_read("Storage capacity grew by 10.4 GW in the United States in 2024.", url="https://a.test/1")
-    finding = make_finding(read, "Storage capacity grew by 10.4 GW in the United States in 2024.",
+    read = make_read("The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
+                     url="https://a.test/1")
+    finding = make_finding(read, "The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
                            figures=[figure("10.4", "GW", "2024", "actual")], target_ids=[])
     finding = finding.model_copy(update={"related_sub_topic": "Capacity added"})
     result = FigureResultFor(finding, organisation=EIA, attribution="own", kind="actual", period="2024")
@@ -1880,10 +2085,12 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
     state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic], verified_findings=[finding])
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
-                    points=[WriterPointDraft(text="Storage capacity grew by 10.4 GW in the United States in 2024.",
-                                             finding_labels=["F01"])]),
+                    points=[WriterPointDraft(
+                        text="The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
+                        finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(
-            text="Storage capacity grew by 10.4 GW in the United States in 2024.", finding_labels=["F01"])]),
+            text="The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
+            finding_labels=["F01"])]),
     ])
     from deep_research.agents.evidence_verifier import StatementCheckItem
     import deep_research.agents.evidence_verifier as ev
@@ -2312,6 +2519,44 @@ def test_apply_marks_resolves_finding_id_from_by_even_when_findings_share_one_pa
     assert dropped == []
     assert kept[0].source_url == "https://shared.test/1"
     assert kept[0].finding_id == "finding-relayed"
+
+
+@pytest.mark.asyncio
+async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """RevZ2 P1-c: the naive first-kept-point pick the fallback used to
+    make could itself be silent about a dispute its own target carries;
+    when it touches a disputed target but is not the part's own marked
+    point, the marked point is preferred instead, so the fallback never
+    prints a disputed step as settled."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding_a = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                        target_ids=["topic-01-target-01"])
+    finding_b = _checked("https://b.test/1", "11 GW in 2024, revised.", "11", "GW",
+                        organisation="Example Institute", target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding_a, finding_b])
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(
+                text="According to the source, a later account differs, giving 11 GW in 2024 instead.",
+                finding_labels=["F02"], disputes=True,
+            ),
+        ]),
+        _output_limit_error(), _output_limit_error(),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert len(composition.summary) == 1
+    assert composition.summary[0].text == (
+        "According to the source, a later account differs, giving 11 GW in 2024 instead."
+    )
 
 
 @pytest.mark.asyncio
