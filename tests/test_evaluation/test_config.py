@@ -1116,7 +1116,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Moved `71849bdb488d` -> `5431883ccaec`.
     # Run-6 fix wave (Fable audit 57.5/100; reviews, Fable prompt review).
     # Moved `5431883ccaec` -> `8d202482e743`.
-    "researcher": "8d202482e743",
+    # Run-7 fix wave (Fable audit 58.5/100; the dissent re-ask and its packet,
+    # reviews, Fable prompt review GREEN at c0ba781). Moved `8d202482e743` ->
+    # `580bec83c9a1`.
+    "researcher": "580bec83c9a1",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1284,7 +1287,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Moved `dccfc1149817` -> `ffa83c134496`.
     # Run-6 fix wave (Fable audit 57.5/100; reviews, Fable prompt review).
     # Moved `ffa83c134496` -> `bc3c09d23a7e`.
-    "report_writer": "bc3c09d23a7e",
+    # Run-7 fix wave (Fable audit 58.5/100; the credit and dispute guards,
+    # disputes marks, the Disputed block, terminal step; reviews, Fable prompt
+    # review GREEN at c0ba781). Moved `bc3c09d23a7e` -> `f1a5d8f8efc3`.
+    "report_writer": "f1a5d8f8efc3",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
