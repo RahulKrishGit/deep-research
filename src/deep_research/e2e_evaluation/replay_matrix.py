@@ -1,4 +1,4 @@
-"""The versioned offline matrix: thirty-three real-agent scenarios.
+"""The versioned offline matrix: thirty-four real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
@@ -36,7 +36,12 @@ from deep_research.e2e_evaluation.replay import (
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 6
+REPLAY_CASE_MANIFEST_VERSION = 7
+# Bumped to 7 for RevFormatT6's fix round: the new row
+# ``scoped-review-invalid-reply-falls-back`` exercises the T5 addendum's
+# scoped-review fallback (a 34-row inventory must not be read as the 33-row
+# one recorded under version 6).
+#
 # Bumped to 6 for format-build T6: the new row
 # ``scoped-redraft-after-a-named-defect`` exercises the T5 addendum's scoped
 # re-review path (a 33-row inventory must not be read as the 32-row one
@@ -1965,13 +1970,22 @@ def _statement_check_failure_keeps_sentences() -> ReplayScenario:
                 # The parallel writer (spec §6.6): the bottom line is fed
                 # only checked, kept section statements, so when every
                 # statement everywhere came back unchecked (this scenario's
-                # whole premise) there is nothing to write it from -- a fact
-                # the writer records against the same non-recoverable error
-                # type it uses when every part's own draft fails, though here
-                # every part drafted and printed its sentences fine.
-                "error:report_writer_provider_error",
+                # whole premise) there is nothing to write it from. Fixed at
+                # HEAD: this is a recoverable
+                # ``report_writer_bottom_line_unchecked``, not the false
+                # "every part failed" ``report_writer_provider_error`` -- the
+                # sections all drafted and printed fine, only the bottom line
+                # is empty, and the renderer says so in plain prose.
+                "error:report_writer_bottom_line_unchecked",
             ),
-            required_report_phrases=("40 percent", "12 million dollars"),
+            forbidden_assertions=(
+                "No source we could check answers this question.",
+            ),
+            required_report_phrases=(
+                "40 percent",
+                "12 million dollars",
+                "A summary could not be written this time",
+            ),
             required_invariants=("statement_failure_keeps_sentences",),
         ),
     )
@@ -2456,14 +2470,18 @@ def _count_unit_period() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-03-target-01"),
-            # The period is what keeps the two counts apart: a run that bound
-            # the 2024 count to a 2025 obligation would print the answered
-            # obligation's measure beside the 2024 period, which is the
-            # findings table's merged "What was measured" cell this phrase
-            # forbids.
-            forbidden_assertions=("The number of Kettle units shipped, 2024",),
+            # The period is what keeps the two counts apart: a row that bound
+            # the 2024 count to the 2025 obligation would be exactly the
+            # merged-obligation defect ``count_period_binds_obligation``
+            # checks for structurally (the phrase this used to forbid,
+            # "The number of Kettle units shipped, 2024", can never print:
+            # the cell uses ``row.subject``, which this fixture leaves
+            # ``None``).
             allowed_failure_classes=("missing_required_target",),
-            required_invariants=("extra_pass_finds_nothing",),
+            required_invariants=(
+                "extra_pass_finds_nothing",
+                "count_period_binds_obligation",
+            ),
         ),
     )
 
@@ -2787,11 +2805,18 @@ def _maker_notes_vs_relay() -> ReplayScenario:
             terminal_quality="accepted",
             exit_code=0,
             required_target_ids=("topic-01-target-01", "topic-02-target-01"),
+            # "Example Games" alone is also the report's own title text, so a
+            # phrase match on the name cannot tell the maker's own row from
+            # the relay's mention of it; ``maker_row_is_own`` reads the typed
+            # fact row instead.
             required_report_phrases=(
-                "Example Games",
                 "Example Games, reported by news.example.test",
             ),
-            required_invariants=("relay_labelled_as_relay", "no_false_verification"),
+            required_invariants=(
+                "relay_labelled_as_relay",
+                "no_false_verification",
+                "maker_row_is_own",
+            ),
         ),
     )
 
@@ -2857,6 +2882,71 @@ def _scoped_redraft_after_a_named_defect() -> ReplayScenario:
             required_invariants=("scoped_review_used",),
         ),
     )
+
+
+def _scoped_review_invalid_reply_falls_back() -> ReplayScenario:
+    """An invalid scoped reply falls back to exactly one full review (T5 addendum).
+
+    Same premise as ``scoped-redraft-after-a-named-defect`` -- a defect on
+    one part buys a redraft of that part alone, leaving the other part
+    carried over byte-identical -- but the scoped attempt the graph makes
+    after the redraft cannot be used (the provider raises), so the run must
+    fall back to one fresh full review rather than accept a scoped-derived
+    judgement or publish an unjudged report.
+    """
+    adoption_claim = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
+    export_claim = (
+        "the Acme widget export volume in the United States was 3.4 million "
+        "units in 2024"
+    )
+    return ReplayScenario(
+        case_id="scoped-review-invalid-reply-falls-back",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "What were the Acme widget adoption rate and export volume in "
+            "the United States in 2024?"
+        ),
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                _pair(1, "adoption-2024b", "Adoption survey", adoption_claim),
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _topic(
+                2,
+                "Export volume",
+                "What was the Acme widget export volume in the United States in 2024?",
+                "value",
+                "Acme widget export volume United States 2024",
+                _pair(2, "export-2024b", "Export survey", export_claim),
+                labels=("Acme widget", "export volume"),
+            ),
+        ),
+        review_defect=ReplayReviewDefect(
+            target_ids=("topic-02-target-01",),
+            kind="presentation",
+            severity="major",
+            problem=(
+                "The export-volume section restates the figure without "
+                "naming its own subject plainly; redraft it."
+            ),
+        ),
+        scoped_review_failure=True,
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01", "topic-02-target-01"),
+            required_report_phrases=("40 percent", "3.4 million units"),
+            required_invariants=("scoped_review_fallback_used",),
+        ),
+    )
+
 
 
 
@@ -3261,6 +3351,17 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "review is a scoped re-review, never a second full one"
         ),
         build=_scoped_redraft_after_a_named_defect,
+    ),
+    ReplayCaseEntry(
+        case_id="scoped-review-invalid-reply-falls-back",
+        version=REPLAY_CASE_VERSION,
+        title="An unusable scoped reply falls back to one full review",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The scoped attempt is made and fails; the run's final judgement "
+            "is one fresh full review, never a scoped-derived result"
+        ),
+        build=_scoped_review_invalid_reply_falls_back,
     ),
 )
 

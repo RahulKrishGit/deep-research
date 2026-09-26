@@ -437,6 +437,12 @@ class ReplayScenario:
     # the part(s) its ``target_ids`` route to (T5 addendum, spec §6.9). Left
     # unset, the review never returns a defect and no redraft is bought.
     review_defect: ReplayReviewDefect | None = None
+    # The scoped re-review that could not be used: the provider raises,
+    # exactly as an outage would, so the run has to fall back to one fresh
+    # full review rather than accept a scoped-derived judgement (T5
+    # addendum). Meaningless without ``review_defect``, since nothing buys a
+    # redraft (and so a scoped attempt) without one.
+    scoped_review_failure: bool = False
     # The Statement Check that could not be made: every batch's provider call
     # raises, exactly as an outage would, and every drafted sentence has to be
     # kept exactly as drafted with the failure recorded (§5.4). The case exists
@@ -749,6 +755,7 @@ class ReplayCompleter(AgentCompleter):
         )
         self.review_score: float = scenario.review_score
         self.review_defect: ReplayReviewDefect | None = scenario.review_defect
+        self.scoped_review_failure: bool = scenario.scoped_review_failure
         # Returned on the first ``ReportReviewDraft`` reply only: a redraft
         # buys one re-run (spec §6.9), and a controlled case scripts one,
         # never a defect that keeps reappearing after it is resolved.
@@ -1508,6 +1515,12 @@ class ReplayCompleter(AgentCompleter):
         statements is exactly what the packet's own carried dispositions
         already supply.
         """
+        if self.scoped_review_failure:
+            # The provider boundary's own failure type: the T5 addendum's
+            # fallback exists precisely for a scoped call that could not be
+            # made, and raising anything else would test the harness's
+            # imagination instead of the product's own fallback.
+            raise ProviderError("the scoped re-review was not made")
         changed_block = self._material_block(text, "Changed statement ids").strip()
         changed_line = changed_block.splitlines()[-1] if changed_block else ""
         changed_ids = [
@@ -2089,7 +2102,10 @@ def _invariant_relay_labelled_as_relay(run: ReplayRun) -> str | None:
     The honesty rule is one sentence: a relay is never presented as the
     organisation it relays. So the row names the site that relays the figure as
     the host, credits the figure to the organisation the page credits, and the
-    two are never the same name.
+    two are never the same name. Spec §11.3: the rule is per *page*, not per
+    row -- a wire service relaying four separate obligations is one relaying
+    site four times over, so any other fact row read from that same host must
+    carry the same ``relayed`` attribution, never a stray ``own``.
     """
     rows = [row for row in _fact_rows(run) if row.attribution == "relayed"]
     if not rows:
@@ -2102,10 +2118,57 @@ def _invariant_relay_labelled_as_relay(run: ReplayRun) -> str | None:
                 f"the relayed row {row.row_id} credits {row.organisation!r}, "
                 "which is the site that relays it"
             )
+    relayed_hosts = {row.relay_host for row in rows if row.relay_host}
+    composition = run.state.composition
+    if composition is not None:
+        host_by_finding_id = {
+            finding_fingerprint(finding): publisher_identity(finding.source_url)
+            for finding in composition.findings
+        }
+        for row in _fact_rows(run):
+            host = host_by_finding_id.get(row.finding_id)
+            if host in relayed_hosts and row.attribution != "relayed":
+                return (
+                    f"row {row.row_id} reads from {host!r}, a site this run "
+                    "relays elsewhere, but is attributed "
+                    f"{row.attribution!r}, not 'relayed'"
+                )
     host = rows[0].relay_host or ""
     if host.casefold() not in run.report.casefold():
         return f"the report never names the relaying site {host!r}"
     return None
+
+
+def _invariant_maker_row_is_own(run: ReplayRun) -> str | None:
+    """The maker's own page credits its own figure, never as a relay.
+
+    ``maker-notes-vs-relay``'s premise: "Example Games" is also the report's
+    own title text, so a phrase match on the name cannot tell the maker's own
+    row from the relay's mention of it. This reads the typed fact row for the
+    maker's own page (``games.example.test``) instead.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    by_id = {
+        finding_fingerprint(finding): finding for finding in composition.findings
+    }
+    maker_rows = [
+        row
+        for row in composition.fact_rows
+        if row.finding_id in by_id
+        and publisher_identity(by_id[row.finding_id].source_url) == "games.example.test"
+    ]
+    if not maker_rows:
+        return "no fact row is bound to the maker's own page"
+    for row in maker_rows:
+        if row.attribution != "own":
+            return (
+                f"the maker's own row {row.row_id} is attributed "
+                f"{row.attribution!r}, not 'own'"
+            )
+    return None
+
 
 
 # --- what the invariants read -----------------------------------------------
@@ -2976,6 +3039,14 @@ def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     """
     if "evidence_verifier_statement_check_failed" not in run.error_types():
         return "the run recorded no Statement Check failure"
+    for error in run.state.errors:
+        if error.error_type == "report_writer_provider_error":
+            return (
+                "a false 'every part failed' error was recorded, though "
+                "every part drafted and printed its sentences fine"
+            )
+        if not error.recoverable:
+            return f"a non-recoverable error was recorded: {error.error_type}"
     composition = run.state.composition
     if composition is None:
         return "the run composed no report"
@@ -3122,16 +3193,32 @@ def _invariant_no_table_printed(run: ReplayRun) -> str | None:
     return None
 
 
+def _owning_coverage_ids(run: ReplayRun) -> set[str]:
+    """The plan part(s) a scenario's review defect names, by coverage id."""
+    defect = run.scenario.review_defect
+    if defect is None:
+        return set()
+    target_ids = set(defect.target_ids)
+    return {
+        topic.coverage_id
+        for topic in run.state.sub_topics
+        for target in topic.evidence_targets
+        if target.target_id in target_ids
+    }
+
+
 def _invariant_scoped_review_used(run: ReplayRun) -> str | None:
     """The redraft's second review is scoped, never a second full review.
 
     T5 addendum: once a redrafted composition carries a part byte-identical
     to what the first review judged, the graph must ask a *scoped* re-review
     (``ScopedReportReviewDraft``) rather than falling back to a second full
-    one -- the fallback exists for a redraft that changed everything, which
-    this case's untouched part is built to avoid. Read from the completer's
-    own call log, a structural fact about which schema each request named,
-    never from the rendered report.
+    one. This checks the whole chain of facts that makes that true, not just
+    the schema name: exactly the defect's own part(s) were redrafted
+    (``status == "written"``), every other part carried over unchanged, the
+    section-draft call count matches (one per part, plus one per redrafted
+    part), and the final review still carries the first review's defect,
+    marked resolved.
     """
     calls = run.replay.completer.calls
     full_reviews = calls.count("report_reviewer:ReportReviewDraft")
@@ -3142,12 +3229,93 @@ def _invariant_scoped_review_used(run: ReplayRun) -> str | None:
         return f"expected exactly one scoped re-review, saw {scoped_reviews}"
     if run.state.writer_redrafts != 1:
         return f"expected exactly one writer redraft, saw {run.state.writer_redrafts}"
+    owning = _owning_coverage_ids(run)
+    if not owning:
+        return "the scenario names no review defect to redraft"
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    parts_by_id = {part.coverage_id: part for part in composition.parts}
+    for coverage_id, part in parts_by_id.items():
+        expected_status = "written" if coverage_id in owning else "carried_over"
+        if part.status != expected_status:
+            return (
+                f"part {coverage_id!r} has status {part.status!r}, expected "
+                f"{expected_status!r}"
+            )
+    section_draft_calls = calls.count("report_writer:SectionDraft")
+    expected_calls = len(parts_by_id) + len(owning)
+    if section_draft_calls != expected_calls:
+        return (
+            f"expected {expected_calls} SectionDraft calls (one per part, "
+            f"plus one per redrafted part), saw {section_draft_calls}"
+        )
+    review = run.state.report_review
+    if review is None:
+        return "the run recorded no final review"
+    if not any(defect.resolution == "resolved" for defect in review.defects):
+        return "the final review carries no defect marked resolved"
+    return None
+
+
+def _invariant_count_period_binds_obligation(run: ReplayRun) -> str | None:
+    """A count row binds an obligation only by the period it actually states.
+
+    ``count-unit-period``'s premise: the page states counts for two different
+    years, and only the row stating 2025 may bind the 2025 obligation
+    (``topic-01-target-01``) -- a row for any other period naming that target
+    id is exactly the merged-obligation defect this case rejects.
+    """
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    bound = [
+        row for row in composition.fact_rows if "topic-01-target-01" in row.target_ids
+    ]
+    if not bound:
+        return "no fact row binds topic-01-target-01 at all"
+    wrong_period = [row for row in bound if row.period != "2025"]
+    if wrong_period:
+        return (
+            f"row(s) {[row.row_id for row in wrong_period]} bind "
+            "topic-01-target-01 with a period other than 2025: "
+            f"{[row.period for row in wrong_period]}"
+        )
+    return None
+
+
+
+def _invariant_scoped_review_fallback_used(run: ReplayRun) -> str | None:
+    """An invalid scoped reply falls back to exactly one full review (T5 addendum).
+
+    The scoped attempt is made -- that is what makes the fallback observable
+    -- but its reply could not be used, so the run's *final* judgement is a
+    fresh full review, never a scoped-derived one: the redraft's carried
+    dispositions and previous-defect resolutions play no part in the record
+    the run actually publishes.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped attempt, saw {scoped_reviews}"
+    if full_reviews != 2:
+        return (
+            f"expected exactly two full reviews (first, then the fallback), "
+            f"saw {full_reviews}"
+        )
+    review = run.state.report_review
+    if review is None:
+        return "the run recorded no final review"
+    if "scoped" not in review.rationale.casefold():
+        return "the final review's rationale does not record the scoped fallback"
     return None
 
 
 
 _REPLAY_INVARIANTS: dict[str, Any] = {
     "relay_labelled_as_relay": _invariant_relay_labelled_as_relay,
+    "maker_row_is_own": _invariant_maker_row_is_own,
     "no_false_verification": _invariant_no_false_verification,
     "mirror_not_double_counted": _invariant_mirror_not_double_counted,
     "denied_url_not_retried": _invariant_denied_url_not_retried,
@@ -3190,6 +3358,8 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     ),
     "no_table_printed": _invariant_no_table_printed,
     "scoped_review_used": _invariant_scoped_review_used,
+    "count_period_binds_obligation": _invariant_count_period_binds_obligation,
+    "scoped_review_fallback_used": _invariant_scoped_review_fallback_used,
 }
 
 

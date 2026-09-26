@@ -525,7 +525,8 @@ scope, release — is no longer printed beside each reader sentence (spec
 sentence in plain prose, and its full provenance lives in the evidence log's
 per-finding record and in the quality JSON's fact rows. The one exception is
 a sentence whose Statement Check verdict is `unchecked` (a batch failure)
-and that carries a fact row: it still ends with a deterministic
+and that carries a fact row whose unit the figure parser scales (D10): it
+still ends with a deterministic
 `(figure: {who reported it (and when)})` line, so the only sentence printed
 without an independent check keeps a visible provenance line.
 

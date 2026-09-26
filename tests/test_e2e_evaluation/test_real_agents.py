@@ -79,6 +79,7 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "one-part-question",
     "maker-notes-vs-relay",
     "scoped-redraft-after-a-named-defect",
+    "scoped-review-invalid-reply-falls-back",
 )
 
 REPETITIONS = 3
@@ -121,6 +122,13 @@ def _stable_report(report: str) -> str:
     references: list[tuple[str, str]] = []
     for line in report.splitlines():
         if line.startswith("How this was researched:"):
+            body.append(
+                re.sub(
+                    r"\(report-.*-(\d+)-evidence\.md\)$",
+                    r"(report-<session>-\1-evidence.md)",
+                    line,
+                )
+            )
             continue
         match = _REFERENCE.match(line) if references or line[:1].isdigit() else None
         if match is not None:

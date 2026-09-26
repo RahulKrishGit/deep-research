@@ -115,6 +115,13 @@ def canonical_report_fingerprint(report: str) -> str:
     references: list[tuple[str, str]] = []
     for line in report.splitlines():
         if line.startswith("How this was researched:"):
+            body.append(
+                re.sub(
+                    r"\(report-.*-(\d+)-evidence\.md\)$",
+                    r"(report-<session>-\1-evidence.md)",
+                    line,
+                )
+            )
             continue
         match = (
             _REFERENCE_LINE.match(line)
