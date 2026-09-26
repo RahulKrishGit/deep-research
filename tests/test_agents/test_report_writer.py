@@ -7,8 +7,6 @@ other question about a sentence's wording is the Statement Check's job."""
 from __future__ import annotations
 
 import asyncio
-import sys
-import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -67,25 +65,6 @@ from deep_research.utils.types import (
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.research_fakes import report_writer_tools
-
-
-@pytest.fixture(autouse=True)
-def _document_kind_stand_in(monkeypatch):
-    """V1 -> V2's shared contract (``agents/document_kind.py``): a local
-    stand-in for ``derivative_self_description`` so ``build_task``'s
-    lazy import resolves while V1 is still landing in this same wave.
-    A no-op once V1's real module is importable -- the real one is never
-    shadowed. Tests that need a specific self-description build the
-    ``self_descriptions`` mapping directly instead of relying on this
-    stand-in's own (empty) answer."""
-    try:
-        import deep_research.agents.document_kind  # noqa: F401
-        return
-    except ImportError:
-        pass
-    stub = types.ModuleType("deep_research.agents.document_kind")
-    stub.derivative_self_description = lambda read: None
-    monkeypatch.setitem(sys.modules, "deep_research.agents.document_kind", stub)
 
 
 EIA = "U.S. Energy Information Administration"
@@ -521,6 +500,46 @@ def test_finding_registry_orders_a_required_targets_answers_by_authority():
     registry = finding_registry([weak, strong], [target], sources=[weak_source, strong_source])
 
     assert [f.source_url for _, f in registry] == ["https://strong.test/1", "https://weak.test/1"]
+
+
+def test_finding_registry_breaks_a_tie_by_the_targets_plan_order():
+    """RevV2 P2: within a tie (missing or equal authority), the required
+    group still lists a target's answers in the targets' own plan
+    order, the tiebreak the pre-authority registry used -- not merely
+    input/citable order, which interleaves two required targets'
+    answers when authority is absent or equal."""
+    target_1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                           unit_dimension=None)
+    target_2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True,
+                           unit_dimension=None)
+    a = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-02"])
+    b = _statement_finding("https://b.test/1", "B claim.", target_ids=["topic-01-target-01"])
+
+    registry = finding_registry([a, b], [target_1, target_2])
+
+    assert [f.source_url for _, f in registry] == ["https://b.test/1", "https://a.test/1"]
+
+
+def test_finding_registry_puts_a_required_targets_answer_first_over_a_stronger_optional_one():
+    """RevV2 P3: the required-group beats authority, not merely orders
+    within it -- a weaker source answering the required target still
+    outranks a stronger source that only answers an optional sibling."""
+    required = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                           unit_dimension=None)
+    optional = make_target("topic-01-target-02", coverage_id="topic-01", required=False,
+                           unit_dimension=None)
+    strong_optional = _statement_finding("https://strong.test/1", "An optional claim.",
+                                         target_ids=["topic-01-target-02"])
+    weak_required = _statement_finding("https://weak.test/1", "A required claim.",
+                                       target_ids=["topic-01-target-01"])
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    weak_source = _authority_source("https://weak.test/1", authority=0.3)
+
+    registry = finding_registry([strong_optional, weak_required], [required, optional],
+                                sources=[strong_source, weak_source])
+
+    assert [label for label, _ in registry] == ["F01", "F02"]
+    assert registry[0][1].source_url == "https://weak.test/1"
 
 
 # --- registry_lines: D5's content: and passage: lines ----------------------
@@ -3408,6 +3427,56 @@ async def test_a_mechanism_bottom_line_that_already_cites_the_outcome_never_re_a
         "A funding cut reduced the budget in 2018, restated.",
         "The programme closed in 2020, restated.",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_mechanism_bottom_line_never_re_asks_when_its_only_outcome_is_below_the_floor(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """RevV2 P1: an outcome-marked point resting only on a sub-floor
+    source is withheld from the bottom line's own candidate pool the
+    same way any below-floor statement is (item 2) -- so its label
+    never reaches ``outcome_labels``, and the guard must gate on that
+    filtered set, not the writer's raw marks, or it demands a citation
+    to a "# Outcome" block that is never printed. Only two scripted
+    replies are queued: a wrongly triggered re-ask fails loudly on a
+    missing scripted response."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    cause = _statement_finding("https://strong.test/1", "A funding cut reduced the budget in 2018.",
+                               target_ids=["topic-01-target-01"])
+    outcome = _statement_finding("https://weak.test/1", "The programme closed in 2020.",
+                                 target_ids=["topic-01-target-01"])
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    weak_source = _authority_source("https://weak.test/1", authority=0.1)
+    topic = _topic("topic-01", "Programme closure", [target])
+    contract = AnswerContract(
+        question="Why did the programme close?",
+        scope_statement="Answered as of 2026-09-24.", geographic_scope="worldwide",
+        as_of_date="2026-09-24", evidence_period_requirement="the period the question names",
+        assumptions=[], answer_kind="explanation", requested_word_limit=500,
+    )
+    state = ResearchState(session_id="s1", original_question="Why did the programme close?",
+                          sub_topics=[topic], verified_findings=[cause, outcome],
+                          evaluated_sources=[strong_source, weak_source],
+                          answer_contract=contract)
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Programme closure", points=[
+            WriterPointDraft(text="According to the source, a funding cut reduced the budget in 2018.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, the programme closed in 2020.",
+                             finding_labels=["F02"], outcome=True),
+        ]),
+        BottomLineDraft(sentences=[
+            WriterPointDraft(text="A funding cut reduced the budget in 2018, restated.",
+                             finding_labels=["F01"]),
+        ]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.text for p in composition.summary] == ["A funding cut reduced the budget in 2018, restated."]
 
 
 @pytest.mark.asyncio

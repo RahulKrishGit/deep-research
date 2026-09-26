@@ -523,6 +523,12 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
     descending, with a missing score last (D1, D3) -- so the strongest
     sources of a target get the first labels, and a weaker source never
     outranks the target's own best evidence merely by extracting first.
+    Within an authority tie (RevV2 P2: missing or equal scores are common --
+    every score is missing when ``sources`` is empty, and evaluators often
+    give several sources the same value), the required group still falls
+    back to the targets' own plan order, the pre-authority registry's only
+    tiebreak, so two required targets' answers are not interleaved by
+    citable-list order.
 
     The answers are resolved against every target, so an optional sibling
     still keeps a figure about its subject off a required target's answers
@@ -536,15 +542,17 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
         citable, targets, sub_topics=sub_topics).items() if t in required}
     first = list(dict.fromkeys(fid for ids in answered.values() for fid in ids))
     group = dict.fromkeys(first, 0)
+    rank = {fid: n for n, fid in enumerate(first)}
     src_by_url = sources_by_url(sources)
 
-    def sort_key(finding: Finding) -> tuple[int, int, float]:
+    def sort_key(finding: Finding) -> tuple[int, int, float, int]:
         source = src_by_url.get(normalize_source_url(finding.source_url))
         score = source.authority_score if source is not None else None
         return (
             group.get(finding_fingerprint(finding), 1),
             0 if score is not None else 1,
             -score if score is not None else 0.0,
+            rank.get(finding_fingerprint(finding), len(rank)),
         )
 
     ordered = sorted(citable, key=sort_key)
@@ -2627,9 +2635,16 @@ async def _run_bottom_line(
     # Run-8 D4/D5: a mechanism answer whose kept bottom line cites no
     # outcome-marked statement's finding is missing the mechanism's own
     # last step -- the same one re-ask the dispute guard uses, merged
-    # into a single re-ask rather than two.
+    # into a single re-ask rather than two. RevV2 P1: gated on
+    # ``outcome_labels`` (built from ``checked_sections``, after the floor
+    # and verdict filter), never the writer's raw ``outcome_statement_ids``
+    # -- when every outcome-marked point rests only on a sub-floor or
+    # declared-derivative source, or was never checked ``consistent`` or
+    # ``corrected``, no "# Outcome" block is ever printed, and gating on
+    # the unfiltered set demanded a citation to a block that does not
+    # exist, on every mechanism answer.
     missing_outcome = (
-        task.answer_kind == "explanation" and bool(outcome_statement_ids)
+        task.answer_kind == "explanation" and bool(outcome_labels)
         and not any(
             {
                 label_by_finding_id[fid] for fid in point.statement.finding_ids
