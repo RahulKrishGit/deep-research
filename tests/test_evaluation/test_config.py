@@ -1106,7 +1106,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # `06a492b0d768` -> `8f97523e05d5`.
     # Fable final prompt review: the registry contract's media-title wording
     # ('an embedded video's or audio player's title'). Moved `8f97523e05d5` -> `639232e40a48`.
-    "researcher": "639232e40a48",
+    # Whole-branch review round: S6 docstrings describe failed-page handling
+    # exactly (no behaviour change). Moved `639232e40a48` -> `a967b15b311d`.
+    "researcher": "a967b15b311d",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1256,7 +1258,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # does; a forecast's release is not a page date; actuals take no forecast
     # verb; the sub-topic-only suffix explained; no doubled answer-form label.
     # Moved `78d7a747bc14` -> `74cd71c823a8`.
-    "report_writer": "74cd71c823a8",
+    # Whole-branch review round: a new research pass writes every part fresh;
+    # an all-refused part is failed; page metadata dates outrank the evaluator's;
+    # section titles fall back on a figure or verdict word; rule 8 per Fable
+    # (picked/by for a relayed pick, the verdict span keeps its criterion within
+    # the mark cap). Moved `74cd71c823a8` -> `a4eafe23b35a`.
+    "report_writer": "a4eafe23b35a",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
