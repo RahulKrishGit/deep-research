@@ -50,6 +50,7 @@ from deep_research.agents.report_table import _who_text
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.verified_facts import (
     _period_key,
+    answered_target_ids,
     release_text,
     same_organisation,
     subject_names_row,
@@ -92,6 +93,7 @@ __all__ = [
     "ReportComposition",
     "ReportPoint",
     "ReportSection",
+    "answered_not_stated_targets",
     "artifact_content_hashes",
     "canonical_sources",
     "citation_markers",
@@ -1444,9 +1446,33 @@ def _unreachable_line(page: UnreachablePage) -> str:
     return f"- {label} ({host}){suffix}"
 
 
+def answered_not_stated_targets(composition: ReportComposition) -> list[str]:
+    """Required targets a verified finding answers -- an explicit binding or
+    a fallback through the sub-topic -- but that no printed statement states
+    and that are not already listed under Not found (spec §10's disclosure
+    group). The one place this set is computed: :func:`_could_not_confirm_groups`
+    and ``quality.compute_report_quality``'s ``unaccounted_required_targets``
+    gate both call this, so the reader's disclosure and the gate that
+    exempts a disclosed target from being a hard failure can never disagree
+    about which targets these are.
+    """
+    targets = [t for topic in composition.sub_topics for t in topic.evidence_targets]
+    required = [t.target_id for t in targets if t.required]
+    answered = answered_target_ids(composition.findings, targets, sub_topics=composition.sub_topics)
+    listed = {row.target_id for row in composition.not_found}
+    points = [*composition.summary, *(p for section in composition.sections for p in section.points)]
+    stated = {identifier for p in points if p.statement is not None
+              for identifier in p.statement.finding_ids}
+    return [
+        t for t in required
+        if t in answered and t not in listed and not set(answered[t]) & stated
+    ]
+
+
 def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]:
     """§10: each present group, in order -- searched targets, unsearched
-    targets, failed parts, unreachable pages (capped at 5, Q5)."""
+    targets, answered-but-unstated targets, failed parts, unreachable pages
+    (capped at 5, Q5)."""
     groups: list[list[str]] = []
     searched = [target for target in composition.not_found if target.searched]
     unsearched = [target for target in composition.not_found if not target.searched]
@@ -1459,6 +1485,16 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
         groups.append([
             "This run did not research:",
             *[f"- {target.question}" for target in unsearched],
+        ])
+    unstated_ids = answered_not_stated_targets(composition)
+    if unstated_ids:
+        targets_by_id = {
+            target.target_id: target
+            for topic in composition.sub_topics for target in topic.evidence_targets
+        }
+        groups.append([
+            "We found sources on these but could not state a checked answer:",
+            *[f"- {targets_by_id[t].question}" for t in unstated_ids if t in targets_by_id],
         ])
     failed = [part for part in composition.parts if part.status == "failed"]
     if failed:

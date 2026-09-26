@@ -638,6 +638,46 @@ def test_what_we_couldnt_confirm_groups_searched_and_unsearched_targets() -> Non
     assert report.index("We found no source") < report.index("This run did not research")
 
 
+def test_what_we_couldnt_confirm_lists_answered_but_unstated_targets() -> None:
+    """The disclosure group that closes the loop the P1-3 quality fix opened:
+    a required target a citable finding answers, but that no printed
+    statement states, must reach the reader instead of vanishing silently."""
+    target = make_target("topic-01-target-01", question="How much capacity was added?")
+    topic = SubTopic(coverage_id="topic-01", title="Capacity", rationale="r",
+                     search_queries=["q"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    composition = ReportComposition(
+        question="q", session_id="s", sub_topics=[topic], findings=[finding],
+    )
+
+    report = render_written_report(composition)
+
+    assert "We found sources on these but could not state a checked answer:" in report
+    assert "- How much capacity was added?" in report
+
+
+def test_what_we_couldnt_confirm_puts_unstated_targets_before_failed_parts() -> None:
+    target = make_target("topic-01-target-01", question="How much capacity was added?")
+    topic = SubTopic(coverage_id="topic-01", title="Capacity", rationale="r",
+                     search_queries=["q"], success_criteria=["c"], priority=1,
+                     evidence_targets=[target])
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    composition = ReportComposition(
+        question="q", session_id="s", sub_topics=[topic], findings=[finding],
+        parts=[ReportPart(coverage_id="topic-02", sub_topic_title="Mic", status="failed")],
+    )
+
+    report = render_written_report(composition)
+
+    assert report.index("We found sources on these") < report.index("We could not write up Mic")
+
+
+
 def test_what_we_couldnt_confirm_lists_failed_parts() -> None:
     composition = ReportComposition(
         question="q", session_id="s",

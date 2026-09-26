@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.agents.report import ReportComposition
+from deep_research.agents.report import ReportComposition, answered_not_stated_targets
 from deep_research.agents.verified_facts import (
     _rows_share_a_subject,
     answered_target_ids,
@@ -88,23 +88,29 @@ def compute_report_quality(
     answered = answered_target_ids(state.verified_findings, targets,
                                    sub_topics=state.sub_topics)
     missing = [t for t in required if t not in answered]
-    listed = {row.target_id for row in composition.not_found}
+    listed = {row.target_id for row in composition.not_found} | set(
+        answered_not_stated_targets(composition)
+    )
     by_id = {finding_fingerprint(f): f for f in composition.findings}
     points = [*composition.summary, *(p for s in composition.sections for p in s.points)]
     stated = {identifier for p in points if p.statement is not None
               for identifier in p.statement.finding_ids}
-    # Review F2 (extended, P1-3): an answered target is not yet *accounted
-    # for*, whichever way it was answered. With the fallback (1A) an unbound
-    # finding answers a target of its own sub-topic; an explicit binding
-    # answers it directly. Either way, nothing else forces that answer to
-    # reach the reader -- a required question could be neither stated nor
-    # disclosed while every other gate passed, whether because the writer
-    # never bound it (the fallback case) or because the part that would have
-    # stated it vanished (a redraft that carried the part over unchanged, or
-    # a part whose every drafted point was refused). A required target
-    # counts only when a kept statement cites one of its answering findings,
-    # or when the report lists it under Not found; an answered target no
-    # statement states is an unaccounted answer, never a silent one.
+    # Review F2 (extended, P1-3, and its disclosure follow-up): an answered
+    # target is not yet *accounted for*, whichever way it was answered. With
+    # the fallback (1A) an unbound finding answers a target of its own
+    # sub-topic; an explicit binding answers it directly. Either way,
+    # nothing else forces that answer to reach the reader -- a required
+    # question could be neither stated nor disclosed while every other gate
+    # passed, whether because the writer never bound it (the fallback case)
+    # or because the part that would have stated it vanished (a redraft
+    # that carried the part over unchanged, or a part whose every drafted
+    # point was refused). Once the renderer's "We found sources on these..."
+    # group discloses such a target (``answered_not_stated_targets``, the
+    # same helper folded into ``listed`` above), it is no longer a silent
+    # gap and the gate stops flagging it: a required target counts as
+    # accounted for when a kept statement cites one of its answering
+    # findings, or when the report lists it under Not found, or when the
+    # report discloses it as answered-but-unstated.
     unaccounted = [
         t for t in required
         if t not in listed and (t not in answered or not set(answered[t]) & stated)

@@ -414,12 +414,15 @@ and raises `PlanningError` if the repair also fails. There is no partial plan.
 in its own agent span with its own tool budget, using `web_search`,
 `web_scraper`, `document_reader`, `query_memory`, and `save_to_memory`.
 On an extra pass, sub-topics are ordered by the targets that pass was bought
-for first, then by priority ascending, and capped at `max_sub_topics`. After each loop, a structured
-extraction pass over the loop's actual tool payloads produces `Finding`
-entries — skipped entirely when the loop retrieved nothing, so a source is
-never invented. A tool failure is an observation and the loop continues; a
-provider failure stops the remaining sub-topics with the findings so far kept.
-A high-priority sub-topic that produced no findings records a recoverable
+for first, then by priority ascending, and capped at `max_sub_topics`. Extraction
+is per page, not per loop (S6): a structured extraction call starts the moment
+a read is admitted, in the background, rather than waiting for the whole loop
+to finish, bounded by `agents.extraction_concurrency` (16) in flight at once —
+a local resource bound, not the provider's own concurrency limit. A read that
+yields nothing produces no `Finding`, so a source is never invented. A tool
+failure is an observation and the loop continues; a provider failure stops
+the remaining sub-topics with the findings so far kept. A high-priority
+sub-topic that produced no findings records a recoverable
 `researcher_sub_topic_without_findings` error in `state.errors`. A
 high-priority sub-topic that was never attempted at all records a recoverable
 `researcher_sub_topic_skipped` error instead — this can happen either because
@@ -500,16 +503,19 @@ Two stages, and both are needed:
   period, scope, kind (actual or forecast), attribution and the page's own
   organisation, or rejecting it. Batches hold
   `agents.verifier_batch_size` findings (5) and at most
-  `agents.verifier_concurrency` batches are in flight (8). Code then applies
+  `agents.verifier_concurrency` batches are in flight (16). Code then applies
   the checks that cannot be a judgement: the corrected wording must be on the
   page, a relayed figure keeps its originator, and a page is credited with its
   own organisation only when code confirms the host is that organisation's own.
 
-A finding's `verification.status` is one of `verified`, `verified_corrected` or
-`dropped`, exactly as the code decides it: with **every** figure dropped the
-finding is `dropped` with reason `all_figures_dropped`; with **some** figure
-dropped, or one whose context was corrected, it is `verified_corrected`; with
-every figure kept as written it is `verified`. A figure the Context Check
+A finding's `verification.status` is one of `verified`, `verified_corrected`,
+`quoted` or `dropped`, exactly as the code decides it: with **every** figure
+dropped the finding is `dropped` with reason `all_figures_dropped`; with
+**some** figure dropped, or one whose context was corrected, it is
+`verified_corrected`; with every figure kept as written it is `verified`; a
+finding with no figure at all — nothing for the Context Check to judge — is
+`quoted` (its snippet is on the page, and that is all this status claims).
+A figure the Context Check
 rejected or that could not be confirmed is dropped with an enumerated reason —
 `evidence_not_on_page`, `correction_not_on_page`, `context_rejected`,
 `context_unavailable` — and a figure with no reply at all is kept as
@@ -584,16 +590,29 @@ over the composition it composed, which is what the terminal gates and the
 extra-pass router read.
 
 `ReportReviewer` makes the single quality judgement. The packet holds every
-printed statement with its code-built label and its cited findings' snippets
-and labels, the key facts, the Not found list, and the gate results, and the
-reviewer answers a disposition for every statement it read — `supported`,
-`unsupported` or `not_reviewed` — plus a defect for anything it could not
-establish. A defect is material when its severity is `critical` or `major`, and
-a material defect blocks acceptance. A truncated reply is asked once more at
-high effort; a provider failure gives `provider_failed`, missing dispositions
-give `incomplete`, and either way the report publishes as `partial` — an
-unscored review never fails the run (PD-13). The *node*, not the model, stamps
-`missing_required_target_ids` from the quality snapshot (PD-5).
+printed statement with its own label and its cited findings' snippets and
+labels, the Verified figures (the fact-row table, unfiltered), the Table
+(the question-shaped table's own backing statement and fact-row ids), What
+the report could not confirm, each finding's `status:` line, and the gate
+results, and the reviewer answers a disposition for every statement it read
+— `supported`, `unsupported` or `not_reviewed` — plus a defect for anything
+it could not establish. A defect is material when its severity is
+`critical` or `major`, and a material defect blocks acceptance. A truncated
+reply is asked once more at high effort; a provider failure gives
+`provider_failed`, missing dispositions give `incomplete`, and either way
+the report publishes as `partial` — an unscored review never fails the run
+(PD-13). The *node*, not the model, stamps `missing_required_target_ids`
+from the quality snapshot (PD-5).
+
+After a redraft (spec §6.9), the reviewer's next call is a *scoped*
+re-review (T5 addendum) rather than a second full one, whenever the
+redrafted composition carries at least one part byte-identical to what the
+previous review judged: it is fed only the changed statements to judge
+fresh, the unchanged ones keep their carried-over dispositions, and it
+resolves or carries forward the previous review's own defects. A scoped
+reply that cannot be used (a provider failure, or one judging an id the
+packet does not carry) falls back to exactly one fresh full review, never a
+stale or partial judgement.
 
 ```python
 from deep_research.agents import ReportReviewer, ReportWriterAgent
@@ -875,16 +894,18 @@ gate (PD-24).
 
 ### Lowering parallelism when a provider throttles (spec 7.3)
 
-Four concurrency bounds decide how many provider calls one run makes at once,
+Six concurrency bounds decide how many provider calls one run makes at once,
 and they are the *only* caps. Lowering one is a config or environment change,
 with no code edit and no re-run of anything:
 
 | Setting | Default | What it bounds | Environment override |
 | --- | --- | --- | --- |
-| `agents.sub_topic_concurrency` | 5 | researcher sub-topics in flight | `AGENTS_SUB_TOPIC_CONCURRENCY` |
-| `agents.source_scoring_concurrency` | 3 | source-evaluator scoring batches in flight | `AGENTS_SOURCE_SCORING_CONCURRENCY` |
+| `agents.sub_topic_concurrency` | 10 | researcher sub-topics in flight | `AGENTS_SUB_TOPIC_CONCURRENCY` |
+| `agents.source_scoring_concurrency` | 6 | source-evaluator scoring batches in flight | `AGENTS_SOURCE_SCORING_CONCURRENCY` |
 | `agents.verifier_batch_size` | 5 | Context Check and Statement Check items per call | `AGENTS_VERIFIER_BATCH_SIZE` |
-| `agents.verifier_concurrency` | 8 | verification calls in flight | `AGENTS_VERIFIER_CONCURRENCY` |
+| `agents.verifier_concurrency` | 16 | verification calls in flight | `AGENTS_VERIFIER_CONCURRENCY` |
+| `agents.extraction_concurrency` | 16 | one sub-topic's per-page extraction calls in flight (S6) | `AGENTS_EXTRACTION_CONCURRENCY` |
+| `agents.writer_section_concurrency` | 10 | the parallel writer's section drafts in flight (spec §6.10) | `AGENTS_WRITER_SECTION_CONCURRENCY` |
 
 On a run that meets recurring `429` responses, lower the knob of the agent the
 telemetry names at the peak — `agents.verifier_concurrency` first, then
@@ -1088,8 +1109,8 @@ harness, and its CLI exposes exactly two commands: `list` and `suite`.
 
 ### Real-agent harness
 
-`suite` runs the real agents: the 21 rows of the versioned replay manifest
-(manifest v3, case semantics v2), each started through the production
+`suite` runs the real agents: the 35 rows of the versioned replay manifest
+(manifest v8, case semantics v2), each started through the production
 `deep_research.cli` entrypoint with the five production agent classes, the real
 graph, reviewer, renderer, and publisher, and only the external boundaries
 scripted. The socket layer is denied for every repetition and the attempts it

@@ -19,7 +19,7 @@ from deep_research.agents import (
 )
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.quality import compute_report_quality
-from deep_research.agents.report import ReportComposition
+from deep_research.agents.report import ReportComposition, answered_not_stated_targets
 from deep_research.utils import (
     ReportQualitySnapshot as UtilsReportQualitySnapshot,
 )
@@ -591,10 +591,14 @@ def _stating_composition(state: ResearchState, findings: Sequence[Finding], *,
 
     The gate reads the kept statements' own ``finding_ids`` (review F2), so a
     fixture states an answer by citing the finding that carries it -- exactly
-    what the writer's packet asks the model to do.
+    what the writer's packet asks the model to do. ``sub_topics`` and
+    ``findings`` mirror the state's own (the real writer's compose step
+    copies both verbatim), which the P1-3 follow-up's shared
+    ``answered_not_stated_targets`` helper needs.
     """
     return ReportComposition(
         question=state.original_question, session_id=state.session_id, as_of="2026-09-25",
+        sub_topics=list(state.sub_topics), findings=list(state.verified_findings),
         summary=[ReportPoint(
             text="The obligations apply from 2 August 2025.",
             source_urls=[f.source_url for f in findings],
@@ -628,12 +632,15 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
     # case and not this test's subject.
     assert "topic-03-target-01" not in snapshot.unaccounted_target_ids
 
-    # Answered but never stated: the obligation is neither missing (a finding
-    # answers it) nor silent -- it is an unaccounted answer and a hard failure.
+    # Answered but never stated: now disclosed under the new "We found
+    # sources on these but could not state a checked answer:" group instead
+    # of being a silent, undisclosed gap -- the gate reads that same
+    # disclosure set (``answered_not_stated_targets``), so it is no longer a
+    # hard failure once the report discloses it this way.
     unstated = compute_report_quality(state, _stating_composition(state, []))
     assert "topic-03-target-01" not in unstated.missing_required_target_ids
-    assert "topic-03-target-01" in unstated.unaccounted_target_ids
-    assert "unaccounted_required_targets" in unstated.hard_failures
+    assert "topic-03-target-01" not in unstated.unaccounted_target_ids
+    assert "topic-03-target-01" in answered_not_stated_targets(_stating_composition(state, []))
     # Disclosed under Not found instead of stated: the other honest reading.
     listed = compute_report_quality(state, _stating_composition(
         state, [], not_found=NotFoundTarget(target_id="topic-03-target-01",
@@ -666,10 +673,13 @@ def test_an_explicitly_bound_answer_must_still_be_stated_or_listed() -> None:
         _topic(1, make_target(organisation=EIA)), _topic(2), _topic(3, when),
         _topic(4), _topic(5)]})
 
+    # Answered but never stated: disclosed under the new "We found sources
+    # on these..." group (``answered_not_stated_targets``), so the gate no
+    # longer treats it as a silent, undisclosed gap.
     unstated = compute_report_quality(state, _stating_composition(state, []))
     assert "topic-03-target-01" not in unstated.missing_required_target_ids
-    assert "topic-03-target-01" in unstated.unaccounted_target_ids
-    assert "unaccounted_required_targets" in unstated.hard_failures
+    assert "topic-03-target-01" not in unstated.unaccounted_target_ids
+    assert "topic-03-target-01" in answered_not_stated_targets(_stating_composition(state, []))
 
     stated = compute_report_quality(state, _stating_composition(state, [bound]))
     assert "topic-03-target-01" not in stated.unaccounted_target_ids
@@ -678,3 +688,30 @@ def test_an_explicitly_bound_answer_must_still_be_stated_or_listed() -> None:
         state, [], not_found=NotFoundTarget(target_id="topic-03-target-01",
                                             question="From what date do the obligations apply?")))
     assert "topic-03-target-01" not in listed.unaccounted_target_ids
+
+
+def test_a_target_neither_answered_nor_listed_is_still_flagged() -> None:
+    """P1-3 disclosure follow-up, requirement 2: the one 'truly undisclosed'
+    case the gate still catches after the new disclosure group is a required
+    target with no answering finding at all.
+
+    An *answered* target that nothing states can no longer be constructed as
+    "neither stated nor disclosed": ``answered_not_stated_targets`` is the
+    exact set both the renderer's new group and this gate's exemption read,
+    so any answered, unstated, unlisted target is disclosed by construction
+    the moment it exists -- see the "Answered but never stated" assertions
+    in ``test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic``
+    and ``test_an_explicitly_bound_answer_must_still_be_stated_or_listed``,
+    both of which now show the target accounted for rather than flagged.
+    Bypassing the renderer's own list to fabricate a case is not possible
+    either: the gate computes the exemption from the same composition, not
+    from rendered text, so there is no separate "list" to go around. The
+    only target this gate can still flag is one with no answering finding at
+    all -- ``missing_forecast_state``'s target, unlisted under Not found.
+    """
+    unlisted = compute_report_quality(*missing_forecast_state(listed_not_found=False))
+    assert unlisted.unaccounted_target_ids == [FORECAST_TARGET]
+    assert "unaccounted_required_targets" in unlisted.hard_failures
+    assert FORECAST_TARGET not in answered_not_stated_targets(
+        missing_forecast_state(listed_not_found=False)[1]
+    )
