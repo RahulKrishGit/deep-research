@@ -386,6 +386,34 @@ def test_is_context_only_treats_an_exact_floor_authority_as_weak():
                            authority_floor=0.4) is True
 
 
+def test_two_findings_exactly_at_the_floor_do_not_gate_each_other(writer) -> None:
+    """P1-1: 'stronger' is the exact complement of 'weak' -- two sources
+    both scored exactly at the floor must not make each other context-only,
+    which would otherwise print an answered, evidenced target as not found."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                         unit_dimension=None)
+    a = _statement_finding("https://a.test/1", "A claim about the topic.",
+                           target_ids=["topic-01-target-01"])
+    b = _statement_finding("https://b.test/1", "Another claim about the topic.",
+                           target_ids=["topic-01-target-01"])
+    a_source = _authority_source("https://a.test/1", authority=0.4)
+    b_source = _authority_source("https://b.test/1", authority=0.4)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[a, b], evaluated_sources=[a_source, b_source])
+
+    task = writer.build_task(state)
+
+    assert "topic-01-target-01" not in {nf.target_id for nf in task.not_found}
+    sources = sources_by_url([a_source, b_source])
+    findings_by_id = {finding_fingerprint(a): a, finding_fingerprint(b): b}
+    answered = {"topic-01-target-01": [finding_fingerprint(a), finding_fingerprint(b)]}
+    assert is_context_only(a, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is False
+    assert is_context_only(b, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is False
+
+
 # --- registry_lines: D5's content: and passage: lines ----------------------
 
 
@@ -424,7 +452,7 @@ def test_registry_lines_carry_the_sources_rationale_first_sentence():
     assert "It was not peer reviewed." not in text
 
 
-def test_registry_lines_truncate_a_rationale_with_no_early_sentence_break_to_120_characters():
+def test_registry_lines_truncate_a_rationale_with_no_word_boundary_at_120_characters():
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     source = ScoredSource(
         url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
@@ -432,7 +460,47 @@ def test_registry_lines_truncate_a_rationale_with_no_early_sentence_break_to_120
     )
     text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
     line = next(l for l in text.splitlines() if l.startswith("source: "))
-    assert len(line) - len("source: ") <= 120
+    assert line[len("source: "):] == "A" * 120 + "…"
+
+
+def test_registry_lines_truncate_a_long_rationale_at_a_word_boundary_with_an_ellipsis():
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    long_rationale = ("An enthusiast site with no named author, no editorial review and no "
+                      "institutional backing for any of its historical claims about the topic")
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5, rationale=long_rationale,
+    )
+    text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
+    line = next(l for l in text.splitlines() if l.startswith("source: "))
+    expected = ("An enthusiast site with no named author, no editorial review and no "
+               "institutional backing for any of its historical")
+    assert line[len("source: "):] == expected + "…"
+
+
+def test_registry_lines_do_not_split_the_rationale_at_an_abbreviation():
+    """P3-2: 'U.S. Department' is not two sentences."""
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="Published by the U.S. Department of Energy. A government statistical release.",
+    )
+    text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
+    assert "source: Published by the U.S. Department of Energy." in text
+
+
+def test_registry_lines_omit_the_source_line_for_a_pipeline_generated_rationale():
+    """P3-2: a "Cited for: ..." rationale carries no source-evaluator
+    judgement, so it never reaches the writer as the page's kind."""
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="Cited for: battery storage capacity.",
+    )
+    text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
+    assert "source:" not in text
 
 
 def test_registry_lines_omit_the_source_line_when_no_sources_are_given():
@@ -587,11 +655,6 @@ def test_point_budget_uses_the_required_targets_floor_when_it_exceeds_the_length
     own_finding_ids = {finding_fingerprint(f) for f in findings}
 
     assert _point_budget(task, job, own_finding_ids) == 5
-
-
-def test_max_point_words_constant_is_sixty():
-    from deep_research.agents.report_writer import MAX_POINT_WORDS
-    assert MAX_POINT_WORDS == 60
 
 
 def test_word_budget_divides_target_words_by_drafted_part_count():
@@ -1395,18 +1458,17 @@ def test_consider_section_point_strips_a_parenthesised_label_group_without_refus
         finding_labels=["F18", "F28"],
     )
     rejected: list = []
-    dropped_marks: list = []
 
     candidates = _consider_section_point(
         point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
         context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
-        key_prefix="P01.", dropped_marks=dropped_marks,
+        key_prefix="P01.",
     )
 
     assert len(candidates) == 1
     assert candidates[0].text == "Structural pressures built over decades. Next sentence continues."
+    assert candidates[0].had_label_group is True
     assert rejected == []
-    assert dropped_marks != []
 
 
 def test_consider_section_point_strips_a_three_digit_label_group():
@@ -1415,15 +1477,15 @@ def test_consider_section_point_strips_a_three_digit_label_group():
     part_labels = {"F161": finding}
     point = WriterPointDraft(text="A claim about the topic (F161).", finding_labels=["F161"])
     rejected: list = []
-    dropped_marks: list = []
 
     candidates = _consider_section_point(
         point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
         context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
-        key_prefix="P01.", dropped_marks=dropped_marks,
+        key_prefix="P01.",
     )
 
     assert candidates[0].text == "A claim about the topic."
+    assert candidates[0].had_label_group is True
 
 
 def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_refusing():
@@ -1435,18 +1497,55 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
         finding_labels=["F18"],
     )
     rejected: list = []
-    dropped_marks: list = []
 
     candidates = _consider_bottom_line_point(
         point, "bottom_line[0]", cited_by_sections=cited_by_sections,
         numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
-        dropped_marks=dropped_marks,
     )
 
     assert len(candidates) == 1
     assert candidates[0].text == "Structural pressures built over decades. Next clause continues."
+    assert candidates[0].had_label_group is True
     assert rejected == []
-    assert dropped_marks != []
+
+
+def test_finalize_candidate_never_records_a_strip_note_for_a_refused_point():
+    """P3-3: a refused candidate's key never reaches a printed S-id, so its
+    strip note must never be recorded -- an unconditional note would orphan
+    itself under the evidence log's dropped-marks heading."""
+    from deep_research.agents.report_writer import _Candidate, _finalize_candidate
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    candidate = _Candidate(key="B01", where="bottom_line[0]", text="A claim.",
+                           finding_labels=["F01"], findings=[finding], items=[],
+                           had_label_group=True)
+    dropped_marks: list = []
+    verdicts = {"B01": _verdict("inconsistent", reason="not supported")}
+
+    point, _ = _finalize_candidate(
+        candidate, verdicts, stated_rows=set(), task_facts=[], task_targets=[],
+        label_urls={}, label_finding_ids={}, dropped_marks=dropped_marks, rejected=[],
+    )
+
+    assert point is None
+    assert dropped_marks == []
+
+
+def test_finalize_candidate_records_the_strip_note_for_a_kept_point():
+    from deep_research.agents.report_writer import _Candidate, _finalize_candidate
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    candidate = _Candidate(key="B01", where="bottom_line[0]", text="A claim.",
+                           finding_labels=["F01"], findings=[finding], items=[],
+                           had_label_group=True)
+    dropped_marks: list = []
+    verdicts = {"B01": _verdict("consistent")}
+
+    point, _ = _finalize_candidate(
+        candidate, verdicts, stated_rows=set(), task_facts=[], task_targets=[],
+        label_urls={}, label_finding_ids={}, dropped_marks=dropped_marks, rejected=[],
+    )
+
+    assert point is not None
+    assert dropped_marks == [("B01", "stripped a finding label from the point's text")]
 
 
 @pytest.mark.asyncio
@@ -2213,7 +2312,8 @@ async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
 ) -> None:
     """D1/D2: the Statement Check refusing a bottom-line sentence buys one
     re-ask carrying the refusal reason; its own result replaces the
-    refused attempt when every one of its sentences passes."""
+    refused attempt when every one of its sentences passes, and (P2-1)
+    attempt 1's own refusal record stays in the evidence log."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
                        target_ids=["topic-01-target-01"])
@@ -2235,6 +2335,55 @@ async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
     composition = await compose_written_report(task, provider=completer, section_concurrency=7)
 
     assert [p.text for p in composition.summary] == ["10.4 GW in 2024, restated."]
+    assert any(r.text == "A wrong claim." for r in composition.rejected_points)
+
+
+@pytest.mark.asyncio
+async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line(
+    tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P1-2: when the re-ask's own Statement Check fails (a provider outage
+    returns no verdicts at all, exactly as ``_check`` leaves every
+    candidate on a real failure), the re-ask is never adopted -- a checked
+    bottom line is never swapped for unchecked text."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="A wrong claim.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="Unchecked claim.", finding_labels=["F01"])]),
+    ])
+
+    import deep_research.agents.evidence_verifier as ev
+
+    calls = {"n": 0}
+
+    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Attempt 1's own bottom-line check: refuse it to buy a re-ask.
+            return {item.label: _verdict("inconsistent", reason="No cited finding supports this claim.")
+                    for item in items}, []
+        if calls["n"] == 3:
+            # The re-ask's own check: a provider outage, no verdicts at all.
+            return {}, []
+        return {item.label: _verdict("consistent") for item in items}, []
+
+    original = ev.check_statements
+    ev.check_statements = flaky_check
+    try:
+        agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+        task = agent.build_task(state)
+        composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+    finally:
+        ev.check_statements = original
+
+    assert [p.text for p in composition.summary] == ["10.4 GW in 2024."]
 
 
 @pytest.mark.asyncio

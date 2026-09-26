@@ -210,7 +210,8 @@ SECTION_INSTRUCTION = (
     "passage does not give.\n"
     "- When the source line describes the page's kind (a student paper, a class "
     "assignment, a teaching or role-play document, an enthusiast site, a blog post, a "
-    "reader comment, a podcast or course description), say so when you credit it: "
+    "reader comment, a podcast or course description), say so when you credit it, in "
+    "the source line's own words; never a kind the source line does not state: "
     "\"a student paper read at example.edu states …\".\n"
     "- Every judgement, ranking or recommendation is attributed to the source that made "
     "it, as the finding names it; where findings disagree, state each; never a pick, "
@@ -368,18 +369,18 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
         'one to beat for the price","picked":true,"by":"F02"}]}]}',
     ),
     (
-        "Example input: # Checked statements ## Why the change happened - A 2019 "
-        "regulation raised the compliance cost for small operators. (cites F03) - "
-        "Example Institute and example-register.test state that the cost rise pushed "
-        "several small operators to exit the market. (cites F04, F05) - Example News "
-        "reports that the market exit then concentrated supply among the remaining "
-        "larger operators. (cites F06)",
-        '{"sentences":[{"text":"A 2019 regulation raised the compliance cost for small '
-        'operators, and Example Institute and example-register.test state that the '
-        'cost rise then pushed several small operators to exit the market.",'
-        '"finding_labels":["F03","F04","F05"],"items":[]},{"text":"Example News '
-        'reports that the market exit then concentrated supply among the remaining '
-        'larger operators.","finding_labels":["F06"],"items":[]}]}',
+        "Example input: # Checked statements ## Why the change happened - Example "
+        "Institute reports that a 2019 regulation raised the compliance cost for "
+        "small operators. (cites F03) - Example Register and example-news.test state "
+        "that the cost rise pushed several small operators to exit the market. (cites "
+        "F04, F05) - Example Journal reports that the market exit concentrated supply "
+        "among the remaining larger operators. (cites F06)",
+        '{"sentences":[{"text":"According to Example Institute, a 2019 regulation '
+        'drove up compliance costs for small operators, and Example Register and '
+        'example-news.test say the rise pushed several of them out of the market.",'
+        '"finding_labels":["F03","F04","F05"],"items":[]},{"text":"Example Journal '
+        'reports that those exits left supply concentrated among the larger operators '
+        'that remained.","finding_labels":["F06"],"items":[]}]}',
     ),
 )
 
@@ -495,20 +496,52 @@ def statement_passages(findings: Sequence[Finding],
 
 
 _RATIONALE_CHARS = 120
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
+#: P3-2: a token abutting the split point that never ends a sentence on its
+#: own -- a single letter ("U" in "U.S.") or a known abbreviation. Checked
+#: on the whole token immediately before the break, periods and all.
+_RATIONALE_ABBREVIATIONS = {
+    "u.s.", "u.k.", "dr.", "mr.", "mrs.", "ms.", "st.", "no.", "vs.",
+    "e.g.", "i.e.", "etc.", "jr.", "sr.", "prof.", "inc.", "ltd.", "co.",
+}
+
+
+def _is_abbreviation_break(text: str, position: int) -> bool:
+    before = text[:position].split()
+    if not before:
+        return False
+    token = before[-1]
+    bare = token.rstrip(".")
+    return len(bare) <= 1 or token.lower() in _RATIONALE_ABBREVIATIONS
+
+
+def _first_sentence(text: str) -> str:
+    """P3-2: the first real sentence break -- ``[.!?]`` followed by
+    whitespace and an uppercase letter, skipping a break at a single-letter
+    or known-abbreviation token ("U.S. Department" is not two sentences)."""
+    for match in _SENTENCE_END.finditer(text):
+        if not _is_abbreviation_break(text, match.start()):
+            return text[:match.start()]
+    return text
 
 
 def _source_rationale_line(source: ScoredSource | None) -> str | None:
     """D8/D9: the Source Evaluator's own rationale, first sentence, at most
     ``_RATIONALE_CHARS`` characters -- so the writer (and through it the
-    reader) learns what kind of page a weak source is, not just its host."""
+    reader) learns what kind of page a weak source is, not just its host.
+    ``None`` for a pipeline-generated rationale ("Cited for: ...", carrying
+    no source-evaluator judgement at all, P3-2)."""
     if source is None:
         return None
     rationale = source.rationale.strip()
-    if not rationale:
+    if not rationale or rationale.startswith("Cited for:"):
         return None
-    first = _SENTENCE_END.split(rationale, maxsplit=1)[0].strip()
-    return first[:_RATIONALE_CHARS].rstrip()
+    first = _first_sentence(rationale).strip()
+    if len(first) <= _RATIONALE_CHARS:
+        return first
+    cut = first[:_RATIONALE_CHARS]
+    boundary = cut.rfind(" ")
+    return (cut[:boundary] if boundary > 0 else cut).rstrip() + "…"
 
 
 def registry_lines(label: str, finding: Finding,
@@ -713,7 +746,7 @@ def is_context_only(
             if (not other.target_ids and other_source.relevance_score is not None
                     and other_source.relevance_score < CONTEXT_ONLY_RELEVANCE):
                 continue
-            if other_source.authority_score is not None and other_source.authority_score >= authority_floor:
+            if other_source.authority_score is not None and other_source.authority_score > authority_floor:
                 return True
         return False
 
@@ -1182,6 +1215,12 @@ class _Candidate:
     finding_labels: list[str]
     findings: list[Finding]
     items: list[ItemMarkDraft]
+    had_label_group: bool = False
+    """D12/P3-3: whether the drafted text carried a leaked finding-label
+    group that ``_strip_label_groups`` removed -- the note this earns is
+    recorded by ``_finalize_candidate`` only once the candidate is kept, so
+    a refused candidate (whose key never reaches a printed S-id) never
+    leaves an orphaned note in the log."""
 
 
 def _finding_label(finding: Finding) -> str:
@@ -1201,7 +1240,6 @@ def _consider_section_point(
     point: WriterPointDraft, where: str, *, part_labels: Mapping[str, Finding],
     all_labels: Mapping[str, Finding], context_only_labels: set[str],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
-    dropped_marks: list[tuple[str, str]],
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
     drafted, had_label_group = _strip_label_groups(drafted)
@@ -1236,23 +1274,19 @@ def _consider_section_point(
     if pieces is None:
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
-    candidates = [
+    return [
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
-                  findings=[part_labels[label] for label in wanted], items=list(point.items))
+                  findings=[part_labels[label] for label in wanted], items=list(point.items),
+                  had_label_group=had_label_group)
         for n, piece in enumerate(pieces, start=1)
     ]
-    if had_label_group:
-        for candidate in candidates:
-            dropped_marks.append((candidate.key, "stripped a finding label from the point's text"))
-    return candidates
 
 
 def _consider_bottom_line_point(
     point: WriterPointDraft, where: str, *, cited_by_sections: Mapping[str, Finding],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
-    dropped_marks: list[tuple[str, str]],
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
     drafted, had_label_group = _strip_label_groups(drafted)
@@ -1280,17 +1314,14 @@ def _consider_bottom_line_point(
     if pieces is None:
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
-    candidates = [
+    return [
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
-                  findings=[cited_by_sections[label] for label in wanted], items=list(point.items))
+                  findings=[cited_by_sections[label] for label in wanted], items=list(point.items),
+                  had_label_group=had_label_group)
         for n, piece in enumerate(pieces, start=1)
     ]
-    if had_label_group:
-        for candidate in candidates:
-            dropped_marks.append((candidate.key, "stripped a finding label from the point's text"))
-    return candidates
 
 
 def _apply_marks(
@@ -1401,6 +1432,8 @@ def _finalize_candidate(
     )
     point = ReportPoint(text=text, source_urls=list(dict.fromkeys(f.source_url for f in own_first)),
                         statement=statement)
+    if candidate.had_label_group:
+        dropped_marks.append((candidate.key, "stripped a finding label from the point's text"))
     return point, verdict_string
 
 
@@ -1583,7 +1616,6 @@ async def _run_part(
             point, f"section[{job.coverage_id}].points[{n}]", part_labels=part_labels,
             all_labels=all_labels, context_only_labels=context_only_labels,
             numbers=numbers, rejected=rejected, key_prefix=f"P{job.order + 1:02d}.",
-            dropped_marks=dropped_marks,
         ))
 
     verdicts, check_errors = await _check(
@@ -1664,8 +1696,9 @@ def _statement_meets_authority_floor(
     finding_ids: Sequence[str], findings_by_id: Mapping[str, Finding],
     sources: Mapping[str, ScoredSource], authority_floor: float,
 ) -> bool:
-    """D6/D7 bullet 3: whether one of ``finding_ids``' sources is citable
-    and at or above ``authority_floor``."""
+    """D6/D7 bullet 3, and D8/D9's inclusive floor: whether one of
+    ``finding_ids``' sources is citable and above ``authority_floor`` -- the
+    exact complement of ``is_context_only``'s own-source ``weak`` test."""
     for finding_id in finding_ids:
         finding = findings_by_id.get(finding_id)
         if finding is None:
@@ -1673,7 +1706,7 @@ def _statement_meets_authority_floor(
         source = sources.get(normalize_source_url(finding.source_url))
         if source is None or source.low_confidence:
             continue
-        if source.authority_score is not None and source.authority_score >= authority_floor:
+        if source.authority_score is not None and source.authority_score > authority_floor:
             return True
     return False
 
@@ -1684,13 +1717,18 @@ async def _check_and_finalize_bottom_line(
     batch_size: int, cited_by_sections: Mapping[str, Finding], label_urls: Mapping[str, str],
     label_finding_ids: Mapping[str, str], key_prefix: str,
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
-          list[tuple[str, str]], list[tuple[str, str]]]:
+          list[tuple[str, str]], list[tuple[str, str]], bool]:
     """One bottom-line draft's candidates, checked and finalized (spec §6.6).
 
     Returns (points, verdict_map, check_errors, rejected, dropped_marks,
-    statement_check_refusals) -- the last is (drafted text, reason) for every
-    candidate the Statement Check itself refused (verdict "inconsistent"),
-    the D1/D2 re-ask's own input.
+    statement_check_refusals, fully_checked). ``statement_check_refusals``
+    is (drafted text, reason) for every candidate the Statement Check itself
+    refused (verdict "inconsistent"), the D1/D2 re-ask's own input.
+    ``fully_checked`` is True only when this draft had at least one
+    candidate, no check error, no mechanical or Statement Check rejection,
+    and a "consistent" or "corrected" verdict for every one of them (P1-2):
+    the re-ask adopts its own result only then, so a check outage or a
+    partial refusal never swaps a checked bottom line for unchecked text.
     """
     numbers = iter(range(1, 100))
     rejected: list[RejectedDraftPoint] = []
@@ -1700,7 +1738,6 @@ async def _check_and_finalize_bottom_line(
         candidates.extend(_consider_bottom_line_point(
             point, f"bottom_line[{n}]", cited_by_sections=cited_by_sections,
             numbers=numbers, rejected=rejected, key_prefix=key_prefix,
-            dropped_marks=dropped_marks,
         ))
 
     # P3-2: cap before the check, so an overflow sentence never spends one,
@@ -1737,7 +1774,14 @@ async def _check_and_finalize_bottom_line(
             if verdict_obj is not None and verdict_obj.verdict == "inconsistent":
                 refusals.append((candidate.text, verdict_obj.reason))
 
-    return points, verdict_map, check_errors, rejected, dropped_marks, refusals
+    fully_checked = (
+        bool(candidates) and not check_errors and not rejected
+        and all(
+            verdicts.get(c.key) is not None and verdicts.get(c.key).verdict in ("consistent", "corrected")
+            for c in candidates
+        )
+    )
+    return points, verdict_map, check_errors, rejected, dropped_marks, refusals, fully_checked
 
 
 async def _run_bottom_line(
@@ -1860,7 +1904,7 @@ async def _run_bottom_line(
         )
         return fallback_points, fallback_verdicts, [*draft_errors, error], [], [], moved
 
-    points, verdict_map, check_errors, rejected, dropped_marks, refusals = (
+    points, verdict_map, check_errors, rejected, dropped_marks, refusals, _ = (
         await _check_and_finalize_bottom_line(
             task, draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
             batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
@@ -1871,9 +1915,12 @@ async def _run_bottom_line(
     # D1/D2: one re-ask, carrying the Statement Check's own refusal reasons
     # the same way a redraft carries defects, when it refused a drafted
     # sentence -- the run-5 refusal dropped a mechanism step with no retry.
-    # The re-ask's own result replaces this attempt's only when every one of
-    # its own sentences passes; a re-ask that still has a refusal is
-    # discarded so a worse draft never displaces a partly-good one.
+    # The re-ask's own result replaces this attempt's only when it is fully
+    # checked (P1-2: no check error, no rejection, a consistent or corrected
+    # verdict for every one of its own candidates) -- never on a check
+    # outage or a partial refusal, which would otherwise swap a checked
+    # bottom line for unchecked or worse text. Attempt 1's own refusal
+    # records stay in the log either way (P2-1).
     if refusals:
         reask_defects = [
             ReviewDefect(
@@ -1890,15 +1937,16 @@ async def _run_bottom_line(
         draft_errors = [*draft_errors, *reask_draft_errors]
         if reask_draft is not None:
             (reask_points, reask_verdict_map, reask_check_errors, reask_rejected,
-             reask_dropped_marks, reask_refusals) = await _check_and_finalize_bottom_line(
+             reask_dropped_marks, _, reask_fully_checked) = await _check_and_finalize_bottom_line(
                 task, reask_draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
                 batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
                 label_finding_ids=label_finding_ids, key_prefix="R",
             )
-            if reask_points and not reask_refusals:
-                points, verdict_map, rejected, dropped_marks = (
-                    reask_points, reask_verdict_map, reask_rejected, reask_dropped_marks,
+            if reask_fully_checked:
+                points, verdict_map, dropped_marks = (
+                    reask_points, reask_verdict_map, reask_dropped_marks,
                 )
+                rejected = [*rejected, *reask_rejected]
                 check_errors = [*check_errors, *reask_check_errors]
 
     if not points:
