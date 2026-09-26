@@ -429,6 +429,26 @@ def test_the_bottom_line_falls_back_when_every_part_failed() -> None:
            "the evidence log shows what was verified.") in body
 
 
+
+def test_the_bottom_line_never_denies_an_answer_a_citable_finding_gives() -> None:
+    """P1-3 belt and braces: a citable (verified) finding must never be
+    hidden behind 'No source we could check answers this question.', even
+    when no part kept a point that states it -- a vanished part, or a part
+    a redraft carried over with the old material a new pass superseded.
+    """
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10.4 GW added in 2024.",
+                       "10.4", "GW", organisation="Example Agency")
+    composition = ReportComposition(question="q", session_id="s", findings=[finding])
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "No source we could check answers this question." not in body
+    assert ("This report's sections could not be written this time; "
+           "the evidence log shows what was verified.") in body
+
+
 def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
     """P0: an empty bottom line (a D8 outage -- the draft returned no kept
     sentence) must not claim the report cites nothing when a section below
@@ -639,7 +659,8 @@ def test_what_we_couldnt_confirm_lists_up_to_five_unreachable_pages_with_plain_r
 
     report = render_written_report(composition)
 
-    assert "These pages could not be opened, so nothing from them is in this report:" in report
+    assert "These pages could not be opened:" in report
+    assert "so nothing from them is in this report" not in report
     assert "- Denied 0 (denied0.example.test) — access was denied" in report
     assert "- Denied 4 (denied4.example.test) — access was denied" in report
     assert "Denied 5" not in report
@@ -659,6 +680,33 @@ def test_an_unreachable_pages_reason_reads_in_plain_words() -> None:
         page = UnreachablePage(url="https://example.test/page", title="A page", reason=code)
         report = render_written_report(ReportComposition(question="q", session_id="s", unreachable=[page]))
         assert plain in report
+
+
+
+def test_the_unreachable_pages_header_never_overclaims_when_the_same_work_is_cited() -> None:
+    """P3-3: a blocked landing page denied while its own PDF is read and
+    cited is still one work reaching the report; the header must not claim
+    "nothing from them is in this report" in a case it cannot rule out.
+    Chosen fix: soften the header rather than try to detect "the same work"
+    from the renderer alone (no reliable signal for that is carried on
+    ``UnreachablePage`` or the citation index)."""
+    finding = _finding("https://agency.example.test/report.pdf",
+                       "The agency reports strong growth.", "1", "unit",
+                       organisation="Example Agency")
+    point = ReportPoint(text="The agency reports strong growth.",
+                        source_urls=[finding.source_url],
+                        statement=ReportStatement(statement_id="S001",
+                                                  text="The agency reports strong growth.",
+                                                  finding_ids=[finding_fingerprint(finding)]))
+    page = UnreachablePage(url="https://agency.example.test/report", title="Annual report",
+                          reason="access_denied")
+    composition = ReportComposition(question="q", session_id="s", findings=[finding],
+                                    summary=[point], unreachable=[page])
+
+    report = render_written_report(composition)
+
+    assert "These pages could not be opened:" in report
+    assert "so nothing from them is in this report" not in report
 
 
 # --- §3.1.8: the unchecked-sentence provenance exception ------------------------

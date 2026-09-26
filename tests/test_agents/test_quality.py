@@ -648,15 +648,13 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
         blind, composition).missing_required_target_ids
 
 
-def test_an_answer_the_extraction_bound_is_accounted_for_by_being_answered() -> None:
-    """The bound on F2's rule: a target the *extraction* bound to a finding whose
-    sentence the Statement Check refused stays accounted for by being answered.
-
-    That is the pre-1A reading, and it is what the controlled scenarios
-    (`report-scope-corrected-to-all-segments`, `report-relay-labelled-as-relay`,
-    `validated-cache-reuse`) publish: their own expectation is an accepted report
-    whose refused sentence is gone. The rule's job is the fallback answer, which
-    no extraction ever read for this target.
+def test_an_explicitly_bound_answer_must_still_be_stated_or_listed() -> None:
+    """P1-3: an explicit binding is not enough on its own to be accounted
+    for -- the target still has to reach the reader, through a printed
+    statement or a Not-found entry, the same rule §11.2/review F2 already
+    holds a fallback answer to. Without either, the obligation is silently
+    lost -- the vanished-part scenario a redraft or an all-refused part can
+    produce, which no gate previously caught for an explicit binding.
     """
     bound = _unbound_dated_finding().model_copy(
         update={"target_ids": ["topic-03-target-01"]})
@@ -668,9 +666,15 @@ def test_an_answer_the_extraction_bound_is_accounted_for_by_being_answered() -> 
         _topic(1, make_target(organisation=EIA)), _topic(2), _topic(3, when),
         _topic(4), _topic(5)]})
 
-    snapshot = compute_report_quality(state, _stating_composition(state, []))
+    unstated = compute_report_quality(state, _stating_composition(state, []))
+    assert "topic-03-target-01" not in unstated.missing_required_target_ids
+    assert "topic-03-target-01" in unstated.unaccounted_target_ids
+    assert "unaccounted_required_targets" in unstated.hard_failures
 
-    # The plan's other required target has no finding at all, which is a
-    # different failure; this target is the one the rule is about.
-    assert "topic-03-target-01" not in snapshot.unaccounted_target_ids
-    assert "topic-03-target-01" not in snapshot.missing_required_target_ids
+    stated = compute_report_quality(state, _stating_composition(state, [bound]))
+    assert "topic-03-target-01" not in stated.unaccounted_target_ids
+
+    listed = compute_report_quality(state, _stating_composition(
+        state, [], not_found=NotFoundTarget(target_id="topic-03-target-01",
+                                            question="From what date do the obligations apply?")))
+    assert "topic-03-target-01" not in listed.unaccounted_target_ids

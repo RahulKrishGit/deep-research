@@ -15,7 +15,6 @@ from collections.abc import Iterable
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import ReportComposition
 from deep_research.agents.verified_facts import (
-    answers_by_fallback,
     _rows_share_a_subject,
     answered_target_ids,
     same_organisation,
@@ -94,30 +93,21 @@ def compute_report_quality(
     points = [*composition.summary, *(p for s in composition.sections for p in s.points)]
     stated = {identifier for p in points if p.statement is not None
               for identifier in p.statement.finding_ids}
-    # Review F2: an answered target is not yet *accounted for*. With the
-    # fallback (1A) an unbound finding answers a target of its own sub-topic,
-    # and nothing else forces that answer to reach the reader -- a required
-    # question could be neither stated nor disclosed while every gate passed.
-    # A required target counts only when a kept statement cites one of its
-    # answering findings, or when the report lists it under Not found; an
-    # answered target no statement states is an unaccounted answer, never a
-    # silent one.
-    by_fingerprint = {finding_fingerprint(f): f for f in state.verified_findings}
-    fallback = {
-        target.target_id for target in targets if target.required
-        if any(answers_by_fallback(by_fingerprint[identifier], target, state.sub_topics)
-               for identifier in answered.get(target.target_id, ()))
-    }
+    # Review F2 (extended, P1-3): an answered target is not yet *accounted
+    # for*, whichever way it was answered. With the fallback (1A) an unbound
+    # finding answers a target of its own sub-topic; an explicit binding
+    # answers it directly. Either way, nothing else forces that answer to
+    # reach the reader -- a required question could be neither stated nor
+    # disclosed while every other gate passed, whether because the writer
+    # never bound it (the fallback case) or because the part that would have
+    # stated it vanished (a redraft that carried the part over unchanged, or
+    # a part whose every drafted point was refused). A required target
+    # counts only when a kept statement cites one of its answering findings,
+    # or when the report lists it under Not found; an answered target no
+    # statement states is an unaccounted answer, never a silent one.
     unaccounted = [
         t for t in required
-        if t not in listed and (
-            t not in answered
-            # A fallback answer rests on the finding's sub-topic alone, so the
-            # gate requires it to reach the reader; an answer the extraction
-            # bound to the target itself is the pre-1A reading and is accounted
-            # for by being answered (the relative-period and scope scenarios).
-            or (t in fallback and not set(answered[t]) & stated)
-        )
+        if t not in listed and (t not in answered or not set(answered[t]) & stated)
     ]
     uncited = sum(1 for p in points if p.statement is None or not p.statement.finding_ids)
     unresolved = sum(1 for p in points if p.statement is not None and (

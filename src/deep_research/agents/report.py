@@ -1207,34 +1207,53 @@ def _written_bullet(
     return f"- {_rendered_point(point, composition, index)}"
 
 
+def _has_citable_finding(composition: ReportComposition) -> bool:
+    """Whether any recorded finding could be cited (spec §4: every status
+    except ``dropped``) -- keeps the "nothing answered" sentence honest when
+    a vanished part (a redraft carry-over, or every drafted point refused)
+    leaves a verified finding unstated rather than truly absent (P1-3).
+    """
+    return any(
+        finding.verification is not None and finding.verification.status != "dropped"
+        for finding in composition.findings
+    )
+
+
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
     """§3.1 rule 3 and §10: one paragraph, or a fallback when nothing was
     written.
 
     The "nothing answered" sentence is reserved for a pass that cites
-    nothing at all: an empty ``index`` and no table and no section with kept
-    points. An empty bottom line over a pass that *does* cite something (a
-    D8 batch outage on the bottom-line call alone) gets its own honest
-    sentence instead -- the old, wider fallback claimed the report answered
-    nothing while the table and sections below it plainly did.
+    nothing at all and holds no citable finding either: an empty ``index``,
+    no table, no section with kept points, and no citable finding recorded.
+    P1-3's belt and braces -- a required part whose points all vanished,
+    through a redraft carry-over or an all-refused draft, must never read as
+    "no source answers this" while a verified finding for it exists. An
+    empty bottom line over a pass that does cite or hold something gets its
+    own honest sentence instead: the every-part-failed wording when no
+    section kept a point either (nothing was in fact written), else the
+    summary-missing sentence (some section was, only the bottom line was not).
     """
     if composition.summary:
         return " ".join(
             _rendered_point(point, composition, index) for point in composition.summary
         )
     non_empty_parts = [part for part in composition.parts if part.status != "empty"]
+    every_part_failed_line = (
+        "This report's sections could not be written this time; "
+        f"{'the table and ' if composition.table is not None else ''}"
+        "the evidence log shows what was verified."
+    )
     if non_empty_parts and all(part.status == "failed" for part in non_empty_parts):
-        table_note = "the table and " if composition.table is not None else ""
-        return (
-            "This report's sections could not be written this time; "
-            f"{table_note}the evidence log shows what was verified."
-        )
+        return every_part_failed_line
     has_content = (
         bool(index)
         or composition.table is not None
         or any(section.points for section in composition.sections)
     )
-    if has_content:
+    if has_content or _has_citable_finding(composition):
+        if not any(section.points for section in composition.sections):
+            return every_part_failed_line
         return (
             "A summary could not be written this time; the sections below "
             "give what was found."
@@ -1451,7 +1470,7 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
     if composition.unreachable:
         shown = composition.unreachable[:_MAX_UNREACHABLE_LINES]
         lines = [
-            "These pages could not be opened, so nothing from them is in this report:",
+            "These pages could not be opened:",
             *[_unreachable_line(page) for page in shown],
         ]
         if len(composition.unreachable) > _MAX_UNREACHABLE_LINES:

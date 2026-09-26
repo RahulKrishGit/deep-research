@@ -400,7 +400,7 @@ Tradeoffs: `page_owner` falls back to the host for pages that do not name themse
 - **Partially answered comparison:** option rows show `—` where a part has no mark; the bottom line reports the picks that exist and never announces a gap; the gap appears under What we couldn't confirm when it is a required target with no answering finding.
 - **Every part failed:** `## Bottom line` reads `This report's sections could not be written this time; the evidence log shows what was verified.` (with `the table and` before `the evidence log` when a table qualifies); the table if it qualifies; the failed parts listed.
 - **The bottom-line draft returns no kept sentence, but the pass still cites something** (a D8 outage on the bottom-line call alone, distinct from every part failing): `## Bottom line` reads `A summary could not be written this time; the sections below give what was found.`; the table and the part sections print as they otherwise would.
-- **What we couldn't confirm** prints each group only when it is non-empty, in this order: `We found no source we could check that answers:` then `- {question}` (searched targets); `This run did not research:` then `- {question}` (targets not searched); `We could not write up {sub-topic title}; its sources are listed in the evidence log.` (failed parts); `These pages could not be opened, so nothing from them is in this report:` then `- {title or host} ({host})` plus ` — {reason}` when recorded (at most 5, then `- and others, listed in the evidence log`). No search or page counts. Tradeoff: plain and honest, at the cost of long lists on capped runs (Example 13.3 lists 12 questions).
+- **What we couldn't confirm** prints each group only when it is non-empty, in this order: `We found no source we could check that answers:` then `- {question}` (searched targets); `This run did not research:` then `- {question}` (targets not searched); `We could not write up {sub-topic title}; its sources are listed in the evidence log.` (failed parts); `These pages could not be opened:` then `- {title or host} ({host})` plus ` — {reason}` when recorded (at most 5, then `- and others, listed in the evidence log`). No search or page counts. The pages header stays this plain rather than adding "so nothing from them is in this report": a denied landing page can still reach the report through content read another way (a PDF fallback from the same work), and the renderer has no reliable signal on `UnreachablePage`/the citation index to rule that out. Tradeoff: plain and honest, at the cost of long lists on capped runs (Example 13.3 lists 12 questions).
 
 ## 11. Impact
 
@@ -501,7 +501,7 @@ SoundGuys names the Sony WH-1000XM6 the best wireless headphone overall for most
 
 ## What we couldn't confirm
 
-These pages could not be opened, so nothing from them is in this report:
+These pages could not be opened:
 - Wirecutter (nytimes.com)
 - A Business Insider guide to wired and wireless headphones (businessinsider.com)
 
