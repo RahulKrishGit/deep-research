@@ -1205,6 +1205,34 @@ async def test_the_scoped_calls_own_retry_telemetry_survives_the_fallback() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_successful_scoped_calls_retry_record_is_not_duplicated() -> None:
+    """ReRevFormatT5 (round 3): when the scoped call itself succeeds, no
+    fallback call ever runs to reset ``review_records`` -- so the same
+    tuple must not be listed twice just because ``scoped_records`` and
+    ``reviewer.review_records`` are, in that case, the identical object."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    scoped_retry = ResearchError(
+        error_type="report_review_output_limit_retry",
+        source="agents.report_reviewer",
+        message="The scoped review request was truncated and re-asked once.",
+        recoverable=True,
+    )
+    reviewer = FakeReviewer(
+        [fake_report_review(reviewed_statement_ids=("S010", "S011", "S012"))],
+        records=[(scoped_retry,)],
+    )
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 1
+    assert loaded.errors.count(scoped_retry) == 1
+
+
+@pytest.mark.asyncio
 async def test_an_extra_pass_rewrite_gets_a_full_review_not_a_remap() -> None:
     """P2: the remap must fire only through the writer-redraft hop, never
     across an extra-pass iteration boundary, even with a scored review and

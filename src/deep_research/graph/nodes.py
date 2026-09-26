@@ -939,7 +939,11 @@ async def _review_report(
             # both reset ``review_records`` to an empty tuple at the start of
             # their own request, so a truncation retry the scoped call paid
             # for would otherwise vanish from ``errors`` the moment the
-            # fallback's own (possibly retry-free) call starts.
+            # fallback's own (possibly retry-free) call starts. When no
+            # fallback runs, ``reviewer.review_records`` below is still this
+            # very tuple, so ``scoped_records`` is prepended only when
+            # ``scoped_failure`` is set -- never beside the identical tuple
+            # it was captured from.
             scoped_records = reviewer.review_records
             if scoped_status is not None:
                 # The addendum's own promise: a scoped call that could not be
@@ -972,7 +976,7 @@ async def _review_report(
         return (
             review,
             [
-                *scoped_records,
+                *(scoped_records if scoped_failure is not None else ()),
                 *reviewer.review_records,
                 report_review_unavailable_error(
                     node=REPORT_REVIEWER_NODE,
@@ -995,7 +999,10 @@ async def _review_report(
                 ).strip()
             }
         )
-    errors: list[ResearchError] = [*scoped_records, *reviewer.review_records]
+    errors: list[ResearchError] = [
+        *(scoped_records if scoped_failure is not None else ()),
+        *reviewer.review_records,
+    ]
     if review.status != "scored":
         errors.append(
             report_review_unavailable_error(
