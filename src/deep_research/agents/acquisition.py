@@ -1189,6 +1189,13 @@ class AcquisitionPolicy:
     )
     _read_admitted_notified: set[str] = field(default_factory=set, init=False)
     _passage_batches: dict[str, int] = field(default_factory=dict, init=False)
+    _validated_cache_reads: dict[str, ReadRecord] = field(
+        default_factory=dict, init=False
+    )
+    """A cache hit's ``validate_cached_read`` result, stashed by the
+    ``ToolPolicyDecision`` short-circuit under its read id and consumed by
+    ``_read_observed`` -- so one cache hit costs one validation instead of
+    the short-circuit and the reducer each validating it separately."""
 
     def __post_init__(self) -> None:
         if self.read_admission_chars < 1:
@@ -1668,6 +1675,7 @@ class AcquisitionPolicy:
                 validated_at=self.retrieved_at(),
             )
             if validated is not None:
+                self._validated_cache_reads[validated.read_id] = validated
                 result = ToolResult(
                     tool_name=tool_name,
                     success=True,
@@ -1928,86 +1936,90 @@ class AcquisitionPolicy:
         )
         self._last_search_failed = False
         if is_cache and isinstance(cached_read_id, str):
-            original = self._cache.get(requested) or self.reads.get(cached_read_id)
-            if original is not None:
-                validated = validate_cached_read(
-                    original,
-                    "".join(original.passages.values()),
-                    expected_content_sha256=original.content_sha256,
-                    version_eligible=True,
-                    validated_at=self.retrieved_at(),
+            validated = self._validated_cache_reads.pop(cached_read_id, None)
+            if validated is None:
+                original = self._cache.get(requested) or self.reads.get(
+                    cached_read_id
                 )
-                if validated is not None:
-                    # The import is what this session holds: ``cache`` kind, the
-                    # session that read the bytes, and the moment this one
-                    # validated them. A body this registry already holds is left
-                    # alone — a body this run read itself, or one an earlier
-                    # sub-topic of this run already imported, stays the record it
-                    # was filed as rather than being re-stamped by each reuse.
-                    self.reads.setdefault(validated.read_id, validated)
-                    validated = self._resolve_read_title(validated, requested)
-                    selected = select_passages_with_lede(
-                        validated.passages,
-                        self.query,
-                        self.read_admission_chars,
-                        lede=next(iter(validated.passages)),
+                if original is not None:
+                    validated = validate_cached_read(
+                        original,
+                        "".join(original.passages.values()),
+                        expected_content_sha256=original.content_sha256,
+                        version_eligible=True,
+                        validated_at=self.retrieved_at(),
                     )
-                    target_ids = (
-                        () if self.target_id is None else (self.target_id,)
-                    )
-                    units: dict[str, EvidenceUnit] = {}
-                    for locator in selected:
-                        unit = build_evidence_unit(
-                            read=validated,
-                            locator=locator,
-                            excerpt=validated.passages[locator],
-                            origin=self.origin,
-                            target_ids=target_ids,
-                        )
-                        units[unit.evidence_id] = unit
-                    self._assign_evidence(units)
-                    omitted = [
-                        locator
-                        for locator in validated.passages
-                        if locator not in set(selected)
-                    ]
-                    self._record_deferred_passages(
-                        validated, omitted, target_ids
-                    )
-                    self._record_selection_audits(
-                        validated,
-                        selected,
-                        omitted,
-                        target_ids,
-                    )
-                    admission_audit = build_boundary_audit(
-                        operation=READ_ADMISSION_OPERATION,
-                        job_id=self.session_id,
-                        agent_name=self.origin,
-                        sequence=self._next_sequence(),
+            if validated is not None:
+                # The import is what this session holds: ``cache`` kind, the
+                # session that read the bytes, and the moment this one
+                # validated them. A body this registry already holds is left
+                # alone — a body this run read itself, or one an earlier
+                # sub-topic of this run already imported, stays the record it
+                # was filed as rather than being re-stamped by each reuse.
+                self.reads.setdefault(validated.read_id, validated)
+                validated = self._resolve_read_title(validated, requested)
+                selected = select_passages_with_lede(
+                    validated.passages,
+                    self.query,
+                    self.read_admission_chars,
+                    lede=next(iter(validated.passages)),
+                )
+                target_ids = (
+                    () if self.target_id is None else (self.target_id,)
+                )
+                units: dict[str, EvidenceUnit] = {}
+                for locator in selected:
+                    unit = build_evidence_unit(
+                        read=validated,
+                        locator=locator,
+                        excerpt=validated.passages[locator],
+                        origin=self.origin,
                         target_ids=target_ids,
-                        input_ids=(validated.requested_url,),
-                        returned_ids=(validated.read_id,),
-                        accepted_ids=(validated.read_id,),
-                        packet_fingerprint=_fingerprint(
-                            validated.read_id, "cache", validated.content_sha256
-                        ),
-                        configuration_fingerprint=self.configuration_fingerprint,
                     )
-                    self.boundary_audits[admission_audit.audit_id] = (
-                        admission_audit
-                    )
-                    read_urls = list(self.state.read_urls)
-                    if validated.resolved_url not in read_urls:
-                        read_urls.append(validated.resolved_url)
-                    self.state = self.state.model_copy(
-                        update={"read_urls": read_urls}
-                    )
-                    self._mark_candidate(
-                        requested, status="read", read_id=validated.read_id
-                    )
-                    self._notify_read_admitted(validated.read_id)
-                    return
+                    units[unit.evidence_id] = unit
+                self._assign_evidence(units)
+                omitted = [
+                    locator
+                    for locator in validated.passages
+                    if locator not in set(selected)
+                ]
+                self._record_deferred_passages(
+                    validated, omitted, target_ids
+                )
+                self._record_selection_audits(
+                    validated,
+                    selected,
+                    omitted,
+                    target_ids,
+                )
+                admission_audit = build_boundary_audit(
+                    operation=READ_ADMISSION_OPERATION,
+                    job_id=self.session_id,
+                    agent_name=self.origin,
+                    sequence=self._next_sequence(),
+                    target_ids=target_ids,
+                    input_ids=(validated.requested_url,),
+                    returned_ids=(validated.read_id,),
+                    accepted_ids=(validated.read_id,),
+                    packet_fingerprint=_fingerprint(
+                        validated.read_id, "cache", validated.content_sha256
+                    ),
+                    configuration_fingerprint=self.configuration_fingerprint,
+                )
+                self.boundary_audits[admission_audit.audit_id] = (
+                    admission_audit
+                )
+                read_urls = list(self.state.read_urls)
+                if validated.resolved_url not in read_urls:
+                    read_urls.append(validated.resolved_url)
+                self.state = self.state.model_copy(
+                    update={"read_urls": read_urls}
+                )
+                self._mark_candidate(
+                    requested, status="read", read_id=validated.read_id
+                )
+                self._notify_read_admitted(validated.read_id)
+                return
         admission = admit_read_result(
             result,
             session_id=self.session_id,

@@ -202,6 +202,39 @@ def excerpt_matches(text: str, excerpt: str) -> bool:
     )
 
 
+class _NormalisedBody:
+    """Caches ``cosmetic_text(body)`` per hyphenation mode, lazily.
+
+    ``excerpt_matches`` normalises the whole ``text`` argument on every call,
+    so checking many passages against one body costs passages x page length
+    (twice that on a miss, since both hyphenation modes are tried). This
+    normalises the body once per mode -- the second mode only if some
+    passage's excerpt misses the first -- and reuses it for every passage
+    checked against the same body. The per-passage verdict is exactly
+    ``excerpt_matches(body, excerpt)`` would give, since the normalised body
+    text does not depend on the excerpt.
+    """
+
+    __slots__ = ("_text", "_joined", "_kept")
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._joined: str | None = None
+        self._kept: str | None = None
+
+    def matches(self, excerpt: str) -> bool:
+        candidate = cosmetic_text(excerpt)
+        if not candidate:
+            return False
+        if self._joined is None:
+            self._joined = cosmetic_text(self._text)
+        if candidate in self._joined:
+            return True
+        if self._kept is None:
+            self._kept = cosmetic_text(self._text, join_hyphenation=False)
+        return candidate in self._kept
+
+
 # ---------------------------------------------------------------------------
 # identity
 # ---------------------------------------------------------------------------
@@ -2963,12 +2996,11 @@ def build_read_record(
         raise EvidenceContractError("a read record requires at least one passage")
 
     checked: dict[str, str] = {}
+    body = _NormalisedBody(canonical)
     for locator, passage_text in passages.items():
         if not isinstance(locator, str) or not locator.strip():
             raise EvidenceContractError("a passage requires a non-empty locator")
-        if not isinstance(passage_text, str) or not excerpt_matches(
-            canonical, passage_text
-        ):
+        if not isinstance(passage_text, str) or not body.matches(passage_text):
             raise EvidenceContractError(
                 f"passage {locator!r} is not verbatim text of the read body"
             )
@@ -3176,10 +3208,11 @@ def validate_cached_read(
     passages = getattr(record, "passages", None)
     if not passages:
         return None
+    body = _NormalisedBody(resolved_text)
     for locator, passage_text in passages.items():
         if not isinstance(locator, str) or not locator.strip():
             return None
-        if not excerpt_matches(resolved_text, passage_text):
+        if not body.matches(passage_text):
             # A stored passage that is not in the stored body is a summary or
             # a rewrite, not original source text.
             return None

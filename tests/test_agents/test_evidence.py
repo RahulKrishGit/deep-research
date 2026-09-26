@@ -18,6 +18,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents import evidence
 from deep_research.agents.evidence import (
     DISPOSITION_REASONS,
     DISPOSITION_STAGES,
@@ -905,6 +906,46 @@ def test_a_read_preserves_raw_locator_text_and_matches_it_normalized() -> None:
     )
 
 
+def test_build_read_record_normalises_the_body_at_most_twice(monkeypatch) -> None:
+    """Whole-body normalisation must not scale with passage count (P1-A).
+
+    ``excerpt_matches`` used to normalise the whole body once per passage
+    (twice on a miss), so a page of many passages cost passages x page
+    length. The fix normalises each hyphenation mode once, lazily, and
+    reuses it for every passage -- so the whole-body cost is at most two
+    normalisations no matter how many passages are checked.
+    """
+    passages = {
+        f"p-{i}": f"Paragraph {i} reports a unique measurement for locator {i}."
+        for i in range(200)
+    }
+    body = "\n\n".join(passages.values())
+    canonical = canonical_read_text(body)
+    original_cosmetic_text = evidence.cosmetic_text
+    body_normalisations = 0
+
+    def counting(text: str, *, join_hyphenation: bool = True) -> str:
+        nonlocal body_normalisations
+        if text == canonical:
+            body_normalisations += 1
+        return original_cosmetic_text(text, join_hyphenation=join_hyphenation)
+
+    monkeypatch.setattr(evidence, "cosmetic_text", counting)
+
+    evidence.build_read_record(
+        session_id=SESSION_ID,
+        reader="web_scraper",
+        requested_url="https://lab.example/big-page",
+        resolved_url="https://lab.example/big-page",
+        title="Big page",
+        retrieved_at=RETRIEVED_AT,
+        text=body,
+        passages=passages,
+    )
+
+    assert body_normalisations <= 2
+
+
 def test_passages_from_chunks_locates_every_extracted_chunk() -> None:
     chunks = [
         {"text": "Page one body.", "chunk_index": 0, "page": 1},
@@ -988,6 +1029,47 @@ def test_an_admitted_cache_read_still_resolves_its_publisher_and_work() -> None:
     assert canonical_publisher_id(_identity_metadata(stored)) == (
         canonical_publisher_id(_identity_metadata(admitted))
     )
+
+
+def test_validate_cached_read_normalises_the_body_at_most_twice(monkeypatch) -> None:
+    """The same whole-body cost bound applies to cache re-validation (P1-A)."""
+    passages = {
+        f"p-{i}": f"Paragraph {i} reports a unique measurement for locator {i}."
+        for i in range(200)
+    }
+    body = "\n\n".join(passages.values())
+    stored = build_read_record(
+        session_id=SESSION_ID,
+        reader="web_scraper",
+        requested_url="https://lab.example/big-page",
+        resolved_url="https://lab.example/big-page",
+        title="Big page",
+        retrieved_at=RETRIEVED_AT,
+        text=body,
+        passages=passages,
+    )
+    canonical = canonical_read_text(body)
+    original_cosmetic_text = evidence.cosmetic_text
+    body_normalisations = 0
+
+    def counting(text: str, *, join_hyphenation: bool = True) -> str:
+        nonlocal body_normalisations
+        if text == canonical:
+            body_normalisations += 1
+        return original_cosmetic_text(text, join_hyphenation=join_hyphenation)
+
+    monkeypatch.setattr(evidence, "cosmetic_text", counting)
+
+    admitted = evidence.validate_cached_read(
+        stored,
+        body,
+        expected_content_sha256=stored.content_sha256,
+        version_eligible=True,
+        validated_at=VALIDATED_AT,
+    )
+
+    assert admitted is not None
+    assert body_normalisations <= 2
 
 
 def test_a_forged_or_missing_cache_read_id_is_refused() -> None:
@@ -3078,6 +3160,37 @@ def test_a_real_leap_day_is_still_a_date() -> None:
     assert temporal.data_period == "2024-02-29"
     assert temporal.status == "stale_data"
     assert read_dated_tokens(read) == ["2024", "2024-02", "2024-02-29"]
+
+
+def test_normalised_body_matches_excerpt_matches_semantics() -> None:
+    """The shared body matcher agrees with ``excerpt_matches`` on every case.
+
+    ``_NormalisedBody`` is the cache ``build_read_record`` and
+    ``validate_cached_read`` share; it must return exactly what
+    ``excerpt_matches(text, excerpt)`` returns for a passage that matches
+    only with the line-break hyphen joined, one that matches only with it
+    kept, and a non-verbatim passage that matches neither.
+    """
+    page = (
+        "EIA said \u201cdevelopers plan to add 19.6 GW\u201d of bat\u00adtery "
+        "stor-\nage in 2025, and the grid-\nscale fleet keeps growing."
+    )
+    body = evidence._NormalisedBody(page)
+
+    joined_only = "battery storage in 2025"
+    kept_only = "the grid-scale fleet keeps growing"
+    non_verbatim = "developers plan to add 19.7 GW"
+
+    assert excerpt_matches(page, joined_only) is True
+    assert body.matches(joined_only) == excerpt_matches(page, joined_only)
+
+    assert excerpt_matches(page, kept_only) is True
+    assert body.matches(kept_only) == excerpt_matches(page, kept_only)
+
+    assert excerpt_matches(page, non_verbatim) is False
+    assert body.matches(non_verbatim) == excerpt_matches(page, non_verbatim)
+
+    assert body.matches("   ") is False
 
 
 def test_excerpt_matches_is_cosmetic_only() -> None:

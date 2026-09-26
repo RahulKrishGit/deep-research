@@ -2729,6 +2729,72 @@ def test_both_targets_survive_a_second_admission_of_one_body() -> None:
     assert merge_evidence_units({}, dict(shared_evidence)) == shared_evidence
 
 
+def test_a_cache_hit_validates_the_stored_read_exactly_once(monkeypatch) -> None:
+    """A cache hit must run ``validate_cached_read`` once, not twice (P1-A).
+
+    The ``ToolPolicyDecision`` short-circuit validates the stored read to
+    build the free cache-hit result; ``_read_observed`` used to validate the
+    same read again to admit it. One hit must cost one validation.
+    """
+    from deep_research.agents import acquisition as acquisition_module
+
+    shared_reads: dict[str, ReadRecord] = {}
+    shared_evidence: dict[str, EvidenceUnit] = {}
+    shared_cache: dict[str, ReadRecord] = {}
+    shared_network: set[str] = set()
+    first = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-1",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-1",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+    first.after_action(
+        _document_step(_paged_result(1, text="queue delay commissioning"))
+    )
+
+    second = AcquisitionPolicy(
+        state=AcquisitionState(
+            target_id="target-2",
+            candidate_urls=[_STUDY_URL],
+            remaining_calls=2,
+        ),
+        session_id="session-1",
+        target_id="target-2",
+        query="queue delay commissioning",
+        reads=shared_reads,
+        evidence=shared_evidence,
+        cache=shared_cache,
+        network_read_ids=shared_network,
+    )
+
+    calls = 0
+    original = acquisition_module.validate_cached_read
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(acquisition_module, "validate_cached_read", counting)
+
+    cached = second.before_action(
+        _read_decision("document_reader", _STUDY_URL), {"source": _STUDY_URL}
+    )
+    assert cached.result is not None
+    second.after_action(_document_step(cached.result))
+
+    assert calls == 1
+    assert len(shared_evidence) == 1
+
+
 class _RecordingAudits(MutableMapping[str, BoundaryAudit]):
     """One run's boundary-audit mapping, remembering every write it is handed.
 
