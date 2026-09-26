@@ -55,8 +55,11 @@ from deep_research.agents.planner import (
     SubTopicDraft,
 )
 from deep_research.agents.report_reviewer import (
+    PreviousDefectResolutionDraft,
     ReportReviewDraft,
+    ReviewDefectDraft,
     ReviewDimensionScores,
+    ScopedReportReviewDraft,
     StatementDispositionDraft,
 )
 from deep_research.agents.report_writer import WriterPointDraft
@@ -385,6 +388,27 @@ class CaseExpectation:
 
 
 @dataclass(frozen=True)
+class ReplayReviewDefect:
+    """One material defect the scripted *first* full review names (T5 addendum).
+
+    Its ``target_ids`` are what routes the redraft it buys to exactly the
+    part(s) that own them (spec §6.9's ``_route_defects``); a scenario with
+    two or more parts and one such defect is what leaves the other part(s)
+    carried over byte-identical, which is what lets the second review be
+    scoped rather than a second full one. ``ReplayCompleter`` returns this
+    defect on the first ``ReportReviewDraft`` reply only, and marks it
+    resolved on every scoped re-review after -- a controlled case scripts one
+    redraft, never a loop.
+    """
+
+    target_ids: tuple[str, ...]
+    kind: str = "presentation"
+    severity: str = "major"
+    problem: str = "This part's section should restate its own figure more plainly."
+
+
+
+@dataclass(frozen=True)
 class ReplayScenario:
     """One fully scripted offline replay of the real stack."""
 
@@ -409,6 +433,10 @@ class ReplayScenario:
     # sentences the evidence does not carry.
     review_score: float = 0.9
     rejected_statement_ids: tuple[str, ...] = ()
+    # The one material defect the scripted first full review names, naming
+    # the part(s) its ``target_ids`` route to (T5 addendum, spec §6.9). Left
+    # unset, the review never returns a defect and no redraft is bought.
+    review_defect: ReplayReviewDefect | None = None
     # The Statement Check that could not be made: every batch's provider call
     # raises, exactly as an outage would, and every drafted sentence has to be
     # kept exactly as drafted with the failure recorded (§5.4). The case exists
@@ -720,6 +748,11 @@ class ReplayCompleter(AgentCompleter):
             scenario.rejected_statement_ids
         )
         self.review_score: float = scenario.review_score
+        self.review_defect: ReplayReviewDefect | None = scenario.review_defect
+        # Returned on the first ``ReportReviewDraft`` reply only: a redraft
+        # buys one re-run (spec §6.9), and a controlled case scripts one,
+        # never a defect that keeps reappearing after it is resolved.
+        self._review_defect_returned = False
         self.invented_prose: str = scenario.invented_prose
         # Every sentence the writer double drafted, mapped to the page it was
         # drafted from. This is how a scenario's per-page wording override
@@ -1422,6 +1455,17 @@ class ReplayCompleter(AgentCompleter):
             for item in manifest.group(1).split(",")
             if item.strip() and item.strip() != "(none)"
         ]
+        defects: list[ReviewDefectDraft] = []
+        if self.review_defect is not None and not self._review_defect_returned:
+            self._review_defect_returned = True
+            defects.append(
+                ReviewDefectDraft(
+                    kind=self.review_defect.kind,
+                    severity=self.review_defect.severity,
+                    target_ids=list(self.review_defect.target_ids),
+                    problem=self.review_defect.problem,
+                )
+            )
         return ReportReviewDraft(
             dimensions=ReviewDimensionScores(
                 **{name: self.review_score for name in REVIEW_DIMENSIONS}
@@ -1433,6 +1477,7 @@ class ReplayCompleter(AgentCompleter):
                 )
                 for statement_id in statement_ids
             ],
+            defects=defects,
             rationale="Every statement is carried by the evidence shown.",
         )
 
@@ -1448,6 +1493,52 @@ class ReplayCompleter(AgentCompleter):
         if statement_id in self.rejected_statement_ids:
             return "unsupported"
         return "supported"
+
+    def _reply_ScopedReportReviewDraft(self, text: str) -> ScopedReportReviewDraft:
+        """Accept a redraft: every changed statement supported, every
+        previous defect resolved, no new defect (T5 addendum).
+
+        Generic over the packet's own content, exactly as
+        ``_reply_ReportReviewDraft`` is keyed on the full packet's own
+        manifest rather than on one case's specifics: the changed statement
+        ids and the previous defect ids are both read back out of the
+        request's own sections, so any scenario whose redraft buys a scoped
+        re-review is answered the same way -- the one redraft closed
+        whatever the first review named, and judgement of the untouched
+        statements is exactly what the packet's own carried dispositions
+        already supply.
+        """
+        changed_block = self._material_block(text, "Changed statement ids").strip()
+        changed_line = changed_block.splitlines()[-1] if changed_block else ""
+        changed_ids = [
+            item.strip()
+            for item in changed_line.split(",")
+            if item.strip() and item.strip() != "(none)"
+        ]
+        previous_defects = self._material_block(text, "Previous defects")
+        defect_ids = re.findall(r"(?m)^- (\S+) \(", previous_defects)
+        return ScopedReportReviewDraft(
+            dimensions=ReviewDimensionScores(
+                **{name: self.review_score for name in REVIEW_DIMENSIONS}
+            ),
+            statement_dispositions=[
+                StatementDispositionDraft(
+                    statement_id=statement_id,
+                    disposition=self.disposition_for(statement_id),
+                )
+                for statement_id in changed_ids
+            ],
+            previous_defect_resolutions=[
+                PreviousDefectResolutionDraft(
+                    defect_id=defect_id,
+                    resolved=True,
+                    note="The redraft resolved it.",
+                )
+                for defect_id in defect_ids
+            ],
+            new_defects=[],
+            rationale="The redraft closed every previous defect; nothing else changed.",
+        )
 
 
 class ReplaySearch:
@@ -3031,6 +3122,30 @@ def _invariant_no_table_printed(run: ReplayRun) -> str | None:
     return None
 
 
+def _invariant_scoped_review_used(run: ReplayRun) -> str | None:
+    """The redraft's second review is scoped, never a second full review.
+
+    T5 addendum: once a redrafted composition carries a part byte-identical
+    to what the first review judged, the graph must ask a *scoped* re-review
+    (``ScopedReportReviewDraft``) rather than falling back to a second full
+    one -- the fallback exists for a redraft that changed everything, which
+    this case's untouched part is built to avoid. Read from the completer's
+    own call log, a structural fact about which schema each request named,
+    never from the rendered report.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if full_reviews != 1:
+        return f"expected exactly one full review, saw {full_reviews}"
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped re-review, saw {scoped_reviews}"
+    if run.state.writer_redrafts != 1:
+        return f"expected exactly one writer redraft, saw {run.state.writer_redrafts}"
+    return None
+
+
+
 _REPLAY_INVARIANTS: dict[str, Any] = {
     "relay_labelled_as_relay": _invariant_relay_labelled_as_relay,
     "no_false_verification": _invariant_no_false_verification,
@@ -3074,6 +3189,7 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
         _invariant_mechanism_obligation_stays_unanswered
     ),
     "no_table_printed": _invariant_no_table_printed,
+    "scoped_review_used": _invariant_scoped_review_used,
 }
 
 

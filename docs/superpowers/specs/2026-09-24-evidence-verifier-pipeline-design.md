@@ -221,6 +221,10 @@ verified provenance, and the error is recorded. It never stops the run.
 
 ### 6.1 Report shape
 
+**Superseded** by `2026-09-25-consumer-report-format.md` §3: the answer-first
+skeleton (bottom line, question-shaped table, part sections, what we
+couldn't confirm, sources) replaces the layout this section describes.
+
 1. Header: question, as-of, scope, counts.
 2. Executive summary: a direct answer to each part of the question, first.
    For the benchmark: the 2024 actual; then each organisation's latest 2025

@@ -50,11 +50,14 @@ from deep_research.utils.types import (
     ReportPoint,
     ReportQualitySnapshot,
     ReportReview,
+    ReportTable,
     ResearchError,
     ResearchEvent,
     ResearchState,
     ScoredSource,
     SubTopic,
+    TableCell,
+    TableEntry,
 )
 from tests.evidence_fakes import figure, make_finding, make_read
 
@@ -1382,14 +1385,14 @@ def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
 
 
 def test_the_cited_count_is_what_the_published_report_cites() -> None:
-    """P2-1: ``cited_assessed_sources`` is the report's own "N sources cited".
+    """P2-1: ``cited_assessed_sources`` is the report's own evidence line.
 
     The count intersects the assessed URLs with exactly the pages the written
-    report cites: everything its points, its sections and its Key facts rows
-    reference, with mirror copies never merged. A source cited only through a
-    Key facts row therefore counts as cited, three URLs of one work are three
-    cited sources, and an assessed source the report never cites is not
-    counted at all.
+    report cites: everything its points, its sections and the question-shaped
+    table's cells reference (spec §5), with mirror copies never merged. A
+    source cited only through a table cell therefore counts as cited, three
+    URLs of one work are three cited sources, and an assessed source the
+    report never cites is not counted at all.
     """
     key_read = make_read(
         KEY_FACTS_TEXT, url=KEY_FACTS_URL, title="Battery capacity additions"
@@ -1435,12 +1438,30 @@ def test_the_cited_count_is_what_the_published_report_cites() -> None:
                 finding_id=finding_fingerprint(key_finding),
             )
         ],
+        as_of="2026-08-01T00:00:00+00:00",
         summary=[
             ReportPoint(
                 text="Generators added 10 GW of battery storage capacity in 2024.",
                 source_urls=[GRID_URL, MIRROR_URL, MIRROR_TWO_URL],
             )
         ],
+        table=ReportTable(
+            shape="findings",
+            columns=[
+                "What was measured", "Result", "Who reported it (and when)", "Source",
+            ],
+            rows=[
+                [
+                    TableCell(text="battery storage power capacity added"),
+                    TableCell(text="10.4 GW"),
+                    TableCell(text="Example Laboratory"),
+                    TableCell(
+                        entries=[TableEntry(source_url=KEY_FACTS_URL)],
+                        finding_ids=[finding_fingerprint(key_finding)],
+                    ),
+                ]
+            ],
+        ),
     )
     composition = state.composition
     counts = outcome_of(state).evidence_counts
@@ -1458,7 +1479,7 @@ def test_the_cited_count_is_what_the_published_report_cites() -> None:
     assert counts.cited_assessed_sources == 4
 
     # The report's own header prints that same number.
-    cited_line = re.search(r"\b(\d+) sources cited\b", render_written_report(composition))
+    cited_line = re.search(r"· (\d+) sources?\b", render_written_report(composition))
     assert cited_line is not None
     assert int(cited_line.group(1)) == counts.cited_assessed_sources
 

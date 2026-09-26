@@ -78,6 +78,7 @@ DECLARED_CASE_IDS: tuple[str, ...] = (
     "unattributed-relay-prose",
     "one-part-question",
     "maker-notes-vs-relay",
+    "scoped-redraft-after-a-named-defect",
 )
 
 REPETITIONS = 3

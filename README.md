@@ -519,16 +519,15 @@ Figure Match result, is marked `context_unchecked`, and is cited only as
 "unchecked context" (PD-26); nothing is ever promoted by a Context Check it
 never got.
 
-Reader labels are built by code (D7, §6.1) from the verified fields, and they
-are the only provenance the reader sees: the report prints the label beside the
-figure, so a corrected scope or a relayed originator is visible whatever the
-prose says.
-
-A sentence ends with its figure's reader label only when the figure's unit is
-one the figure parser scales (watts, watt-hours, percent). A figure in any
-other unit (money, counts, tonnes) is still verified, cited and listed in Key
-facts with its organisation, period and kind, but the sentence that states it
-carries no label (spec D10).
+Provenance built from the verified fields — organisation, kind, period,
+scope, release — is no longer printed beside each reader sentence (spec
+`2026-09-25-consumer-report-format.md` §3.1 rule 9): the reader states a
+sentence in plain prose, and its full provenance lives in the evidence log's
+per-finding record and in the quality JSON's fact rows. The one exception is
+a sentence whose Statement Check verdict is `unchecked` (a batch failure)
+and that carries a fact row: it still ends with a deterministic
+`(figure: {who reported it (and when)})` line, so the only sentence printed
+without an independent check keeps a visible provenance line.
 
 ```python
 from deep_research.agents import EvidenceVerifierAgent, SourceEvaluatorAgent
@@ -550,15 +549,22 @@ async with tracker.session_span(session_id, state.original_question):
 
 ## Report Writer And Report Reviewer
 
-`ReportWriterAgent` turns `state.verified_findings` into the reader report and
-its evidence ledger. Everything structural is built by code — the key facts
-table (`fact_rows()`, one row per fact, revisions folded and noted), the Not
-found list, the labels, the source appendix and the section order — so the
+`ReportWriterAgent` turns `state.verified_findings` into the reader report —
+the answer-first skeleton of `2026-09-25-consumer-report-format.md` §3: an
+evidence line, the bottom line, an optional question-shaped table, one
+section per plan part, What we couldn't confirm, and Sources — and its
+evidence ledger. One call drafts each plan part's section (§6.3) from only
+that part's own findings, every part running in parallel, and a last call
+drafts the bottom line (§6.6) from the parts' checked statements once every
+part has finished; a redraft re-asks only the parts a defect names (§6.9).
+Code builds everything structural the model does not draft: the
+question-shaped table (§4), the evidence line, the Sources list, the link to
+the evidence log, and the evidence log's own full fact-row table
+(`fact_rows()`, one row per fact, revisions folded and noted) — so the
 required sections exist whether or not the model produced prose. The model
-drafts the executive summary and the short section points and cites findings
-**by label only**; a point citing no known label is refused with a recorded
-reason, and citations are derived from the cited findings, so a URL no finding
-carries cannot be printed (PD-6).
+cites findings **by label only**; a point citing no known label is refused
+with a recorded reason, and citations are derived from the cited findings,
+so a URL no finding carries cannot be printed (PD-6).
 
 Wording is judged once, by the Statement Check: one batched, tool-free call
 over every candidate sentence with its cited findings' verified figures,
@@ -909,7 +915,7 @@ three names are one family, derived from the session id and the pass:
 
 | Artifact | Answers | Name |
 | --- | --- | --- |
-| Reader report | What is settled, how strongly, and where it is uncertain. Every figure carries its code-built label — organisation, kind, period, scope, release — and **Sources** lists only the sources its statements cite. | `report-<session>-<iteration>.md` |
+| Reader report | The bottom line first, an optional question-shaped table, one section per plan part, What we couldn't confirm, and **Sources** listing only the sources its statements cite (publisher, title, date). A figure's own organisation, kind, period, scope and release live in the evidence log and the quality record, not beside the reader sentence. | `report-<session>-<iteration>.md` |
 | Evidence ledger | What was checked and what the check found. It carries every finding with its snippet and read locator, every figure kept or dropped with its reason, the verification record, and every drafted sentence the Statement Check refused, in full. | `report-<session>-<iteration>-evidence.md` |
 | Quality record | The replay surface: counts, ids, the SHA-256 of each published document, the quality contract version, the findings with their verification, the fact rows, Not found, and the review's status and packet fingerprint. | `report-<session>-<iteration>-quality.json` |
 
@@ -917,7 +923,8 @@ Finding-to-memory writes are a *separate* write, attempted only for an accepted
 report, and they are outside that artifact set: a failed memory write is
 reported as its own count and leaves the three paths advertised.
 
-The reader report prints an **As of** line read from the newest timestamp
+The reader report prints an **Evidence as of** line — the evidence date and
+the count of sources it cites, read from the newest timestamp
 the *recorded evidence* carries — the reads' retrieval times and the findings'
 extraction times, never a graph event and never a clock read — so the same
 session always renders the same date and a session with no dated evidence says
@@ -1071,10 +1078,11 @@ addition to the LangSmith experiment:
 The graph-level campaign is a separate CLI and package:
 `python -m deep_research.e2e_evaluation`. Individual-agent evaluation checks
 one agent's contract in isolation; whole-report evaluation checks the
-five-agent handoff, the verified-finding snapshot, the reader labels and
-citations, the Not found list, the Statement Check's verdicts, the targeted
-extra pass, terminal publication, memory timing, and each row's declared
-result against the run that produced it. The package ships one controlled
+five-agent handoff, the verified-finding snapshot, citations and the evidence
+log's provenance, what the report could not confirm, the Statement Check's
+verdicts, the targeted extra pass, terminal publication, memory timing, and
+each row's declared result against the run that produced it. The package
+ships one controlled
 harness, and its CLI exposes exactly two commands: `list` and `suite`.
 
 ### Real-agent harness

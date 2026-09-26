@@ -1,4 +1,4 @@
-"""The versioned offline matrix: thirty-two real-agent scenarios.
+"""The versioned offline matrix: thirty-three real-agent scenarios.
 
 The manifest below is the *declared inventory* the release proof is measured
 against. Each row names a case id, the version of its semantics, the product
@@ -29,13 +29,19 @@ from typing import Literal
 
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
+    ReplayReviewDefect,
     ReplayScenario,
     ReplaySource,
     ReplayTopic,
 )
 from deep_research.memory.entries import MemoryEntry
 
-REPLAY_CASE_MANIFEST_VERSION = 5
+REPLAY_CASE_MANIFEST_VERSION = 6
+# Bumped to 6 for format-build T6: the new row
+# ``scoped-redraft-after-a-named-defect`` exercises the T5 addendum's scoped
+# re-review path (a 33-row inventory must not be read as the 32-row one
+# recorded under version 5).
+#
 # Bumped to 5 for Task 5.9 fix round 2's row,
 # ``comparison-target-names-both-products``: a 32-row inventory must not be
 # read as the 31-row one recorded under version 4.
@@ -2789,6 +2795,70 @@ def _maker_notes_vs_relay() -> ReplayScenario:
         ),
     )
 
+def _scoped_redraft_after_a_named_defect() -> ReplayScenario:
+    """A material defect on one part buys a redraft of only that part, and
+    the second review is scoped, never a second full one (T5 addendum).
+
+    Two required parts, each independently supported. The scripted first
+    full review accepts every statement but also raises one material defect
+    naming the export-volume part's own target -- the redraft that buys is
+    routed to that part alone (spec §6.9), so the adoption-rate part carries
+    over byte-identical and its statement is exactly the unchanged one that
+    lets the second review be scoped rather than a second full one.
+    """
+    adoption_claim = (
+        "the Acme widget adoption rate in the United States was 40 percent in 2024"
+    )
+    export_claim = (
+        "the Acme widget export volume in the United States was 3.4 million "
+        "units in 2024"
+    )
+    return ReplayScenario(
+        case_id="scoped-redraft-after-a-named-defect",
+        version=REPLAY_CASE_VERSION,
+        question=(
+            "What were the Acme widget adoption rate and export volume in "
+            "the United States in 2024?"
+        ),
+        topics=(
+            _topic(
+                1,
+                "Adoption rate",
+                "What was the Acme widget adoption rate in the United States in 2024?",
+                "rate",
+                "Acme widget adoption rate United States 2024",
+                _pair(1, "adoption-2024", "Adoption survey", adoption_claim),
+                labels=("Acme widget", "adoption rate"),
+            ),
+            _topic(
+                2,
+                "Export volume",
+                "What was the Acme widget export volume in the United States in 2024?",
+                "value",
+                "Acme widget export volume United States 2024",
+                _pair(2, "export-2024", "Export survey", export_claim),
+                labels=("Acme widget", "export volume"),
+            ),
+        ),
+        review_defect=ReplayReviewDefect(
+            target_ids=("topic-02-target-01",),
+            kind="presentation",
+            severity="major",
+            problem=(
+                "The export-volume section restates the figure without "
+                "naming its own subject plainly; redraft it."
+            ),
+        ),
+        expectation=CaseExpectation(
+            terminal_quality="accepted",
+            exit_code=0,
+            required_target_ids=("topic-01-target-01", "topic-02-target-01"),
+            required_report_phrases=("40 percent", "3.4 million units"),
+            required_invariants=("scoped_review_used",),
+        ),
+    )
+
+
 
 class ReplayCaseEntry:
     """One declared matrix row: identity, expectation, and its builder."""
@@ -3179,6 +3249,18 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
             "the maker"
         ),
         build=_maker_notes_vs_relay,
+    ),
+    ReplayCaseEntry(
+        case_id="scoped-redraft-after-a-named-defect",
+        version=REPLAY_CASE_VERSION,
+        title="A named defect redrafts one part; the re-review is scoped",
+        expected_product_result="accepted / 0",
+        decisive_assertion=(
+            "The redraft touches only the part the defect names; the "
+            "untouched part carries over byte-identical and the second "
+            "review is a scoped re-review, never a second full one"
+        ),
+        build=_scoped_redraft_after_a_named_defect,
     ),
 )
 
