@@ -75,8 +75,8 @@ def config_path(tmp_path: Path) -> Path:
                 "agents": {
                     "max_iterations": 5,
                     "tool_budget": 10,
-                    "prompt_context_entries": 8,
-                    "observation_summary_chars": 200,
+                    "prompt_context_entries": 20,
+                    "observation_summary_chars": 2000,
                 },
                 "output": {"directory": "output/", "default_format": "markdown"},
             }
@@ -459,8 +459,8 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
         ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
         ("AGENTS_MAX_SUB_TOPICS", ("agents", "max_sub_topics"), "5", 5),
         (
-            "AGENTS_SELECTED_PASSAGES_PER_READ",
-            ("agents", "selected_passages_per_read"),
+            "AGENTS_READ_ADMISSION_CHARS",
+            ("agents", "read_admission_chars"),
             "6",
             6,
         ),
@@ -759,9 +759,9 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
 
     assert settings.agents.max_iterations == 5
     assert settings.agents.tool_budget == 10
-    assert settings.agents.max_sub_topics == 7
-    assert settings.agents.prompt_context_entries == 8
-    assert settings.agents.observation_summary_chars == 200
+    assert settings.agents.max_sub_topics == 10
+    assert settings.agents.prompt_context_entries == 20
+    assert settings.agents.observation_summary_chars == 2000
     assert settings.agents.planner_final_max_tokens == 65536
 
 
@@ -771,7 +771,7 @@ def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
     settings = load_config(str(config_path))
 
     assert settings.agents.source_evaluator.batch_size == 12
-    assert settings.agents.source_evaluator.max_total_sources == 36
+    assert settings.agents.source_evaluator.max_total_sources == 100
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
@@ -911,7 +911,7 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
     assert raw["agents"]["tool_budget"] == 10
     assert raw["agents"]["tool_budget_overrides"] == {
         "planner": 1,
-        "researcher": 20,
+        "researcher": 40,
         "source_evaluator": 0,
         "evidence_verifier": 0,
         "report_writer": 0,
@@ -919,14 +919,14 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
 
 
 def test_the_shipped_config_sets_the_researcher_budget_and_turn_caps() -> None:
-    """Spec §7.2: the researcher's tool budget is 20 over seven model turns,
-    and one pass attempts every sub-topic a plan may carry (seven)."""
+    """Spec §7.2: the researcher's tool budget is 40 over fifteen model turns,
+    and one pass attempts every sub-topic a plan may carry (ten)."""
     settings = load_config("config.yaml")
 
     assert (
-        settings.agents.max_iterations == 7
-        and settings.agents.max_sub_topics == 7
-        and settings.agents.tool_budget_overrides["researcher"] == 20
+        settings.agents.max_iterations == 15
+        and settings.agents.max_sub_topics == 10
+        and settings.agents.tool_budget_overrides["researcher"] == 40
     )
 
 
@@ -1308,7 +1308,7 @@ def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() ->
 def test_the_evidence_verifier_pipeline_config() -> None:
     settings = load_settings("config.yaml")
     assert settings.graph.max_extra_passes == 1
-    assert settings.agents.tool_budget_overrides["researcher"] == 20
+    assert settings.agents.tool_budget_overrides["researcher"] == 40
     assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
     assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
     reviewer = settings.llm.resolve_for("report_reviewer")
@@ -1317,7 +1317,7 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)
     # Spec 7.3 (D9/PD-27): the four concurrency caps, one assertion each.
-    assert settings.agents.sub_topic_concurrency == 7
-    assert settings.agents.source_scoring_concurrency == 3
+    assert settings.agents.sub_topic_concurrency == 10
+    assert settings.agents.source_scoring_concurrency == 6
     assert settings.agents.verifier_batch_size == 5
-    assert settings.agents.verifier_concurrency == 8
+    assert settings.agents.verifier_concurrency == 16

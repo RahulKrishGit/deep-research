@@ -1077,7 +1077,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # relocated locator. No prompt string moved; only this module's own
     # source did, so the other four target pins and the Judge pin are
     # unchanged. Moved `4245163b56a8` -> `ecb64eeaf882`.
-    "researcher": "ecb64eeaf882",
+    # S1's whole-page admission rework (passage selection, packet building,
+    # and the finding/source caps) landed on the same head and moved the
+    # researcher's own module source a second time: `ecb64eeaf882` ->
+    # `5472a4abdedf`. Recomputed after the merge, not carried from either
+    # parent's own value.
+    "researcher": "5472a4abdedf",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

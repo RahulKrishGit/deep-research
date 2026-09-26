@@ -15,6 +15,7 @@ import pytest
 from deep_research.agents.acquisition import (
     UNMINED_QUANTITY_REASON,
     UNMINED_TARGET_REASON,
+    WEB_PASSAGE_CHARS,
 )
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError
@@ -250,9 +251,9 @@ def _tool_step(
 
 def test_priority_and_selection_defaults_match_the_plan() -> None:
     assert HIGH_PRIORITY_THRESHOLD == 2
-    assert DEFAULT_MAX_SUB_TOPICS == 7
-    assert MAX_FINDINGS_PER_SUB_TOPIC == 6
-    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 4
+    assert DEFAULT_MAX_SUB_TOPICS == 10
+    assert MAX_FINDINGS_PER_SUB_TOPIC == 30
+    assert MAX_UNIQUE_SOURCES_PER_SUB_TOPIC == 12
 
 
 def test_the_default_cap_attempts_the_whole_planner_output() -> None:
@@ -696,7 +697,9 @@ def test_duplicate_findings_are_folded_before_the_cap() -> None:
     assert budget.sources_retained == 1
 
 
-def test_the_cap_keeps_the_six_most_confident_findings() -> None:
+def test_the_cap_keeps_the_most_confident_findings() -> None:
+    total = MAX_FINDINGS_PER_SUB_TOPIC + 2
+    confidences = [round(0.01 * step, 4) for step in range(total, 0, -1)]
     findings = [
         _finding(
             "Alpha",
@@ -704,27 +707,22 @@ def test_the_cap_keeps_the_six_most_confident_findings() -> None:
             content=f"Finding {index}.",
             confidence=confidence,
         )
-        for index, confidence in enumerate(
-            [0.1, 0.8, 0.3, 0.6, 0.2, 0.7, 0.5, 0.4], start=1
-        )
+        for index, confidence in enumerate(confidences, start=1)
     ]
 
     budget = bound_sub_topic_findings(findings)
 
-    assert [finding.confidence for finding in budget.retained] == [
-        0.8,
-        0.7,
-        0.6,
-        0.5,
-        0.4,
-        0.3,
-    ]
+    assert [finding.confidence for finding in budget.retained] == sorted(
+        confidences, reverse=True
+    )[:MAX_FINDINGS_PER_SUB_TOPIC]
     assert budget.dropped_duplicate == 0
     assert budget.dropped_cap == 2
     assert budget.sources_retained == 1
 
 
-def test_the_cap_keeps_at_most_four_distinct_sources() -> None:
+def test_the_cap_keeps_at_most_the_configured_distinct_sources() -> None:
+    total = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 2
+    confidences = [round(0.01 * step, 4) for step in range(total, 0, -1)]
     findings = [
         _finding(
             "Alpha",
@@ -732,30 +730,28 @@ def test_the_cap_keeps_at_most_four_distinct_sources() -> None:
             content=f"Finding {index}.",
             confidence=confidence,
         )
-        for index, confidence in enumerate(
-            [0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1
-        )
+        for index, confidence in enumerate(confidences, start=1)
     ]
 
     budget = bound_sub_topic_findings(findings)
 
     assert {finding.source_url for finding in budget.retained} == {
-        "https://s1.test/one",
-        "https://s2.test/one",
-        "https://s3.test/one",
-        "https://s4.test/one",
+        f"https://s{index}.test/one"
+        for index in range(1, MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1)
     }
     assert budget.dropped_cap == 2
-    assert budget.sources_retained == 4
+    assert budget.sources_retained == MAX_UNIQUE_SOURCES_PER_SUB_TOPIC
 
 
 def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
     """Bounding evidence must not narrow it to one publisher.
 
-    Six findings from one page and one from an independent one: a pure
-    confidence ranking would keep six of the seven and drop the single
+    One page over the cap, and one finding from an independent page: a pure
+    confidence ranking would keep the whole first page and drop the single
     independent source, which is the one a reader most needs to see.
     """
+    count = MAX_FINDINGS_PER_SUB_TOPIC + 1
+    confidences = [round(0.99 - 0.01 * step, 4) for step in range(count)]
     findings = [
         _finding(
             "Alpha",
@@ -763,9 +759,7 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
             content=f"Finding {index}.",
             confidence=confidence,
         )
-        for index, confidence in enumerate(
-            [0.98, 0.96, 0.94, 0.92, 0.90, 0.88], start=1
-        )
+        for index, confidence in enumerate(confidences, start=1)
     ] + [
         _finding(
             "Alpha", "https://b.test/two", content="Independent.", confidence=0.5
@@ -774,23 +768,15 @@ def test_a_second_source_keeps_a_slot_confidence_alone_would_fill() -> None:
 
     budget = bound_sub_topic_findings(findings)
 
+    kept_a = sorted(confidences, reverse=True)[: MAX_FINDINGS_PER_SUB_TOPIC - 1]
     assert [finding.source_url for finding in budget.retained] == [
-        "https://a.test/one",
-        "https://a.test/one",
-        "https://a.test/one",
-        "https://a.test/one",
-        "https://a.test/one",
-        "https://b.test/two",
-    ]
+        "https://a.test/one" for _ in kept_a
+    ] + ["https://b.test/two"]
     assert [finding.confidence for finding in budget.retained] == [
-        0.98,
-        0.96,
-        0.94,
-        0.92,
-        0.90,
+        *kept_a,
         0.5,
     ]
-    assert budget.dropped_cap == 1
+    assert budget.dropped_cap == 2
     assert budget.sources_retained == 2
 
 
@@ -832,10 +818,12 @@ def test_findings_bound_to_a_required_target_are_exempt_from_the_finding_cap() -
 def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() -> None:
     """The source cap bounds corroboration volume, not the answer's own pages.
 
-    Six findings from six publishers, and the least confident one — a
-    publisher the source cap would drop — is the only record of a required
-    target.
+    One publisher per source, one over the cap, and the least confident one
+    -- a publisher the source cap would drop -- is the only record of a
+    required target.
     """
+    total = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 2
+    confidences = [round(0.99 - 0.01 * step, 4) for step in range(total)]
     findings = [
         _finding(
             "Alpha",
@@ -843,39 +831,35 @@ def test_findings_bound_to_a_required_target_are_exempt_from_the_source_cap() ->
             content=f"Finding {index}.",
             confidence=confidence,
         )
-        for index, confidence in enumerate(
-            [0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1
-        )
+        for index, confidence in enumerate(confidences, start=1)
     ]
-    required = findings[5].model_copy(
+    required = findings[-1].model_copy(
         update={"target_ids": [PLANNED_TARGET_ID]}
     )
 
     budget = bound_sub_topic_findings(
-        [*findings[:5], required], required_target_ids=[PLANNED_TARGET_ID]
+        [*findings[:-1], required], required_target_ids=[PLANNED_TARGET_ID]
     )
 
     assert {finding.source_url for finding in budget.retained} == {
-        "https://s1.test/one",
-        "https://s2.test/one",
-        "https://s3.test/one",
-        "https://s4.test/one",
-        "https://s6.test/one",
-    }
+        f"https://s{index}.test/one"
+        for index in range(1, MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1)
+    } | {f"https://s{total}.test/one"}
     assert budget.dropped_cap == 1
-    assert budget.sources_retained == 5
+    assert budget.sources_retained == MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 1
 
 
 def test_the_required_target_exemption_has_a_ceiling() -> None:
     """The exemption guarantees the answer a slot, not every restatement of it.
 
-    Twenty-five findings bind one required target, each from its own page and
-    all less confident than six independent unbound ones. Without a ceiling
-    the exemption keeps all twenty-five and the per-sub-topic cap bounds
-    nothing, which is not an exemption but a hole in the cap: two is the
-    ceiling, the two most confident are the answer, and the rest are evidence
-    like any other, ranked by the caps.
+    A pool of bound findings well past the exemption ceiling and the source
+    cap, each from its own page and all less confident than six independent
+    unbound ones. Without a ceiling the exemption keeps every one of them
+    and the per-sub-topic cap bounds nothing, which is not an exemption but
+    a hole in the cap: two is the ceiling, the two most confident are the
+    answer, and the rest are evidence like any other, ranked by the caps.
     """
+    bound_count = MAX_FINDINGS_PER_SUB_TOPIC + 10
     bound = [
         _finding(
             "Alpha",
@@ -884,7 +868,8 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
             confidence=confidence,
         ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
         for index, confidence in enumerate(
-            [round(0.10 + 0.02 * step, 2) for step in range(25)], start=1
+            [round(0.10 + 0.01 * step, 4) for step in range(bound_count)],
+            start=1,
         )
     ]
     others = [
@@ -903,20 +888,25 @@ def test_the_required_target_exemption_has_a_ceiling() -> None:
         [*bound, *others], required_target_ids=[PLANNED_TARGET_ID]
     )
 
-    assert budget.findings_retained == 6
+    # Exempt: the two most confident bound findings. Ordinary pool: the six
+    # independent sources plus the six next-most-confident bound findings,
+    # the source cap's own limit once the two exempt slots are set aside.
+    assert budget.findings_retained == 14
     assert {
         finding.content for finding in budget.retained if finding.target_ids
-    } == {"Bound 24.", "Bound 25."}
-    assert budget.dropped_cap == 25
+    } == {f"Bound {index}." for index in range(bound_count - 7, bound_count + 1)}
+    assert budget.dropped_cap == len(bound) + len(others) - 14
 
 
 def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
     """Two required targets each keep their own two, not two between them.
 
-    Three findings bind each of two required obligations. A ceiling of two
-    overall would let the first target's evidence use up the second's; the
-    guarantee is per obligation, so each keeps its own strongest two.
+    Three findings bind each of two required obligations, and enough
+    independent sources to exceed the source cap on their own. A ceiling of
+    two overall would let the first target's evidence use up the second's;
+    the guarantee is per obligation, so each keeps its own strongest two.
     """
+    others_count = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC + 6
     findings = [
         _finding(
             "Alpha",
@@ -941,7 +931,8 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
             confidence=confidence,
         )
         for index, confidence in enumerate(
-            [0.95, 0.93, 0.91, 0.89, 0.87, 0.85], start=1
+            [round(0.99 - 0.01 * step, 4) for step in range(others_count)],
+            start=1,
         )
     ]
 
@@ -950,7 +941,7 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
         required_target_ids=[PLANNED_TARGET_ID, OTHER_TARGET_ID],
     )
 
-    assert budget.findings_retained == 8
+    assert budget.findings_retained == 16
     assert {
         target_id: {
             finding.content
@@ -962,7 +953,7 @@ def test_the_exemption_ceiling_is_counted_per_required_target() -> None:
         PLANNED_TARGET_ID: {"A1.", "A2."},
         OTHER_TARGET_ID: {"B1.", "B2."},
     }
-    assert budget.dropped_cap == 4
+    assert budget.dropped_cap == len(findings) - 16
 
 
 def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
@@ -972,6 +963,8 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
     not required, or to none at all, is evidence like any other and the cap
     still ranks it by confidence.
     """
+    total = MAX_FINDINGS_PER_SUB_TOPIC + 2
+    confidences = [round(0.01 * step, 4) for step in range(1, total + 1)]
     findings = [
         _finding(
             "Alpha",
@@ -979,9 +972,7 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
             content=f"Finding {index}.",
             confidence=confidence,
         )
-        for index, confidence in enumerate(
-            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], start=1
-        )
+        for index, confidence in enumerate(confidences, start=1)
     ]
     bound = [
         finding.model_copy(update={"target_ids": [OTHER_TARGET_ID]})
@@ -992,7 +983,7 @@ def test_a_binding_to_another_target_leaves_a_finding_under_the_cap() -> None:
         [*bound, *findings[2:]], required_target_ids=[PLANNED_TARGET_ID]
     )
 
-    assert len(budget.retained) == 6
+    assert len(budget.retained) == MAX_FINDINGS_PER_SUB_TOPIC
     assert budget.dropped_cap == 2
     assert not any(finding.target_ids for finding in budget.retained)
 
@@ -1015,6 +1006,7 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
         content="Own obligation, third.",
         confidence=0.35,
     ).model_copy(update={"target_ids": [PLANNED_TARGET_ID]})
+    other_count = MAX_FINDINGS_PER_SUB_TOPIC
     other_topic_rows = [
         _finding(
             "Alpha",
@@ -1022,7 +1014,10 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
             content=f"Other-target row {index}.",
             confidence=confidence,
         ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
-        for index, confidence in enumerate([0.9, 0.8, 0.7, 0.6, 0.5, 0.4], start=1)
+        for index, confidence in enumerate(
+            [round(0.99 - 0.01 * step, 4) for step in range(other_count)],
+            start=1,
+        )
     ]
 
     budget = bound_sub_topic_findings(
@@ -1033,7 +1028,7 @@ def test_the_cap_keeps_the_sub_topics_own_obligation_ahead_of_other_target_rows(
 
     retained_content = {finding.content for finding in budget.retained}
     assert "Own obligation, third." in retained_content
-    assert "Other-target row 6." not in retained_content
+    assert f"Other-target row {other_count}." not in retained_content
 
 
 def test_extraction_messages_carry_the_sub_topic_criteria_and_evidence() -> None:
@@ -2665,10 +2660,15 @@ def _packet_locator_for(figure: str, packet: str) -> tuple[str, str]:
     the packet never showed the passage, which is the whole failure this
     fixture exists to catch. Rows are split on their ``- `` prefix rather than
     on newlines: a stored passage keeps the source's own line breaks, so one
-    row can span several lines.
+    row can span several lines. Whole-page admission (fix-round 3) usually
+    admits a matching passage as its own unit row (``evidence_id=...``)
+    rather than the raw passage dump (``passage read_id=...``); this reads
+    either shape.
     """
     for row in re.split(r"(?m)^- ", packet):
-        if not row.startswith("passage ") or figure not in row:
+        if figure not in row:
+            continue
+        if not row.startswith(("passage ", "evidence_id=")):
             continue
         read_id = re.search(r"read_id=(\S+)", row)
         locator = re.search(r"locator=(\S+)", row)
@@ -2800,7 +2800,7 @@ def _researcher(
     config: AgentRuntimeConfig | None = None,
     tools: Sequence[BaseTool] | None = None,
     sub_topic_concurrency: int | None = None,
-    selected_passages_per_read: int | None = None,
+    read_admission_chars: int | None = None,
 ) -> ResearcherAgent:
     return ResearcherAgent(
         provider=completer,
@@ -2816,7 +2816,7 @@ def _researcher(
         config=config or AgentRuntimeConfig(max_iterations=4, tool_budget=4),
         max_sub_topics=max_sub_topics,
         sub_topic_concurrency=sub_topic_concurrency,
-        selected_passages_per_read=selected_passages_per_read,
+        read_admission_chars=read_admission_chars,
         clock=_clock,
     )
 
@@ -3569,12 +3569,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
 ) -> None:
     """Bounded evidence must be visible: what was kept, and what was not.
 
-    Ten drafted findings collapse to six: three restatements of one claim, and
-    two distinct claims over the six-finding cap. An operator reading only the
-    event stream has to be able to see both, and see that the six came from a
-    single source.
+    Thirty-five drafted findings collapse under the cap: three restatements of
+    one claim, and thirty-two distinct claims over the findings cap. An
+    operator reading only the event stream has to be able to see both, and
+    see that the retained findings came from a single source.
 
-    The seven distinct claims are distinct *statements* — one sentence each of
+    The distinct claims are distinct *statements* — one sentence each of
     the page — because that is what makes a finding its own evidence: three
     drafts that mine the one sentence already mined are restatements, whatever
     their content says (``identity.deduplicate_findings``).
@@ -3583,7 +3583,7 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
     sentences = [
         *(
             f"Claim {index}: the measured error rate fell by {index}0 percent in 2025."
-            for index in range(1, 8)
+            for index in range(1, 33)
         ),
         restated,
     ]
@@ -3662,12 +3662,12 @@ async def test_the_completed_event_reports_what_bounding_kept_and_dropped(
         for event in outcome.state_update["events"]
         if event.event_type == "researcher.sub_topic.completed"
     )
-    assert completed.metadata["findings"] == 6
+    assert completed.metadata["findings"] == 30
     assert completed.metadata["findings_dropped_duplicate"] == 2
-    assert completed.metadata["findings_dropped_cap"] == 2
+    assert completed.metadata["findings_dropped_cap"] == 3
     assert completed.metadata["sources_retained"] == 1
 
-    assert len(outcome.result.findings) == 6
+    assert len(outcome.result.findings) == 30
     assert max(
         finding.confidence for finding in outcome.result.findings
     ) == 0.9
@@ -4562,10 +4562,19 @@ def _packet_passage_for(
 
     Derived from the request the way a model must, and it fails loudly when
     the packet never carried the passage — the whole failure this fixture
-    exists to catch.
+    exists to catch. Whole-page admission (fix-round 3) usually admits a
+    matching passage as its own unit row (``evidence_id=...``) rather than
+    the raw passage dump (``passage read_id=...``), since a locator with a
+    unit is never also dumped; this reads either shape.
     """
     for row in re.split(r"(?m)^- ", packet):
-        if not row.startswith("passage ") or figure not in row:
+        if figure not in row:
+            continue
+        if row.startswith("passage "):
+            text_key = " text="
+        elif row.startswith("evidence_id="):
+            text_key = " excerpt="
+        else:
             continue
         read_id = re.search(r"read_id=(\S+)", row)
         locator = re.search(r"locator=(\S+)", row)
@@ -4573,7 +4582,7 @@ def _packet_passage_for(
         return (
             read_id.group(1),
             locator.group(1),
-            row.split(" text=", 1)[1].rstrip("\n"),
+            row.split(text_key, 1)[1].rstrip("\n"),
         )
     raise AssertionError(f"the extraction packet showed no passage with {figure}")
 
@@ -4970,7 +4979,9 @@ def _owed_agent(
             [search_response(title=_OWED_TITLE, url=_OWED_URL)]
         ),
         http=page_client(title=_OWED_TITLE, body=body or _OWED_BODY),
-        selected_passages_per_read=selected,
+        read_admission_chars=(
+            None if selected is None else selected * WEB_PASSAGE_CHARS
+        ),
     )
 
 

@@ -34,7 +34,7 @@ StopReason: TypeAlias = Literal[
 ]
 ReActActionType: TypeAlias = Literal["use_tool", "finish"]
 
-DEFAULT_SUMMARY_LIMIT = 200
+DEFAULT_SUMMARY_LIMIT = 2000
 _ELLIPSIS = "..."
 
 

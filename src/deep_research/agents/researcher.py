@@ -99,12 +99,12 @@ RESEARCHER_NAME = "researcher"
 HIGH_PRIORITY_THRESHOLD = 2
 # The Planner's own ceiling is seven sub-topics, so one research pass attempts
 # the whole plan by default rather than silently truncating it.
-DEFAULT_MAX_SUB_TOPICS = 7
+DEFAULT_MAX_SUB_TOPICS = 10
 # Evidence kept per sub-topic, not coverage planned: a sub-topic may report at
-# most six distinct findings drawn from at most four distinct sources. These
-# are properties of the extraction contract, not deployment knobs.
-MAX_FINDINGS_PER_SUB_TOPIC = 6
-MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 4
+# most thirty distinct findings drawn from at most twelve distinct sources.
+# These are properties of the extraction contract, not deployment knobs.
+MAX_FINDINGS_PER_SUB_TOPIC = 30
+MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 12
 # How many findings one required target may keep outside those caps. The
 # exemption is what stops a cap from deleting the answer the run was sent to
 # get; the ceiling is what stops an extraction that binds its whole output to
@@ -2324,9 +2324,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
         high_priority_threshold: int = HIGH_PRIORITY_THRESHOLD,
         evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
-        selected_passages_per_read: int | None = None,
+        read_admission_chars: int | None = None,
         evidence_packet_chars: int | None = None,
         sub_topic_concurrency: int | None = None,
+        decision_context_chars: int | None = None,
         cache: MutableMapping[str, ReadRecord] | None = None,
         network_read_ids: set[str] | None = None,
         clock: Clock = _utc_now,
@@ -2345,20 +2346,27 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             raise ValueError("high_priority_threshold must be at least 1")
         if evidence_chars < 1:
             raise ValueError("evidence_chars must be at least 1")
-        selected_limit = (
-            self.config.selected_passages_per_read
-            if selected_passages_per_read is None
-            else selected_passages_per_read
+        admission_limit = (
+            self.config.read_admission_chars
+            if read_admission_chars is None
+            else read_admission_chars
         )
         packet_limit = (
             self.config.evidence_packet_chars
             if evidence_packet_chars is None
             else evidence_packet_chars
         )
-        if selected_limit < 1:
-            raise ValueError("selected_passages_per_read must be at least 1")
+        decision_limit = (
+            self.config.decision_context_chars
+            if decision_context_chars is None
+            else decision_context_chars
+        )
+        if admission_limit < 1:
+            raise ValueError("read_admission_chars must be at least 1")
         if packet_limit < 1:
             raise ValueError("evidence_packet_chars must be at least 1")
+        if decision_limit < 1:
+            raise ValueError("decision_context_chars must be at least 1")
         resolved_concurrency = (
             self.config.sub_topic_concurrency
             if sub_topic_concurrency is None
@@ -2375,8 +2383,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._max_sub_topics = max_sub_topics
         self._high_priority_threshold = high_priority_threshold
         self._evidence_chars = evidence_chars
-        self._selected_passages_per_read = selected_limit
+        self._read_admission_chars = admission_limit
         self._evidence_packet_chars = packet_limit
+        self._decision_context_chars = decision_limit
         self._clock = clock
         # These registries are intentionally run-scoped and shared by every
         # sub-topic loop. A body read for one target can therefore be selected
@@ -2550,10 +2559,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             boundary_audits=self._run_boundary_audits,
             audit_sequence=self._run_audit_sequence,
             retrieved_at=lambda: self._clock().isoformat(),
-            selected_passages_per_read=self._selected_passages_per_read,
+            read_admission_chars=self._read_admission_chars,
             configuration_fingerprint=(
-                f"selected={self._selected_passages_per_read};"
-                f"packet={self._evidence_packet_chars}"
+                f"admission={self._read_admission_chars};"
+                f"packet={self._evidence_packet_chars};"
+                f"decision={self._decision_context_chars}"
             ),
             cache=self._run_cache,
             network_read_ids=self._run_network_read_ids,
@@ -2797,7 +2807,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                                         unit.evidence_id: unit
                                         for unit in batch
                                     },
-                                    limit=self._evidence_packet_chars,
+                                    limit=self._decision_context_chars,
                                     target_id=policy.target_id,
                                     dispositions=policy.dispositions,
                                     focus_ids=[
@@ -2996,7 +3006,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 iteration=iteration,
                 steps=steps,
                 decision_context=policy.context(
-                    limit=self._evidence_packet_chars
+                    limit=self._decision_context_chars
                 ),
                 scratchpad=scratchpad,
             )
