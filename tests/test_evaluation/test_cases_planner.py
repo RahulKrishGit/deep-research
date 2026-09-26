@@ -77,7 +77,7 @@ _REFERENCES = {
         "minimum_sub_topics": 3,
         "maximum_sub_topics": 7,
         "minimum_targets_per_sub_topic": 1,
-        "maximum_targets_per_sub_topic": 4,
+        "maximum_targets_per_sub_topic": 6,
     },
 }
 

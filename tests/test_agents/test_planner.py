@@ -149,7 +149,7 @@ def _run(*, observation: str | None = None, answer: str | None = None) -> ReActR
 
 def test_plan_size_bounds_match_the_spec() -> None:
     assert MIN_SUB_TOPICS == 1
-    assert MAX_SUB_TOPICS == 7
+    assert MAX_SUB_TOPICS == 10
 
 
 def test_valid_plan_converts_every_draft_into_a_sub_topic() -> None:
@@ -170,7 +170,7 @@ def test_an_empty_plan_is_rejected() -> None:
 
     assert sub_topics == []
     assert problems == [
-        "the plan has 0 valid sub-topics; produce between 1 and 7"
+        "the plan has 0 valid sub-topics; produce between 1 and 10"
     ]
 
 
@@ -182,11 +182,11 @@ def test_a_one_part_plan_is_valid() -> None:
 
 def test_a_plan_with_too_many_sub_topics_is_rejected() -> None:
     _, problems = validate_plan_draft(
-        _plan("A", "B", "C", "D", "E", "F", "G", "H")
+        _plan("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K")
     )
 
     assert problems == [
-        "the plan has 8 valid sub-topics; produce between 1 and 7"
+        "the plan has 11 valid sub-topics; produce between 1 and 10"
     ]
 
 
@@ -322,7 +322,7 @@ def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> No
     rejected = ResearchPlanDraft(
         sub_topics=[
             _draft(f"Mechanism {name}", priority=index)
-            for index, name in enumerate("ABCDEFGH", start=1)
+            for index, name in enumerate("ABCDEFGHIJK", start=1)
         ]
     )
     repaired = _plan("Mechanism A", "Mechanism B", "Mechanism C")
@@ -331,7 +331,7 @@ def test_a_repair_pass_produces_the_same_ids_for_the_same_ordered_titles() -> No
     repaired_sub_topics, repaired_problems = validate_plan_draft(repaired)
 
     assert rejected_problems == [
-        "the plan has 8 valid sub-topics; produce between 1 and 7"
+        "the plan has 11 valid sub-topics; produce between 1 and 10"
     ]
     assert repaired_problems == []
     kept = {
@@ -381,7 +381,7 @@ def test_plan_messages_carry_question_notes_and_requirements() -> None:
     assert "2 finding(s) recalled from previous sessions:" in body
     assert "- web_search succeeded: 3 results" in body
     assert "- Enough." in body
-    assert "between 1 and 7" in body
+    assert "between 1 and 10" in body
     assert "# Repair" not in body
 
 
@@ -1117,7 +1117,7 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
         outputs=[
             ResearchPlanDraft(sub_topics=[]),
-            _plan("A", "B", "C", "D", "E", "F", "G", "H"),
+            _plan("A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"),
         ],
     )
     agent = _planner(tracker, completer)
@@ -1127,8 +1127,8 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
             await agent.run(_state())
 
     assert failure.value.problems == (
-        "draft: the plan has 0 valid sub-topics; produce between 1 and 7",
-        "repair: the plan has 8 valid sub-topics; produce between 1 and 7",
+        "draft: the plan has 0 valid sub-topics; produce between 1 and 10",
+        "repair: the plan has 11 valid sub-topics; produce between 1 and 10",
     )
 
 
@@ -1188,7 +1188,7 @@ async def test_a_sub_topic_without_targets_is_structurally_fatal(
 ) -> None:
     """A sub-topic carrying no target cannot be researched, so it still stops.
 
-    The 1-4 target count is a structural rule, not an advisory one: a plan with
+    The 1-6 target count is a structural rule, not an advisory one: a plan with
     an empty sub-topic is one no pass can execute. Filing the count line under
     the advisory list let exactly that plan reach the researcher with nothing
     but a recoverable record, where the parent commit raised on the same input.
@@ -1205,9 +1205,9 @@ async def test_a_sub_topic_without_targets_is_structurally_fatal(
 
     assert failure.value.problems == (
         "draft: topic-03 proposes 0 evidence targets; every sub-topic carries "
-        "between 1 and 4",
+        "between 1 and 6",
         "repair: topic-03 proposes 0 evidence targets; every sub-topic carries "
-        "between 1 and 4",
+        "between 1 and 6",
     )
     assert [call[0] for call in completer.calls] == [
         "ResearchPlanDraft",
@@ -3762,7 +3762,7 @@ async def test_an_unusable_review_repair_keeps_the_reviewed_plan(
             "plan": "review_repair",
             "problems": [
                 "review_repair: topic-03 proposes 0 evidence targets; every "
-                "sub-topic carries between 1 and 4"
+                "sub-topic carries between 1 and 6"
             ],
         },
     ]
@@ -3836,9 +3836,9 @@ async def test_a_recorded_plan_defect_reaches_the_warning_block(
 async def test_an_infeasible_target_batch_is_repaired_once_then_refused(
     tracker: Tracker,
 ) -> None:
-    """More than four obligations on one sub-topic is caught structurally.
+    """More than six obligations on one sub-topic is caught structurally.
 
-    Feasibility has a structural half (a sub-topic carries at most four
+    Feasibility has a structural half (a sub-topic carries at most six
     obligations; a pass that has to settle eight is not a pass) and a semantic
     half the review owns. This pins the structural half: the batch is rejected,
     the repair is asked for, and a model that keeps the oversized batch fails
@@ -3851,7 +3851,7 @@ async def test_an_infeasible_target_batch_is_repaired_once_then_refused(
                 priority=index,
                 evidence_targets=[
                     _target(f"What does {title} report as measure {measure}?")
-                    for measure in range(1, 6)
+                    for measure in range(1, 8)
                 ],
             )
             for index, title in enumerate(
@@ -3940,7 +3940,7 @@ async def test_the_planning_request_carries_the_frozen_contract_and_its_obligati
     assert "- As of: 2026-09-16" in plan_request
     assert "the period the question names (2021)" in plan_request
     assert "never substitute today's figures" in plan_request
-    assert "between 1 and 4 evidence_targets" in plan_request
+    assert "between 1 and 6 evidence_targets" in plan_request
     # What the session plans from names the question's own year and the frozen
     # contract's date, and nothing else. (The static sections quote "added in
     # 2024" as an example of a bounded window and carry hypothetical reply

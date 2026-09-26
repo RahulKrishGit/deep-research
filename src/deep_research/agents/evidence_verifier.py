@@ -136,7 +136,7 @@ def figure_match(finding: Finding, reads: Mapping[str, ReadRecord]) -> FigureMat
 # only so a direct caller and the module's own tests have a defined default.
 CONTEXT_CHECK_BATCH_SIZE = 5
 CONTEXT_CHECK_CONCURRENCY = 8
-CONTEXT_PASSAGE_CHARS = 3000
+CONTEXT_PASSAGE_CHARS = 6000
 
 CONTEXT_CHECK_SYSTEM_PROMPT = (
     "You check the context of figures that a research system copied from web "

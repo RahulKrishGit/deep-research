@@ -964,7 +964,16 @@ from deep_research.utils.config import (
 # constraints answer form. Module source and one marker string; the others
 # are unchanged.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "7b9532f4fd85",
+    # Lift the research-content limits (user decision 2026-09-25):
+    # ``MAX_SUB_TOPICS`` 7 -> 10 and its "1-7"/"1-10" docstring mentions; the
+    # per-topic evidence-target ceiling ``MAX_TARGETS_PER_TOPIC`` 4 -> 6, and
+    # ``PLAN_INSTRUCTION``'s "between 1 and 4 evidence_targets" sentence now
+    # interpolates ``MIN_TARGETS_PER_TOPIC``/``MAX_TARGETS_PER_TOPIC`` instead
+    # of naming the old bound literally. No prompt sentence changed in
+    # substance, only the numbers it states; ``agents.prompts`` was untouched,
+    # so the other four target pins and the Judge pin are unchanged. Moved
+    # `7b9532f4fd85` -> `4d3acb4ce085`.
+    "planner": "4d3acb4ce085",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1059,7 +1068,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # moved `0e92c7cf1206` -> `4245163b56a8`; no other agent's text changed,
     # so the other four target pins and the Judge pin are unchanged.
     "researcher": "4245163b56a8",
-    "source_evaluator": "58c4e7d909ef",
+    # Lift the research-content limits (user decision 2026-09-25):
+    # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
+    # 1000, so the scoring pass sees enough of each page's excerpt and can
+    # write a fuller rationale. No prompt sentence names either number
+    # literally, so no model-read text moved beyond the module source itself;
+    # ``agents.prompts`` was untouched, so the other four target pins and the
+    # Judge pin are unchanged. Moved `58c4e7d909ef` -> `72339771d728`.
+    "source_evaluator": "72339771d728",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1098,7 +1114,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # and a no-figure finding is labelled `quoted` rather than `verified`
     # (its completion event gained a matching count): `99faed0d857d` ->
     # `8b1ad6b04834`.
-    "evidence_verifier": "8b1ad6b04834",
+    # Lift the research-content limits (user decision 2026-09-25):
+    # ``CONTEXT_PASSAGE_CHARS`` 3000 -> 6000, so the Context Check's bounded
+    # passage window covers more of the page around a kept figure. No prompt
+    # sentence names the character count, so no model-read text moved beyond
+    # the module source itself; ``agents.prompts`` was untouched, so the
+    # other four target pins and the Judge pin are unchanged. Moved
+    # `8b1ad6b04834` -> `725d8e9ef930`.
+    "evidence_verifier": "725d8e9ef930",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

@@ -1213,7 +1213,7 @@ def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
 
 # The same bound the Context Check windows a passage to (spec §5.2): large
 # enough for a real paragraph's worth of context, never the whole page.
-_RELAY_PASSAGE_CHARS = 3000
+_RELAY_PASSAGE_CHARS = 6000
 
 
 def _windowed_passage(text: str, snippet: str, *, chars: int) -> str:

@@ -125,7 +125,7 @@ AnswerKind: TypeAlias = Literal[
 # a feasibility rule, not a storage limit: a topic with eight required targets
 # cannot be finished by one research pass, and a plan that asks for it is
 # asking for a partially answered report.
-MAX_TARGETS_PER_TOPIC = 4
+MAX_TARGETS_PER_TOPIC = 6
 
 
 class AnswerContract(ContractModel):
@@ -192,7 +192,7 @@ class SubTopic(ContractModel):
         default_factory=list,
         max_length=MAX_TARGETS_PER_TOPIC,
     )
-    """The answerable obligations this sub-topic must satisfy, 1-4 of them.
+    """The answerable obligations this sub-topic must satisfy, 1-6 of them.
 
     Stamped locally by ``PlannerAgent``: the draft proposes obligations, and
     the planner assigns their ids, their required dimensions, and their
@@ -200,8 +200,8 @@ class SubTopic(ContractModel):
     plan — a snapshot written before this contract — and never means "nothing
     is required": such a plan has to be replanned before it can be executed,
     which is what ``planner.targets_requiring_replanning`` reports. The
-    ceiling of four keeps one sub-topic from becoming a batch no pass can
-    finish; a fifth obligation belongs to its own sub-topic.
+    ceiling of six keeps one sub-topic from becoming a batch no pass can
+    finish; a seventh obligation belongs to its own sub-topic.
     """
 
 
@@ -323,7 +323,7 @@ class AcquisitionState(ContractModel):
 
 FigureKind: TypeAlias = Literal["actual", "forecast"]
 UnitDimension: TypeAlias = Literal["power", "energy", "percent"]
-MAX_SNIPPET_CHARS = 600
+MAX_SNIPPET_CHARS = 1200
 # Is a number a figure in one of the two bases a run measures in? The
 # vocabulary is shared so the Researcher, which decides whether a passage
 # states a figure in a target's own unit, and every later reader of a unit

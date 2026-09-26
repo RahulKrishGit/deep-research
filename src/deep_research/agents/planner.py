@@ -80,7 +80,7 @@ PLANNER_NAME = "planner"
 # follows this constant, so the instruction, the plan validators and the
 # planning event's metadata all move together.
 MIN_SUB_TOPICS = 1
-MAX_SUB_TOPICS = 7
+MAX_SUB_TOPICS = 10
 MIN_TARGETS_PER_TOPIC = 1
 _COVERAGE_ID_WIDTH = 2
 
@@ -467,7 +467,8 @@ PLAN_INSTRUCTION = (
     "least one success criterion naming the evidence that would settle it, and "
     "a priority where 1 is the most important; list the sub-topics in "
     "priority order, most important first.\n"
-    "Give every sub-topic between 1 and 4 evidence_targets. Each target is one "
+    f"Give every sub-topic between {MIN_TARGETS_PER_TOPIC} and "
+    f"{MAX_TARGETS_PER_TOPIC} evidence_targets. Each target is one "
     "atomic obligation, written as a question whose answer is a fact, a "
     "measurement or a statement the evidence makes, not as an assertion the "
     "plan already believes. The text of a rule, a list, or a set of items the "
@@ -822,7 +823,7 @@ class ResearchPlan(ContractModel):
     bounds are free to be real constraints. The lower bound is enforced in a
     validator rather than as a field keyword because an extension is a plan
     of *additional* sub-topics and is judged by its own rule; every other
-    plan carries the 1-7 the instruction asks for.
+    plan carries the 1-10 the instruction asks for.
 
     ``answer_contract`` is the frozen contract the plan was written against.
     ``extension`` marks a plan that carries *only* the topics a later
@@ -2029,7 +2030,7 @@ def target_problems(
     This is not an atomicity proof: one measure combined with another inside
     a single criterion is a meaning defect, and the plan review call is what
     judges meaning. What is checkable here is that every sub-topic carries
-    1-4 obligations, that each obligation is asked as a question rather than
+    1-6 obligations, that each obligation is asked as a question rather than
     asserted, that nothing anchors currency to a year the contract has already
     left behind, and that nothing invents a numeric agreement tolerance. The
     years the frozen question itself names are exempt from the anchor check:
@@ -2866,7 +2867,7 @@ class _PlanAttempt:
     under. The two problem lists are split because they are not equally fatal:
     ``structural`` problems decide whether anything can be researched at all —
     ``validate_plan_draft``'s own, plus the two local ones that make a plan
-    unexecutable (a sub-topic carrying outside 1-4 evidence targets, and a
+    unexecutable (a sub-topic carrying outside 1-6 evidence targets, and a
     target written as an assertion rather than a question) — while ``advisory``
     problems come from the contract-level checks — a stale anchor, an invented
     tolerance — and are a judgement about meaning, which is the review's to
@@ -2978,7 +2979,7 @@ def _planner_output_limit_retry(
 
 
 class PlannerAgent(BaseAgent[ResearchPlan]):
-    """Convert ``original_question`` into 1-7 distinct, prioritized sub-topics.
+    """Convert ``original_question`` into 1-10 distinct, prioritized sub-topics.
 
     The ReAct loop is for scoping only — the session's own startup recall is
     the planner's single procedural lookup, and ``web_search`` is available

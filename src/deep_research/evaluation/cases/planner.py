@@ -146,7 +146,7 @@ _SCOPED = build_case(
             "minimum_targets_per_sub_topic": 1,
             # The contract's own ceiling, declared here as well so a reader
             # of the case sees the bound the metric polices.
-            "maximum_targets_per_sub_topic": 4,
+            "maximum_targets_per_sub_topic": 6,
         },
         known_source_urls=[],
         max_iterations=5,
@@ -160,7 +160,7 @@ _SCOPED = build_case(
             (
                 "targets_declared",
                 0.30,
-                "Every subtopic carries 1-4 counted evidence targets; a "
+                "Every subtopic carries 1-6 counted evidence targets; a "
                 "reserved omission marker is not an obligation.",
             ),
             (
