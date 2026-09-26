@@ -543,18 +543,45 @@ def _nearest_itemscope_types(tag: Tag) -> set[str] | None:
     return None
 
 
-def _first_itemprop_date(soup: BeautifulSoup, prop: str) -> str | None:
-    """The date one microdata ``itemprop`` states, read only from an item
-    shaped like the page's own content.
+# A date-bearing itemprop inside the page's navigation, masthead, footer or
+# an aside is never the page's own date: a related-post card, a "you might
+# also like" widget and a site's masthead all sit in one of these regions,
+# never in the article itself. Itemtype scoping alone cannot tell such a
+# card apart from the article -- a card is itself validly typed
+# ``BlogPosting`` -- so the region it sits in is what decides this, not its
+# claimed type (RevDatesR3 round 3).
+_MICRODATA_CHROME_TAGS = frozenset({"aside", "nav", "header", "footer"})
 
-    An itemprop with no ``itemscope`` ancestor, or one scoped to a
-    ``Comment``, ``Person``, ``Organization`` or ``WebSite`` item, is
-    skipped: that is exactly the shape a related-post card, a recent-posts
-    widget or a comment's own timestamp carries, and reading it the same way
-    as the article's own date is how a comment's timestamp became the page's
-    date (RevDatesR3 P1).
+
+def _has_chrome_ancestor(tag: Tag) -> bool:
+    node: Tag | None = tag
+    while node is not None:
+        if node.name in _MICRODATA_CHROME_TAGS:
+            return True
+        node = node.parent if isinstance(node.parent, Tag) else None
+    return False
+
+
+def _first_itemprop_date(soup: BeautifulSoup, prop: str) -> str | None:
+    """The date every article-shaped item's own ``itemprop`` agrees on.
+
+    An itemprop with no ``itemscope`` ancestor, one scoped to a ``Comment``,
+    ``Person``, ``Organization`` or ``WebSite`` item, or one sitting inside
+    the page's navigation, masthead, footer or an aside, is never a
+    candidate: item *type* alone cannot tell a related-post card or a
+    recent-posts widget apart from the article, since such a card is itself
+    validly typed ``BlogPosting`` -- it is the *region* it sits in that
+    marks it as something other than the article (RevDatesR3 P1/P2).
+
+    Multiple surviving candidates that disagree are worse than none: a
+    second article-shaped item elsewhere on the page whose own date differs
+    from the first means this page's own date is not established, so
+    nothing is returned rather than guessing which one is right.
     """
+    found: set[str] = set()
     for tag in soup.find_all(attrs={"itemprop": prop}):
+        if _has_chrome_ancestor(tag):
+            continue
         scope_types = _nearest_itemscope_types(tag)
         if not scope_types or scope_types & _JSON_LD_EXCLUDED_TYPES:
             continue
@@ -566,8 +593,8 @@ def _first_itemprop_date(soup: BeautifulSoup, prop: str) -> str | None:
         if isinstance(value, str) and value.strip():
             normalized = _normalize_page_date(value)
             if normalized is not None:
-                return normalized
-    return None
+                found.add(normalized)
+    return found.pop() if len(found) == 1 else None
 
 
 def _og_dates(soup: BeautifulSoup) -> tuple[str | None, str | None]:

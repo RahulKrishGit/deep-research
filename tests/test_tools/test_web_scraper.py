@@ -1420,6 +1420,57 @@ async def test_a_sidebar_cards_microdata_date_never_beats_the_articles_json_ld(
 
 
 @pytest.mark.asyncio
+async def test_a_sidebar_cards_microdata_date_is_excluded_with_no_json_ld_at_all(
+    tracker,
+) -> None:
+    """RevDatesR3 P2 (round 3): itemtype scoping alone cannot tell a related-
+    post card apart from the article, since a card is itself validly typed
+    ``BlogPosting``. With no JSON-LD to mask it, the card's own date must
+    still never win: it sits in an ``<aside>``, which is never the article
+    regardless of its itemtype."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        '<aside itemscope itemtype="https://schema.org/BlogPosting">'
+        '<time itemprop="datePublished" datetime="2024-01-05">Jan 5, 2024</time>'
+        "</aside>"
+        '<article itemscope itemtype="https://schema.org/Article">'
+        '<time itemprop="datePublished" datetime="2026-09-17">Sep 17, 2026</time>'
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</article>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2026-09-17"
+
+
+@pytest.mark.asyncio
+async def test_two_disagreeing_article_scoped_dates_give_no_date_at_all(
+    tracker,
+) -> None:
+    """A wrong date is worse than none: two article-shaped items outside any
+    chrome region that disagree on the date are not resolved by picking
+    either one -- the page's own date is not established, so neither is
+    recorded."""
+    page = (
+        "<html><head><title>Grid Storage Outlook</title></head><body>"
+        '<article itemscope itemtype="https://schema.org/Article">'
+        '<time itemprop="datePublished" datetime="2026-09-17">Sep 17, 2026</time>'
+        "<p>Battery storage capacity grew across every region.</p>"
+        "</article>"
+        '<article itemscope itemtype="https://schema.org/Article">'
+        '<time itemprop="datePublished" datetime="2025-01-01">Jan 1, 2025</time>'
+        "<p>A second, unrelated article snippet on the same page.</p>"
+        "</article>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert "page_published" not in result.data
+
+@pytest.mark.asyncio
 async def test_a_comments_microdata_date_never_beats_the_articles_json_ld(
     tracker,
 ) -> None:
