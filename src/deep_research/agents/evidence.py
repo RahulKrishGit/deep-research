@@ -1356,15 +1356,17 @@ def _passage_index(boundaries: Sequence[int], offset: int) -> int:
 # the same way. A "Data source: ..." caption line credits its originator the
 # same way a sentence does.
 # D8: a page that introduces a block quotation names its author or work the
-# same way it names a relay's issuer -- "To quote X", "In the words of X",
-# "X writes:", "X puts it" (as in "As X put it") -- and a blockquote's own
-# quotation marks are lost in text extraction, so the introducing phrase is
-# the only cue that survives.
+# same way it names a relay's issuer -- "To quote X", "In the words of X".
+# Only the introducer phrase is a cue, never the bare verb: a page saying
+# "X wrote a book" or "X put it to a vote" is not crediting X with the
+# page's own following statement, so "quote"/"quoting"/"quoted"/"writes"/
+# "wrote"/"puts it" are never bare cues here -- "As X put it" and "X
+# writes:" are matched as whole shapes in :func:`attribution_cue_adjacent`
+# instead, anchored on the name itself.
 ATTRIBUTION_CUE_PATTERN = re.compile(
     r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
     r"data\s+from|report(?:s|ed|ing)?\s+from|estimates?\s+from|sources?\s*:|per|said|"
-    r"to\s+quote|quotes?|quoting|quoted|writes|wrote|puts?\s+it|"
-    r"in\s+the\s+words\s+of)"
+    r"to\s+quote|in\s+the\s+words\s+of)"
     r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
@@ -1408,6 +1410,18 @@ _TITLE_CUE_MARK = re.compile(r"^\s*:\s")
 # colon, credits that name with what follows exactly as "X writes:" does --
 # "Example Author (Notes 2.19): the council could not act ...".
 _CITATION_COLON_MARK = re.compile(r"^\s*\([^()]{0,60}\)\s*:")
+# D8/P1: "writes"/"wrote" credits the name only directly after it and only
+# when followed by a colon ("Example Author writes: ...") -- never merely
+# somewhere nearby, which would credit a name a page's own sentence about
+# someone else's writing happens to mention ("Example Author wrote a book
+# ... our own count found 40 sites").
+_WRITES_COLON_MARK = re.compile(r"^\s*(?:writes|wrote)\s*:")
+# D8/P1: "As X put it" is matched only as the whole introducer shape -- "as"
+# directly before the name, "put(s) it" directly after -- never a bare
+# "put it" found nearby for an unrelated reason ("Example Council put it to
+# a vote").
+_AS_PREFIX_PATTERN = re.compile(r"\bas\s*$", re.IGNORECASE)
+_PUTS_IT_TAIL_PATTERN = re.compile(r"^\s*puts?\s+it\b", re.IGNORECASE)
 # A possessive immediately after the matched name: "Wood Mackenzie's" names
 # an owner of what follows exactly as "according to Wood Mackenzie" does.
 _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
@@ -1434,6 +1448,11 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
         or _REPORTING_CUE_PATTERN.match(tail)
         or _SOURCE_NOUN_CUE_PATTERN.match(tail)
         or _CITATION_COLON_MARK.match(tail)
+        or _WRITES_COLON_MARK.match(tail)
+        or (
+            _AS_PREFIX_PATTERN.search(phrase[: name_match.start()])
+            and _PUTS_IT_TAIL_PATTERN.match(tail)
+        )
         or (not phrase[: name_match.start()].strip() and _TITLE_CUE_MARK.match(tail))
     ):
         return True

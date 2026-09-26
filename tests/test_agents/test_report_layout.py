@@ -1120,6 +1120,19 @@ def test_a_fact_row_value_that_spells_its_own_unit_is_not_doubled() -> None:
     assert "a century years" not in log
 
 
+def test_a_fact_row_rate_value_keeps_its_real_unit() -> None:
+    """D15/P2 (RevZ3): 'per year' names a rate's period, not a doubled
+    duration -- 'days' is what is counted, not the period counted in -- so
+    the dedup must never strip it down to '2 days per'."""
+    base = _composition()
+    rate_row = base.fact_rows[0].model_copy(update={"value": "2 days per year"})
+    composition = base.model_copy(update={"fact_rows": [rate_row, base.fact_rows[1]]})
+
+    log = render_finding_log(composition)
+
+    assert "| 2 days per year |" in log
+
+
 def test_a_kept_figures_spelled_value_is_not_doubled_with_its_unit() -> None:
     """D15: the same rule applies to a kept figure's own line under the
     evidence log's Findings section, where value and unit are separate

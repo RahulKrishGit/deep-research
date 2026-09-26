@@ -414,16 +414,36 @@ def _meta_name_content(soup: BeautifulSoup, name: str) -> str | None:
 # A banner or logo heading names the site, not the page: a theme's
 # ``<header><h1 class="site-title">...</h1></header>`` or a ``<nav>``
 # heading is never a headline (RevW5Titles P2), so it is excluded before
-# the first ``h1`` or ``h2`` is read as a fallback title candidate.
-_BANNER_HEADING_ANCESTORS = ("header", "nav")
+# the first ``h1`` or ``h2`` is read as a fallback title candidate. The
+# same is true of a heading under ``<aside>``/``<footer>``, or under any
+# ancestor whose own id or class names sidebar, comment, related, or
+# footer chrome even without that tag (RevZ3 P2): "Related articles" in an
+# aside, or "Comments" in a ``<section id="comments">``, names that block,
+# not the page.
+_BANNER_HEADING_ANCESTORS = ("header", "nav", "aside", "footer")
 _BANNER_HEADING_CLASSES = frozenset({"site-title", "logo"})
+_CHROME_ANCESTOR_MARKERS = ("sidebar", "comment", "related", "footer")
+
+
+def _has_chrome_ancestor_marker(heading: Tag) -> bool:
+    node = heading.parent
+    while isinstance(node, Tag):
+        identifiers = [str(node.get("id") or "")]
+        identifiers.extend(str(cls) for cls in node.get("class") or [])
+        joined = " ".join(identifiers).casefold()
+        if any(marker in joined for marker in _CHROME_ANCESTOR_MARKERS):
+            return True
+        node = node.parent
+    return False
 
 
 def _is_banner_heading(heading: Tag) -> bool:
     if heading.find_parent(_BANNER_HEADING_ANCESTORS) is not None:
         return True
     classes = heading.get("class") or []
-    return any(str(cls).casefold() in _BANNER_HEADING_CLASSES for cls in classes)
+    if any(str(cls).casefold() in _BANNER_HEADING_CLASSES for cls in classes):
+        return True
+    return _has_chrome_ancestor_marker(heading)
 
 
 def _first_usable_heading_text(soup: BeautifulSoup, name: str) -> str | None:
@@ -444,17 +464,24 @@ def _first_usable_h2_text(soup: BeautifulSoup) -> str | None:
     return _first_usable_heading_text(soup, "h2")
 
 
-# D10: the leading clause of a page's own description meta -- up to its
-# first sentence-ending mark -- when nothing else names the page: "Appian,
-# The Civil Wars, translated by Horace White" from a longer DC.description
-# still names the work, without the rest of the description's own prose.
-_CLAUSE_END_PATTERN = re.compile(r"[.;:]")
+# D10: the leading clause of a page's own description meta -- up to a
+# sentence end followed by whitespace and a new capital-letter sentence,
+# never merely a period, or the whole text when no such cut leaves at
+# least two words (RevZ3 P3) -- when nothing else names the page: "Example
+# Author, Collected Works, translated by J. Smith" from a longer
+# DC.description still names the work, without the rest of the
+# description's own prose, and "Dr. Example Author, Collected Works" keeps
+# its abbreviation rather than being cut down to "Dr" alone.
+_SENTENCE_CUT_PATTERN = re.compile(r"[.;:]\s+(?=[A-Z])")
 
 
 def _leading_clause(text: str) -> str | None:
-    match = _CLAUSE_END_PATTERN.search(text)
-    clause = (text[: match.start()] if match else text).strip()
-    return clause or None
+    for match in _SENTENCE_CUT_PATTERN.finditer(text):
+        clause = text[: match.start()].strip()
+        if len(clause.split()) >= 2:
+            return clause
+    clause = text.strip()
+    return clause if len(clause.split()) >= 2 else None
 
 
 # A generic single-word title names no page at all -- a template's default
@@ -586,9 +613,9 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
         _meta_property_content(soup, "og:title"),
         _meta_name_content(soup, "twitter:title"),
         _first_usable_h1_text(soup),
-        _first_usable_h2_text(soup),
         _meta_name_content(soup, "DC.title"),
         _meta_name_content(soup, "citation_title"),
+        _first_usable_h2_text(soup),
         _leading_clause(description) if description else None,
     ]
     for index, candidate in enumerate(candidates):

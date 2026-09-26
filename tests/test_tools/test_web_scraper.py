@@ -1880,3 +1880,80 @@ async def test_scraper_falls_back_to_dc_title_when_there_is_no_h2(tracker) -> No
     result = await _read_served_page(tracker, page)
 
     assert result.data["title"] == "Example Author, Collected Works"
+
+
+@pytest.mark.asyncio
+async def test_scraper_prefers_dc_title_over_a_sidebar_h2(tracker) -> None:
+    """D10/P2 (RevZ3): a heading under a sidebar, a comments block, or a
+    footer names that chrome, not the page -- 'Related articles' beside a
+    real ``DC.title`` must not win, and the candidate chain tries
+    ``DC.title``/``citation_title`` before ``h2`` for exactly this reason."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta name="DC.title" content="Example Author, Collected Works">'
+        "</head><body><aside><h2>Related articles</h2></aside>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Example Author, Collected Works"
+
+
+@pytest.mark.asyncio
+async def test_scraper_skips_an_h2_under_a_comments_section_id(tracker) -> None:
+    """D10/P2 (RevZ3): an ancestor's own id or class naming comments,
+    sidebar, related, or footer chrome excludes its heading, even without a
+    ``<aside>``/``<footer>`` tag -- ``citation_title`` stands in instead."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta name="citation_title" content="Field surveys of 2019">'
+        "</head><body>"
+        '<section id="comments"><h2>Comments</h2></section>'
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Field surveys of 2019"
+
+
+@pytest.mark.asyncio
+async def test_scraper_skips_an_h2_inside_a_footer_with_no_title_anywhere(tracker) -> None:
+    """D10/P2 (RevZ3): a footer heading ('Contact us') is chrome, and with
+    no title candidate anywhere else the raw (empty) title is kept rather
+    than inventing one from the footer."""
+    page = (
+        "<html><head>"
+        '<meta property="og:site_name" content="Example Register">'
+        "</head><body><footer><h2>Contact us</h2></footer>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] != "Contact us"
+
+
+@pytest.mark.asyncio
+async def test_scraper_keeps_an_abbreviation_in_the_description_leading_clause(tracker) -> None:
+    """D10/P3 (RevZ3): a leading abbreviation's own full stop ('Dr.') is not
+    a sentence end -- the whole description is kept rather than cut down to
+    the abbreviation alone."""
+    page = (
+        "<html><head><title>Work - Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta name="DC.description" '
+        'content="Dr. Example Author, Collected Works.">'
+        "</head><body><p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Dr. Example Author, Collected Works."

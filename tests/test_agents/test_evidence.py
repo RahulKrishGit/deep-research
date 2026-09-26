@@ -3166,6 +3166,56 @@ def test_a_parenthetical_citation_then_colon_credits_the_named_work() -> None:
     assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
 
 
+
+def test_writes_credits_only_directly_before_a_colon() -> None:
+    """D8/P1: 'writes'/'wrote' credits the name only when it sits directly
+    after it and is followed by a colon ('Example Author writes: ...') --
+    not merely somewhere nearby, which would credit a name a page's own
+    sentence about someone else's writing happens to mention."""
+    snippet = "Example Author writes: the council could not act without a majority present."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
+
+
+def test_as_name_puts_it_credits_the_quoted_author() -> None:
+    """D8/P1: 'As X put it' credits X only as the whole introducer shape --
+    'as' directly before the name and 'put(s) it' directly after -- never a
+    bare 'put it' found nearby for an unrelated reason."""
+    snippet = "As Example Author put it, the council could not act without a majority present."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
+
+
+def test_a_bare_reporting_verb_wrote_does_not_credit_a_nearby_name() -> None:
+    """D8/P1 (RevZ3): a page saying 'X wrote a book' about someone is not
+    that page's own attribution of ITS OWN separate statement to X -- the
+    bare word 'wrote' must never turn a nearby name into a credited
+    source."""
+    snippet = (
+        "Example Author wrote a book about field surveys. The book is "
+        "outdated; our own count found 40 sites."
+    )
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Author")
+
+
+def test_a_bare_put_it_does_not_credit_a_nearby_name() -> None:
+    """D8/P1 (RevZ3): 'Example Council put it to a vote' uses 'put it' in
+    its ordinary sense, not as a quotation introducer -- it must not credit
+    Example Council with the page's own following statement."""
+    snippet = "Example Council put it to a vote in 2019. Our survey found 12 GW."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Example Council")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of

@@ -1636,16 +1636,29 @@ def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | 
 
 
 # D15: a spelled duration value ("a century", "sixteen years or more")
-# already states its own unit; appending "years" beside it, or a fact
-# row's own already-combined value string repeating it, restates what the
-# value already says ("a century years"). Both shapes -- a figure's
-# separate value/unit pair, and a fact row's already-fused value string --
-# are checked the same way: whether a duration word appears more than
-# once across value and unit together.
+# already states its own unit; appending "years" beside it restates what
+# the value already says ("a century years"). A figure's separate
+# value/unit pair is checked simply: whether a duration word appears
+# anywhere in the value when the unit is itself a duration word -- the
+# unit there is one indivisible string, so "per year" can never coincide
+# with a duration word buried inside a longer value by accident. A fact
+# row's already-fused value string has no such separator, though, so the
+# same check cannot be reused as-is: "2 days per year" split naively on
+# its trailing word alone would see "year" as the unit and "days" earlier
+# in "2 days per" as a duplicate, stripping the rate down to "2 days per"
+# (RevZ3 P2) -- "per" there is what makes "year" a rate's period, not a
+# repeated duration. A fact row's trailing duration word is only ever a
+# repeat when the word right before it is itself a duration word (as in "3
+# years years"), or when the value already ends on a duration-bearing
+# phrase like "or more"/"or less"/"or so" -- never merely because some
+# earlier word happens to be one, and never right after a rate connective
+# (per, a, an, each, every).
 _DURATION_WORDS = frozenset({
     "day", "days", "week", "weeks", "month", "months",
     "decade", "decades", "century", "centuries", "year", "years",
 })
+_RATE_CONNECTIVES = frozenset({"per", "a", "an", "each", "every"})
+_DURATION_TRAILING_PHRASES = ("or more", "or less", "or so")
 
 
 def _is_duration_word(word: str) -> bool:
@@ -1660,6 +1673,27 @@ def _value_already_spells_a_unit(value: str, unit: str) -> bool:
     return any(_is_duration_word(word) for word in value.split())
 
 
+def _value_part_already_spells_the_unit(value_part: str, unit: str) -> bool:
+    """Whether ``value_part`` -- the words of a fact row's fused value
+    before its trailing ``unit`` word -- itself already ends by spelling
+    that kind of unit, rather than merely containing a duration word
+    somewhere earlier (D15 P2): 'a century' and 'sixteen years or more'
+    really do already end on the unit they would be doubling, while '2
+    days per' (from '2 days per year') never does -- 'per' marks a rate's
+    period, not a repeated duration.
+    """
+    if not _is_duration_word(unit):
+        return False
+    words = value_part.split()
+    if not words or words[-1].casefold() in _RATE_CONNECTIVES:
+        return False
+    if _is_duration_word(words[-1]):
+        return True
+    return value_part.casefold().endswith(_DURATION_TRAILING_PHRASES) and any(
+        _is_duration_word(word) for word in words
+    )
+
+
 def _figure_value_text(figure: FindingFigure) -> str:
     """``figure``'s value with its unit appended, unless the value already
     spells the same kind of unit (D15)."""
@@ -1671,14 +1705,16 @@ def _figure_value_text(figure: FindingFigure) -> str:
 def _deduplicated_fact_value(value: str) -> str:
     """``value`` -- a fact row's already-combined "value unit" string -- with
     a trailing unit word dropped when the value it follows already spells
-    that same kind of unit (D15): 'a century years' -> 'a century'.
+    that same kind of unit (D15): 'a century years' -> 'a century' -- but
+    never when the word before it is a rate connective (D15 P2): '2 days
+    per year' is a rate, not a doubled duration, and stays unchanged.
     """
     words = value.split()
     if len(words) < 2:
         return value
     unit_candidate = words[-1]
     value_part = " ".join(words[:-1])
-    if _value_already_spells_a_unit(value_part, unit_candidate):
+    if _value_part_already_spells_the_unit(value_part, unit_candidate):
         return value_part
     return value
 
