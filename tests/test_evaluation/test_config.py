@@ -1104,7 +1104,9 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # (the owed-batch retry's own rejections carried no read id either)
     # moved the source a seventh time, no prompt sentence changing:
     # `06a492b0d768` -> `8f97523e05d5`.
-    "researcher": "8f97523e05d5",
+    # Fable final prompt review: the registry contract's media-title wording
+    # ('an embedded video's or audio player's title'). Moved `8f97523e05d5` -> `639232e40a48`.
+    "researcher": "639232e40a48",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1176,7 +1178,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Merge of the plan branch (S6 + LimitsLift) with the consumer report
     # format: both module-source changes above now coexist; re-pinned on the
     # merged source.
-    "evidence_verifier": "aa2d17feb972",
+    # Fable final prompt review: each kept figure's line in the Statement Check
+    # now carries its release; a stated release is consistent and a dropped one
+    # correctable; corrected text may use the named organisation and site;
+    # media-title wording. Moved `aa2d17feb972` -> `aee44f66d137`.
+    "evidence_verifier": "aee44f66d137",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1245,7 +1251,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # one is) before building the table, then re-keys it to the table's own
     # citations afterward. Module code only, no prompt wording changed:
     # `20ef7adf493c` -> `78d7a747bc14`.
-    "report_writer": "78d7a747bc14",
+    # Fable final prompt review: sections never state a pick, ranking or
+    # verdict of their own; the bottom line credits figures as its statement
+    # does; a forecast's release is not a page date; actuals take no forecast
+    # verb; the sub-topic-only suffix explained; no doubled answer-form label.
+    # Moved `78d7a747bc14` -> `74cd71c823a8`.
+    "report_writer": "74cd71c823a8",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
