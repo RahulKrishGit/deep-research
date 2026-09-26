@@ -604,11 +604,12 @@ PLANNED_OPERATION_INVENTORY = {
     # keeps the writer's two-example shapes (a figure line and its snippet,
     # then a statement-only finding whose line names only the host it was
     # read on -- the two shapes whose crediting the audits found wrong, run 2
-    # S005/S009, smoke 1), and the bottom-line call gets one neutral example
-    # (WRI-6): a fresh call with its own reply schema, not another shape the
-    # first needs to teach.
+    # S005/S009, smoke 1), and the bottom-line call also carries two: a
+    # neutral picks/judgement shape (WRI-6) and a causal-mechanism shape
+    # (D1/D2, run-5 fix wave) showing ordered steps with sources named
+    # together where they agree -- the second shape the first cannot teach.
     "report section drafting": ("report_writer", 2),
-    "report bottom line drafting": ("report_writer", 1),
+    "report bottom line drafting": ("report_writer", 2),
     "report review": ("report_reviewer", 1),
 }
 

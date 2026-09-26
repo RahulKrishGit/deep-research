@@ -125,6 +125,7 @@ REPORT_WRITER_NAME = "report_writer"
 # word (spec §6.4 rule 7's own concern) falls back to the sub-topic's own
 # title instead of printing unchecked.
 MAX_POINT_CHARS = 1200
+MAX_POINT_WORDS = 60
 MAX_BOTTOM_LINE_SENTENCES = 4
 MAX_BOTTOM_LINE_SENTENCE_WORDS = 60
 _SECTION_TITLE_CHARS = 80
@@ -178,6 +179,8 @@ SECTION_INSTRUCTION = (
     "Rules:\n"
     "- Cite by label only: every point lists in finding_labels the labels it rests on. "
     "Never write a URL.\n"
+    "- A point's text is reader prose: never a finding label (F01, F02, ...), a URL, "
+    "or a label's own words; labels go only in finding_labels.\n"
     "- State a forecast with a forecast verb (\"projects\", \"expects\", \"forecasts\"), never "
     "as a completed outcome, and an actual as a reported outcome with its period, never "
     "with a forecast verb.\n"
@@ -199,12 +202,26 @@ SECTION_INSTRUCTION = (
     "names no publisher. A host is where a statement was read, never the body that made "
     "it. Never print a label's own words (\"own figure\", \"not stated\", \"does not "
     "attribute it\") in a point.\n"
+    "- When a snippet or passage shows the page quoting a named author or work "
+    "(quotation marks with the author named, a footnote or a parenthetical citation), "
+    "credit that author or work as the passage names it, as reported by the page: "
+    "\"according to Example Author, as quoted by example-register.test\". A page "
+    "quoting someone is not the originator of the words. Never supply a name the "
+    "passage does not give.\n"
+    "- When the source line describes the page's kind (a student paper, a class "
+    "assignment, a teaching or role-play document, an enthusiast site, a blog post, a "
+    "reader comment, a podcast or course description), say so when you credit it: "
+    "\"a student paper read at example.edu states …\".\n"
     "- Every judgement, ranking or recommendation is attributed to the source that made "
     "it, as the finding names it; where findings disagree, state each; never a pick, "
     "ranking, verdict or criterion of your own.\n"
     "- When two findings give different values or dates for the same thing, state both "
     "in one point, say that they differ, and, where a cited finding shows it, name "
     "which source dates its value or names the document it rests on.\n"
+    "- When two findings state opposite judgements of the same thing, state both in "
+    "one point, say they differ, and, where a cited finding shows it, name which one "
+    "is dated later or which the page calls the current view. Never pick one "
+    "yourself.\n"
     "- Within the point budget this request states, state each distinct fact the "
     "listed findings carry for this part's targets once, in one point citing together "
     "every finding that states it, required targets first in the listed order, each in "
@@ -219,9 +236,13 @@ SECTION_INSTRUCTION = (
     "not yours. A target marked \"(through its sub-topic only)\" is answered by a "
     "finding matched to its sub-topic, not bound to that target explicitly; state it "
     "the same as any other answer.\n"
+    "- When several findings state the same fact, state it once and credit the "
+    "sources together (\"Example Institute, example-register.test and Example News "
+    "state that ...\", citing all their labels), never one clause per source.\n"
     f"- Keep every point under {MAX_POINT_CHARS} characters. A longer point is split "
     "at a sentence boundary and every piece kept with the same citations, so a "
     "sentence that long on its own is refused: write one fact per point.\n"
+    f"- Keep every point under {MAX_POINT_WORDS} words.\n"
     "- A section title names the part of the question this section answers, in the "
     "question's own words where it has them: at most eight words, never a judgement or "
     "a status.\n"
@@ -306,6 +327,8 @@ BOTTOM_LINE_INSTRUCTION = (
     "- Cite by label only: every sentence lists in finding_labels the labels it "
     "rests on, and every label must be one the listed statements cite -- never a "
     "label a listed statement does not carry.\n"
+    "- A sentence's text is reader prose: never a finding label (F01, F02, ...), a "
+    "URL, or a label's own words; labels go only in finding_labels.\n"
     "- Credit every figure, judgement, pick or ranking to its source exactly as the "
     "statement credits it, keeping \"according to <organisation>, as reported by "
     "<site>\" where the statement has it.\n"
@@ -320,6 +343,9 @@ BOTTOM_LINE_INSTRUCTION = (
     "- Every judgement, pick or verdict names the item it is about, exactly as the "
     "statement names it: never a bare pronoun or an unnamed reference. Such a "
     "sentence is refused.\n"
+    "- A sentence never refers to the question's own subject by a bare pronoun once "
+    "an earlier clause is cut or condensed: name the subject again in full, every "
+    "time, even where the same sentence named it a clause before.\n"
     "- Mark each option your sentence is about, in items, the same way a section "
     "does: name, verdict, picked, and by when the sentence cites more than one "
     "site.\n"
@@ -340,6 +366,20 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
         '"finding_labels":["F01","F02"],"items":[{"name":"Model A","verdict":"4.5 out '
         'of 5 for noise","picked":false,"by":"F01"},{"name":"Model B","verdict":"the '
         'one to beat for the price","picked":true,"by":"F02"}]}]}',
+    ),
+    (
+        "Example input: # Checked statements ## Why the change happened - A 2019 "
+        "regulation raised the compliance cost for small operators. (cites F03) - "
+        "Example Institute and example-register.test state that the cost rise pushed "
+        "several small operators to exit the market. (cites F04, F05) - Example News "
+        "reports that the market exit then concentrated supply among the remaining "
+        "larger operators. (cites F06)",
+        '{"sentences":[{"text":"A 2019 regulation raised the compliance cost for small '
+        'operators, and Example Institute and example-register.test state that the '
+        'cost rise then pushed several small operators to exit the market.",'
+        '"finding_labels":["F03","F04","F05"],"items":[]},{"text":"Example News '
+        'reports that the market exit then concentrated supply among the remaining '
+        'larger operators.","finding_labels":["F06"],"items":[]}]}',
     ),
 )
 
@@ -454,10 +494,28 @@ def statement_passages(findings: Sequence[Finding],
     return passages
 
 
+_RATIONALE_CHARS = 120
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _source_rationale_line(source: ScoredSource | None) -> str | None:
+    """D8/D9: the Source Evaluator's own rationale, first sentence, at most
+    ``_RATIONALE_CHARS`` characters -- so the writer (and through it the
+    reader) learns what kind of page a weak source is, not just its host."""
+    if source is None:
+        return None
+    rationale = source.rationale.strip()
+    if not rationale:
+        return None
+    first = _SENTENCE_END.split(rationale, maxsplit=1)[0].strip()
+    return first[:_RATIONALE_CHARS].rstrip()
+
+
 def registry_lines(label: str, finding: Finding,
-                   passages: Mapping[str, str] | None = None) -> list[str]:
-    """One finding's registry block: header, content, snippet, then its figure
-    or statement lines (spec §6.2, D5).
+                   passages: Mapping[str, str] | None = None,
+                   sources: Mapping[str, ScoredSource] | None = None) -> list[str]:
+    """One finding's registry block: header, source rationale, content,
+    snippet, then its figure or statement lines (spec §6.2, D5, D8/D9).
 
     ``content`` is the researcher's own wording, which names the referent a
     snippet leaves as a pronoun. A finding with no kept figure also shows the
@@ -467,9 +525,16 @@ def registry_lines(label: str, finding: Finding,
     passages = passages or {}
     lines = [
         f"## {label}: {finding.source_title} ({publisher_identity(finding.source_url)})",
+    ]
+    rationale_line = _source_rationale_line(
+        (sources or {}).get(normalize_source_url(finding.source_url))
+    )
+    if rationale_line:
+        lines.append(f"source: {rationale_line}")
+    lines.extend([
         f"content: {finding.content}",
         f"snippet: {finding.snippet or finding.content}",
-    ]
+    ])
     number = 0
     for result in finding.verification.figure_results if finding.verification else []:
         if not result.kept or result.context is None:
@@ -608,7 +673,8 @@ def is_context_only(
 
     Unbound and from a low-relevance or low-confidence source, as before. A
     *bound* finding is also context-only when its own source is
-    low-confidence or its authority is below ``authority_floor``, and
+    low-confidence or its authority is at or below ``authority_floor`` (D8/D9:
+    inclusive -- a source AT the floor is weak), and
     EVERY target it binds has another, citable finding at or above the
     floor answering it too (``answered``, ``findings_by_id``) -- one
     stronger sibling on one of several bound targets never gates the
@@ -623,7 +689,7 @@ def is_context_only(
             return True
         return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
     weak = source.low_confidence or (
-        source.authority_score is not None and source.authority_score < authority_floor
+        source.authority_score is not None and source.authority_score <= authority_floor
     )
     if not weak:
         return False
@@ -722,10 +788,11 @@ def _target_line(
 
 
 def _registry_block(findings: Sequence[Finding], registry: Sequence[tuple[str, Finding]],
-                    passages: Mapping[str, str]) -> str:
+                    passages: Mapping[str, str],
+                    sources: Mapping[str, ScoredSource] | None = None) -> str:
     wanted = {finding_fingerprint(f) for f in findings}
     blocks = [
-        "\n".join(registry_lines(label, finding, passages))
+        "\n".join(registry_lines(label, finding, passages, sources))
         for label, finding in registry
         if finding_fingerprint(finding) in wanted
     ]
@@ -808,11 +875,25 @@ def _point_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str
     return max(_required_targets_answered(job, task, own_finding_ids), length_budget, 3)
 
 
+def _word_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
+    """D14's word budget (spec §6.3): an instruction to the model only --
+    code refuses nothing new; ``MAX_POINT_CHARS`` stays the runaway guard.
+    W = the report's word budget divided evenly across its drafted parts,
+    never below ``MAX_POINT_WORDS`` times the part's own required-target
+    count."""
+    parts = max(job.drafted_part_count, 1)
+    raw = round(task.target_words / parts)
+    floor = MAX_POINT_WORDS * _required_targets_answered(job, task, own_finding_ids)
+    return max(raw, floor)
+
+
 def _point_budget_line(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> str:
-    budget = _point_budget(task, job, own_finding_ids)
+    points = _point_budget(task, job, own_finding_ids)
+    words = _word_budget(task, job, own_finding_ids)
     return (
-        f"Write at most {budget} points for this part: the facts that best answer "
-        "the question and this part's targets. The evidence log keeps every finding."
+        f"Write at most {points} points for this part, about {words} words in total: "
+        "the facts that best answer the question and this part's targets. The "
+        "evidence log keeps every finding."
     )
 
 
@@ -822,6 +903,7 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
     label_by_id = {finding_fingerprint(f): label for label, f in task.registry}
     findings_by_id = {finding_fingerprint(f): f for f in task.findings}
     own_finding_ids = {finding_fingerprint(f) for f in job.findings}
+    src_by_url = sources_by_url(task.sources)
     targets_block = "\n".join(
         _target_line(t, answered=task.answered, label_by_id=label_by_id,
                      findings_by_id=findings_by_id, sub_topics=task.sub_topics,
@@ -844,10 +926,11 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
         material.append(f"# Your previous section\n{_rendered_previous_section(job.previous)}")
         material.append(f"# Defects to fix\n{_defect_lines(job.defects)}")
     material.append(
-        f"# Verified findings for this part\n{_registry_block(job.findings, task.registry, task.passages)}"
+        f"# Verified findings for this part\n"
+        f"{_registry_block(job.findings, task.registry, task.passages, src_by_url)}"
     )
     context_block = (
-        _registry_block(job.context_findings, task.registry, task.passages)
+        _registry_block(job.context_findings, task.registry, task.passages, src_by_url)
         if job.context_findings else "(none)"
     )
     material.append(f"# Context only\n{context_block}")
@@ -969,6 +1052,17 @@ _UNNAMED_SUBJECT = re.compile(
     re.IGNORECASE,
 )
 _QUOTED_SPAN = re.compile(r"[\"“]([^\"”]+)[\"”]")
+
+#: D12: a leaked internal finding-label group in a point's own text --
+#: "(F18, F28)" -- stripped together with the space before it. Deterministic
+#: to detect, unlike the model's own compliance rule, and the point is never
+#: refused for carrying one (spec §6.4's own D12 fix).
+_LABEL_GROUP = re.compile(r"\s*\(\s*F\d{2,3}(?:\s*,\s*F\d{2,3})*\s*\)")
+
+
+def _strip_label_groups(text: str) -> tuple[str, bool]:
+    stripped = _LABEL_GROUP.sub("", text)
+    return " ".join(stripped.split()), stripped != text
 
 
 def _has_unnamed_subject(text: str) -> bool:
@@ -1107,8 +1201,10 @@ def _consider_section_point(
     point: WriterPointDraft, where: str, *, part_labels: Mapping[str, Finding],
     all_labels: Mapping[str, Finding], context_only_labels: set[str],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
+    dropped_marks: list[tuple[str, str]],
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
+    drafted, had_label_group = _strip_label_groups(drafted)
     wanted = [label.strip() for label in point.finding_labels]
 
     def refuse(reason: str) -> None:
@@ -1140,20 +1236,26 @@ def _consider_section_point(
     if pieces is None:
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
-    return [
+    candidates = [
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=[part_labels[label] for label in wanted], items=list(point.items))
         for n, piece in enumerate(pieces, start=1)
     ]
+    if had_label_group:
+        for candidate in candidates:
+            dropped_marks.append((candidate.key, "stripped a finding label from the point's text"))
+    return candidates
 
 
 def _consider_bottom_line_point(
     point: WriterPointDraft, where: str, *, cited_by_sections: Mapping[str, Finding],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
+    dropped_marks: list[tuple[str, str]],
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
+    drafted, had_label_group = _strip_label_groups(drafted)
     wanted = [label.strip() for label in point.finding_labels]
 
     def refuse(reason: str) -> None:
@@ -1178,13 +1280,17 @@ def _consider_bottom_line_point(
     if pieces is None:
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
-    return [
+    candidates = [
         _Candidate(key=f"{key_prefix}{next(numbers):02d}",
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=[cited_by_sections[label] for label in wanted], items=list(point.items))
         for n, piece in enumerate(pieces, start=1)
     ]
+    if had_label_group:
+        for candidate in candidates:
+            dropped_marks.append((candidate.key, "stripped a finding label from the point's text"))
+    return candidates
 
 
 def _apply_marks(
@@ -1470,12 +1576,14 @@ async def _run_part(
 
     numbers = iter(range(1, 10_000))
     rejected: list[RejectedDraftPoint] = []
+    dropped_marks: list[tuple[str, str]] = []
     candidates: list[_Candidate] = []
     for n, point in enumerate(draft.points):
         candidates.extend(_consider_section_point(
             point, f"section[{job.coverage_id}].points[{n}]", part_labels=part_labels,
             all_labels=all_labels, context_only_labels=context_only_labels,
             numbers=numbers, rejected=rejected, key_prefix=f"P{job.order + 1:02d}.",
+            dropped_marks=dropped_marks,
         ))
 
     verdicts, check_errors = await _check(
@@ -1484,7 +1592,6 @@ async def _run_part(
     )
 
     stated_rows: set[str] = set()
-    dropped_marks: list[tuple[str, str]] = []
     verdict_map: dict[str, str] = {}
     points: list[ReportPoint] = []
     for candidate in candidates:
@@ -1569,6 +1676,68 @@ def _statement_meets_authority_floor(
         if source.authority_score is not None and source.authority_score >= authority_floor:
             return True
     return False
+
+
+async def _check_and_finalize_bottom_line(
+    task: ReportWriterTask, draft: BottomLineDraft, *, provider: AgentCompleter,
+    fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
+    batch_size: int, cited_by_sections: Mapping[str, Finding], label_urls: Mapping[str, str],
+    label_finding_ids: Mapping[str, str], key_prefix: str,
+) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
+          list[tuple[str, str]], list[tuple[str, str]]]:
+    """One bottom-line draft's candidates, checked and finalized (spec §6.6).
+
+    Returns (points, verdict_map, check_errors, rejected, dropped_marks,
+    statement_check_refusals) -- the last is (drafted text, reason) for every
+    candidate the Statement Check itself refused (verdict "inconsistent"),
+    the D1/D2 re-ask's own input.
+    """
+    numbers = iter(range(1, 100))
+    rejected: list[RejectedDraftPoint] = []
+    dropped_marks: list[tuple[str, str]] = []
+    candidates: list[_Candidate] = []
+    for n, point in enumerate(draft.sentences):
+        candidates.extend(_consider_bottom_line_point(
+            point, f"bottom_line[{n}]", cited_by_sections=cited_by_sections,
+            numbers=numbers, rejected=rejected, key_prefix=key_prefix,
+            dropped_marks=dropped_marks,
+        ))
+
+    # P3-2: cap before the check, so an overflow sentence never spends one,
+    # and record its refusal with the real F-labels, not finding fingerprints.
+    candidates, overflow_candidates = (
+        candidates[:MAX_BOTTOM_LINE_SENTENCES], candidates[MAX_BOTTOM_LINE_SENTENCES:],
+    )
+    for extra in overflow_candidates:
+        rejected.append(RejectedDraftPoint(
+            where=extra.where, text=extra.text, finding_labels=list(extra.finding_labels),
+            reason="over the bottom line's four sentences",
+        ))
+
+    verdicts, check_errors = await _check(
+        provider, candidates, question=task.question, gate=check_gate,
+        batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
+    )
+
+    stated_rows: set[str] = set()
+    verdict_map: dict[str, str] = {}
+    points: list[ReportPoint] = []
+    refusals: list[tuple[str, str]] = []
+    for candidate in candidates:
+        point, verdict_string = _finalize_candidate(
+            candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
+            task_targets=task.targets, label_urls=label_urls, label_finding_ids=label_finding_ids,
+            dropped_marks=dropped_marks, rejected=rejected,
+        )
+        if point is not None:
+            points.append(point)
+            verdict_map[point.statement_id] = verdict_string
+        else:
+            verdict_obj = verdicts.get(candidate.key)
+            if verdict_obj is not None and verdict_obj.verdict == "inconsistent":
+                refusals.append((candidate.text, verdict_obj.reason))
+
+    return points, verdict_map, check_errors, rejected, dropped_marks, refusals
 
 
 async def _run_bottom_line(
@@ -1691,44 +1860,46 @@ async def _run_bottom_line(
         )
         return fallback_points, fallback_verdicts, [*draft_errors, error], [], [], moved
 
-    numbers = iter(range(1, 100))
-    rejected: list[RejectedDraftPoint] = []
-    candidates: list[_Candidate] = []
-    for n, point in enumerate(draft.sentences):
-        candidates.extend(_consider_bottom_line_point(
-            point, f"bottom_line[{n}]", cited_by_sections=cited_by_sections,
-            numbers=numbers, rejected=rejected, key_prefix="B",
-        ))
-
-    # P3-2: cap before the check, so an overflow sentence never spends one,
-    # and record its refusal with the real F-labels, not finding fingerprints.
-    candidates, overflow_candidates = (
-        candidates[:MAX_BOTTOM_LINE_SENTENCES], candidates[MAX_BOTTOM_LINE_SENTENCES:],
-    )
-    for extra in overflow_candidates:
-        rejected.append(RejectedDraftPoint(
-            where=extra.where, text=extra.text, finding_labels=list(extra.finding_labels),
-            reason="over the bottom line's four sentences",
-        ))
-
-    verdicts, check_errors = await _check(
-        provider, candidates, question=task.question, gate=check_gate,
-        batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
-    )
-
-    stated_rows: set[str] = set()
-    dropped_marks: list[tuple[str, str]] = []
-    verdict_map: dict[str, str] = {}
-    points: list[ReportPoint] = []
-    for candidate in candidates:
-        point, verdict_string = _finalize_candidate(
-            candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
-            task_targets=task.targets, label_urls=label_urls, label_finding_ids=label_finding_ids,
-            dropped_marks=dropped_marks, rejected=rejected,
+    points, verdict_map, check_errors, rejected, dropped_marks, refusals = (
+        await _check_and_finalize_bottom_line(
+            task, draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
+            batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
+            label_finding_ids=label_finding_ids, key_prefix="B",
         )
-        if point is not None:
-            points.append(point)
-            verdict_map[point.statement_id] = verdict_string
+    )
+
+    # D1/D2: one re-ask, carrying the Statement Check's own refusal reasons
+    # the same way a redraft carries defects, when it refused a drafted
+    # sentence -- the run-5 refusal dropped a mechanism step with no retry.
+    # The re-ask's own result replaces this attempt's only when every one of
+    # its own sentences passes; a re-ask that still has a refusal is
+    # discarded so a worse draft never displaces a partly-good one.
+    if refusals:
+        reask_defects = [
+            ReviewDefect(
+                defect_id=f"bottom-line-reask-{n:02d}", kind="missing_support", severity="major",
+                problem=f'The sentence "{text}" was refused: {reason}',
+            )
+            for n, (text, reason) in enumerate(refusals, start=1)
+        ]
+        reask_messages = bottom_line_messages(task, checked_sections, previous=points,
+                                              defects=reask_defects)
+        reask_draft, reask_draft_errors = await _attempt_bottom_line_draft(
+            provider, reask_messages, agent_name=REPORT_WRITER_NAME, fingerprint=fingerprint,
+        )
+        draft_errors = [*draft_errors, *reask_draft_errors]
+        if reask_draft is not None:
+            (reask_points, reask_verdict_map, reask_check_errors, reask_rejected,
+             reask_dropped_marks, reask_refusals) = await _check_and_finalize_bottom_line(
+                task, reask_draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
+                batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
+                label_finding_ids=label_finding_ids, key_prefix="R",
+            )
+            if reask_points and not reask_refusals:
+                points, verdict_map, rejected, dropped_marks = (
+                    reask_points, reask_verdict_map, reask_rejected, reask_dropped_marks,
+                )
+                check_errors = [*check_errors, *reask_check_errors]
 
     if not points:
         # P1-b(ii): a drafted bottom line that ends up with nothing kept

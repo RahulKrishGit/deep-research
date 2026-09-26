@@ -368,6 +368,24 @@ def test_an_already_context_only_unbound_finding_does_not_count_as_a_stronger_an
     assert "topic-01-target-01" not in {nf.target_id for nf in task.not_found}
 
 
+def test_is_context_only_treats_an_exact_floor_authority_as_weak():
+    """D8/D9: the floor is inclusive -- a source AT the floor is weak, where
+    before only strictly below it counted."""
+    weak = _statement_finding("https://weak.test/1", "A claim.",
+                              target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A stronger claim.",
+                                target_ids=["topic-01-target-01"])
+    sources = sources_by_url([
+        _authority_source("https://weak.test/1", authority=0.4),
+        _authority_source("https://strong.test/1", authority=0.9),
+    ])
+    findings_by_id = {finding_fingerprint(weak): weak, finding_fingerprint(strong): strong}
+    answered = {"topic-01-target-01": [finding_fingerprint(weak), finding_fingerprint(strong)]}
+
+    assert is_context_only(weak, sources, answered=answered, findings_by_id=findings_by_id,
+                           authority_floor=0.4) is True
+
+
 # --- registry_lines: D5's content: and passage: lines ----------------------
 
 
@@ -390,6 +408,54 @@ def test_registry_lines_omit_a_passage_line_for_a_kept_figure():
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA)
     text = "\n".join(registry_lines("F01", finding, {finding_fingerprint(finding): "unused"}))
     assert "passage:" not in text
+
+
+def test_registry_lines_carry_the_sources_rationale_first_sentence():
+    """D8/D9: the registry line states the Source Evaluator's own
+    rationale, first sentence, as "source: ..."."""
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5,
+        rationale="A student paper hosted at a university. It was not peer reviewed.",
+    )
+    text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
+    assert "source: A student paper hosted at a university." in text
+    assert "It was not peer reviewed." not in text
+
+
+def test_registry_lines_truncate_a_rationale_with_no_early_sentence_break_to_120_characters():
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    source = ScoredSource(
+        url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
+        relevance_score=0.8, overall_score=0.5, rationale="A" * 200,
+    )
+    text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
+    line = next(l for l in text.splitlines() if l.startswith("source: "))
+    assert len(line) - len("source: ") <= 120
+
+
+def test_registry_lines_omit_the_source_line_when_no_sources_are_given():
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    text = "\n".join(registry_lines("F01", finding))
+    assert "source:" not in text
+
+
+def test_section_messages_carry_the_finding_sources_rationale():
+    task = _one_target_task()
+    source = ScoredSource(
+        url=task.findings[0].source_url, title="A page", authority_score=0.9,
+        recency_score=0.8, relevance_score=0.8, overall_score=0.8,
+        rationale="A peer-reviewed statistical release.",
+    )
+    task = task.model_copy(update={"sources": [source]})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True)
+
+    body = section_messages(task, job)[-1].content
+
+    assert "source: A peer-reviewed statistical release." in body
 
 
 # --- section_messages: part scoping, answer form, redraft context ---------
@@ -521,6 +587,57 @@ def test_point_budget_uses_the_required_targets_floor_when_it_exceeds_the_length
     own_finding_ids = {finding_fingerprint(f) for f in findings}
 
     assert _point_budget(task, job, own_finding_ids) == 5
+
+
+def test_max_point_words_constant_is_sixty():
+    from deep_research.agents.report_writer import MAX_POINT_WORDS
+    assert MAX_POINT_WORDS == 60
+
+
+def test_word_budget_divides_target_words_by_drafted_part_count():
+    from deep_research.agents.report_writer import _word_budget
+    task = _one_target_task()
+    task = task.model_copy(update={"target_words": 900})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=3)
+    own_finding_ids = {finding_fingerprint(f) for f in task.findings}
+
+    assert _word_budget(task, job, own_finding_ids) == 300
+
+
+def test_word_budget_never_drops_below_sixty_times_required_targets_answered():
+    from deep_research.agents.report_writer import _word_budget
+    targets = [make_target(f"topic-01-target-{n:02d}", coverage_id="topic-01", required=True)
+              for n in range(1, 4)]
+    findings = [_statement_finding(f"https://a.test/{n}", f"Fact {n}.", target_ids=[t.target_id])
+               for n, t in enumerate(targets, start=1)]
+    task = _one_target_task()
+    task = task.model_copy(update={
+        "targets": targets, "findings": findings, "target_words": 30,
+        "answered": {t.target_id: [finding_fingerprint(f)] for t, f in zip(targets, findings)},
+    })
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=targets, findings=findings, context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=1)
+    own_finding_ids = {finding_fingerprint(f) for f in findings}
+
+    assert _word_budget(task, job, own_finding_ids) == 180
+
+
+def test_section_messages_state_the_computed_word_budget():
+    from deep_research.agents.report_writer import _word_budget
+    task = _one_target_task()
+    task = task.model_copy(update={"target_words": 900})
+    job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
+                 targets=task.targets, findings=task.findings, context_findings=[],
+                 previous=None, defects=[], redraft=True, drafted_part_count=3)
+    own_finding_ids = {finding_fingerprint(f) for f in task.findings}
+    expected = _word_budget(task, job, own_finding_ids)
+
+    body = section_messages(task, job)[-1].content
+
+    assert str(expected) in body
 
 
 # --- bottom_line_messages ---------------------------------------------------
@@ -1263,6 +1380,98 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
     assert isinstance(checker.gates[0], asyncio.Semaphore)
 
 
+# --- D12: no finding labels leak into point text ----------------------------
+
+
+def test_consider_section_point_strips_a_parenthesised_label_group_without_refusing():
+    """D12: a leaked label group is stripped, together with the space
+    before it, and the point survives -- never refused for it."""
+    from deep_research.agents.report_writer import _consider_section_point
+    finding_18 = _statement_finding("https://a.test/18", "Pressure one.", target_ids=[])
+    finding_28 = _statement_finding("https://a.test/28", "Pressure two.", target_ids=[])
+    part_labels = {"F18": finding_18, "F28": finding_28}
+    point = WriterPointDraft(
+        text="Structural pressures built over decades (F18, F28). Next sentence continues.",
+        finding_labels=["F18", "F28"],
+    )
+    rejected: list = []
+    dropped_marks: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.", dropped_marks=dropped_marks,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "Structural pressures built over decades. Next sentence continues."
+    assert rejected == []
+    assert dropped_marks != []
+
+
+def test_consider_section_point_strips_a_three_digit_label_group():
+    from deep_research.agents.report_writer import _consider_section_point
+    finding = _statement_finding("https://a.test/161", "A claim.", target_ids=[])
+    part_labels = {"F161": finding}
+    point = WriterPointDraft(text="A claim about the topic (F161).", finding_labels=["F161"])
+    rejected: list = []
+    dropped_marks: list = []
+
+    candidates = _consider_section_point(
+        point, "section[topic-01].points[0]", part_labels=part_labels, all_labels=part_labels,
+        context_only_labels=set(), numbers=iter(range(1, 100)), rejected=rejected,
+        key_prefix="P01.", dropped_marks=dropped_marks,
+    )
+
+    assert candidates[0].text == "A claim about the topic."
+
+
+def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_refusing():
+    from deep_research.agents.report_writer import _consider_bottom_line_point
+    finding = _statement_finding("https://a.test/18", "Pressure one.", target_ids=[])
+    cited_by_sections = {"F18": finding}
+    point = WriterPointDraft(
+        text="Structural pressures built over decades (F18). Next clause continues.",
+        finding_labels=["F18"],
+    )
+    rejected: list = []
+    dropped_marks: list = []
+
+    candidates = _consider_bottom_line_point(
+        point, "bottom_line[0]", cited_by_sections=cited_by_sections,
+        numbers=iter(range(1, 100)), rejected=rejected, key_prefix="B",
+        dropped_marks=dropped_marks,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].text == "Structural pressures built over decades. Next clause continues."
+    assert rejected == []
+    assert dropped_marks != []
+
+
+@pytest.mark.asyncio
+async def test_a_leaked_label_group_is_stripped_from_the_printed_point(writer, checker) -> None:
+    """D12: the compose pipeline strips a leaked label group from a
+    point's printed text end to end, without refusing the point."""
+    state = _one_part_state()
+    task = writer.build_task(state)
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="Capacity grew steadily across the period (F01).",
+                             finding_labels=["F01"]),
+        ]),
+        BottomLineDraft(sentences=[]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    section_texts = [point.text for section in composition.sections for point in section.points]
+    bottom_line_texts = [point.text for point in composition.summary]
+    printed = (section_texts + bottom_line_texts)[0]
+    assert printed == "Capacity grew steadily across the period."
+    assert composition.dropped_marks != []
+
+
 # --- verdict application, still per-part -----------------------------------
 
 
@@ -1999,11 +2208,42 @@ async def test_a_statement_check_outage_leaves_a_recoverable_error_not_a_false_e
 
 
 @pytest.mark.asyncio
+async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """D1/D2: the Statement Check refusing a bottom-line sentence buys one
+    re-ask carrying the refusal reason; its own result replaces the
+    refused attempt when every one of its sentences passes."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                       target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    checker.verdicts["B01"] = _verdict("inconsistent", reason="No cited finding supports this claim.")
+    checker.verdicts["R01"] = _verdict("consistent")
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="A wrong claim.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, restated.",
+                                                    finding_labels=["F01"])]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.text for p in composition.summary] == ["10.4 GW in 2024, restated."]
+
+
+@pytest.mark.asyncio
 async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_section_points(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
     """P1-b(ii): a drafted-but-empty-after-refusal bottom line still gets the
-    §6.8 fallback, not a silent empty summary."""
+    §6.8 fallback, not a silent empty summary -- even after the D1/D2
+    re-ask, when the re-ask's own sentence is refused too."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
                        target_ids=["topic-01-target-01"])
@@ -2011,10 +2251,13 @@ async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_s
     state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
                           verified_findings=[finding])
     checker.verdicts["B01"] = _verdict("inconsistent", reason="not supported")
+    checker.verdicts["R01"] = _verdict("inconsistent", reason="still not supported")
     completer = ScriptedCompleter(outputs=[
         SectionDraft(title="Capacity added",
                     points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
         BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, allegedly.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024, still allegedly.",
+                                                    finding_labels=["F01"])]),
     ])
     agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
     task = agent.build_task(state)
