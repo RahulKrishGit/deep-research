@@ -750,6 +750,43 @@ def test_an_unchecked_sentence_citing_a_relay_copy_gets_the_relays_provenance() 
     assert "reported by gazette.example.test" in body
 
 
+
+def test_an_unchecked_sentence_citing_the_own_duplicate_of_a_relay_row_gets_its_own_provenance() -> None:
+    """P1/D13, the reverse direction: when the row's own primary is the relay
+    page but the sentence cites only the original issuer's duplicate page,
+    the suffix must credit that page, never a relay the report never cites."""
+    own_page = _finding("https://agency.example.test/own-release",
+                        "The agency expects 14 GW of additions in 2025.",
+                        "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
+    own_page = own_page.model_copy(update={"release_date": "2025-01-14"})
+    relay_page = _finding("https://gazette.example.test/story",
+                          "According to the Example Agency, as reported by the Example Gazette, "
+                          "14 GW of additions are expected in 2025.",
+                          "14", "GW", organisation="Example Agency", attribution="relayed",
+                          kind="forecast", period="2025")
+    primary = finding_fingerprint(relay_page)
+    row = FactRow(row_id="K001", organisation="Example Agency", attribution="relayed",
+                 relay_host="gazette.example.test", measure="additions",
+                 period="2025", value="14 GW", kind="forecast", finding_id=primary,
+                 duplicate_finding_ids=[finding_fingerprint(own_page)],
+                 target_ids=["topic-01-target-01"])
+    text = "The agency expects 14 GW of additions in 2025."
+    point = ReportPoint(text=text, source_urls=[own_page.source_url],
+                        statement=ReportStatement(statement_id="S001", text=text,
+                                                  finding_ids=[finding_fingerprint(own_page)]))
+    composition = ReportComposition(
+        question="What is the outlook for additions?", session_id="s",
+        findings=[own_page, relay_page], fact_rows=[row], summary=[point],
+        statement_verdicts={"S001": "unchecked"},
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "gazette.example.test" not in body
+    assert "(figure: Example Agency (released 2025-01-14))" in body
+
+
 # --- §9: the evidence log ------------------------------------------------------
 
 
