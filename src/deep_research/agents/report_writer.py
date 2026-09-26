@@ -605,9 +605,11 @@ def is_context_only(
     Unbound and from a low-relevance or low-confidence source, as before. A
     *bound* finding is also context-only when its own source is
     low-confidence or its authority is below ``authority_floor``, and
-    another finding at or above the floor answers one of the same targets
-    (``answered``, ``findings_by_id``) -- so a target answered only by weak
-    sources still gets its answer unchanged (D6: "nothing changes").
+    EVERY target it binds has another, citable finding at or above the
+    floor answering it too (``answered``, ``findings_by_id``) -- one
+    stronger sibling on one of several bound targets never gates the
+    others: a target with no stronger source still gets its answer
+    unchanged (D6: "nothing changes").
     """
     source = sources.get(normalize_source_url(finding.source_url))
     if source is None:
@@ -624,7 +626,8 @@ def is_context_only(
     answered = answered or {}
     findings_by_id = findings_by_id or {}
     own_id = finding_fingerprint(finding)
-    for target_id in finding.target_ids:
+
+    def stronger_answer_exists(target_id: str) -> bool:
         for other_id in answered.get(target_id, []):
             if other_id == own_id:
                 continue
@@ -634,9 +637,17 @@ def is_context_only(
             other_source = sources.get(normalize_source_url(other.source_url))
             if other_source is None or other_source.low_confidence:
                 continue
+            # The candidate must itself be citable: an unbound other finding
+            # that D16's own low-relevance rule already makes context-only
+            # carries no answer to lean on.
+            if (not other.target_ids and other_source.relevance_score is not None
+                    and other_source.relevance_score < CONTEXT_ONLY_RELEVANCE):
+                continue
             if other_source.authority_score is not None and other_source.authority_score >= authority_floor:
                 return True
-    return False
+        return False
+
+    return all(stronger_answer_exists(target_id) for target_id in finding.target_ids)
 
 
 # --- §6.3/§6.6: the section and bottom-line requests ------------------------
@@ -662,11 +673,11 @@ class PartJob:
     """Whether this part's call runs at all: ``False`` means carried over
     unchanged from ``previous`` (spec §6.9), no call made."""
     drafted_part_count: int = 1
-    """D11: how many of this report's parts have any citable finding at all
-    -- the reader-length point budget's own denominator, computed once
-    across every ``PartJob`` a report builds (spec §6.3). Defaults to 1 so
-    a caller that builds one ``PartJob`` directly (a unit test) still gets
-    a sane budget."""
+    """D11: how many of this report's parts have at least one citable,
+    non-context-only finding -- the reader-length point budget's own
+    denominator, computed once across every ``PartJob`` a report builds
+    (spec §6.3). Defaults to 1 so a caller that builds one ``PartJob``
+    directly (a unit test) still gets a sane budget."""
 
 
 def _answer_form_line(task: ReportWriterTask) -> str:
@@ -1537,6 +1548,25 @@ def _bottom_line_fallback(
     return points, verdicts, moved
 
 
+
+def _statement_meets_authority_floor(
+    finding_ids: Sequence[str], findings_by_id: Mapping[str, Finding],
+    sources: Mapping[str, ScoredSource], authority_floor: float,
+) -> bool:
+    """D6/D7 bullet 3: whether one of ``finding_ids``' sources is citable
+    and at or above ``authority_floor``."""
+    for finding_id in finding_ids:
+        finding = findings_by_id.get(finding_id)
+        if finding is None:
+            continue
+        source = sources.get(normalize_source_url(finding.source_url))
+        if source is None or source.low_confidence:
+            continue
+        if source.authority_score is not None and source.authority_score >= authority_floor:
+            return True
+    return False
+
+
 async def _run_bottom_line(
     task: ReportWriterTask, outcomes: Sequence[_PartOutcome], *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
@@ -1548,9 +1578,10 @@ async def _run_bottom_line(
     moved_statement_ids -- source section statement ids a §6.8 fallback moved
     into the bottom line, so the caller removes them from their sections and
     a sentence is never printed twice, P1-a)."""
-    checked_sections: list[ReportSection] = []
-    cited_by_sections: dict[str, Finding] = {}
-    label_by_finding_id = {finding_fingerprint(f): label for label, f in task.registry}
+    findings_by_id = {finding_fingerprint(f): f for f in task.findings}
+    src_by_url = sources_by_url(task.sources)
+    section_points: list[tuple[ReportSection, list[ReportPoint]]] = []
+    any_above_floor = False
     for outcome in outcomes:
         if outcome.section is None:
             continue
@@ -1561,7 +1592,34 @@ async def _run_bottom_line(
         ]
         if not kept_points:
             continue
-        checked_sections.append(outcome.section.model_copy(update={"points": kept_points}))
+        section_points.append((outcome.section, kept_points))
+        if any(
+            _statement_meets_authority_floor(
+                point.statement.finding_ids, findings_by_id, src_by_url, task.authority_floor,
+            )
+            for point in kept_points
+        ):
+            any_above_floor = True
+
+    # D6/D7 bullet 3: once at least one checked statement cites a finding at
+    # or above the floor, a statement resting only on below-floor findings
+    # is withheld from the bottom line's own candidate pool -- it stays
+    # printed in its own section (this loop never touches ``outcome.section``
+    # itself). When none does, every statement passes through unchanged.
+    checked_sections: list[ReportSection] = []
+    cited_by_sections: dict[str, Finding] = {}
+    label_by_finding_id = {finding_fingerprint(f): label for label, f in task.registry}
+    for section, kept_points in section_points:
+        if any_above_floor:
+            kept_points = [
+                point for point in kept_points
+                if _statement_meets_authority_floor(
+                    point.statement.finding_ids, findings_by_id, src_by_url, task.authority_floor,
+                )
+            ]
+        if not kept_points:
+            continue
+        checked_sections.append(section.model_copy(update={"points": kept_points}))
         for point in kept_points:
             for finding_id in point.statement.finding_ids:
                 label = label_by_finding_id.get(finding_id)
@@ -1728,14 +1786,15 @@ def _page_credit(
     sources: Sequence[ScoredSource],
 ) -> PageCredit:
     """Spec §6.7/§8: the publisher from the page's own words (or the host),
-    and the date in order: the read's own ``page_published``; else its
-    ``page_updated`` (``date_kind`` marks which); else the Source
-    Evaluator's validated ``publication_date``, used only when the page
-    carries no metadata date of its own -- the evaluator sees only excerpts
-    and can admit a date the page's text merely mentions (P1-2: a content
-    date such as a product's release date is not the page's own date) --
-    never a figure's ``statement_date`` or its vintage: those are the
-    figure's, not the page's.
+    and the date in order: the read's own ``page_updated`` when it is later
+    than its ``page_published`` (D8, ``date_kind`` marks which); else
+    ``page_published``; else ``page_updated``; else the Source Evaluator's
+    validated ``publication_date``, used only when the page carries no
+    metadata date of its own -- the evaluator sees only excerpts and can
+    admit a date the page's text merely mentions (P1-2: a content date
+    such as a product's release date is not the page's own date) -- never
+    a figure's ``statement_date`` or its vintage: those are the figure's,
+    not the page's.
     """
     # Imported at call time, matching this module's other evidence_verifier
     # seams: no import cycle (evidence_verifier never imports this module at

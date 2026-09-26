@@ -1552,10 +1552,11 @@ class PageCredit(ContractModel):
     publisher: str
     date: str | None = None
     date_kind: Literal["published", "updated"] | None = None
-    """Which date ``date`` is (T3 renders them differently): the Source
-    Evaluator's validated ``publication_date`` or the read's own
-    ``page_published`` is ``"published"``; a read's ``page_updated`` used
-    only because no publication date exists is ``"updated"``. ``None`` when
+    """Which date ``date`` is (T3 renders them differently): the read's own
+    ``page_updated``, when it is later than its ``page_published`` (D8), or
+    a read's ``page_updated`` used because no ``page_published`` exists, is
+    ``"updated"``; the Source Evaluator's validated ``publication_date`` or
+    the read's own ``page_published`` is ``"published"``. ``None`` when
     ``date`` is ``None``, or for a snapshot written before this field."""
 
 

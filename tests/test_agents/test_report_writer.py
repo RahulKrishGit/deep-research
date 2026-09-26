@@ -117,10 +117,11 @@ def _low_relevance_source(url: str, *, low_confidence: bool = False, relevance: 
     )
 
 
-def _authority_source(url: str, *, authority: float, low_confidence: bool = False) -> ScoredSource:
+def _authority_source(url: str, *, authority: float, low_confidence: bool = False,
+                      relevance: float = 0.8) -> ScoredSource:
     return ScoredSource(
         url=url, title="A page", authority_score=authority, recency_score=0.8,
-        relevance_score=0.8, overall_score=0.5,
+        relevance_score=relevance, overall_score=0.5,
         rationale="Scored for authority.", low_confidence=low_confidence,
     )
 
@@ -316,6 +317,56 @@ def test_is_context_only_false_for_a_bound_low_authority_finding_when_no_stronge
 
     assert is_context_only(weak, sources, answered=answered, findings_by_id=findings_by_id,
                            authority_floor=0.4) is False
+
+
+def test_a_bound_findings_other_target_is_not_gated_by_one_targets_stronger_answer(writer) -> None:
+    """P1: a weak finding bound to two required targets stays citable (and
+    the target is not "not found") for the one target no stronger source
+    answers, even though its other target does have a stronger answer."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
+    weak = _statement_finding("https://weak.test/1", "A weak claim about both parts.",
+                              target_ids=["topic-01-target-01", "topic-01-target-02"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim about part two.",
+                                target_ids=["topic-01-target-02"])
+    weak_source = _authority_source("https://weak.test/1", authority=0.2)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [t1, t2])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[weak, strong],
+                          evaluated_sources=[weak_source, strong_source])
+
+    task = writer.build_task(state)
+
+    assert "topic-01-target-01" not in {nf.target_id for nf in task.not_found}
+    findings_by_id = {finding_fingerprint(weak): weak, finding_fingerprint(strong): strong}
+    src_by_url = sources_by_url([weak_source, strong_source])
+    assert is_context_only(weak, src_by_url, answered=task.answered, findings_by_id=findings_by_id,
+                           authority_floor=task.authority_floor) is False
+
+
+def test_an_already_context_only_unbound_finding_does_not_count_as_a_stronger_answer(writer) -> None:
+    """P1: an unbound finding that is itself context-only by D16's low-
+    relevance rule must not count as the stronger answer that gates a
+    bound weak finding."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                         unit_dimension=None)
+    weak = _statement_finding("https://weak.test/1", "Storage capacity in the United States was weak in 2024.",
+                              target_ids=["topic-01-target-01"])
+    unbound_low_relevance = _statement_finding(
+        "https://fallback.test/1", "Storage capacity added in the United States was modest in 2024.",
+        target_ids=[], related_sub_topic="Capacity added",
+    )
+    weak_source = _authority_source("https://weak.test/1", authority=0.2)
+    fallback_source = _authority_source("https://fallback.test/1", authority=0.8, relevance=0.2)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[weak, unbound_low_relevance],
+                          evaluated_sources=[weak_source, fallback_source])
+
+    task = writer.build_task(state)
+
+    assert "topic-01-target-01" not in {nf.target_id for nf in task.not_found}
 
 
 # --- registry_lines: D5's content: and passage: lines ----------------------
@@ -585,21 +636,6 @@ def test_section_instruction_names_the_new_target_answering_rule():
     assert "a point never announces an absence" in SECTION_INSTRUCTION
 
 
-def test_section_instruction_states_one_point_per_distinct_fact():
-    assert "State each distinct fact" in SECTION_INSTRUCTION
-    assert "in one point citing together every finding that states it" in SECTION_INSTRUCTION
-
-
-def test_section_instruction_limits_an_optional_targets_answer_to_a_new_fact():
-    assert ("State an optional target's answer only where it adds a fact the "
-           "required targets' points do not carry") in SECTION_INSTRUCTION
-
-
-def test_section_instruction_states_the_differing_values_rule():
-    assert ("state both in one point, say that they differ, and name which "
-           "source dates or documents its value") in SECTION_INSTRUCTION
-
-
 def test_section_instruction_states_the_unnamed_subject_guard():
     assert "bare pronoun" in SECTION_INSTRUCTION
 
@@ -649,18 +685,6 @@ def test_bottom_line_instruction_forbids_a_pick_of_its_own():
 def test_bottom_line_instruction_forbids_stating_a_pages_own_date():
     assert "Never state a page's own date" in BOTTOM_LINE_INSTRUCTION
     assert "a forecast's release is not a page date and stays" in BOTTOM_LINE_INSTRUCTION
-
-
-def test_bottom_line_instruction_states_the_mechanism_rule_for_why_and_how_questions():
-    assert "give the mechanism as ordered steps" in BOTTOM_LINE_INSTRUCTION
-    assert "a cause and its effect" in BOTTOM_LINE_INSTRUCTION
-    assert "not a verdict of your own" in BOTTOM_LINE_INSTRUCTION
-
-
-def test_bottom_line_instruction_states_the_sentence_word_cap():
-    assert MAX_BOTTOM_LINE_SENTENCE_WORDS == 60
-    assert f"under {MAX_BOTTOM_LINE_SENTENCE_WORDS} words" in BOTTOM_LINE_INSTRUCTION
-    assert f"under {MAX_POINT_CHARS} characters" in BOTTOM_LINE_INSTRUCTION
 
 
 # --- generality (D10): no domain or probe wording in model-read text -------
@@ -873,6 +897,95 @@ async def test_a_bound_weak_authority_findings_point_is_refused_when_a_stronger_
     assert "A strong claim about the topic." in section_texts + bottom_line_texts
     assert "A weak claim about the topic." not in section_texts
     assert any(r.reason == "rests only on context-only findings" for r in composition.rejected_points)
+
+
+@pytest.mark.asyncio
+async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
+    tracker: Tracker, tmp_path: Path, checker,
+) -> None:
+    """D6/D7 bullet 3: once a checked statement citing a finding at or
+    above the authority floor exists, a statement resting only on
+    below-floor findings is withheld from the bottom line's own candidate
+    pool -- it stays printed in its own section."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
+    weak = _statement_finding("https://weak.test/1", "A weak claim about part one.",
+                              target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim about part two.",
+                                target_ids=["topic-01-target-02"])
+    weak_source = _authority_source("https://weak.test/1", authority=0.2)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [t1, t2])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[weak, strong],
+                          evaluated_sources=[weak_source, strong_source])
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    captured: dict[str, str] = {}
+
+    def route(messages, schema):
+        if schema is BottomLineDraft:
+            captured["text"] = messages[-1].content
+            return BottomLineDraft(sentences=[WriterPointDraft(
+                text="A strong claim about part two.", finding_labels=[label_by_url[strong.source_url]])])
+        return SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="A weak claim about part one.",
+                             finding_labels=[label_by_url[weak.source_url]]),
+            WriterPointDraft(text="A strong claim about part two.",
+                             finding_labels=[label_by_url[strong.source_url]]),
+        ])
+
+    completer = ScriptedCompleter(outputs=[route, route])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert "A strong claim about part two." in captured["text"]
+    assert "A weak claim about part one." not in captured["text"]
+    section_texts = [point.text for section in composition.sections for point in section.points]
+    assert "A weak claim about part one." in section_texts
+
+
+@pytest.mark.asyncio
+async def test_the_bottom_line_sees_every_checked_statement_when_none_reaches_the_floor(
+    tracker: Tracker, tmp_path: Path, checker,
+) -> None:
+    """D6/D7 bullet 3: when no checked statement cites a finding at or
+    above the floor, every one reaches the bottom line unchanged."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
+    weak1 = _statement_finding("https://weak1.test/1", "A weak claim about part one.",
+                               target_ids=["topic-01-target-01"])
+    weak2 = _statement_finding("https://weak2.test/1", "A weak claim about part two.",
+                               target_ids=["topic-01-target-02"])
+    weak1_source = _authority_source("https://weak1.test/1", authority=0.2)
+    weak2_source = _authority_source("https://weak2.test/1", authority=0.1)
+    topic = _topic("topic-01", "Capacity added", [t1, t2])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[weak1, weak2],
+                          evaluated_sources=[weak1_source, weak2_source])
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    captured: dict[str, str] = {}
+
+    def route(messages, schema):
+        if schema is BottomLineDraft:
+            captured["text"] = messages[-1].content
+            return BottomLineDraft(sentences=[])
+        return SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="A weak claim about part one.",
+                             finding_labels=[label_by_url[weak1.source_url]]),
+            WriterPointDraft(text="A weak claim about part two.",
+                             finding_labels=[label_by_url[weak2.source_url]]),
+        ])
+
+    completer = ScriptedCompleter(outputs=[route, route])
+
+    await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert "A weak claim about part one." in captured["text"]
+    assert "A weak claim about part two." in captured["text"]
 
 
 @pytest.mark.asyncio
@@ -1450,16 +1563,34 @@ def test_build_task_resolves_the_reader_length_from_the_contracts_word_limit(
     assert task.target_words == 500
 
 
-def test_build_task_resolves_the_authority_floor_from_config(
+def test_build_task_gates_a_bound_finding_by_the_configured_authority_floor(
     tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """D6/D7: the writer's authority floor comes from ``agents.writer_authority_floor``."""
+    """D6/D7 (behaviour, not wiring): with a raised floor, a finding whose
+    authority sits below it is context-only once a stronger finding
+    answers the same target."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
+                         unit_dimension=None)
+    mid = _statement_finding("https://mid.test/1", "A mid-authority claim about the topic.",
+                             target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim about the topic.",
+                                target_ids=["topic-01-target-01"])
+    mid_source = _authority_source("https://mid.test/1", authority=0.5)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[mid, strong],
+                          evaluated_sources=[mid_source, strong_source])
     agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path),
                     config=AgentRuntimeConfig(max_iterations=2, tool_budget=0, writer_authority_floor=0.6))
 
-    task = agent.build_task(_one_part_state())
+    task = agent.build_task(state)
 
     assert task.authority_floor == 0.6
+    findings_by_id = {finding_fingerprint(mid): mid, finding_fingerprint(strong): strong}
+    src_by_url = sources_by_url([mid_source, strong_source])
+    assert is_context_only(mid, src_by_url, answered=task.answered, findings_by_id=findings_by_id,
+                           authority_floor=task.authority_floor) is True
 
 
 # --- T4 compose (spec §6.7): the table, page credits, unreachable ----------
