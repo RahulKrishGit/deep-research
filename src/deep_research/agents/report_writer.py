@@ -1090,13 +1090,20 @@ def _consider_bottom_line_point(
 
 def _apply_marks(
     marks: Sequence[ItemMarkDraft], *, final_text: str, labels: Sequence[str],
-    label_urls: Mapping[str, str], dropped: list[tuple[str, str]], statement_key: str,
+    label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
+    dropped: list[tuple[str, str]], statement_key: str,
 ) -> list[ItemMark]:
     """Rule 8: each name/verdict a verbatim span of the final text, at most
     ``_MARK_SPAN_CHARS``; ``by`` resolved only among the point's own cited
     ``labels`` -- never the whole registry, or a mark could credit a page the
     sentence and its Statement Check never rested on. A failing mark is
-    dropped -- the point stays -- and recorded (spec §5)."""
+    dropped -- the point stays -- and recorded (spec §5).
+
+    R-2: ``finding_id`` is resolved from ``by`` (or, when the point cites
+    only one finding, that finding), never guessed from whichever finding
+    happens to share the mark's page -- a page can carry more than one
+    finding, and the table must not credit a pick to the wrong one of them.
+    """
     kept: list[ItemMark] = []
     sites = {label_urls[label] for label in labels if label in label_urls}
     for mark in marks:
@@ -1116,15 +1123,22 @@ def _apply_marks(
             source_url = label_urls[by]
         else:
             source_url = next(iter(sites), "")
-        kept.append(ItemMark(name=name, verdict=verdict, picked=mark.picked, source_url=source_url))
+        if by in labels and by in label_finding_ids:
+            finding_id = label_finding_ids[by]
+        elif len(labels) == 1:
+            finding_id = label_finding_ids.get(labels[0])
+        else:
+            finding_id = None
+        kept.append(ItemMark(name=name, verdict=verdict, picked=mark.picked, source_url=source_url,
+                             finding_id=finding_id))
     return kept
 
 
 def _finalize_candidate(
     candidate: _Candidate, verdicts: Mapping[str, _Verdict | None], *,
     stated_rows: set[str], task_facts: Sequence[FactRow], task_targets: Sequence[EvidenceTarget],
-    label_urls: Mapping[str, str], dropped_marks: list[tuple[str, str]],
-    rejected: list[RejectedDraftPoint],
+    label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
+    dropped_marks: list[tuple[str, str]], rejected: list[RejectedDraftPoint],
 ) -> tuple[ReportPoint | None, str]:
     """Apply the Statement Check's verdict, the restatement dedup, and the
     marks; return the printed point (or ``None``) and its verdict string."""
@@ -1170,7 +1184,8 @@ def _finalize_candidate(
         if target.target_id in finding.target_ids and finding_fingerprint(finding) in cited_ids
     })
     marks = _apply_marks(candidate.items, final_text=text, labels=candidate.finding_labels,
-                         label_urls=label_urls, dropped=dropped_marks, statement_key=candidate.key)
+                         label_urls=label_urls, label_finding_ids=label_finding_ids,
+                         dropped=dropped_marks, statement_key=candidate.key)
     own_first = sorted(candidate.findings, key=lambda f: 0 if any(
         r.context is not None and r.context.attribution == "own"
         for r in (f.verification.figure_results if f.verification else [])) else 1)
@@ -1319,6 +1334,7 @@ async def _run_part(
     job: PartJob, task: ReportWriterTask, *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, section_gate: asyncio.Semaphore,
     check_gate: asyncio.Semaphore, batch_size: int, label_urls: Mapping[str, str],
+    label_finding_ids: Mapping[str, str],
 ) -> _PartOutcome:
     if not job.findings and not job.context_findings:
         return _PartOutcome(job=job, section=None, status="empty", errors=[], verdicts={})
@@ -1375,8 +1391,8 @@ async def _run_part(
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
             candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
-            task_targets=task.targets, label_urls=label_urls, dropped_marks=dropped_marks,
-            rejected=rejected,
+            task_targets=task.targets, label_urls=label_urls, label_finding_ids=label_finding_ids,
+            dropped_marks=dropped_marks, rejected=rejected,
         )
         if point is not None:
             points.append(point)
@@ -1440,7 +1456,7 @@ def _bottom_line_fallback(
 async def _run_bottom_line(
     task: ReportWriterTask, outcomes: Sequence[_PartOutcome], *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
-    batch_size: int, label_urls: Mapping[str, str],
+    batch_size: int, label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
           list[tuple[str, str]], set[str]]:
     """The bottom-line call (spec §6.6), started once every part task has
@@ -1472,15 +1488,32 @@ async def _run_bottom_line(
 
     if not checked_sections:
         # P1-b(i): a part whose draft succeeded but whose Statement Check
-        # never came back (D8) or judged everything inconsistent is
-        # "written", not "failed" -- only every non-empty part actually
-        # failing earns the non-recoverable "no bottom line" error.
+        # never came back (D8) is "written", not "failed" -- only every
+        # non-empty part actually failing earns the "no bottom line" error
+        # below. P1-3 made an all-refused draft "failed" too (so the
+        # renderer discloses it), which means this branch now covers two
+        # different causes that must not share one verdict (R-5): a real
+        # provider/draft failure (``report_writer_section_failed`` on the
+        # outcome) is still the non-recoverable ``report_writer_provider_error``,
+        # but a part whose draft succeeded and whose points were all
+        # explicitly refused is a content outcome, not a provider failure --
+        # a recoverable ``report_writer_all_parts_refused`` instead.
         non_empty = [outcome for outcome in outcomes if outcome.status != "empty"]
         if non_empty and all(outcome.status == "failed" for outcome in non_empty):
-            error = agent_error(
-                agent_name=REPORT_WRITER_NAME, error_type="report_writer_provider_error",
-                message="Every part failed; the report has no bottom line.", recoverable=False,
+            provider_failed = any(
+                any(e.error_type == "report_writer_section_failed" for e in outcome.errors)
+                for outcome in non_empty
             )
+            if provider_failed:
+                error = agent_error(
+                    agent_name=REPORT_WRITER_NAME, error_type="report_writer_provider_error",
+                    message="Every part failed; the report has no bottom line.", recoverable=False,
+                )
+            else:
+                error = agent_error(
+                    agent_name=REPORT_WRITER_NAME, error_type="report_writer_all_parts_refused",
+                    message="Every part's drafted points were refused; the report has no bottom line.",
+                )
             return [], {}, [error], [], [], set()
         if non_empty:
             # P1-b(iii): sections are printed, so the bottom line is left
@@ -1544,8 +1577,8 @@ async def _run_bottom_line(
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
             candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
-            task_targets=task.targets, label_urls=label_urls, dropped_marks=dropped_marks,
-            rejected=rejected,
+            task_targets=task.targets, label_urls=label_urls, label_finding_ids=label_finding_ids,
+            dropped_marks=dropped_marks, rejected=rejected,
         )
         if point is not None:
             points.append(point)
@@ -1723,6 +1756,7 @@ async def compose_written_report(
     resolved_batch_size = batch_size if batch_size is not None else _CHECK_BATCH_SIZE_DEFAULT
     resolved_concurrency = concurrency if concurrency is not None else _CHECK_CONCURRENCY_DEFAULT
     label_urls = {label: f.source_url for label, f in task.registry}
+    label_finding_ids = {label: finding_fingerprint(f) for label, f in task.registry}
 
     if not task.registry:
         empty = ReportComposition(
@@ -1778,6 +1812,7 @@ async def compose_written_report(
         outcomes[index] = await _run_part(
             job, task, provider=provider, fingerprint=fingerprint, section_gate=section_gate,
             check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
+            label_finding_ids=label_finding_ids,
         )
 
     try:
@@ -1793,6 +1828,7 @@ async def compose_written_report(
      bottom_line_dropped_marks, bottom_line_moved_ids) = await _run_bottom_line(
         task, resolved_outcomes, provider=provider, fingerprint=fingerprint,
         check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
+        label_finding_ids=label_finding_ids,
     )
 
     # P1-a's "move": a point the §6.8 fallback promoted into the bottom line
@@ -2074,9 +2110,14 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
 
         No ReAct loop runs, so the returned ``ReActRun`` is synthetic with
         zero iterations and zero tool calls. ``stop_reason`` is
-        ``"provider_error"`` only when there was something to cite and every
-        non-empty part's draft failed (spec §6.8): an empty verified
-        snapshot is not a failure, it is an honest report of no evidence.
+        ``"provider_error"`` only when there was something to cite, every
+        non-empty part failed, and at least one of them is a genuine
+        provider/draft failure (spec §6.8, R-5): an empty verified snapshot
+        is not a failure, it is an honest report of no evidence, and a part
+        whose draft succeeded but whose points were all refused is a content
+        outcome the recoverable ``report_writer_all_parts_refused`` records
+        -- ``agents.steps.ReActRun.succeeded`` reads only ``"provider_error"``
+        as non-recoverable, so that case must still finish.
         """
         task = self.build_task(state)
         async with self.tracker.agent_span(self.name) as span:
@@ -2089,7 +2130,10 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             })
         composition = result.composition
         any_written = any(part.status in ("written", "carried_over") for part in composition.parts)
-        stop_reason = "finished" if (any_written or not task.registry) else "provider_error"
+        provider_failed = any(error.error_type == "report_writer_provider_error" for error in composition.errors)
+        stop_reason = (
+            "provider_error" if (not any_written and task.registry and provider_failed) else "finished"
+        )
         react = ReActRun(
             agent_name=self.name,
             stop_reason=stop_reason,

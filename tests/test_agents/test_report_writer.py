@@ -1106,6 +1106,67 @@ async def test_a_report_with_only_refused_points_discloses_it_not_the_no_source_
 
 
 @pytest.mark.asyncio
+async def test_all_parts_refused_is_recoverable_and_the_run_still_finishes(
+    writer, checker, tracker: Tracker,
+) -> None:
+    """R-5: every drafted point being refused is a content outcome, not a
+    provider failure -- the composition's error must be accurately named and
+    recoverable, and the synthetic ReActRun must not report
+    stop_reason='provider_error' (agents.steps.ReActRun.succeeded reads that
+    exact value as a non-recoverable provider failure)."""
+    state = _one_part_state()
+    checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[]),
+    ])
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        run = await writer.run(state)
+
+    error_types = [e.error_type for e in run.result.composition.errors]
+    assert "report_writer_provider_error" not in error_types
+    assert "report_writer_all_parts_refused" in error_types
+    refused_error = next(
+        e for e in run.result.composition.errors if e.error_type == "report_writer_all_parts_refused"
+    )
+    assert refused_error.recoverable is True
+    assert run.react.stop_reason == "finished"
+    assert run.react.succeeded
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_provider_failure_on_every_part_keeps_the_provider_error(
+    writer, checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """R-5: a real provider/draft failure on every part must still be the
+    non-recoverable report_writer_provider_error, with stop_reason
+    'provider_error' -- only the refused-content case changes."""
+    def route(messages, schema):
+        del messages, schema
+        raise ProviderResponseError("provider returned an HTTP error", retryable=True,
+                                    failure_category="http", http_status_code=503, failure_origin="sdk")
+
+    state = _one_part_state()
+    completer = ScriptedCompleter(outputs=[route] * 10)
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        run = await agent.run(state)
+
+    error_types = [e.error_type for e in run.result.composition.errors]
+    assert "report_writer_all_parts_refused" not in error_types
+    assert "report_writer_provider_error" in error_types
+    provider_error = next(
+        e for e in run.result.composition.errors if e.error_type == "report_writer_provider_error"
+    )
+    assert provider_error.recoverable is False
+    assert run.react.stop_reason == "provider_error"
+    assert not run.react.succeeded
+
+
+@pytest.mark.asyncio
 async def test_a_point_citing_no_known_label_is_refused_without_calling_the_checker(writer, checker) -> None:
     state = _one_part_state()
     task = writer.build_task(state)
@@ -1455,6 +1516,7 @@ def test_apply_marks_drops_a_mark_whose_by_the_point_does_not_cite() -> None:
         final_text="One gives Model A a score of 9 and Two gives Model B a score of 8.",
         labels=["F01", "F02"],
         label_urls={"F01": "https://one.test/1", "F02": "https://two.test/1", "F03": "https://three.test/1"},
+        label_finding_ids={"F01": "finding-01", "F02": "finding-02", "F03": "finding-03"},
         dropped=dropped, statement_key="S001",
     )
 
@@ -1471,11 +1533,35 @@ def test_apply_marks_still_resolves_by_when_it_is_one_of_the_points_own_labels()
         final_text="One gives Model A a score of 9 and Two gives Model B a score of 8.",
         labels=["F01", "F02"],
         label_urls={"F01": "https://one.test/1", "F02": "https://two.test/1"},
+        label_finding_ids={"F01": "finding-01", "F02": "finding-02"},
         dropped=dropped, statement_key="S001",
     )
 
     assert dropped == []
-    assert kept == [ItemMark(name="Model A", verdict="a score of 9", picked=True, source_url="https://one.test/1")]
+    assert kept == [ItemMark(name="Model A", verdict="a score of 9", picked=True,
+                             source_url="https://one.test/1", finding_id="finding-01")]
+
+
+def test_apply_marks_resolves_finding_id_from_by_even_when_findings_share_one_page() -> None:
+    """R-2: the table decides whether a pick is relayed from the mark's own
+    finding, never from whichever finding happens to come last on a shared
+    page -- so a mark's ``finding_id`` is resolved from its own ``by``, even
+    when two cited findings share one URL."""
+    from deep_research.agents.report_writer import _apply_marks
+
+    dropped: list[tuple[str, str]] = []
+    kept = _apply_marks(
+        [ItemMarkDraft(name="Model A", verdict="a score of 9", picked=True, by="F02")],
+        final_text="One gives Model A a score of 9 and Two gives Model A a score of 9, relayed.",
+        labels=["F01", "F02"],
+        label_urls={"F01": "https://shared.test/1", "F02": "https://shared.test/1"},
+        label_finding_ids={"F01": "finding-own", "F02": "finding-relayed"},
+        dropped=dropped, statement_key="S001",
+    )
+
+    assert dropped == []
+    assert kept[0].source_url == "https://shared.test/1"
+    assert kept[0].finding_id == "finding-relayed"
 
 
 @pytest.mark.asyncio

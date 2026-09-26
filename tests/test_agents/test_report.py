@@ -1338,7 +1338,8 @@ def test_the_quality_record_publishes_answer_kind_table_parts_items_and_marks() 
     statement_row = next(row for row in record["statements"] if row["statement_id"] == "S001")
     assert statement_row["part"] == "bottom_line"
     assert statement_row["items"] == [
-        {"name": "EIA", "verdict": "best positioned", "picked": True, "source_url": EIA_URL}
+        {"name": "EIA", "verdict": "best positioned", "picked": True,
+         "source_url": EIA_URL, "finding_id": None}
     ]
     source_row = next(row for row in record["sources"] if row["url"] == normalize_source_url(EIA_URL))
     assert source_row["publisher"] == "QEC"

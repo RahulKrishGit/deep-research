@@ -173,6 +173,41 @@ def _relay_credit(
     return None
 
 
+def _mark_relay_credit(
+    mark: ItemMark,
+    statement: ReportStatement,
+    mark_url: str,
+    page_credits: Mapping[str, PageCredit],
+    finding_by_id: Mapping[str, Finding],
+) -> tuple[str, str] | None:
+    """R-2: the relay credit for one mark, decided by the finding it actually
+    rests on — never by whichever finding happens to share its page.
+
+    Prefers ``mark.finding_id`` (the fingerprint the draft's ``by`` resolved
+    to, set by the writer's ``_apply_marks``). When it is unset (older data,
+    or a mark the writer left unresolved), falls back to the statement's own
+    cited findings on this page: when they all agree (the same credited
+    body, or all the page's own), that shared reading applies; a genuine
+    disagreement never guesses which one the mark rests on, so the page's
+    own reading applies instead.
+    """
+    if mark.finding_id:
+        return _relay_credit(finding_by_id.get(mark.finding_id), page_credits, mark_url)
+    candidates = [
+        finding_by_id[fid]
+        for fid in statement.finding_ids
+        if fid in finding_by_id and _norm(finding_by_id[fid].source_url) == mark_url
+    ]
+    if not candidates:
+        return None
+    credits = {
+        _relay_credit(candidate, page_credits, mark_url) for candidate in candidates
+    }
+    if len(credits) == 1:
+        return next(iter(credits))
+    return None  # mixed citations: never guess which one the mark rests on
+
+
 def _resolve_marks(
     composition: ReportComposition,
 ) -> tuple[list[_ResolvedMark], list[str]]:
@@ -198,7 +233,7 @@ def _resolve_marks(
     """
     part_by_finding = _part_by_finding(composition)
     finding_url = _finding_source_urls(composition)
-    finding_by_url = {_norm(f.source_url): f for f in composition.findings}
+    finding_by_id = _finding_by_id(composition)
     resolved: list[_ResolvedMark] = []
     dropped: list[str] = []
     order = 0
@@ -235,8 +270,8 @@ def _resolve_marks(
                     for fid in statement.finding_ids
                     if fid in part_by_finding and finding_url.get(fid) == mark_url
                 )
-            relay = _relay_credit(
-                finding_by_url.get(mark_url), composition.page_credits, mark_url
+            relay = _mark_relay_credit(
+                mark, statement, mark_url, composition.page_credits, finding_by_id
             )
             resolved.append(
                 _ResolvedMark(statement.statement_id, mark, parts, order, relay)

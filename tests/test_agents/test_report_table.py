@@ -2713,3 +2713,246 @@ def test_period_resolved_from_falls_back_to_the_pages_date() -> None:
     assert table is not None
     what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
     assert "counted from the page's date, 2026-02-20" in what
+
+
+# =============================================================================
+# Whole-branch re-review R-2: the relay credit must follow the finding the
+# mark rests on, never whichever finding happens to share its page.
+# =============================================================================
+
+
+def _relay_and_own_findings_on_one_page(bi_url: str) -> tuple[Finding, Finding]:
+    relay_text = (
+        "According to Wirecutter, as reported by Business Insider, the Sony "
+        "WH-1000XM6 is the best overall pick."
+    )
+    relay_read = make_read(relay_text, url=bi_url, title="Best Headphones")
+    relayed_finding = make_finding(
+        relay_read, relay_text, attributed_issuer="Wirecutter"
+    )
+    own_text = "Business Insider also lists the Sony WH-1000XM6 at $390."
+    own_read = make_read(own_text, url=bi_url, title="Best Headphones")
+    own_finding = make_finding(own_read, own_text)
+    return relayed_finding, own_finding
+
+
+def test_relay_credit_ignores_finding_list_order_when_the_statement_cites_one() -> None:
+    """R-2 repro: the relay decision must follow the finding the STATEMENT
+    cites on that page, never whichever finding happens to come last in
+    ``composition.findings`` for that URL."""
+    bi_url = "https://businessinsider.com/best-headphones"
+    other_url = "https://other.test/page"
+    relayed_finding, own_finding = _relay_and_own_findings_on_one_page(bi_url)
+    other_finding = _finding_for_url(other_url)
+
+    def _table_for(findings_order: list[Finding]) -> None:
+        composition = _composition(
+            sub_topics=[_topic("topic-01", required=True, priority=1)],
+            findings=[*findings_order, other_finding],
+            page_credits={bi_url: PageCredit(publisher="Business Insider")},
+            sections=[
+                _section(
+                    "topic-01",
+                    "Sound",
+                    [
+                        _stmt(
+                            "S1",
+                            "According to Wirecutter, as reported by Business Insider, "
+                            "the Sony WH-1000XM6 is the best overall pick.",
+                            items=[
+                                ItemMark(
+                                    name=XM6,
+                                    verdict="the best overall pick",
+                                    picked=True,
+                                    source_url=bi_url,
+                                )
+                            ],
+                            finding_ids=[finding_fingerprint(relayed_finding)],
+                        ),
+                        _backed_stmt(
+                            "S2",
+                            "Site B says Model B is fine.",
+                            items=[
+                                ItemMark(
+                                    name="Model B", verdict="fine", source_url=other_url
+                                )
+                            ],
+                            findings_by_url={other_url: other_finding},
+                        ),
+                    ],
+                )
+            ],
+            statement_verdicts=_verdicts("S1", "S2"),
+        )
+        table = options_table(composition)
+        xm6_row = table.rows[labels_of(table).index(XM6)]
+        recommended = xm6_row[-1]
+        assert recommended.entries[0].text == "Wirecutter, reported by Business Insider"
+
+    _table_for([relayed_finding, own_finding])
+    _table_for([own_finding, relayed_finding])
+
+
+def test_relay_credit_defers_to_the_page_when_the_statement_cites_mixed_findings() -> (
+    None
+):
+    """R-2: when a statement cites more than one finding on the same page and
+    they disagree on who is credited, a bare mark (no ``finding_id``) never
+    guesses which one it rests on — the page's own reading applies."""
+    bi_url = "https://businessinsider.com/best-headphones"
+    other_url = "https://other.test/page"
+    relayed_finding, own_finding = _relay_and_own_findings_on_one_page(bi_url)
+    other_finding = _finding_for_url(other_url)
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[relayed_finding, own_finding, other_finding],
+        page_credits={bi_url: PageCredit(publisher="Business Insider")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "According to Wirecutter, as reported by Business Insider, the Sony "
+                        "WH-1000XM6 is the best overall pick, also listed at $390.",
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="the best overall pick",
+                                picked=True,
+                                source_url=bi_url,
+                            )
+                        ],
+                        finding_ids=[
+                            finding_fingerprint(relayed_finding),
+                            finding_fingerprint(own_finding),
+                        ],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site B says Model B is fine.",
+                        items=[
+                            ItemMark(
+                                name="Model B", verdict="fine", source_url=other_url
+                            )
+                        ],
+                        findings_by_url={other_url: other_finding},
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    recommended = xm6_row[-1]
+    assert recommended.entries[0].text == ""
+
+
+def test_relay_credit_falls_back_to_statement_citations_when_mark_finding_id_is_none() -> (
+    None
+):
+    """R-2: ``ItemMark.finding_id`` defaults to ``None`` (unset by the writer,
+    or older data); until it is set, the relay decision falls back to the
+    statement's own cited findings on the mark's page."""
+    assert ItemMark(name="x", source_url="https://a.test/x").finding_id is None
+    bi_url = "https://businessinsider.com/best-headphones"
+    relayed_finding, _own_finding = _relay_and_own_findings_on_one_page(bi_url)
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[relayed_finding],
+        page_credits={bi_url: PageCredit(publisher="Business Insider")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "According to Wirecutter, as reported by Business Insider, "
+                        "the Sony WH-1000XM6 is the best overall pick.",
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="the best overall pick",
+                                picked=True,
+                                source_url=bi_url,
+                            )
+                        ],
+                        finding_ids=[finding_fingerprint(relayed_finding)],
+                    ),
+                    _stmt(
+                        "S2",
+                        "Site A says Model B is fine.",
+                        items=[
+                            ItemMark(name="Model B", verdict="fine", source_url=bi_url)
+                        ],
+                        finding_ids=[finding_fingerprint(relayed_finding)],
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    recommended = xm6_row[-1]
+    assert recommended.entries[0].text == "Wirecutter, reported by Business Insider"
+
+
+def test_relay_credit_prefers_the_marks_own_finding_id_over_the_fallback() -> None:
+    """R-2: when ``mark.finding_id`` names one of two mixed findings on the
+    same page explicitly, that decides the credit — the mark is not left to
+    the "mixed citations, defer to the page" fallback that would otherwise
+    apply when a bare mark cites both."""
+    bi_url = "https://businessinsider.com/best-headphones"
+    other_url = "https://other.test/page"
+    relayed_finding, own_finding = _relay_and_own_findings_on_one_page(bi_url)
+    other_finding = _finding_for_url(other_url)
+    composition = _composition(
+        sub_topics=[_topic("topic-01", required=True, priority=1)],
+        findings=[relayed_finding, own_finding, other_finding],
+        page_credits={bi_url: PageCredit(publisher="Business Insider")},
+        sections=[
+            _section(
+                "topic-01",
+                "Sound",
+                [
+                    _stmt(
+                        "S1",
+                        "According to Wirecutter, as reported by Business Insider, the Sony "
+                        "WH-1000XM6 is the best overall pick, also listed at $390.",
+                        items=[
+                            ItemMark(
+                                name=XM6,
+                                verdict="the best overall pick",
+                                picked=True,
+                                source_url=bi_url,
+                                finding_id=finding_fingerprint(relayed_finding),
+                            )
+                        ],
+                        finding_ids=[
+                            finding_fingerprint(relayed_finding),
+                            finding_fingerprint(own_finding),
+                        ],
+                    ),
+                    _backed_stmt(
+                        "S2",
+                        "Site B says Model B is fine.",
+                        items=[
+                            ItemMark(
+                                name="Model B", verdict="fine", source_url=other_url
+                            )
+                        ],
+                        findings_by_url={other_url: other_finding},
+                    ),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    table = options_table(composition)
+    xm6_row = table.rows[labels_of(table).index(XM6)]
+    recommended = xm6_row[-1]
+    assert recommended.entries[0].text == "Wirecutter, reported by Business Insider"

@@ -1232,19 +1232,27 @@ def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]
     through a redraft carry-over or an all-refused draft, must never read as
     "no source answers this" while a verified finding for it exists. An
     empty bottom line over a pass that does cite or hold something gets its
-    own honest sentence instead: the every-part-failed wording when no
-    section kept a point either (nothing was in fact written), else the
-    summary-missing sentence (some section was, only the bottom line was not).
+    own honest sentence instead: the every-part-failed wording only when a
+    part actually failed (R-7: an ``empty`` part is not a failure -- its
+    findings were simply never placed there, spec §6.1 -- so that wording
+    would be inaccurate); when nothing failed but no section kept a point
+    either, a plain unplaced-findings sentence; else the summary-missing
+    sentence (some section was written, only the bottom line was not).
     """
     if composition.summary:
         return " ".join(
             _rendered_point(point, composition, index) for point in composition.summary
         )
     non_empty_parts = [part for part in composition.parts if part.status != "empty"]
+    any_part_failed = any(part.status == "failed" for part in composition.parts)
     every_part_failed_line = (
         "This report's sections could not be written this time; "
         f"{'the table and ' if composition.table is not None else ''}"
         "the evidence log shows what was verified."
+    )
+    unplaced_line = (
+        "No finding could be placed in a section this time; the evidence "
+        "log lists them."
     )
     if non_empty_parts and all(part.status == "failed" for part in non_empty_parts):
         return every_part_failed_line
@@ -1255,7 +1263,7 @@ def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]
     )
     if has_content or _has_citable_finding(composition):
         if not any(section.points for section in composition.sections):
-            return every_part_failed_line
+            return every_part_failed_line if any_part_failed else unplaced_line
         return (
             "A summary could not be written this time; the sections below "
             "give what was found."
@@ -1302,15 +1310,19 @@ def _option_part_cell_text(
 def _recommended_by_text(
     cell: TableCell, composition: ReportComposition, index: Sequence[Citation]
 ) -> str:
-    """§4.2: the distinct picking pages, ``{Publisher} ({date}) [n]``."""
+    """§4.2: the distinct picking pages, ``{Publisher} ({date}) [n]`` -- or,
+    when the mark's own entry text credits a relay (R-1: a page reporting
+    another body's pick), that credit instead of the bare publisher, so a
+    relayed pick is never printed as if the relaying page made it itself.
+    """
     if not cell.entries:
         return _CELL_EMPTY
     parts: list[str] = []
     for entry in cell.entries:
         marker = citation_markers([entry.source_url], index)
-        publisher = _publisher_for(entry.source_url, composition)
         date_part = _entry_date_suffix(entry.source_url, composition)
-        parts.append(f"{publisher}{date_part} {marker}".strip())
+        who = _table_cell(entry.text) if entry.text else _publisher_for(entry.source_url, composition)
+        parts.append(f"{who}{date_part} {marker}".strip())
     return "; ".join(parts)
 
 

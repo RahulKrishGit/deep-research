@@ -40,6 +40,7 @@ from deep_research.utils.types import (
     ResearchState,
     SubTopic,
     TableCell,
+    TableEntry,
     UnreachablePage,
 )
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
@@ -430,11 +431,34 @@ def test_the_bottom_line_falls_back_when_every_part_failed() -> None:
 
 
 
+def test_the_bottom_line_does_not_claim_a_part_failed_when_parts_are_only_empty() -> None:
+    """R-7: a part recorded as merely 'empty' (no failure, nothing to write)
+    must not make the bottom line claim a part's sections could not be
+    written -- that wording is reserved for an actual failure."""
+    finding = _finding("https://agency.example.test/report",
+                       "The agency reports 10 GW added in 2024.",
+                       "10", "GW", organisation="Example Agency")
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding],
+        parts=[ReportPart(coverage_id="topic-01", sub_topic_title="Capacity", status="empty")],
+    )
+
+    report = render_written_report(composition)
+    body = _section_body(report, "## Bottom line")
+
+    assert "This report's sections could not be written this time" not in body
+    assert ("No finding could be placed in a section this time; the evidence "
+           "log lists them.") in body
+
+
+
 def test_the_bottom_line_never_denies_an_answer_a_citable_finding_gives() -> None:
     """P1-3 belt and braces: a citable (verified) finding must never be
     hidden behind 'No source we could check answers this question.', even
-    when no part kept a point that states it -- a vanished part, or a part
-    a redraft carried over with the old material a new pass superseded.
+    when no part kept a point that states it. This fixture's finding was
+    simply never placed into any part (R-7: no part recorded and no failure
+    either), so the honest reading is the plain unplaced-findings sentence,
+    not a claim that a part's sections could not be written.
     """
     finding = _finding("https://agency.example.test/report",
                        "The agency reports 10.4 GW added in 2024.",
@@ -445,8 +469,9 @@ def test_the_bottom_line_never_denies_an_answer_a_citable_finding_gives() -> Non
     body = _section_body(report, "## Bottom line")
 
     assert "No source we could check answers this question." not in body
-    assert ("This report's sections could not be written this time; "
-           "the evidence log shows what was verified.") in body
+    assert "This report's sections could not be written this time" not in body
+    assert ("No finding could be placed in a section this time; the evidence "
+           "log lists them.") in body
 
 
 def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
@@ -615,6 +640,60 @@ def test_the_table_header_escapes_a_pipe_in_a_column_title() -> None:
 
     header = next(line for line in report.splitlines() if line.startswith("| Option"))
     assert header == "| Option | Price \\| value | Recommended by |"
+
+
+
+def test_recommended_by_credits_a_relay_mark_not_the_relaying_page_alone() -> None:
+    """R-1: when the picking mark's own entry text credits a relay (a page
+    reporting another body's pick), Recommended-by must print that credit,
+    never the relaying page's bare name as if it were the picker itself."""
+    finding = _bare_finding("https://businessinsider.com/best-headphones",
+                            "Best headphones", "Business Insider reports the pick.")
+    table = ReportTable(
+        shape="options", columns=["Option", "Recommended by"],
+        rows=[[
+            TableCell(text="Sony WH-1000XM6"),
+            TableCell(entries=[TableEntry(
+                text="Wirecutter, reported by Business Insider",
+                source_url=finding.source_url,
+            )]),
+        ]],
+    )
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding], table=table,
+        page_credits={normalize_source_url(finding.source_url): PageCredit(publisher="Business Insider")},
+    )
+
+    report = render_written_report(composition)
+
+    assert "Wirecutter, reported by Business Insider [1]" in report
+    assert "| Business Insider [1] |" not in report
+
+
+def test_an_option_part_cell_also_credits_a_relay_mark() -> None:
+    """The same check for a part cell (already correct at the time of R-1,
+    kept as a render-level regression alongside the Recommended-by fix)."""
+    finding = _bare_finding("https://businessinsider.com/best-headphones",
+                            "Best headphones", "Business Insider reports the pick.")
+    table = ReportTable(
+        shape="options", columns=["Option", "Audio quality", "Recommended by"],
+        rows=[[
+            TableCell(text="Sony WH-1000XM6"),
+            TableCell(entries=[TableEntry(
+                text="the best overall pick, according to Wirecutter",
+                source_url=finding.source_url,
+            )]),
+            TableCell(),
+        ]],
+    )
+    composition = ReportComposition(
+        question="q", session_id="s", findings=[finding], table=table,
+        page_credits={normalize_source_url(finding.source_url): PageCredit(publisher="Business Insider")},
+    )
+
+    report = render_written_report(composition)
+
+    assert "the best overall pick, according to Wirecutter — Business Insider [1]" in report
 
 
 

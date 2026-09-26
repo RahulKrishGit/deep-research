@@ -1380,6 +1380,11 @@ class ItemMark(ContractModel):
     verdict: str = ""          # verbatim span, <= 80 chars
     picked: bool = False       # the sentence reports that this page picks or recommends the option
     source_url: str            # the page this mark rests on (resolved from the draft's `by`)
+    finding_id: str | None = None
+    """The finding this mark's `by` (or the point's single cited finding) resolved to (R-2):
+    a page can carry more than one finding, so the table must not guess which one a pick
+    credits from whichever finding happens to come last on that page. Optional and defaults
+    to ``None`` so an older snapshot still validates."""
 
 
 class ReportStatement(ContractModel):
