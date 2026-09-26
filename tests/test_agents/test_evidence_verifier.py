@@ -1663,25 +1663,11 @@ def test_a_statement_date_the_page_does_not_state_is_no_basis() -> None:
     assert dropped.dropped_reason == "correction_not_on_page"
 
 
-def test_context_check_instruction_kind_forecasts_only_a_dated_future_outcome() -> None:
-    """D4: a tense anchor on ``kind`` -- a past plan, proposal, law, limit or
-    provision is actual; forecast requires the page to date the outcome
-    after its own date, or the run's as-of date when it gives none. The
-    audited run's Context Check kept a 133 BC provision as a forecast."""
-    assert (
-        "forecast only when the page dates the outcome after the page's "
-        "own date, or after the run's as-of date when the page gives none"
-        in CONTEXT_CHECK_INSTRUCTION
-    )
-    assert (
-        "a past plan, proposal, law, limit or provision, enacted or not, "
-        "is actual"
-        in CONTEXT_CHECK_INSTRUCTION
-    )
-
-
 def test_context_check_kind_anchor_reaches_the_rendered_batch() -> None:
-    """The rule is not only defined, it renders into the request the model reads."""
+    """D4 (RevW4Extract P0): ``kind`` is content-anchored, not date-anchored --
+    a same-period or undated outlook stays forecast whatever the run's date;
+    only a plan, proposal, law or provision's own term is actual -- and the
+    rule renders into the request the model reads."""
     item = _figure_item(
         "A 2019 regulation set a proposed limit of 40 units.",
         figure("40", "units"),
@@ -1689,10 +1675,33 @@ def test_context_check_kind_anchor_reaches_the_rendered_batch() -> None:
     body = context_check_messages([item])[1].content
 
     assert (
-        "forecast only when the page dates the outcome after the page's "
-        "own date"
+        "forecast for an outcome the page presents as projected, expected, "
+        "planned or targeted rather than reported as having happened"
         in body
     )
+    assert "it stays a forecast whatever the run's date" in body
+    assert "an outcome such a text aims at by a later date is a forecast" in body
+    assert "forecast only when" not in body
+    assert "as-of date when the page gives none" not in body
+
+
+def test_a_same_period_outlook_kept_as_forecast_is_not_relabelled_actual() -> None:
+    """RevW4Extract P0: the honesty rule 'forecasts keep issuer and release'
+    depends on a same-period, undated outlook the Context Check correctly
+    calls forecast reaching the verified figure unchanged, never relabelled
+    actual by a date-based code path. Mirrors the evaluation suite's
+    canonical undated-outlook fixture (an outlook stated in the same year as
+    the page, expected kind forecast)."""
+    text = (
+        "Growth could set a record this year as operators report plans to "
+        "add 19.6 units of new capacity."
+    )
+    item = _figure_item(text, figure("19.6", "units", "2025"))
+
+    kept = _check(item, period="2025", kind="forecast", verdict="correct")
+
+    assert kept.kept
+    assert kept.context.kind == "forecast"
 
 
 _CONTEXT_CHECK_FORBIDDEN_WORDS = (

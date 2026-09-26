@@ -1742,22 +1742,28 @@ def test_planner_regression_plan_instruction_permits_real_search_terms() -> None
         assert phrase in PLAN_INSTRUCTION
 
 
-def test_plan_instruction_kind_forecasts_only_a_dated_future_outcome() -> None:
-    """D4: the same tense anchor as the extraction contract's ``kind`` field
-    -- a past plan, proposal, law, limit or provision is actual; forecast
-    only when the question asks for an outcome dated after the run's as-of
-    date. ``EvidenceTargetDraft.kind`` shares this vocabulary, mirrored here
+def test_plan_instruction_kind_is_content_anchored_not_date_anchored() -> None:
+    """D4 (RevW4Extract P1): ``kind`` reads what the question asks for, not a
+    date relative to the as-of date -- a projected, expected or targeted
+    outcome stays forecast whatever its date, so a target whose outlook
+    period the as-of date has already passed still keeps kind=forecast and
+    can be answered by a figure the Context Check correctly labels forecast
+    (``verified_facts._figure_answers`` requires ``target.kind ==
+    figure.context.kind``). ``EvidenceTargetDraft.kind`` shares this
+    vocabulary with the extraction contract's ``kind`` field, mirrored here
     at plan time before any page is read."""
     assert (
-        "forecast only when the question asks for an outcome dated after "
-        "the run's as-of date"
+        "forecast when the question asks for a projected, expected or "
+        "targeted outcome, whatever its date relative to the as-of date"
         in PLAN_INSTRUCTION
     )
     assert (
-        "a past plan, proposal, law, limit or provision, enacted or not, "
-        "is actual"
+        "actual for a measured or reported outcome and for a term a plan, "
+        "proposal, law or provision itself sets, enacted or not"
         in PLAN_INSTRUCTION
     )
+    assert "forecast only when" not in PLAN_INSTRUCTION
+    assert "as-of date when the page gives none" not in PLAN_INSTRUCTION
 
 
 def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -> None:

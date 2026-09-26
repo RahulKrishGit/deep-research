@@ -2067,6 +2067,11 @@ def test_extraction_contract_treats_a_disputing_passage_as_a_finding() -> None:
     mechanism, provision or figure is a finding for that target too, not only
     a passage that states the mechanism outright. The audited run's read held
     a later source disputing an early claim and produced no finding for it.
+
+    RevW4Extract P3: the example must dispute a step of the mechanism
+    (what caused the decline), not the size of an unrelated effect -- an
+    example that disputes something the target does not ask about would
+    teach the over-binding the preceding rule guards against.
     """
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.",
@@ -2094,17 +2099,21 @@ def test_extraction_contract_treats_a_disputing_passage_as_a_finding() -> None:
         in body
     )
     assert (
-        "Later field surveys found the effect much smaller than the early "
-        "accounts claimed"
+        "Later field surveys found the flooding played little part in the "
+        "decline the early accounts blamed on it"
         in body
     )
+    assert "a target asking what caused the decline" in body
 
 
-def test_extraction_contract_kind_forecasts_only_a_dated_future_outcome() -> None:
-    """D4: a tense anchor on ``kind`` -- a past plan, proposal, law, limit or
-    provision is actual; forecast requires the page to date the outcome
-    after its own date, or the run's as-of date when it gives none. The
-    audited run read a provision's own words as a future target.
+def test_extraction_contract_kind_is_content_anchored_not_date_anchored() -> None:
+    """D4 (RevW4Extract P0): ``kind`` reads what the page presents the outcome
+    as, not a date neither prompt carries. A same-period or undated outlook
+    the page frames as projected, expected, planned or targeted stays
+    forecast whatever the run's date; only a plan, proposal, law or
+    provision's own term -- enacted or not -- is actual. The audited run
+    read a provision's own words as a forecast target; the reverse error
+    (an undated outlook read as actual) is what the date-based wording caused.
     """
     task = SubTopicTask(
         instruction="Gather evidence for Alpha.",
@@ -2127,15 +2136,21 @@ def test_extraction_contract_kind_forecasts_only_a_dated_future_outcome() -> Non
     )[1].content
 
     assert (
-        "forecast only when the page dates the outcome after the page's "
-        "own date, or after the run's as-of date when the page gives none"
+        "forecast for an outcome the page presents as projected, expected, "
+        "planned or targeted rather than reported as having happened"
         in body
     )
+    assert "it stays a forecast whatever the run's date" in body
     assert (
-        "a past plan, proposal, law, limit or provision, enacted or not, "
-        "is actual"
+        "actual for a quantity the page states as measured, reported or "
+        "observed, and for a term a plan, proposal, law or provision itself "
+        "sets"
         in body
     )
+    assert "enacted or not, in force yet or not" in body
+    assert "an outcome such a text aims at by a later date is a forecast" in body
+    assert "forecast only when" not in body
+    assert "as-of date when the page gives none" not in body
 
 
 _EXTRACTION_CONTRACT_FORBIDDEN_WORDS = (
