@@ -3554,6 +3554,95 @@ def test_a_governed_proposal_that_agrees_with_page_metadata_is_admitted() -> Non
 
 
 # ---------------------------------------------------------------------------
+# WholeBranchReview R-4: a publication cue must govern the date it labels --
+# a cue inside a clause about a DIFFERENT document does not govern the
+# page's own date, even when it sits well inside the search window.
+# ---------------------------------------------------------------------------
+
+
+def test_a_cue_inside_a_clause_about_another_document_does_not_govern() -> None:
+    """WholeBranchReview R-4 repro: 'the EIA report, published June 10,
+    2025' names another document's own publication, not this page's --
+    the cue is attached to 'the ... report,' rather than to the page
+    itself."""
+    read = _dated(
+        "Grid Storage Outlook. The agency's newsletter discusses the EIA "
+        "report, published June 10, 2025, in detail. Battery storage "
+        "capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2025-06-10",
+            "the EIA report, published June 10, 2025",
+        ),
+        status="current",
+    )
+
+    assert dated.publication_date is None
+    assert dated.status == "unknown"
+
+
+def test_a_published_colon_byline_still_governs() -> None:
+    """A label with nothing before it still governs its own date."""
+    read = _dated(
+        "Grid Storage Outlook. Published: June 10, 2025. Battery storage "
+        "capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim("2025-06-10", "Published: June 10, 2025"),
+        status="current",
+    )
+
+    assert dated.publication_date == "2025-06-10"
+    assert dated.status == "current"
+
+
+def test_a_posted_on_byline_with_trailing_attribution_still_governs() -> None:
+    """The cue governs even when an attribution clause follows the date,
+    not just when the date immediately ends the sentence."""
+    read = _dated(
+        "Grid Storage Outlook. Posted on 2025-06-10 by the newsroom staff. "
+        "Battery storage capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2025-06-10", "Posted on 2025-06-10 by the newsroom staff"
+        ),
+        status="current",
+    )
+
+    assert dated.publication_date == "2025-06-10"
+    assert dated.status == "current"
+
+
+def test_a_self_referential_this_article_was_published_governs() -> None:
+    """The cue's subject being the page itself ('this article') governs,
+    the same as a bare label does -- neither is a clause about some other
+    document."""
+    read = _dated(
+        "Grid Storage Outlook. This article was published on June 10, "
+        "2025. Battery storage capacity grew across every region this year."
+    )
+
+    dated = validated_temporal(
+        read,
+        publication_date=_claim(
+            "2025-06-10", "This article was published on June 10, 2025"
+        ),
+        status="current",
+    )
+
+    assert dated.publication_date == "2025-06-10"
+    assert dated.status == "current"
+
+
+# ---------------------------------------------------------------------------
 # The live pre-flight's Defect A (review-01): the page's own sentence credits a
 # body inside a reporting phrase, which the relay cue list did not read.
 # ---------------------------------------------------------------------------

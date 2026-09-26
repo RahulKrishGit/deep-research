@@ -2254,6 +2254,30 @@ _PUBLICATION_CUES = re.compile(
 # Institute on 2026-02-20"), an unrelated paragraph does not.
 _PUBLICATION_CUE_CHARS = 200
 
+# A cue preceded by "the"/"a"/"an" naming some other thing -- "the EIA
+# report, published June 10, 2025", "a study, published last week" --
+# governs THAT thing's publication, not the page's: the clause is about the
+# report or the study, and "published" is a participle inside it. A cue
+# with no such lead-in governs the page's own date: a bare label ("In-brief
+# analysis, published August 7, 2026"), a sentence start ("Published:
+# 2026-02-20"), or the page's own self-reference ("This article was
+# published on ...") are none of them a clause about a different document
+# (WholeBranchReview R-4). Bounded to a short reach so an unrelated "the"
+# many words earlier in a long window can never be read as this lead-in.
+_OTHER_DOCUMENT_LEAD = re.compile(
+    r"\b(?:the|a|an)\s+[A-Za-z][A-Za-z\s]{0,40}?,\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _cue_is_governing(text: str) -> bool:
+    """True when ``text`` carries a publication cue that governs its own
+    date, rather than one embedded in a clause about a different document."""
+    return any(
+        not _OTHER_DOCUMENT_LEAD.search(text[: match.start()])
+        for match in _PUBLICATION_CUES.finditer(text)
+    )
+
 
 def _dates_agree(first: str, second: str) -> bool:
     """True when two page dates are consistent: equal, or one is a coarser
@@ -2272,12 +2296,16 @@ def _states_it_as_the_publication_date(
 
     A publication cue -- "Published", "Posted" -- may sit in the quote
     itself or beside the date on the page, which is where a model that
-    quotes only the date leaves it. A cue-less quote is admitted only when
-    it names exactly the date the page's own metadata already captured (D14,
-    ``ReadRecord.page_published``) -- coarser than the captured date is also
-    admitted (a cue-less "2026" beside a captured "2026-09-17" is still that
-    page's year), but never merely because a day-precision date sits early
-    in the page's text (RevDatesR3 P0).
+    quotes only the date leaves it. Either way the cue must govern the date
+    it labels: one embedded in a clause about a different document ("the
+    EIA report, published June 10, 2025") does not count, even from well
+    inside the search window (``_cue_is_governing``, WholeBranchReview R-4).
+    A cue-less quote is admitted only when it names exactly the date the
+    page's own metadata already captured (D14, ``ReadRecord.page_published``)
+    -- coarser than the captured date is also admitted (a cue-less "2026"
+    beside a captured "2026-09-17" is still that page's year), but never
+    merely because a day-precision date sits early in the page's text
+    (RevDatesR3 P0).
 
     Whenever the page's own metadata carries a publication date, a proposal
     that disagrees with it is refused even when a real cue governs it: the
@@ -2285,11 +2313,8 @@ def _states_it_as_the_publication_date(
     worse than none (WholeBranchReview P1-2).
     """
     page_published = read.page_published
-    cue_governs = bool(
-        _PUBLICATION_CUES.search(quote)
-        or _PUBLICATION_CUES.search(
-            _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
-        )
+    cue_governs = _cue_is_governing(quote) or _cue_is_governing(
+        _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
     )
     if not cue_governs:
         if page_published is None or stated is None:
