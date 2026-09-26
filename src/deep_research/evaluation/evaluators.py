@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from deep_research.agents.evidence import excerpt_matches
 from deep_research.agents.evidence_verifier import read_text
+from deep_research.agents.planner import MAX_SUB_TOPICS
 from deep_research.agents.report import collapse_mirror_urls
 from deep_research.agents.sources import (
     normalize_source_url,
@@ -757,7 +758,7 @@ def _subtopic_count_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     if not isinstance(sub_topics, list):
         return False
     minimum = _reference_int(case, "minimum_sub_topics", 3)
-    maximum = _reference_int(case, "maximum_sub_topics", 7)
+    maximum = _reference_int(case, "maximum_sub_topics", MAX_SUB_TOPICS)
     return minimum <= len(sub_topics) <= maximum
 
 
@@ -768,7 +769,7 @@ def _gate_subtopic_count(
     if not isinstance(sub_topics, list):
         return _agent_result("subtopic_count", False, "sub_topics is not a list")
     minimum = _reference_int(case, "minimum_sub_topics", 3)
-    maximum = _reference_int(case, "maximum_sub_topics", 7)
+    maximum = _reference_int(case, "maximum_sub_topics", MAX_SUB_TOPICS)
     count = len(sub_topics)
     passed = minimum <= count <= maximum
     return _agent_result(
