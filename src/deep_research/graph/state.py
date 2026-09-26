@@ -229,10 +229,16 @@ def extra_pass_target_ids(state: ResearchState) -> list[str]:
     target with no verified finding at all. A reviewer's own ``coverage``
     defect can name a required target that gate already counts as answered,
     when the answer it found does not actually settle the question — that
-    target owes the pass too. The two lists are combined, in order, with
-    duplicates dropped, so ``graph_route``'s decision and the pass's own job
-    list can never diverge: whichever one is asked "is anything missing?" or
-    "for what?", both read the same targets.
+    target owes the pass too, *unless* a scoped re-review has since marked
+    that same defect resolved (T5 addendum item 4): ``defect.material``
+    already excludes it from ``ReportReview.material_defects`` and
+    ``semantic_review_passes``, and this reads the same flag so a target the
+    redraft already answered cannot still buy another pass just because the
+    merged record keeps the old, now-resolved defect for its own history.
+    The two lists are combined, in order, with duplicates dropped, so
+    ``graph_route``'s decision and the pass's own job list can never
+    diverge: whichever one is asked "is anything missing?" or "for what?",
+    both read the same targets.
     """
     review = state.report_review
     if review is None:
@@ -241,7 +247,7 @@ def extra_pass_target_ids(state: ResearchState) -> list[str]:
     coverage_target_ids = [
         target_id
         for defect in review.defects
-        if defect.kind == "coverage"
+        if defect.kind == "coverage" and defect.material
         for target_id in defect.target_ids
         if target_id in required
     ]

@@ -536,8 +536,14 @@ class FakeReviewer:
     over unchanged content costs nothing.
     """
 
-    def __init__(self, reviews: Sequence[ReportReview | BaseException] = ()) -> None:
+    def __init__(
+        self,
+        reviews: Sequence[ReportReview | BaseException] = (),
+        *,
+        records: Sequence[tuple[ResearchError, ...]] = (),
+    ) -> None:
         self._reviews = list(reviews) or [fake_report_review()]
+        self._records = list(records)
         self.packets: list[object] = []
         self.review_records: tuple[ResearchError, ...] = ()
 
@@ -560,6 +566,9 @@ class FakeReviewer:
             return previous
         self.packets.append(packet)
         position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        self.review_records = (
+            self._records[min(position, len(self._records) - 1)] if self._records else ()
+        )
         review = self._reviews[position]
         if isinstance(review, BaseException):
             raise review
@@ -605,6 +614,9 @@ class FakeReviewer:
         fingerprint = getattr(base, "fingerprint", "")
         self.packets.append(scoped)
         position = min(len(self.packets) - 1, len(self._reviews) - 1)
+        self.review_records = (
+            self._records[min(position, len(self._records) - 1)] if self._records else ()
+        )
         review = self._reviews[position]
         if isinstance(review, BaseException):
             raise review

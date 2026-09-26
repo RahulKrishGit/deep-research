@@ -923,6 +923,7 @@ async def _review_report(
     if previous is not None and previous.status == "scored":
         scoped = build_scoped_report_review_input(state, previous_review=previous)
     scoped_failure: str | None = None
+    scoped_records: tuple[ResearchError, ...] = ()
     try:
         if scoped is not None:
             try:
@@ -933,6 +934,13 @@ async def _review_report(
             except ProviderError:
                 scoped_status = "provider_failed"
                 review = None
+            # The scoped attempt's own retry telemetry must be read before the
+            # fallback call below: ``ReportReviewer.review``/``review_scoped``
+            # both reset ``review_records`` to an empty tuple at the start of
+            # their own request, so a truncation retry the scoped call paid
+            # for would otherwise vanish from ``errors`` the moment the
+            # fallback's own (possibly retry-free) call starts.
+            scoped_records = reviewer.review_records
             if scoped_status is not None:
                 # The addendum's own promise: a scoped call that could not be
                 # made -- a provider failure, an invalid reply, or one that
@@ -964,6 +972,7 @@ async def _review_report(
         return (
             review,
             [
+                *scoped_records,
                 *reviewer.review_records,
                 report_review_unavailable_error(
                     node=REPORT_REVIEWER_NODE,
@@ -986,7 +995,7 @@ async def _review_report(
                 ).strip()
             }
         )
-    errors: list[ResearchError] = list(reviewer.review_records)
+    errors: list[ResearchError] = [*scoped_records, *reviewer.review_records]
     if review.status != "scored":
         errors.append(
             report_review_unavailable_error(

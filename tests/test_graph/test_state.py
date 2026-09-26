@@ -16,6 +16,7 @@ from deep_research.graph.state import (
     DEFAULT_MAX_EXTRA_PASSES,
     EVIDENCE_VERIFIER_NODE,
     EXTRA_PASS_NODE,
+    extra_pass_target_ids,
     FINALIZE_NODE,
     GRAPH_ROUTES,
     GRAPH_STATUSES,
@@ -412,6 +413,66 @@ def test_a_coverage_defect_naming_a_required_target_buys_the_extra_pass() -> Non
     assert _routed(
         review=review, quality=quality, iteration=1, max_extra_passes=1
     ) == ("redraft", "redraft_requested")
+
+
+def test_extra_pass_target_ids_excludes_a_resolved_coverage_defect() -> None:
+    """ReRevFormatT5 P1: a coverage defect a scoped re-review marked
+    resolved (T5 addendum item 4) must not still read as an obligation the
+    next extra pass exists for -- mirrors the resolution filter
+    ``ReportReview.material_defects``/``semantic_review_passes`` already
+    apply, so a target the redraft already answered cannot buy another
+    pass just because the merged record still lists the old defect.
+    """
+    quality = ReportQualitySnapshot(required_target_ids=["t1", "t2"])
+    resolved_defect = ReviewDefect(
+        defect_id="review-01", kind="coverage", severity="major",
+        target_ids=["t2"], problem="The question's second part names no answer.",
+        resolution="resolved",
+    )
+    resolved_review = ReportReview(
+        status="scored", dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1", missing_required_target_ids=[],
+        defects=[resolved_defect],
+    )
+    resolved_state = ResearchState(
+        session_id="s", original_question="q",
+        report_review=resolved_review, quality=quality,
+    )
+
+    assert extra_pass_target_ids(resolved_state) == []
+
+    unresolved_review = resolved_review.model_copy(
+        update={
+            "defects": [resolved_defect.model_copy(update={"resolution": "unresolved"})]
+        }
+    )
+    unresolved_state = resolved_state.model_copy(update={"report_review": unresolved_review})
+
+    assert extra_pass_target_ids(unresolved_state) == ["t2"]
+
+
+def test_a_resolved_coverage_defect_does_not_buy_another_extra_pass() -> None:
+    """The same regression, at the routing level: ``graph_route`` must not
+    send a resolved-and-otherwise-clean report to another extra pass."""
+    quality = ReportQualitySnapshot(required_target_ids=["t1", "t2"])
+    resolved = ReportReview(
+        status="scored",
+        dimensions={d: 0.9 for d in REVIEW_DIMENSIONS},
+        input_fingerprint="packet-1",
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01", kind="coverage", severity="major",
+                target_ids=["t2"], problem="The question's second part names no answer.",
+                resolution="resolved",
+            )
+        ],
+    )
+
+    assert _routed(
+        review=resolved, quality=quality, iteration=0, max_extra_passes=1
+    ) == ("finalize", "report_accepted")
 
 
 def test_an_unscored_review_buys_no_redraft() -> None:
