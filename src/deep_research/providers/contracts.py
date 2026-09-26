@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from deep_research.observability import TokenUsage
+from deep_research.utils.types import CallAttemptTelemetry
 
 MessageRole = Literal["developer", "system", "user", "assistant"]
 FinishReasonCategory: TypeAlias = Literal[
@@ -151,6 +152,9 @@ class ProviderResponseTelemetry(ProviderContract):
     usage: TokenUsage
     request_attempt: PositiveInt
     structured_attempt: PositiveInt | None = None
+    attempts: tuple[CallAttemptTelemetry, ...] = ()
+    """Each transport attempt this call made, in order (P1-B). Empty for a
+    single-attempt call or one recorded before per-attempt records existed."""
 
 
 class StructuredValidationDiagnostic(ProviderContract):

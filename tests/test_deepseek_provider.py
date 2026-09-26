@@ -35,6 +35,7 @@ from deep_research.evaluation.models import (
 )
 from deep_research.observability import (
     LangSmithRuntimeConfig,
+    RunTelemetryCollector,
     TokenUsage,
     TokenUsageMetric,
     Tracker,
@@ -110,8 +111,27 @@ def chat_response(
     prompt_tokens: object = 4,
     completion_tokens: object = 2,
     reasoning_content: str | None = None,
+    reasoning_tokens: int | None = None,
     tool_calls: object = None,
 ) -> SimpleNamespace:
+    usage = SimpleNamespace(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=(
+            prompt_tokens + completion_tokens
+            if isinstance(prompt_tokens, int)
+            and not isinstance(prompt_tokens, bool)
+            and isinstance(completion_tokens, int)
+            and not isinstance(completion_tokens, bool)
+            else None
+        ),
+    )
+    if reasoning_tokens is not None:
+        # Only set when a test asks for it: an absent attribute is what
+        # exercises "reasoning tokens absent is fine" (P1-B).
+        usage.completion_tokens_details = SimpleNamespace(
+            reasoning_tokens=reasoning_tokens
+        )
     return SimpleNamespace(
         id="deepseek-response",
         choices=[
@@ -124,18 +144,7 @@ def chat_response(
                 ),
             )
         ],
-        usage=SimpleNamespace(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=(
-                prompt_tokens + completion_tokens
-                if isinstance(prompt_tokens, int)
-                and not isinstance(prompt_tokens, bool)
-                and isinstance(completion_tokens, int)
-                and not isinstance(completion_tokens, bool)
-                else None
-            ),
-        ),
+        usage=usage,
     )
 
 
@@ -193,6 +202,20 @@ class CapturingTracker(Tracker):
                     self.llm_outputs.append(span.outputs)
 
         return capture_outputs()
+
+
+def _assert_single_ok_attempt(attempts: list[dict[str, object]]) -> None:
+    """One attempt: succeeded on the first try, with plausible timing.
+
+    Every call now records at least this much (P1-B), even one that never
+    retried; the exact timing is real wall time and so is never pinned.
+    """
+    assert len(attempts) == 1
+    [record] = attempts
+    assert record["attempt"] == 1
+    assert record["outcome"] == "ok"
+    assert record["start_offset"] >= 0.0
+    assert record["seconds"] >= 0.0
 
 
 def local_tracker() -> Tracker:
@@ -407,6 +430,7 @@ async def test_deepseek_plain_completion_translates_roles_and_thinking() -> None
         "input_tokens": 8,
         "output_tokens": 3,
         "total_tokens": 11,
+        "reasoning_tokens": 0,
     }
     call = completions.calls[0]
     assert call["messages"] == [
@@ -484,6 +508,7 @@ def test_deepseek_judge_responses_usage_maps_counts_and_total() -> None:
         "input_tokens": 8,
         "output_tokens": 3,
         "total_tokens": 11,
+        "reasoning_tokens": 0,
     }
 
 
@@ -942,6 +967,7 @@ async def test_deepseek_absent_usage_maps_to_zero_tokens() -> None:
         "input_tokens": 0,
         "output_tokens": 0,
         "total_tokens": 0,
+        "reasoning_tokens": 0,
     }
 
 
@@ -1101,9 +1127,11 @@ def test_output_limit_telemetry_model_is_typed_and_bounded() -> None:
             "input_tokens": 8,
             "output_tokens": 4096,
             "total_tokens": 4104,
+            "reasoning_tokens": 0,
         },
         "request_attempt": 1,
         "structured_attempt": 2,
+        "attempts": [],
     }
 
     with pytest.raises(ValueError):
@@ -1175,9 +1203,11 @@ def test_provider_response_telemetry_rejects_nested_mutation_and_stays_bounded(
             "input_tokens": 8,
             "output_tokens": 4096,
             "total_tokens": 4104,
+            "reasoning_tokens": 0,
         },
         "request_attempt": 1,
         "structured_attempt": None,
+        "attempts": [],
     }
 
 
@@ -1227,13 +1257,18 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
                 )
             assert caught.value.retryable is False
             assert type(caught.value).__name__ == "ProviderOutputLimitError"
-            assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
+            telemetry_dict = getattr(caught.value, "telemetry").model_dump(
+                mode="json"
+            )
+            _assert_single_ok_attempt(telemetry_dict.pop("attempts"))
+            assert telemetry_dict == {
                 "finish_reason_category": "length",
                 "configured_max_tokens": 32768,
                 "usage": {
                     "input_tokens": 8,
                     "output_tokens": 4096,
                     "total_tokens": 4104,
+                    "reasoning_tokens": 0,
                 },
                 "request_attempt": 1,
                 "structured_attempt": None,
@@ -1255,19 +1290,20 @@ async def test_deepseek_output_limit_finish_reason_telemetry_is_finite_and_safe(
             assert "prompt content" not in str(caught.value)
 
     assert len(completions.calls) == 1
-    assert tracker.llm_outputs == [
-        {
-            "finish_reason_category": expected_category,
-            "configured_max_tokens": 32768,
-            "usage": {
-                "input_tokens": 8,
-                "output_tokens": 4096,
-                "total_tokens": 4104,
-            },
-            "request_attempt": 1,
-            "structured_attempt": None,
-        }
-    ]
+    [llm_output] = tracker.llm_outputs
+    _assert_single_ok_attempt(llm_output.pop("attempts"))
+    assert llm_output == {
+        "finish_reason_category": expected_category,
+        "configured_max_tokens": 32768,
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 4096,
+            "total_tokens": 4104,
+            "reasoning_tokens": 0,
+        },
+        "request_attempt": 1,
+        "structured_attempt": None,
+    }
     serialized = json.dumps(tracker.llm_outputs, sort_keys=True)
     assert "unknown-provider-finish-raw-value" not in serialized
     assert "oversized-provider-finish-raw-" not in serialized
@@ -1298,13 +1334,16 @@ async def test_deepseek_structured_length_error_carries_structured_attempt() -> 
 
     assert len(completions.calls) == 1
     assert type(caught.value).__name__ == "ProviderOutputLimitError"
-    assert getattr(caught.value, "telemetry").model_dump(mode="json") == {
+    telemetry_dict = getattr(caught.value, "telemetry").model_dump(mode="json")
+    _assert_single_ok_attempt(telemetry_dict.pop("attempts"))
+    assert telemetry_dict == {
         "finish_reason_category": "length",
         "configured_max_tokens": 32768,
         "usage": {
             "input_tokens": 8,
             "output_tokens": 4096,
             "total_tokens": 4104,
+            "reasoning_tokens": 0,
         },
         "request_attempt": 1,
         "structured_attempt": 1,
@@ -4293,3 +4332,205 @@ def test_cached_input_tokens_are_read_from_both_usage_shapes() -> None:
     assert deepseek_module._responses_cached_input_tokens(responses) == 4
     assert deepseek_module._chat_cached_input_tokens(SimpleNamespace(usage=None)) == 0
     assert deepseek_module._responses_cached_input_tokens(malformed) == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records and reasoning tokens (stall-fix-brief.md P1-B).
+#
+# ``started_at`` used to be taken once, outside ``with_retries``, so a call's
+# ``seconds`` could not be split into what each transport attempt actually
+# cost. Each attempt is now timed and its outcome recorded, on the LLM span's
+# outputs (where the trace fetch sees them) and in the run collector (where
+# the Telemetry line's "slowest call" reads them).
+# ---------------------------------------------------------------------------
+
+
+def test_usage_from_response_maps_reasoning_tokens_when_present() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=8,
+            completion_tokens=100,
+            total_tokens=108,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=64),
+        )
+    )
+    usage = deepseek_module._usage_from_response(response)
+    assert usage.reasoning_tokens == 64
+    assert usage.output_tokens == 100
+    assert usage.total_tokens == 108
+
+
+def test_usage_from_response_reasoning_tokens_absent_is_fine() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3, total_tokens=11)
+    )
+    usage = deepseek_module._usage_from_response(response)
+    assert usage.reasoning_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_captures_reasoning_tokens_on_span_and_collector() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(
+            text="answer", prompt_tokens=8, completion_tokens=100,
+            reasoning_tokens=64,
+        )
+    )
+    tracker = CapturingTracker()
+    collector = RunTelemetryCollector()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")], agent_name="researcher",
+        )
+
+    assert result.usage.reasoning_tokens == 64
+    assert tracker.llm_outputs[-1]["usage"]["reasoning_tokens"] == 64
+    assert collector.snapshot().reasoning_tokens == 64
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_records_a_timeout_then_ok_attempt(monkeypatch) -> (
+    None
+):
+    """Two attempts recorded as timeout then ok, with plausible timing, on the
+    span's outputs and in the run collector."""
+    _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text="answer", prompt_tokens=8, completion_tokens=3),
+    )
+    tracker = CapturingTracker()
+    collector = RunTelemetryCollector()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")], agent_name="researcher"
+        )
+
+    assert result.text == "answer"
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+    for record in attempts:
+        assert record["start_offset"] >= 0.0
+        assert record["seconds"] >= 0.0
+    assert attempts[1]["start_offset"] >= attempts[0]["start_offset"]
+
+    [stage] = collector.snapshot().stages
+    assert [record.outcome for record in stage.slowest_call_attempts] == [
+        "timeout",
+        "ok",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_structured_chat_mode_records_attempts(
+    monkeypatch,
+) -> None:
+    """The chat-JSON-mode structured path (``_structured_attempt``) records
+    attempts the same way as plain ``complete``."""
+    _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text='{"answer": "yes", "confidence": 9}'),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_records_a_connection_error_then_ok_attempt(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "connection error"),
+        (2, "ok"),
+    ]
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_schema_records_attempts(monkeypatch) -> None:
+    """The Responses-API structured path (``_responses_structured_attempt``)
+    records attempts too, not only the Chat Completions paths."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    verdict_payload = _judge_payload(rationale="Grounded judge rationale.")
+    responses = RecordingResponses(
+        sdk_error, responses_response(output_text=json.dumps(verdict_payload))
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekJudgeProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")], JudgeVerdict,
+        )
+
+    assert result == JudgeVerdict.model_validate(verdict_payload)
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]

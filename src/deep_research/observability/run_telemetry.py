@@ -27,11 +27,14 @@ sub-topic research and verification batches really do run concurrently (Task
 from __future__ import annotations
 
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import TYPE_CHECKING
 
 from deep_research.observability.metrics import LLMOperation
 from deep_research.utils.types import (
+    CallAttemptTelemetry,
     OperationTelemetry,
     RunTelemetry,
     StageTelemetry,
@@ -87,6 +90,11 @@ _MODEL_PROVIDER_CATEGORIES = frozenset({"deepseek", "openai"})
 #: A call this close to its cap is what the advice line is for (§7.3).
 _NEAR_CAP_PERCENT = 90
 
+#: A loop-lag wake-up this long or longer is a "block" on the Telemetry line
+#: (P1-B). The event-loop lag monitor uses this as its own default; a test
+#: calling ``note_loop_wakeup`` directly may pass a smaller one.
+_LOOP_LAG_BLOCK_SECONDS = 5.0
+
 
 def cap_key_for(agent: str | None, operation: LLMOperation) -> str:
     """The config key that bounds one provider call's output tokens."""
@@ -114,6 +122,7 @@ class _StageAccumulator:
     seconds: float = 0.0
     slowest_seconds: float = 0.0
     operations: dict[str, _OperationAccumulator] = field(default_factory=dict)
+    slowest_call_attempts: tuple[CallAttemptTelemetry, ...] = ()
 
 
 class RunTelemetryCollector:
@@ -135,6 +144,9 @@ class RunTelemetryCollector:
         self._rate_limit_recovered = 0
         self._input_tokens = 0
         self._cached_input_tokens = 0
+        self._reasoning_tokens = 0
+        self._loop_lag_max = 0.0
+        self._loop_lag_blocks: list[float] = []
         self._stages: dict[str, _StageAccumulator] = {}
 
     def note_call_starting(self, agent: str | None) -> None:
@@ -196,6 +208,31 @@ class RunTelemetryCollector:
         with self._lock:
             self._rate_limit_recovered += count
 
+    def note_loop_wakeup(
+        self, lag: float, *, block_threshold: float = _LOOP_LAG_BLOCK_SECONDS
+    ) -> None:
+        """Record one event-loop lag monitor wake-up's delay (P1-B).
+
+        ``lag`` is the wake-up's delay beyond the tick the monitor asked for.
+        Every positive reading can raise the run's maximum; a reading at or
+        beyond ``block_threshold`` is also kept in the blocks list the
+        Telemetry line counts. A non-finite or negative reading is dropped
+        rather than raising: the monitor that calls this must never fail the
+        run it is watching.
+        """
+        if (
+            not isinstance(lag, (int, float))
+            or isinstance(lag, bool)
+            or not isfinite(lag)
+            or lag < 0
+        ):
+            return
+        with self._lock:
+            if lag > self._loop_lag_max:
+                self._loop_lag_max = lag
+            if lag >= block_threshold:
+                self._loop_lag_blocks.append(lag)
+
     def record_call(
         self,
         *,
@@ -207,6 +244,8 @@ class RunTelemetryCollector:
         truncated: bool,
         input_tokens: int = 0,
         cached_input_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        attempts: Sequence[CallAttemptTelemetry] = (),
     ) -> None:
         """Record one provider call that returned and reported its usage.
 
@@ -218,12 +257,19 @@ class RunTelemetryCollector:
         ``input_tokens`` and ``cached_input_tokens`` are the run's cache
         figures (D10, S5). A provider that reports neither -- OpenAI does not
         -- leaves both at their defaults and so contributes zeros.
+
+        ``reasoning_tokens`` is the run's total apart from content tokens
+        (P1-B); a provider that never reports it leaves the default, zero.
+        ``attempts`` is this call's own per-transport-attempt records; the
+        stage keeps only the attempts of whichever call is currently its
+        slowest, since that is the only call the Telemetry line names.
         """
         stage_name = agent or UNATTRIBUTED_AGENT
         cap_key = cap_key_for(agent, operation)
         with self._lock:
             self._input_tokens += input_tokens
             self._cached_input_tokens += cached_input_tokens
+            self._reasoning_tokens += reasoning_tokens
             stage = self._stages.get(stage_name)
             if stage is None:
                 stage = _StageAccumulator()
@@ -232,6 +278,7 @@ class RunTelemetryCollector:
             stage.seconds += seconds
             if seconds > stage.slowest_seconds:
                 stage.slowest_seconds = seconds
+                stage.slowest_call_attempts = tuple(attempts)
             usage = stage.operations.get(cap_key)
             if usage is None:
                 usage = _OperationAccumulator(configured_cap=configured_cap)
@@ -263,6 +310,7 @@ class RunTelemetryCollector:
                         )
                         for cap_key, usage in sorted(stage.operations.items())
                     ),
+                    slowest_call_attempts=stage.slowest_call_attempts,
                 )
                 for agent, stage in sorted(self._stages.items())
             )
@@ -274,6 +322,11 @@ class RunTelemetryCollector:
                 stages=stages,
                 input_tokens=self._input_tokens,
                 cached_input_tokens=self._cached_input_tokens,
+                reasoning_tokens=self._reasoning_tokens,
+                loop_lag_max_seconds=round(self._loop_lag_max, 1),
+                loop_lag_blocks=tuple(
+                    round(block, 1) for block in self._loop_lag_blocks
+                ),
             )
 
 
@@ -309,6 +362,22 @@ def _truncations(telemetry: RunTelemetry) -> int:
     return sum(operation.truncations for operation in _operations(telemetry))
 
 
+def _render_loop_lag(telemetry: RunTelemetry) -> str:
+    """Render the event-loop lag monitor's reading (P1-B).
+
+    Always present, even at zero: a quiet run's "0 blocks" is itself the
+    fact worth reporting, the same way "0 truncated" is above.
+    """
+    blocks = telemetry.loop_lag_blocks
+    line = (
+        f"loop lag max {telemetry.loop_lag_max_seconds:,.1f} s; "
+        f"{len(blocks)} blocks \u2265 5 s"
+    )
+    if blocks:
+        line += f" (longest {max(blocks):,.1f} s)"
+    return line
+
+
 def render_telemetry_line(telemetry: RunTelemetry) -> str:
     """Render the run's §7.3 figures as the one CLI summary line.
 
@@ -317,7 +386,8 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
     rate limits and how many came back, the slowest call, the operation
     closest to its cap, and the truncation count. A run whose calls reported
     input tokens closes with the cache-hit share (D10, S5); a run that
-    reported none prints no cache part rather than a measured zero.
+    reported none prints no cache part rather than a measured zero. The
+    event-loop lag monitor's reading (P1-B) always closes the line.
     """
     peak = f"peak {telemetry.peak_calls_in_flight} provider calls in flight"
     if telemetry.peak_agent is not None:
@@ -329,7 +399,15 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
     ]
     slowest = _slowest_stage(telemetry)
     if slowest is not None:
-        parts.append(f"slowest call {slowest.agent} {slowest.slowest_seconds:.1f} s")
+        line = f"slowest call {slowest.agent} {slowest.slowest_seconds:,.1f} s"
+        attempts = slowest.slowest_call_attempts
+        if len(attempts) > 1:
+            slowest_attempt = max(attempts, key=lambda record: record.seconds)
+            line += (
+                f" ({len(attempts)} attempts; slowest attempt "
+                f"{slowest_attempt.seconds:,.1f} s, {slowest_attempt.outcome})"
+            )
+        parts.append(line)
     fullest = _fullest_operation(telemetry)
     if fullest is not None:
         parts.append(
@@ -343,6 +421,7 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
             f"{telemetry.input_tokens:,} input tokens "
             f"({telemetry.cached_input_tokens * 100 // telemetry.input_tokens}%)"
         )
+    parts.append(_render_loop_lag(telemetry))
     return f"Telemetry: {'; '.join(parts)}"
 
 

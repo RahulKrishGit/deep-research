@@ -15,6 +15,7 @@ defect and is deliberately allowed to propagate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from typing import Any, TypeAlias
@@ -154,6 +155,37 @@ def _budget_observer(
     return observe
 
 
+#: The event-loop lag monitor's tick (P1-B): it sleeps this long repeatedly
+#: and records each wake-up's delay beyond it. A "block" is a delay at or
+#: beyond five ticks -- five seconds in production -- so a test can shorten
+#: the tick and still exercise the block path without a real 5 s wait.
+_LOOP_LAG_TICK_SECONDS = 1.0
+_LOOP_LAG_BLOCK_TICKS = 5
+
+
+async def _monitor_loop_lag(
+    collector: RunTelemetryCollector, *, tick: float = _LOOP_LAG_TICK_SECONDS
+) -> None:
+    """Record the run's event-loop lag for the Telemetry line (P1-B, §1.2).
+
+    Sleeps ``tick`` seconds at a time for as long as the run lasts, recording
+    each wake-up's delay beyond what was asked for -- time the loop spent
+    blocked elsewhere, such as the page-admission normalisation the stall
+    investigation found. Cancellation is the only way this task ends: it
+    must never keep the run alive past its own work, and a reading it cannot
+    make sense of is dropped by the collector rather than raised, so this
+    monitor can never fail the run it is watching.
+    """
+    loop = asyncio.get_running_loop()
+    block_threshold = tick * _LOOP_LAG_BLOCK_TICKS
+    while True:
+        before = loop.time()
+        await asyncio.sleep(tick)
+        lag = loop.time() - before - tick
+        if lag > 0:
+            collector.note_loop_wakeup(lag, block_threshold=block_threshold)
+
+
 async def run_research(
     question: str | None = None,
     *,
@@ -264,6 +296,11 @@ async def run_research(
     observer = _budget_observer(runtime.run_telemetry, request_budget_handler)
     if observer is not None:
         budget.set_observer(observer)
+    monitor_task = (
+        None
+        if runtime.run_telemetry is None
+        else asyncio.create_task(_monitor_loop_lag(runtime.run_telemetry))
+    )
     try:
         if resume_session_id is not None:
             try:
@@ -314,6 +351,10 @@ async def run_research(
     finally:
         if observer is not None:
             budget.set_observer(None)
+        if monitor_task is not None:
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
 
     # The terminal finalizer takes the collector's reading for a run that
     # reaches publication, and stamps it into the state it publishes from. A

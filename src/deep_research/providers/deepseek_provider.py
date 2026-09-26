@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from time import perf_counter
 from types import SimpleNamespace, UnionType
 from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
@@ -46,10 +46,11 @@ from deep_research.providers.contracts import (
     ToolDefinition,
 )
 from deep_research.providers.native_output import native_text_violation
-from deep_research.providers.retry import with_retries
+from deep_research.providers.retry import AttemptObserver, with_retries
 from deep_research.providers.validation import validation_category
 from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
+from deep_research.utils.types import CallAttemptTelemetry
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 _MAX_VALIDATION_FIELD_PATHS = 16
@@ -335,6 +336,9 @@ def _usage_from_response(response: Any) -> TokenUsage:
     Absent usage maps to zero tokens. When usage exists, both prompt and
     completion token counts must be non-negative integers and any supplied
     total must agree with their sum; anything else is malformed.
+    ``completion_tokens_details.reasoning_tokens`` is captured when present,
+    so reasoning and content tokens can be told apart (P1-B); it never
+    affects the total, since ``completion_tokens`` already counts it.
     """
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -363,10 +367,13 @@ def _usage_from_response(response: Any) -> TokenUsage:
      "DeepSeek response contained malformed usage",
      failure_origin="local_response",
  )
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning_tokens = _cached_count(getattr(details, "reasoning_tokens", None))
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -474,6 +481,7 @@ def _response_telemetry(
     configured_max_tokens: int,
     request_attempt: int,
     structured_attempt: int | None = None,
+    attempts: Sequence[CallAttemptTelemetry] = (),
 ) -> ProviderResponseTelemetry:
     return ProviderResponseTelemetry(
         finish_reason_category=_normalize_finish_reason(
@@ -483,6 +491,7 @@ def _response_telemetry(
         usage=_usage_from_response(response),
         request_attempt=request_attempt,
         structured_attempt=structured_attempt,
+        attempts=tuple(attempts),
     )
 
 
@@ -777,6 +786,31 @@ class DeepSeekChatProvider:
             return
         budget.reserve("deepseek")
 
+    def _attempt_recorder(
+        self, attempts: list[CallAttemptTelemetry]
+    ) -> AttemptObserver:
+        """One ``with_retries`` callback appending to this call's own list.
+
+        A fresh closure per call (P1-B): ``with_retries`` invokes it once per
+        transport attempt, in order, with that attempt's number, start offset,
+        duration and outcome -- exactly the fields ``CallAttemptTelemetry``
+        needs.
+        """
+
+        def _record(
+            number: int, start_offset: float, duration: float, outcome: str
+        ) -> None:
+            attempts.append(
+                CallAttemptTelemetry(
+                    attempt=number,
+                    start_offset=max(start_offset, 0.0),
+                    seconds=max(duration, 0.0),
+                    outcome=outcome,
+                )
+            )
+
+        return _record
+
     def _read_telemetry(
         self,
         response: Any,
@@ -784,6 +818,7 @@ class DeepSeekChatProvider:
         configured_max_tokens: int,
         request_attempt: int,
         structured_attempt: int | None = None,
+        attempts: Sequence[CallAttemptTelemetry] = (),
     ) -> ProviderResponseTelemetry:
         """Read a response's usage and finish reason, releasing on failure.
 
@@ -798,6 +833,7 @@ class DeepSeekChatProvider:
                 configured_max_tokens=configured_max_tokens,
                 request_attempt=request_attempt,
                 structured_attempt=structured_attempt,
+                attempts=attempts,
             )
         except ProviderResponseError:
             self._telemetry.note_attempt_finished()
@@ -813,6 +849,7 @@ class DeepSeekChatProvider:
         seconds: float,
         configured_cap: int,
         truncated: bool,
+        attempts: Sequence[CallAttemptTelemetry] = (),
     ) -> None:
         """Record reported usage, and only for a response that arrived.
 
@@ -823,6 +860,10 @@ class DeepSeekChatProvider:
         The same rule is what makes the §7.3 per-call record honest: this call
         is the run's slowest, its operation's largest reply and its truncation
         count only when the response really carried the numbers.
+
+        ``attempts`` and ``usage.reasoning_tokens`` are this call's own P1-B
+        contributions: the collector keeps the attempts of whichever call is
+        currently its stage's slowest, and sums reasoning tokens across the run.
         """
         budget = self._request_budget
         if budget is not None:
@@ -840,6 +881,8 @@ class DeepSeekChatProvider:
             truncated=truncated,
             input_tokens=usage.input_tokens,
             cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            attempts=attempts,
         )
 
     @property
@@ -907,6 +950,7 @@ class DeepSeekChatProvider:
         effective, request, metadata = self._request_options(agent_name)
         payload = _translated_messages(messages)
         request_attempt = 0
+        attempts: list[CallAttemptTelemetry] = []
         try:
             async with self._tracker.llm_span(
                 effective.model,
@@ -949,11 +993,13 @@ class DeepSeekChatProvider:
                     initial_delay=self._config.retry_initial_delay,
                     max_delay=self._config.retry_max_delay,
                     telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts),
                 )
                 telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=self._config.max_tokens,
                     request_attempt=request_attempt,
+                    attempts=attempts,
                 )
                 self._record_tokens(
                     telemetry.usage,
@@ -963,6 +1009,7 @@ class DeepSeekChatProvider:
                     seconds=perf_counter() - started_at,
                     configured_cap=self._config.max_tokens,
                     truncated=telemetry.finish_reason_category == "length",
+                    attempts=attempts,
                 )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
@@ -1008,6 +1055,7 @@ class DeepSeekChatProvider:
         ) as span:
             _sdk = _openai_errors()
             request_attempt = 0
+            attempts: list[CallAttemptTelemetry] = []
 
             async def _request() -> Any:
                 nonlocal request_attempt
@@ -1043,12 +1091,14 @@ class DeepSeekChatProvider:
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
                 telemetry=self._telemetry,
+                on_attempt=self._attempt_recorder(attempts),
             )
             telemetry = self._read_telemetry(
                 response,
                 configured_max_tokens=configured_max_tokens,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
+                attempts=attempts,
             )
             self._record_tokens(
                 telemetry.usage,
@@ -1058,6 +1108,7 @@ class DeepSeekChatProvider:
                 seconds=perf_counter() - started_at,
                 configured_cap=configured_max_tokens,
                 truncated=telemetry.finish_reason_category == "length",
+                attempts=attempts,
             )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
@@ -1209,6 +1260,7 @@ class DeepSeekChatProvider:
         payload = _translated_messages(messages)
         allowed = {definition.name for definition in tools}
         request_attempt = 0
+        attempts: list[CallAttemptTelemetry] = []
         async with self._tracker.llm_span(
             effective.model,
             {
@@ -1262,6 +1314,7 @@ class DeepSeekChatProvider:
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
                 telemetry=self._telemetry,
+                on_attempt=self._attempt_recorder(attempts),
             )
             telemetry: ProviderResponseTelemetry | None = None
             tool_calls: tuple[NativeToolCall, ...] = ()
@@ -1273,6 +1326,7 @@ class DeepSeekChatProvider:
                     response,
                     configured_max_tokens=resolved_max_tokens,
                     request_attempt=request_attempt,
+                    attempts=attempts,
                 )
             except ProviderResponseError as error:
                 # A malformed usage shape is rejected *before* the clearing
@@ -1289,6 +1343,7 @@ class DeepSeekChatProvider:
                     seconds=perf_counter() - started_at,
                     configured_cap=resolved_max_tokens,
                     truncated=telemetry.finish_reason_category == "length",
+                    attempts=attempts,
                 )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
@@ -1410,6 +1465,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         ) as span:
             _sdk = _openai_errors()
             request_attempt = 0
+            attempts: list[CallAttemptTelemetry] = []
 
             async def _request() -> Any:
                 nonlocal request_attempt
@@ -1452,6 +1508,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 initial_delay=self._config.retry_initial_delay,
                 max_delay=self._config.retry_max_delay,
                 telemetry=self._telemetry,
+                on_attempt=self._attempt_recorder(attempts),
             )
             finish_reason_category = _responses_finish_reason(response)
             try:
@@ -1468,6 +1525,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 usage=usage,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
+                attempts=tuple(attempts),
             )
             self._record_tokens(
                 usage,
@@ -1477,6 +1535,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 seconds=perf_counter() - started_at,
                 configured_cap=configured_max_tokens,
                 truncated=finish_reason_category == "length",
+                attempts=attempts,
             )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":

@@ -1082,7 +1082,8 @@ def run_telemetry_snapshot(
 TELEMETRY_LINE = (
     "Telemetry: peak 1 provider calls in flight (researcher); 3 rate limits "
     "(2 recovered); slowest call report_writer 223.4 s; report_writer output "
-    "61,200 of 65,536 tokens (93% of its cap); 0 truncated"
+    "61,200 of 65,536 tokens (93% of its cap); 0 truncated; "
+    "loop lag max 0.0 s; 0 blocks \u2265 5 s"
 )
 
 

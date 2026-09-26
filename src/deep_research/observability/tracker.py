@@ -184,6 +184,12 @@ class TokenUsage(BaseModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
+    """Output tokens DeepSeek reported as reasoning, apart from content (P1-B).
+
+    Additional detail only: ``total_tokens`` stays ``input_tokens +
+    output_tokens`` regardless, since ``output_tokens`` already counts every
+    generated token and reasoning tokens are a subset of it, not an addition."""
 
     @model_validator(mode="after")
     def populate_or_validate_total(self) -> "TokenUsage":

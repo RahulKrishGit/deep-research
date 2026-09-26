@@ -295,3 +295,131 @@ async def test_a_refused_attempt_is_not_reported_as_a_failed_attempt(
     budget.reserve("deepseek")
 
     assert collector.snapshot().peak_calls_in_flight == 3
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records (stall-fix brief P1-B): ``with_retries`` is the one
+# place that knows an attempt's number, timing and outcome, so it is where
+# they are built rather than duplicated at every provider call site.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_a_timeout_then_an_ok_attempt(monkeypatch) -> None:
+    """Two attempts recorded as timeout then ok, in order, with plausible timing."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+    calls = 0
+
+    async def operation() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ProviderTimeoutError("DeepSeek request timed out")
+        return "ok"
+
+    result = await with_retries(
+        operation,
+        retry_count=2,
+        initial_delay=1.0,
+        max_delay=4.0,
+        on_attempt=lambda *record: recorded.append(record),
+    )
+
+    assert result == "ok"
+    assert [(number, outcome) for number, _, _, outcome in recorded] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+    for _, start_offset, duration, _ in recorded:
+        assert start_offset >= 0.0
+        assert duration >= 0.0
+    # The second attempt starts no earlier than the first began.
+    assert recorded[1][1] >= recorded[0][1]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_a_connection_error_outcome(monkeypatch) -> None:
+    """An SDK connection failure is tagged ``connection error``, not its class name."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+
+    async def operation() -> str:
+        raise ProviderResponseError(
+            "DeepSeek connection failed",
+            failure_origin="sdk",
+            retryable=True,
+            failure_category="transport",
+        )
+
+    with pytest.raises(ProviderResponseError):
+        await with_retries(
+            operation,
+            retry_count=0,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert [outcome for _, _, _, outcome in recorded] == ["connection error"]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_another_error_class_name(monkeypatch) -> None:
+    """A failure that is neither a timeout nor a connection error keeps its
+    own exception class name, so the telemetry line can still name it."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+
+    async def operation() -> str:
+        raise ProviderResponseError(
+            "DeepSeek request failed with status 500",
+            failure_origin="sdk",
+            retryable=True,
+            failure_category="http",
+            http_status_code=500,
+        )
+
+    with pytest.raises(ProviderResponseError):
+        await with_retries(
+            operation,
+            retry_count=0,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert [outcome for _, _, _, outcome in recorded] == ["ProviderResponseError"]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_never_reports_an_attempt_for_a_refused_budget(
+    monkeypatch,
+) -> None:
+    """A budget refusal never reached the wire, so it is not a transport attempt."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+    refusal = RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider="deepseek",
+            attempts=1,
+            ceiling=1,
+            effective_limit=1,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+
+    async def operation() -> str:
+        raise refusal
+
+    with pytest.raises(RequestAttemptLimitError):
+        await with_retries(
+            operation,
+            retry_count=1,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert recorded == []

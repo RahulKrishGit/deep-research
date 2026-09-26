@@ -16,6 +16,7 @@ from deep_research.request_budget import (
     RequestBudgetUpdate,
 )
 from deep_research.utils.types import (
+    CallAttemptTelemetry,
     OperationTelemetry,
     RunTelemetry,
     StageTelemetry,
@@ -225,7 +226,7 @@ def test_the_line_renders_the_four_parts_of_the_spec() -> None:
         "3 rate limits (2 recovered); "
         "slowest call report_reviewer 223.4 s; "
         "report_writer output 61,200 of 65,536 tokens (93% of its cap); "
-        "0 truncated"
+        "0 truncated; loop lag max 0.0 s; 0 blocks \u2265 5 s"
     )
 
 
@@ -373,5 +374,186 @@ def test_the_line_reports_cache_hits_when_input_tokens_were_reported() -> None:
     telemetry = collector.snapshot()
     assert (telemetry.input_tokens, telemetry.cached_input_tokens) == (10_000, 3_000)
     assert render_telemetry_line(telemetry).endswith(
-        "0 truncated; cache hits 3,000 of 10,000 input tokens (30%)"
+        "0 truncated; cache hits 3,000 of 10,000 input tokens (30%); "
+        "loop lag max 0.0 s; 0 blocks \u2265 5 s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records, reasoning tokens, and the event-loop lag monitor
+# (stall-fix-brief.md P1-B).
+# ---------------------------------------------------------------------------
+
+
+def test_the_slowest_calls_attempts_are_kept_on_its_stage() -> None:
+    """The stage remembers the attempts of whichever call is its slowest."""
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="researcher",
+        operation="structured_output",
+        seconds=4.0,
+        output_tokens=100,
+        configured_cap=65_536,
+        truncated=False,
+        attempts=(
+            CallAttemptTelemetry(
+                attempt=1, start_offset=0.0, seconds=4.0, outcome="ok"
+            ),
+        ),
+    )
+    collector.record_call(
+        agent="researcher",
+        operation="structured_output",
+        seconds=2_023.7,
+        output_tokens=42_158,
+        configured_cap=65_536,
+        truncated=False,
+        attempts=(
+            CallAttemptTelemetry(
+                attempt=1, start_offset=0.0, seconds=1_800.0, outcome="timeout"
+            ),
+            CallAttemptTelemetry(
+                attempt=2, start_offset=1_801.0, seconds=222.6, outcome="ok"
+            ),
+        ),
+    )
+
+    [stage] = collector.snapshot().stages
+    assert stage.slowest_seconds == 2_023.7
+    assert [record.outcome for record in stage.slowest_call_attempts] == [
+        "timeout",
+        "ok",
+    ]
+
+
+def test_the_line_shows_the_slowest_attempt_when_the_call_retried() -> None:
+    """The plan's own example: a 2,023.7 s call whose slower attempt timed out."""
+    telemetry = RunTelemetry(
+        stages=(
+            StageTelemetry(
+                agent="researcher",
+                calls=1,
+                seconds=2_023.7,
+                slowest_seconds=2_023.7,
+                slowest_call_attempts=(
+                    CallAttemptTelemetry(
+                        attempt=1, start_offset=0.0, seconds=1_800.0,
+                        outcome="timeout",
+                    ),
+                    CallAttemptTelemetry(
+                        attempt=2, start_offset=1_801.0, seconds=222.6,
+                        outcome="ok",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    line = render_telemetry_line(telemetry)
+
+    assert (
+        "slowest call researcher 2,023.7 s "
+        "(2 attempts; slowest attempt 1,800.0 s, timeout)" in line
+    )
+
+
+def test_the_line_omits_the_attempt_breakdown_for_a_single_attempt_call() -> None:
+    """A call that succeeded on its first attempt renders exactly as before."""
+    telemetry = RunTelemetry(
+        stages=(
+            StageTelemetry(
+                agent="researcher",
+                calls=1,
+                seconds=12.0,
+                slowest_seconds=12.0,
+                slowest_call_attempts=(
+                    CallAttemptTelemetry(
+                        attempt=1, start_offset=0.0, seconds=12.0, outcome="ok"
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    line = render_telemetry_line(telemetry)
+
+    assert "slowest call researcher 12.0 s" in line
+    assert "attempts" not in line
+
+
+def test_reasoning_tokens_accumulate_across_calls() -> None:
+    """Reasoning tokens are a run total, kept apart from content tokens."""
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="researcher", operation="structured_output", seconds=1.0,
+        output_tokens=100, configured_cap=65_536, truncated=False,
+        reasoning_tokens=40,
+    )
+    collector.record_call(
+        agent="researcher", operation="structured_output", seconds=1.0,
+        output_tokens=100, configured_cap=65_536, truncated=False,
+        reasoning_tokens=25,
+    )
+
+    assert collector.snapshot().reasoning_tokens == 65
+
+
+def test_reasoning_tokens_default_to_zero_when_never_reported() -> None:
+    """A provider that never reports reasoning tokens leaves the total at 0."""
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="researcher", operation="structured_output", seconds=1.0,
+        output_tokens=100, configured_cap=65_536, truncated=False,
+    )
+
+    assert collector.snapshot().reasoning_tokens == 0
+
+
+def test_the_loop_lag_monitor_keeps_the_max_and_the_qualifying_blocks() -> None:
+    """The max tracks every positive reading; the blocks list only the ones
+    at or beyond the threshold."""
+    collector = RunTelemetryCollector()
+    collector.note_loop_wakeup(0.2)
+    collector.note_loop_wakeup(5.5)
+    collector.note_loop_wakeup(1.2, block_threshold=1.0)
+    collector.note_loop_wakeup(3.0)
+
+    telemetry = collector.snapshot()
+    assert telemetry.loop_lag_max_seconds == 5.5
+    assert telemetry.loop_lag_blocks == (5.5, 1.2)
+
+
+def test_the_loop_lag_monitor_drops_non_finite_and_negative_readings() -> None:
+    """A bad reading must never corrupt the max or the block list: the monitor
+    that calls this must never fail the run it is watching."""
+    collector = RunTelemetryCollector()
+    collector.note_loop_wakeup(2.0)
+    collector.note_loop_wakeup(float("nan"))
+    collector.note_loop_wakeup(float("inf"))
+    collector.note_loop_wakeup(-1.0)
+
+    telemetry = collector.snapshot()
+    assert telemetry.loop_lag_max_seconds == 2.0
+    assert telemetry.loop_lag_blocks == ()
+
+
+def test_the_line_renders_loop_lag_max_and_blocks() -> None:
+    telemetry = RunTelemetry(
+        loop_lag_max_seconds=338.8,
+        loop_lag_blocks=(173.3, 338.8, 153.4),
+    )
+
+    line = render_telemetry_line(telemetry)
+
+    assert line.endswith(
+        "loop lag max 338.8 s; 3 blocks \u2265 5 s (longest 338.8 s)"
+    )
+
+
+def test_the_line_renders_loop_lag_with_no_blocks_and_no_longest() -> None:
+    telemetry = RunTelemetry()
+
+    line = render_telemetry_line(telemetry)
+
+    assert line.endswith("loop lag max 0.0 s; 0 blocks \u2265 5 s")
+    assert "longest" not in line

@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, TypeVar
+from time import perf_counter
+from typing import TYPE_CHECKING, TypeAlias, TypeVar
 
 from deep_research.providers.contracts import (
     ProviderRateLimitError,
@@ -27,6 +28,27 @@ if TYPE_CHECKING:  # pragma: no cover - import cost only, never a cycle
     from deep_research.observability.run_telemetry import RunTelemetryCollector
 
 T = TypeVar("T")
+
+#: One transport attempt's number (1-based), start offset and duration in
+#: seconds relative to the call's own start, and outcome (``on_attempt`` is
+#: called with exactly these four positional values, in this order).
+AttemptObserver: TypeAlias = Callable[[int, float, float, str], None]
+
+
+def _attempt_outcome(error: BaseException) -> str:
+    """One safe outcome tag for a failed transport attempt.
+
+    ``"timeout"`` and ``"connection error"`` name the two failure shapes the
+    stall investigation (stall-investigation-fable.md §1.3) cared about;
+    anything else keeps its own exception class name, which stays safe here
+    because every error this loop sees is already a project-owned typed
+    failure whose message carries no provider content.
+    """
+    if isinstance(error, ProviderTimeoutError):
+        return "timeout"
+    if isinstance(error, ProviderResponseError) and error.failure_category == "transport":
+        return "connection error"
+    return type(error).__name__
 
 
 def _is_transient(error: BaseException) -> bool:
@@ -68,6 +90,7 @@ async def with_retries(
     initial_delay: float,
     max_delay: float,
     telemetry: RunTelemetryCollector | None = None,
+    on_attempt: AttemptObserver | None = None,
 ) -> T:
     """Run ``operation`` with exponential-backoff retries for transient errors.
 
@@ -87,16 +110,33 @@ async def with_retries(
     tokens. A refused attempt is the exception — the budget refused it before
     any I/O, so it holds nothing to release. ``None`` counts nothing, which is
     what every caller that predates the telemetry gets.
+
+    ``on_attempt`` receives this loop's per-attempt contribution to the stall
+    fix's call telemetry (stall-fix-brief.md P1-B): every transport attempt's
+    number, its start offset and duration relative to this call, and its
+    outcome (``"ok"`` or :func:`_attempt_outcome`). This is the one place that
+    already knows all four, so callers never time attempts themselves. A
+    refused attempt never reached the wire and is not reported here, for the
+    same reason it releases no reservation above.
     """
     failure: BaseException | None = None
     rate_limits = 0
+    call_started_at = perf_counter()
     for attempt in range(retry_count + 1):
+        attempt_started_at = perf_counter()
         try:
             result = await operation()
         except Exception as error:
             if isinstance(error, RequestAttemptLimitError):
                 failure = error
                 break
+            if on_attempt is not None:
+                on_attempt(
+                    attempt + 1,
+                    attempt_started_at - call_started_at,
+                    perf_counter() - attempt_started_at,
+                    _attempt_outcome(error),
+                )
             if isinstance(error, ProviderRateLimitError):
                 rate_limits += 1
                 if telemetry is not None:
@@ -109,6 +149,13 @@ async def with_retries(
             delay = min(initial_delay * (2**attempt), max_delay)
             await asyncio.sleep(delay)
         else:
+            if on_attempt is not None:
+                on_attempt(
+                    attempt + 1,
+                    attempt_started_at - call_started_at,
+                    perf_counter() - attempt_started_at,
+                    "ok",
+                )
             if telemetry is not None and rate_limits:
                 telemetry.note_rate_limit_recovered(rate_limits)
             return result

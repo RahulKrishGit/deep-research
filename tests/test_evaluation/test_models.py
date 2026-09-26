@@ -287,6 +287,7 @@ def test_evaluation_failure_details_are_typed_and_allow_listed() -> None:
             "input_tokens": 8,
             "output_tokens": 4096,
             "total_tokens": 4104,
+            "reasoning_tokens": 0,
         },
         "request_attempt": 1,
         "structured_attempt": 2,

@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
+import deep_research.main as main_module
 from deep_research.graph.orchestrator import compile_research_graph
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
     SUPPORTED_OUTPUT_FORMATS,
+    _monitor_loop_lag,
     resolve_output_format,
     run_research,
     run_research_sync,
@@ -821,3 +826,92 @@ async def test_a_runtime_without_a_budget_fails_loudly(config_file, tracker) -> 
             config_path=config_file,
             runtime_builder=builder,
         )
+
+
+# ---------------------------------------------------------------------------
+# The event-loop lag monitor (stall-fix-brief.md P1-B).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_loop_lag_monitor_records_a_synthetic_block_and_stops_cleanly() -> (
+    None
+):
+    """A synchronous block inside the loop delays the monitor's own tick; the
+    delay is recorded, and cancelling the monitor stops it cleanly with no
+    exception escaping."""
+    collector = RunTelemetryCollector()
+    monitor = asyncio.create_task(_monitor_loop_lag(collector, tick=0.05))
+    await asyncio.sleep(0.1)  # let the monitor get into its own sleep
+    time.sleep(0.5)  # block the loop synchronously: the monitor's tick lags
+    await asyncio.sleep(0.1)  # let the monitor observe and record the delay
+
+    monitor.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await monitor
+    assert monitor.cancelled()
+
+    telemetry = collector.snapshot()
+    assert telemetry.loop_lag_max_seconds > 0.0
+    assert len(telemetry.loop_lag_blocks) >= 1
+
+
+@pytest.mark.asyncio
+async def test_run_research_starts_and_stops_the_loop_lag_monitor(
+    config_file, tracker, monkeypatch
+) -> None:
+    """The monitor runs beside the graph and is cancelled cleanly when the run
+    ends: it must never keep the run alive past its own work, and it must
+    never survive the call that started it."""
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_monitor(passed_collector) -> None:
+        assert passed_collector is collector
+        started.set()
+        try:
+            await asyncio.sleep(1000)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(main_module, "_monitor_loop_lag", fake_monitor)
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    await run_research(
+        QUESTION, config_path=config_file, runtime_builder=builder
+    )
+
+    assert started.is_set()
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_research_skips_the_loop_lag_monitor_with_no_collector(
+    config_file, tracker, monkeypatch
+) -> None:
+    """A runtime with no collector (an injected chat provider, or a harness)
+    starts no monitor: there would be nothing for it to record into."""
+    calls: list[object] = []
+
+    async def fake_monitor(collector) -> None:
+        calls.append(collector)
+        await asyncio.sleep(1000)
+
+    monkeypatch.setattr(main_module, "_monitor_loop_lag", fake_monitor)
+
+    await run_research(
+        QUESTION, config_path=config_file, runtime_builder=fake_builder(tracker)
+    )
+
+    assert calls == []

@@ -2262,6 +2262,26 @@ def advance_research_iteration(state: ResearchState) -> ResearchState:
 # from ``utils.types`` would close a cycle.
 
 
+class CallAttemptTelemetry(ContractModel):
+    """One provider transport attempt's timing and outcome inside one call.
+
+    ``start_offset`` is this attempt's start relative to the call's own
+    start (retries and backoff sleeps live in the gap between attempts), and
+    ``seconds`` is this attempt's own wall time -- never the call's total.
+    ``outcome`` is ``"ok"``, ``"timeout"``, ``"connection error"``, or the
+    failing exception's class name for anything else (P1-B).
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
+    )
+
+    attempt: int = Field(ge=1)
+    start_offset: float = Field(ge=0.0)
+    seconds: float = Field(ge=0.0)
+    outcome: str = Field(min_length=1)
+
+
 class OperationTelemetry(ContractModel):
     """One agent operation's output tokens against the cap that bounds it.
 
@@ -2289,6 +2309,10 @@ class StageTelemetry(ContractModel):
 
     ``seconds`` is the total wall time of those calls and ``slowest_seconds``
     the longest one, which is the number a concurrent stage's runtime turns on.
+    ``slowest_call_attempts`` is that same call's own transport attempts (P1-B):
+    empty for a call recorded before per-attempt records existed, and never
+    more than one call's worth, since only the current slowest call's attempts
+    are worth keeping.
     """
 
     model_config = ConfigDict(
@@ -2300,6 +2324,7 @@ class StageTelemetry(ContractModel):
     seconds: float = Field(ge=0.0)
     slowest_seconds: float = Field(ge=0.0)
     operations: tuple[OperationTelemetry, ...] = ()
+    slowest_call_attempts: tuple[CallAttemptTelemetry, ...] = ()
 
 
 class RunTelemetry(ContractModel):
@@ -2318,3 +2343,9 @@ class RunTelemetry(ContractModel):
     cached_input_tokens: int = Field(default=0, ge=0)
     """Input tokens the provider calls reported, and the part DeepSeek served
     from its context cache (D10, S5)."""
+    reasoning_tokens: int = Field(default=0, ge=0)
+    """Output tokens DeepSeek reported as reasoning, apart from content (P1-B)."""
+    loop_lag_max_seconds: float = Field(default=0.0, ge=0.0)
+    """The largest event-loop wake-up delay the run's lag monitor saw (P1-B)."""
+    loop_lag_blocks: tuple[float, ...] = ()
+    """Each wake-up delay at or beyond the monitor's block threshold (P1-B)."""
