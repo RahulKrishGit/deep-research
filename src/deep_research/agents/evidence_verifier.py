@@ -398,14 +398,69 @@ def page_owner(read: ReadRecord) -> str:
     return host
 
 
+# D5: a passage that ends right before its own qualifier hides the page's
+# hedge or rejection of the very claim it states. When the bounded window
+# ends on a sentence that begins with one of these connectives, it is
+# extended through that sentence -- wherever it continues, even into the
+# next passage -- within ``CONTEXT_PASSAGE_CHARS``. A truncated window is
+# also cut back to its last complete sentence rather than left mid-sentence,
+# wherever the window holds one at all.
+_CONTRASTIVE_CONNECTIVES = (
+    "however", "but", "yet", "nevertheless", "nonetheless", "although",
+    "though", "in contrast", "still", "that said", "on the other hand",
+)
+_SENTENCE_END_PATTERN = re.compile(r"[.!?](?=\s|$)")
+_CONTRASTIVE_START_PATTERN = re.compile(
+    r"^(?:" + "|".join(re.escape(word) for word in _CONTRASTIVE_CONNECTIVES) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _last_sentence_end(text: str) -> int:
+    """The index right after the last sentence-ending mark in ``text``, or
+    ``0`` when it has none."""
+    last = 0
+    for match in _SENTENCE_END_PATTERN.finditer(text):
+        last = match.end()
+    return last
+
+
+def _extended_through_qualifier(text: str, full_text: str) -> str:
+    """``text``, extended through a trailing sentence that begins with a
+    contrastive connective (D5), within ``CONTEXT_PASSAGE_CHARS``.
+
+    The connective's own sentence can already be dangling at ``text``'s own
+    end (a passage cut right after "However,"), so the continuation is
+    found in ``full_text`` -- the read's complete text, in order -- rather
+    than assumed to start the very next sentence.
+    """
+    tail = text[_last_sentence_end(text):].strip()
+    if not tail or not _CONTRASTIVE_START_PATTERN.match(tail):
+        return text
+    offset = full_text.find(text)
+    if offset == -1:
+        return text
+    remainder = full_text[offset + len(text):]
+    end_match = _SENTENCE_END_PATTERN.search(remainder)
+    extension = remainder if end_match is None else remainder[: end_match.end()]
+    extended = text + extension
+    return extended if len(extended) <= CONTEXT_PASSAGE_CHARS else text
+
+
 def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) -> str:
     """§5.2's bounded passage: every passage the snippet actually spans, centred on it."""
-    text = snippet_span_text(read, locator or "", snippet or "") or read_text(read)
+    full_text = read_text(read)
+    text = snippet_span_text(read, locator or "", snippet or "") or full_text
     if len(text) <= CONTEXT_PASSAGE_CHARS:
-        return text
+        return _extended_through_qualifier(text, full_text)
     anchor = text.casefold().find((snippet or "")[:40].casefold())
     start = max(0, anchor - CONTEXT_PASSAGE_CHARS // 2)
-    return text[start : start + CONTEXT_PASSAGE_CHARS]
+    bounded = text[start : start + CONTEXT_PASSAGE_CHARS]
+    if start + len(bounded) < len(text):
+        cut = _last_sentence_end(bounded)
+        if cut:
+            bounded = bounded[:cut]
+    return bounded
 
 
 def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None:

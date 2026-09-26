@@ -181,6 +181,65 @@ def test_context_passage_contains_a_snippet_spanning_three_passages() -> None:
     assert head_c in window
 
 
+
+def test_context_passage_extends_through_a_trailing_contrastive_connective() -> None:
+    """D5: a passage must not end just before its own qualifier.
+
+    The audited shape: a passage cut right after 'However,' drops the
+    page's own rejection of the claim the passage states; the window must
+    grow to carry that sentence whole.
+    """
+    passage_a = (
+        "According to Appian, the agrarian reforms of Tiberius Gracchus "
+        "were meant to support the Italians. However,"
+    )
+    passage_b = (
+        "there is no good evidence to verify this claim and most "
+        "historians reject it as a political tactic."
+    )
+    snippet = (
+        "the agrarian reforms of Tiberius Gracchus were meant to support "
+        "the Italians"
+    )
+    read = make_read(
+        f"{passage_a} {passage_b}",
+        url="https://example.test/qualifier-passage",
+        passages={"chunk-a": passage_a, "chunk-b": passage_b},
+    )
+
+    window = context_passage(read, "chunk-a", snippet)
+
+    assert (
+        "However, there is no good evidence to verify this claim"
+        in window
+    )
+
+
+def test_context_passage_cuts_a_truncated_window_at_a_sentence_end() -> None:
+    """D5: when the window must be cut for length, the cut lands at a
+    sentence end rather than mid-sentence, wherever one is available.
+
+    The trailing filler after the snippet's own sentence carries no period
+    at all until long past the 6000-character bound, so a raw character cut
+    always lands inside it; only a sentence-aware cut can end clean.
+    """
+    lead_filler = "Filler sentence about an unrelated matter entirely. "
+    snippet = "the district office confirmed the annual total"
+    target_sentence = f"The report states that {snippet} for the season."
+    trailing_filler = "and it continues describing further unrelated detail " * 200
+    text = f"{lead_filler}{target_sentence} {trailing_filler}at last."
+    read = make_read(
+        text,
+        url="https://example.test/long-window",
+        passages={"chunk-a": text},
+    )
+
+    window = context_passage(read, "chunk-a", snippet)
+
+    assert window.endswith(".")
+    assert target_sentence in window
+
+
 def _reply(**overrides: object) -> FigureCheckDraft:
     fields = dict(finding="F01", figure=1, period="2025", scope=None, attribution="own",
                   organisation="Wood Mackenzie", kind="actual",

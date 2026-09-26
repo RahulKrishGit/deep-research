@@ -436,6 +436,16 @@ def _first_usable_h1_text(soup: BeautifulSoup) -> str | None:
     return None
 
 
+# A generic single-word title names no page at all -- a template's default
+# caption for an untitled work, not a headline -- and is treated the same
+# as the site's own bare name (D3, run 5): the next candidate is used.
+_GENERIC_TITLE_WORDS = frozenset({"work", "home", "index", "untitled", "document"})
+
+
+def _is_generic_placeholder(value: str) -> bool:
+    return value.strip().casefold() in _GENERIC_TITLE_WORDS
+
+
 def _is_just_site_name(raw_title: str, site_name: str | None) -> bool:
     """Whether ``raw_title`` names only the site itself: it is ``og:site_name``
     verbatim, or has exactly one segment (see :func:`title_segments`) equal
@@ -449,17 +459,28 @@ def _is_just_site_name(raw_title: str, site_name: str | None) -> bool:
     return len(segments) == 1 and segments[0] == site_name
 
 
+def _is_unhelpful_title(value: str, site_name: str | None) -> bool:
+    """Whether ``value`` names nothing useful: the site's own bare name, or
+    a generic single-word placeholder (D3, run 5)."""
+    return value == site_name or _is_generic_placeholder(value)
+
+
 def _page_title(soup: BeautifulSoup) -> str:
-    """The page's title (D3, RevW5Titles P1-a/P2).
+    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3).
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
-    name only the site; only then does ``og:title``, ``twitter:title`` or a
-    non-banner ``h1`` stand in for it, in that order, skipping any of those
-    equal to the site name while a later, differing one remains.
+    name only the site or a generic placeholder; only then does
+    ``og:title``, ``twitter:title`` or a non-banner ``h1`` stand in for it,
+    in that order, skipping any of those that are themselves unhelpful
+    while a later, differing one remains.
     """
     site_name = _meta_property_content(soup, "og:site_name")
     raw_title = soup.title.get_text(strip=True) if soup.title else ""
-    if raw_title and not _is_just_site_name(raw_title, site_name):
+    if (
+        raw_title
+        and not _is_just_site_name(raw_title, site_name)
+        and not _is_generic_placeholder(raw_title)
+    ):
         return raw_title
     candidates: list[str | None] = [
         _meta_property_content(soup, "og:title"),
@@ -469,8 +490,9 @@ def _page_title(soup: BeautifulSoup) -> str:
     for index, candidate in enumerate(candidates):
         if not candidate:
             continue
-        if candidate == site_name and any(
-            later and later != site_name for later in candidates[index + 1 :]
+        if _is_unhelpful_title(candidate, site_name) and any(
+            later and not _is_unhelpful_title(later, site_name)
+            for later in candidates[index + 1 :]
         ):
             continue
         return candidate
@@ -754,6 +776,23 @@ def _json_ld_node_types(node: Mapping[str, object]) -> set[str]:
     }
 
 
+def _json_ld_date_strings(value: object) -> Iterator[str]:
+    """Every date-shaped string ``value`` carries.
+
+    A schema.org property may be published as a single value or as a JSON
+    array of values (D3, run 5): a page's own ``dateModified`` given as
+    ``["2026-07-28"]`` is read the same as a bare string, never silently
+    dropped for not being one.
+    """
+    if isinstance(value, str):
+        if value.strip():
+            yield value
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                yield item
+
+
 def _first_json_ld_date(nodes: list[Mapping[str, object]], key: str) -> str | None:
     """The date every node in ``nodes`` agrees on for ``key``, or ``None``.
 
@@ -764,9 +803,8 @@ def _first_json_ld_date(nodes: list[Mapping[str, object]], key: str) -> str | No
     """
     found: set[str] = set()
     for node in nodes:
-        value = node.get(key)
-        if isinstance(value, str) and value.strip():
-            normalized = _normalize_page_date(value)
+        for raw in _json_ld_date_strings(node.get(key)):
+            normalized = _normalize_page_date(raw)
             if normalized is not None:
                 found.add(normalized)
     return found.pop() if len(found) == 1 else None

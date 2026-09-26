@@ -468,6 +468,10 @@ _HEADING_URL_PATTERN = re.compile(r"https?://|www\.", re.IGNORECASE)
 _RUNNING_HEADER_PATTERN = re.compile(r"\b(?:Vol|pp|No)\.", re.IGNORECASE)
 _SKIPPED_LINE_PREFIXES = ("\u00a9", "copyright", "downloaded from")
 
+# A heading names something in words: a rule of underscores or dashes -- a
+# PDF's own page-break ornament -- has none (D3, run 5).
+_HEADING_LETTER_PATTERN = re.compile(r"[A-Za-z]")
+
 # A heading is one clause, or occasionally two ("Chapter 3. Results", "Fig.
 # 1. Overview"): what separates a genuine compound heading from a run-on
 # paragraph (ReRevW5) is not whether a line contains a second sentence at
@@ -488,6 +492,8 @@ def _is_run_on_paragraph(line: str) -> bool:
 
 def _is_skippable_heading_line(line: str) -> bool:
     """Whether ``line`` is a running artefact or ordinary prose, not a heading."""
+    if not _HEADING_LETTER_PATTERN.search(line):
+        return True
     if _PAGE_NUMBER_LINE_PATTERN.match(line):
         return True
     if _HEADING_URL_PATTERN.search(line):
@@ -499,20 +505,57 @@ def _is_skippable_heading_line(line: str) -> bool:
     return _is_run_on_paragraph(line)
 
 
+# A heading cut off mid-phrase by a PDF's own line wrap ends on a bare
+# function word, never on terminal punctuation (D3, run 5): "... in the
+# Decline of the" continues as "Roman Republic" on the next line. Ending on
+# one of these words -- and nothing else -- is what tells a wrapped heading
+# apart from a short, complete one ("Chapter 3. Results").
+_INCOMPLETE_HEADING_ENDING_PATTERN = re.compile(
+    r"\b(?:the|a|an|of|in|on|for|to|and|or|by|with|at|from)$", re.IGNORECASE
+)
+
+
+def _looks_incomplete(heading: str) -> bool:
+    return bool(_INCOMPLETE_HEADING_ENDING_PATTERN.search(heading))
+
+
+def _next_heading_line(lines: list[str], start: int) -> str | None:
+    """The next non-blank line after ``start``, or ``None`` when it is
+    itself unusable as a heading's continuation."""
+    for line in lines[start:]:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_skippable_heading_line(stripped):
+            return None
+        return stripped
+    return None
+
+
 def _heading_line(text: str) -> str | None:
     """The document's first heading-shaped line, or ``None`` when it has
     none: a title is short, so a line longer than ``_HEADING_MAX_CHARS`` is
     prose, not a heading, however early it sits in the extracted text, and
-    a page number, URL, copyright line or running header is skipped rather
-    than mistaken for one.
+    a page number, URL, copyright line, running header or letterless rule
+    is skipped rather than mistaken for one. A heading a PDF's own line
+    wrap cut off mid-phrase is joined with its continuation, within
+    ``_HEADING_MAX_CHARS``.
     """
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped or len(stripped) > _HEADING_MAX_CHARS:
             continue
         if _is_skippable_heading_line(stripped):
             continue
-        return stripped
+        heading = stripped
+        if _looks_incomplete(heading):
+            continuation = _next_heading_line(lines, index + 1)
+            if continuation is not None:
+                joined = f"{heading} {continuation}"
+                if len(joined) <= _HEADING_MAX_CHARS:
+                    heading = joined
+        return heading
     return None
 
 

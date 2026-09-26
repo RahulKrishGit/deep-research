@@ -639,3 +639,85 @@ async def test_reader_keeps_a_compound_heading_with_one_sentence_break(
         report.unlink()
 
     assert result.data["title"] == "Chapter 3. Results"
+
+
+@pytest.mark.asyncio
+async def test_reader_skips_a_rule_of_underscores_for_the_heading(
+    monkeypatch, tracker
+) -> None:
+    """D3 (run 5): a heading line must contain letters; a rule of
+    underscores or dashes -- a PDF's own page-break ornament -- is skipped."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "__________________________________________________________________\n"
+                "Findings on Filing Delays\n"
+                "Body text follows."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == "Findings on Filing Delays"
+
+
+@pytest.mark.asyncio
+async def test_reader_joins_a_heading_wrapped_onto_the_next_line(
+    monkeypatch, tracker
+) -> None:
+    """D3 (run 5): a heading that continues onto the next line -- the first
+    line ends on a bare function word with no terminal punctuation -- is
+    joined with it, within the 200-character cap."""
+
+    class Page:
+        def extract_text(self):
+            return (
+                "The Effect of a New Filing Rule on the Growth of the\n"
+                "Regional Housing Market\n"
+                "Body text follows."
+            )
+
+    class Pdf:
+        pages = [Page()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(
+        "deep_research.tools.document_reader.pdfplumber.open", lambda _: Pdf()
+    )
+    source = "report.pdf"
+    report = Path(source)
+    report.write_bytes(b"not-a-real-pdf")
+    try:
+        async with tracker.session_span("session-1", "question"):
+            result = await DocumentReaderTool(tracker).execute(source=source)
+    finally:
+        report.unlink()
+
+    assert result.data["title"] == (
+        "The Effect of a New Filing Rule on the Growth of the "
+        "Regional Housing Market"
+    )

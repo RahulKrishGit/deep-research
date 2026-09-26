@@ -1249,6 +1249,33 @@ async def test_scraper_captures_date_published_only_from_article_shaped_json_ld_
 
 
 @pytest.mark.asyncio
+async def test_scraper_reads_a_json_ld_date_given_as_a_single_item_array(
+    tracker,
+) -> None:
+    """A schema.org date property may be published as an array of one value
+    rather than a bare string; a page whose JSON-LD wraps ``dateModified``
+    this way must not lose its own edit date (D3, run 5)."""
+    ld_json = json.dumps(
+        {
+            "@type": "WebPage",
+            "datePublished": "2009-01-23",
+            "dateModified": ["2026-07-28"],
+        }
+    )
+    page = (
+        "<html><head><title>Grid Storage Outlook</title>"
+        f'<script type="application/ld+json">{ld_json}</script>'
+        "</head><body><p>Battery storage capacity grew across every region.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["page_published"] == "2009-01-23"
+    assert result.data["page_updated"] == "2026-07-28"
+
+
+@pytest.mark.asyncio
 async def test_scraper_never_reads_a_comment_nodes_json_ld_date(tracker) -> None:
     """RevDatesR3 P1: a ``Comment`` node's timestamp is never the page's date."""
     ld_json = json.dumps(
@@ -1709,6 +1736,42 @@ async def test_scraper_skips_a_banner_h1_when_choosing_the_fallback_heading(
         "</head><body>"
         '<header><h1 class="site-title">Example Register</h1></header>'
         "<h1>Real headline about filings</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Real headline about filings"
+
+
+@pytest.mark.asyncio
+async def test_scraper_falls_back_from_a_generic_one_word_title(tracker) -> None:
+    """D3 (run 5): a generic single-word ``<title>`` ('Work', 'Home',
+    'Index', 'Untitled', 'Document') carries no information, and counts as
+    a bare site name -- the next candidate is used."""
+    page = (
+        "<html><head><title>Work</title>"
+        "</head><body><h1>Real headline about filings</h1>"
+        "<p>Further detail follows in the body text.</p>"
+        "</body></html>"
+    )
+
+    result = await _read_served_page(tracker, page)
+
+    assert result.data["title"] == "Real headline about filings"
+
+
+@pytest.mark.asyncio
+async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
+    """D3 (run 5): a generic single-word ``og:title`` is skipped the same
+    way a title equal to the site's own name is, while a later, differing
+    candidate remains."""
+    page = (
+        "<html><head><title>Example Register</title>"
+        '<meta property="og:site_name" content="Example Register">'
+        '<meta property="og:title" content="Index">'
+        "</head><body><h1>Real headline about filings</h1>"
         "<p>Further detail follows in the body text.</p>"
         "</body></html>"
     )
