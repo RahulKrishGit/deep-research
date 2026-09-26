@@ -866,6 +866,19 @@ def test_a_composition_round_trips_the_table_parts_credits_marks_and_item_marks(
     assert round_tripped.dropped_marks == ["S004: 'Model A' is not in the sentence"]
 
 
+def test_a_page_credit_records_which_date_it_carries() -> None:
+    """T3's date display rule: a published date and an updated-only date
+    print differently, so the credit must say which one it holds."""
+    undated = PageCredit(publisher="SoundGuys")
+    published = PageCredit(publisher="SoundGuys", date="2026-09-17", date_kind="published")
+    updated = PageCredit(publisher="SoundGuys", date="2026-09-17", date_kind="updated")
+
+    assert undated.date_kind is None
+    assert published.date_kind == "published"
+    assert updated.date_kind == "updated"
+    assert PageCredit.model_validate(updated.model_dump(mode="json")) == updated
+
+
 def test_an_older_composition_snapshot_without_the_new_report_fields_still_validates() -> None:
     """A composition persisted before this contract carries no table, parts, credits or marks."""
     legacy_payload = {"question": "q", "session_id": "s"}

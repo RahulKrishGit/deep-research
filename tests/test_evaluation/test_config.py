@@ -1134,7 +1134,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # whole module changed shape, so the value moved wholesale:
     # `08cad3d4d73f` -> `1f445621ab34`. The other three target pins and the
     # Judge pin are unchanged.
-    "report_writer": "1f445621ab34",
+    # T3 (spec §3.1 rule 8) moved report_filename/evidence_report_filename/
+    # quality_report_filename out of report_writer.py into report.py, so the
+    # writer no longer duplicates them; module code only, no prompt text
+    # changed: `1f445621ab34` -> `65bfda8f7618`.
+    "report_writer": "65bfda8f7618",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

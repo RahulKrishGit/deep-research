@@ -28,13 +28,10 @@ from deep_research.agents.report_writer import (
     WrittenReport,
     bottom_line_messages,
     compose_written_report,
-    evidence_report_filename,
     finding_registry,
     is_context_only,
     material_defects,
-    quality_report_filename,
     registry_lines,
-    report_filename,
     report_parts,
     section_messages,
     sources_by_url,
@@ -944,31 +941,3 @@ async def test_build_task_excludes_a_context_only_answer_from_the_not_found_comp
 
     assert target.target_id in task.answered
     assert any(nf.target_id == target.target_id for nf in task.not_found)
-
-
-# --- filenames (unchanged) --------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("session_id", "iteration", "expected"),
-    [
-        ("Session 1!", 0, "report-session-1-0.md"),
-        ("  ", 2, "report-session-2.md"),
-    ],
-)
-def test_report_filenames_are_slugged_and_traversal_free(session_id, iteration, expected) -> None:
-    assert report_filename(session_id=session_id, iteration=iteration) == expected
-
-
-def test_the_evidence_filename_derives_from_the_reader_report() -> None:
-    assert (
-        evidence_report_filename(session_id="session-1", iteration=0)
-        == "report-session-1-0-evidence.md"
-    )
-
-
-def test_the_quality_filename_derives_from_the_reader_report() -> None:
-    assert (
-        quality_report_filename(session_id="session-1", iteration=0)
-        == "report-session-1-0-quality.json"
-    )

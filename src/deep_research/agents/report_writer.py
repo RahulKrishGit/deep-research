@@ -382,58 +382,6 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
     return [(f"F{n:02d}", finding) for n, finding in enumerate(ordered, start=1)]
 
 
-# --- the publication names (unchanged) --------------------------------------
-#
-# The writer owns the names of the three artifacts one pass publishes, because
-# it is the pass that composes them: the reader report, its evidence ledger,
-# and the quality record are one name family, derived from one slug, so no
-# caller has to remember a second one.
-
-# Characters kept verbatim in a report filename. Narrow on purpose:
-# WriteDocumentTool rejects absolute paths and traversal segments, and a
-# rejected write would lose the artifact.
-_FILENAME_SAFE = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
-
-
-def report_filename(*, session_id: str, iteration: int) -> str:
-    """Return a traversal-free ``.md`` filename for one reader report.
-
-    ``session_id`` reaches this from state and may hold anything, so it is
-    slugged rather than trusted.
-    """
-    if iteration < 0:
-        raise ValueError("iteration must not be negative")
-    slug = "".join(
-        character if character in _FILENAME_SAFE else "-"
-        for character in session_id.strip().casefold()
-    ).strip("-")
-    while "--" in slug:
-        slug = slug.replace("--", "-")
-    return f"report-{slug or 'session'}-{iteration}.md"
-
-
-def evidence_report_filename(*, session_id: str, iteration: int) -> str:
-    """Return the evidence ledger's filename for the same pass.
-
-    Deliberately derived from the reader report's name rather than slugged a
-    second time, so the two artifacts of one pass can never disagree about
-    which session and iteration they belong to.
-    """
-    stem = report_filename(session_id=session_id, iteration=iteration)
-    return f"{stem.removesuffix('.md')}-evidence.md"
-
-
-def quality_report_filename(*, session_id: str, iteration: int) -> str:
-    """Return the quality record's filename for the same pass.
-
-    Derived the same way the ledger's name is, so the three artifacts of one
-    publication are one name family: nothing about which set a file belongs to
-    depends on a caller remembering a second slug.
-    """
-    stem = report_filename(session_id=session_id, iteration=iteration)
-    return f"{stem.removesuffix('.md')}-quality.json"
-
-
 def statement_passages(findings: Sequence[Finding],
                        reads: Mapping[str, ReadRecord]) -> dict[str, str]:
     """Finding id -> the bounded passage of the page it was read from (improvement 8).
