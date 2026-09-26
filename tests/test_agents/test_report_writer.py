@@ -7,6 +7,8 @@ other question about a sentence's wording is the Statement Check's job."""
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +67,26 @@ from deep_research.utils.types import (
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.research_fakes import report_writer_tools
+
+
+@pytest.fixture(autouse=True)
+def _document_kind_stand_in(monkeypatch):
+    """V1 -> V2's shared contract (``agents/document_kind.py``): a local
+    stand-in for ``derivative_self_description`` so ``build_task``'s
+    lazy import resolves while V1 is still landing in this same wave.
+    A no-op once V1's real module is importable -- the real one is never
+    shadowed. Tests that need a specific self-description build the
+    ``self_descriptions`` mapping directly instead of relying on this
+    stand-in's own (empty) answer."""
+    try:
+        import deep_research.agents.document_kind  # noqa: F401
+        return
+    except ImportError:
+        pass
+    stub = types.ModuleType("deep_research.agents.document_kind")
+    stub.derivative_self_description = lambda read: None
+    monkeypatch.setitem(sys.modules, "deep_research.agents.document_kind", stub)
+
 
 EIA = "U.S. Energy Information Administration"
 
@@ -327,6 +349,180 @@ async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer
     assert composition.rejected_points == []
 
 
+@pytest.mark.asyncio
+async def test_bottom_line_withholds_a_statement_resting_only_on_a_derivative_source(
+    writer, checker, monkeypatch,
+) -> None:
+    """Run-8 D1: a statement citing only a source whose read declares
+    itself derivative or teaching content is withheld from the bottom
+    line's candidate pool whenever another statement meets the floor --
+    it stays in its section."""
+    import deep_research.agents.document_kind as document_kind
+    monkeypatch.setattr(
+        document_kind, "derivative_self_description",
+        lambda read: (
+            "This role-play was written for educational purposes."
+            if read.requested_url == "https://derivative.test/1" else None
+        ),
+    )
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    derivative_read = make_read("A claim from a role-play.", url="https://derivative.test/1", title="A page")
+    derivative = _statement_finding("https://derivative.test/1", "According to the source, a claim from a role-play.",
+                                    target_ids=["topic-01-target-01"])
+    derivative = derivative.model_copy(update={"read_id": derivative_read.read_id})
+    strong = _statement_finding("https://strong.test/1", "According to the source, a claim from a strong source.",
+                                target_ids=["topic-01-target-01"])
+    derivative_source = _authority_source("https://derivative.test/1", authority=0.9)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[derivative, strong],
+                          evaluated_sources=[derivative_source, strong_source],
+                          read_records={derivative_read.read_id: derivative_read})
+    task = writer.build_task(state)
+    assert task.self_descriptions
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="According to the source, a claim from a role-play.",
+                             finding_labels=[label_by_url[derivative.source_url]]),
+            WriterPointDraft(text="According to the source, a claim from a strong source.",
+                             finding_labels=[label_by_url[strong.source_url]]),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, a claim from a role-play.",
+            finding_labels=[label_by_url[derivative.source_url]])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    section_texts = [point.text for section in composition.sections for point in section.points]
+    assert "According to the source, a claim from a role-play." in section_texts
+    assert any(
+        r.reason == "cites a finding no checked section statement cites"
+        for r in composition.rejected_points
+    )
+
+
+@pytest.mark.asyncio
+async def test_bottom_line_keeps_a_statement_citing_a_derivative_source_beside_a_strong_one(
+    writer, checker, monkeypatch,
+) -> None:
+    """The other branch: a statement citing the derivative source
+    together with one above the floor is kept -- the floor tests the
+    statement's own citable sources, not any single one among them."""
+    import deep_research.agents.document_kind as document_kind
+    monkeypatch.setattr(
+        document_kind, "derivative_self_description",
+        lambda read: (
+            "This role-play was written for educational purposes."
+            if read.requested_url == "https://derivative.test/1" else None
+        ),
+    )
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    derivative_read = make_read("A claim from a role-play.", url="https://derivative.test/1", title="A page")
+    derivative = _statement_finding("https://derivative.test/1", "A claim from a role-play.",
+                                    target_ids=["topic-01-target-01"])
+    derivative = derivative.model_copy(update={"read_id": derivative_read.read_id})
+    strong = _statement_finding("https://strong.test/1", "a claim from a strong source",
+                                target_ids=["topic-01-target-01"])
+    derivative_source = _authority_source("https://derivative.test/1", authority=0.9)
+    strong_source = _authority_source("https://strong.test/1", authority=0.9)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[derivative, strong],
+                          evaluated_sources=[derivative_source, strong_source],
+                          read_records={derivative_read.read_id: derivative_read})
+    task = writer.build_task(state)
+    assert task.self_descriptions
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    combined_text = "According to the source, a claim from a role-play and a claim from a strong source."
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(
+                text=combined_text,
+                finding_labels=[label_by_url[derivative.source_url], label_by_url[strong.source_url]],
+            ),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text=combined_text,
+            finding_labels=[label_by_url[derivative.source_url], label_by_url[strong.source_url]])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    assert combined_text in [p.text for p in composition.summary]
+
+
+@pytest.mark.asyncio
+async def test_bottom_line_lets_everything_through_when_no_statement_meets_the_floor(
+    writer, checker, monkeypatch,
+) -> None:
+    """The existing behaviour: with no statement above the floor at all
+    (here every source is below it, one for being derivative and one on
+    its own authority score), the withholding never applies."""
+    import deep_research.agents.document_kind as document_kind
+    monkeypatch.setattr(
+        document_kind, "derivative_self_description",
+        lambda read: (
+            "This role-play was written for educational purposes."
+            if read.requested_url == "https://derivative.test/1" else None
+        ),
+    )
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    derivative_read = make_read("A claim from a role-play.", url="https://derivative.test/1", title="A page")
+    derivative = _statement_finding("https://derivative.test/1", "According to the source, a claim from a role-play.",
+                                    target_ids=["topic-01-target-01"])
+    derivative = derivative.model_copy(update={"read_id": derivative_read.read_id})
+    weak = _statement_finding("https://weak.test/1", "According to the source, a claim from a weak source.",
+                              target_ids=["topic-01-target-01"])
+    derivative_source = _authority_source("https://derivative.test/1", authority=0.9)
+    weak_source = _authority_source("https://weak.test/1", authority=0.2)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[derivative, weak],
+                          evaluated_sources=[derivative_source, weak_source],
+                          read_records={derivative_read.read_id: derivative_read})
+    task = writer.build_task(state)
+    assert task.self_descriptions
+    label_by_url = {f.source_url: label for label, f in task.registry}
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="According to the source, a claim from a role-play.",
+                             finding_labels=[label_by_url[derivative.source_url]]),
+            WriterPointDraft(text="According to the source, a claim from a weak source.",
+                             finding_labels=[label_by_url[weak.source_url]]),
+        ]),
+        BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, a claim from a role-play.",
+            finding_labels=[label_by_url[derivative.source_url]])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider, section_concurrency=7)
+
+    assert "According to the source, a claim from a role-play." in [p.text for p in composition.summary]
+    assert composition.rejected_points == []
+
+
+# --- finding_registry: required-first, then authority (D1, D3) -------------
+
+
+def test_finding_registry_orders_a_required_targets_answers_by_authority():
+    """D1, D3: within the required-target-answering group, the stronger
+    source's finding gets the lower label, not merely the one that
+    extracted first -- so the strongest sources of a target get the
+    first labels."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    weak = _statement_finding("https://weak.test/1", "A weak claim.", target_ids=["topic-01-target-01"])
+    strong = _statement_finding("https://strong.test/1", "A strong claim.", target_ids=["topic-01-target-01"])
+    weak_source = _authority_source("https://weak.test/1", authority=0.3)
+    strong_source = _authority_source("https://strong.test/1", authority=0.8)
+
+    registry = finding_registry([weak, strong], [target], sources=[weak_source, strong_source])
+
+    assert [f.source_url for _, f in registry] == ["https://strong.test/1", "https://weak.test/1"]
+
+
 # --- registry_lines: D5's content: and passage: lines ----------------------
 
 
@@ -435,6 +631,22 @@ def test_registry_lines_omit_the_source_line_when_no_sources_are_given():
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     text = "\n".join(registry_lines("F01", finding))
     assert "source:" not in text
+
+
+def test_registry_lines_print_a_self_description_when_the_read_declares_one():
+    """Run-8 D1: a finding whose read has a derivative self-description
+    prints "self-description: <sentence>" on its registry block, so the
+    writer sees what the document says about itself before it credits it."""
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    self_descriptions = {finding.read_id: "This role-play was written for educational purposes."}
+    text = "\n".join(registry_lines("F01", finding, self_descriptions=self_descriptions))
+    assert "self-description: This role-play was written for educational purposes." in text
+
+
+def test_registry_lines_omit_self_description_when_the_read_declares_none():
+    finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
+    text = "\n".join(registry_lines("F01", finding))
+    assert "self-description:" not in text
 
 
 def test_section_messages_carry_the_finding_sources_rationale():
@@ -1911,6 +2123,24 @@ def test_bottom_line_messages_omit_the_disputed_heading_when_nothing_disputes():
     assert "# Disputed:" not in body
 
 
+
+def test_bottom_line_messages_lists_a_marked_statement_under_outcome():
+    """Run-8 D4/D5 (c): a checked statement the writer marked
+    ``outcome: true`` is listed under "# Outcome" so the bottom line can
+    end on it, credited and dated as it states it."""
+    task = _one_target_task()
+    statement = ReportStatement(statement_id="S001", text="According to the source, 10.4 GW in 2024.",
+                                finding_ids=[finding_fingerprint(task.findings[0])],
+                                target_ids=["topic-01-target-01"])
+    section = ReportSection(title="Capacity added", coverage_id="topic-01",
+                            points=[ReportPointFor("According to the source, 10.4 GW in 2024.", statement)])
+
+    body = bottom_line_messages(task, [section], outcome_statement_ids=frozenset({"S001"}))[-1].content
+
+    assert "# Outcome\n" in body
+    assert "According to the source, 10.4 GW in 2024." in body.split("# Outcome\n")[1]
+
+
 def test_bottom_line_dispute_scope_is_the_labels_the_marked_point_cites_not_its_target():
     """ReRevZ2 C7's own proving test: a part with a marked point citing
     F01+F02 and an undisputed dating point citing F03 on the same
@@ -3037,6 +3267,147 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
         ev.check_statements = original
 
     assert [p.text for p in composition.summary] == ["According to the source, 10.4 GW in 2024."]
+
+
+@pytest.mark.asyncio
+async def test_a_mechanism_bottom_line_without_the_outcome_re_asks_and_adopts_it(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Run-8 D4/D5 (c): a mechanism answer whose kept section carries a
+    point marked ``outcome: true`` buys one re-ask when attempt 1's
+    bottom line cites no label of that outcome statement -- the same
+    one re-ask the dispute guard uses. The re-ask's own outcome
+    sentence is adopted when it is fully checked."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    cause = _statement_finding("https://a.test/1", "A funding cut reduced the budget in 2018.",
+                               target_ids=["topic-01-target-01"])
+    outcome = _statement_finding("https://a.test/2", "The programme closed in 2020.",
+                                 target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Programme closure", [target])
+    contract = AnswerContract(
+        question="Why did the programme close?",
+        scope_statement="Answered as of 2026-09-24.", geographic_scope="worldwide",
+        as_of_date="2026-09-24", evidence_period_requirement="the period the question names",
+        assumptions=[], answer_kind="explanation", requested_word_limit=500,
+    )
+    state = ResearchState(session_id="s1", original_question="Why did the programme close?",
+                          sub_topics=[topic], verified_findings=[cause, outcome],
+                          answer_contract=contract)
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Programme closure", points=[
+            WriterPointDraft(text="According to the source, a funding cut reduced the budget in 2018.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, the programme closed in 2020.",
+                             finding_labels=["F02"], outcome=True),
+        ]),
+        BottomLineDraft(sentences=[
+            WriterPointDraft(text="A funding cut reduced the budget in 2018, restated.",
+                             finding_labels=["F01"]),
+        ]),
+        BottomLineDraft(sentences=[
+            WriterPointDraft(text="A funding cut reduced the budget in 2018, restated.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="The programme closed in 2020, restated.",
+                             finding_labels=["F02"]),
+        ]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert "The programme closed in 2020, restated." in [p.text for p in composition.summary]
+
+
+@pytest.mark.asyncio
+async def test_a_non_mechanism_bottom_line_without_the_outcome_never_re_asks(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Run-8 D4/D5 (c): the same missing-outcome bottom line on a
+    non-mechanism answer form never triggers the re-ask -- only two
+    scripted replies are queued, so a wrongly triggered re-ask fails
+    loudly on a missing scripted response."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    cause = _statement_finding("https://a.test/1", "A funding cut reduced the budget in 2018.",
+                               target_ids=["topic-01-target-01"])
+    outcome = _statement_finding("https://a.test/2", "The programme closed in 2020.",
+                                 target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Programme closure", [target])
+    contract = AnswerContract(
+        question="What happened to the programme?",
+        scope_statement="Answered as of 2026-09-24.", geographic_scope="worldwide",
+        as_of_date="2026-09-24", evidence_period_requirement="the period the question names",
+        assumptions=[], answer_kind="factual", requested_word_limit=500,
+    )
+    state = ResearchState(session_id="s1", original_question="What happened to the programme?",
+                          sub_topics=[topic], verified_findings=[cause, outcome],
+                          answer_contract=contract)
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Programme closure", points=[
+            WriterPointDraft(text="According to the source, a funding cut reduced the budget in 2018.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, the programme closed in 2020.",
+                             finding_labels=["F02"], outcome=True),
+        ]),
+        BottomLineDraft(sentences=[
+            WriterPointDraft(text="A funding cut reduced the budget in 2018, restated.",
+                             finding_labels=["F01"]),
+        ]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.text for p in composition.summary] == ["A funding cut reduced the budget in 2018, restated."]
+
+
+@pytest.mark.asyncio
+async def test_a_mechanism_bottom_line_that_already_cites_the_outcome_never_re_asks(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Run-8 D4/D5 (c): a mechanism bottom line whose attempt 1 already
+    cites a label of the outcome-marked statement never re-asks for it
+    -- only two scripted replies are queued, so a wrongly triggered
+    re-ask fails loudly on a missing scripted response."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    cause = _statement_finding("https://a.test/1", "A funding cut reduced the budget in 2018.",
+                               target_ids=["topic-01-target-01"])
+    outcome = _statement_finding("https://a.test/2", "The programme closed in 2020.",
+                                 target_ids=["topic-01-target-01"])
+    topic = _topic("topic-01", "Programme closure", [target])
+    contract = AnswerContract(
+        question="Why did the programme close?",
+        scope_statement="Answered as of 2026-09-24.", geographic_scope="worldwide",
+        as_of_date="2026-09-24", evidence_period_requirement="the period the question names",
+        assumptions=[], answer_kind="explanation", requested_word_limit=500,
+    )
+    state = ResearchState(session_id="s1", original_question="Why did the programme close?",
+                          sub_topics=[topic], verified_findings=[cause, outcome],
+                          answer_contract=contract)
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Programme closure", points=[
+            WriterPointDraft(text="According to the source, a funding cut reduced the budget in 2018.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, the programme closed in 2020.",
+                             finding_labels=["F02"], outcome=True),
+        ]),
+        BottomLineDraft(sentences=[
+            WriterPointDraft(text="A funding cut reduced the budget in 2018, restated.",
+                             finding_labels=["F01"]),
+            WriterPointDraft(text="The programme closed in 2020, restated.",
+                             finding_labels=["F02"]),
+        ]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.text for p in composition.summary] == [
+        "A funding cut reduced the budget in 2018, restated.",
+        "The programme closed in 2020, restated.",
+    ]
 
 
 @pytest.mark.asyncio

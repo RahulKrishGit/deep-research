@@ -1781,6 +1781,8 @@ class WriterPointDraft(ContractModel):
     items: list[ItemMarkDraft] = Field(default_factory=list)
     disputes: bool = False
     """True when the writer marks this point as stating a disagreement or dispute among the sources (the section rule "mark such a point disputes: true"); the bottom line reads it to list disputed steps. Default False keeps older replies valid."""
+    outcome: bool = False
+    """True when the writer marks this point as stating the mechanism's own outcome (the section rule "mark the point that states that outcome outcome: true"); the bottom line reads it to require a credited, dated outcome sentence on a mechanism answer. Default False keeps older replies valid."""
 
 
 class SectionDraft(ContractModel):

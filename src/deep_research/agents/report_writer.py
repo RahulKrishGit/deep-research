@@ -254,14 +254,19 @@ SECTION_INSTRUCTION = (
     "state them; reasons, mechanisms or provisions as the cited findings state them, "
     "and, for a mechanism, its last step states the outcome the question's subject "
     "reached, where a cited finding states that outcome, with its date where that "
-    "finding gives it. "
+    "finding gives it; a finding that dates the outcome, or the whole span the "
+    "question's subject ran through, dates the last step, and mark the point that "
+    "states that outcome outcome: true. "
     "State an optional target's answer only where it adds a fact the required targets' "
     "points do not carry. Every required target a listed finding answers is still "
     "stated by at least one point citing a finding that answers it; a point never "
     "announces an absence of its own -- an unanswered target is code's to disclose, "
     "not yours. A target marked \"(through its sub-topic only)\" is answered by a "
     "finding matched to its sub-topic, not bound to that target explicitly; state it "
-    "the same as any other answer.\n"
+    "the same as any other answer. In a part answering why or how, a point states a "
+    "cause, a step of the mechanism, or a dispute about one; a count, a price, a "
+    "variant account of an incidental detail, or a description of a work is context, "
+    "stated only where a step turns on it.\n"
     "- When several findings state the same fact, state it once and credit the "
     "sources together (\"Example Institute, example-register.test and Example News "
     "state that ...\", citing all their labels), never one clause per source; each "
@@ -320,17 +325,13 @@ SECTION_INSTRUCTION = (
 
 _SECTION_REPLY_EXAMPLES = (
     (
-        "Example input: ## F01: Example Tester's review (example-tester.test) | "
-        "content: Example Tester's own lab measured Model A at a noise rating of "
-        "4.5 out of 5. | snippet: Example Tester gives Model A a noise rating of 4.5 "
-        "out of 5. | F01 | figure 1: 4.5 out of 5 | subject Model A | period 2026 | "
-        "kind actual | "
-        "organisation Example Tester | label: Example Tester's own figure; actual",
-        '{"title":"Noise ratings","points":[{"text":"Example Tester gives Model A a '
-        'noise rating of 4.5 out of 5.","finding_labels":["F01"],"disputes":false,'
-        '"items":[{"name":'
-        '"Model A","verdict":"a noise rating of 4.5 out of 5","picked":false,"by":'
-        '"F01"}]}]}',
+        "Example input: ## F01: Example Register entry (example-register.test) | "
+        "content: The outreach program closed in 2020 after its funding ended. | "
+        "snippet: the outreach program closed in 2020. | F01 | statement | read at "
+        "example-register.test | actual",
+        '{"title":"Programme closure","points":[{"text":"Example Register records '
+        'that the outreach program closed in 2020.","finding_labels":["F01"],'
+        '"disputes":false,"outcome":true,"items":[]}]}',
     ),
     (
         "Example input: ## F02: Example Register entry (example-register.test) | "
@@ -430,19 +431,16 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
         'one to beat for the price","picked":true,"by":"F02"}]}]}',
     ),
     (
-        "Example input: # Checked statements ## Why the change happened - Example "
-        "Institute reports that a 2019 regulation raised the compliance cost for "
-        "small operators. (cites F03) - Example Register states that the cost rise "
-        "pushed several small operators to exit the market. (cites F04) - "
-        "example-news.test states that the cost rise drove several small operators "
-        "out of the market. (cites F05) - Example Journal reports that the market "
-        "exit concentrated supply among the remaining larger operators. (cites F06)",
-        '{"sentences":[{"text":"According to Example Institute, a 2019 regulation '
-        'drove up compliance costs for small operators, and Example Register and '
-        'example-news.test both say the rise pushed several small operators out of '
-        'the market.","finding_labels":["F03","F04","F05"],"items":[]},{"text":'
-        '"Example Journal reports that those exits left supply concentrated among '
-        'the larger operators that remained.","finding_labels":["F06"],"items":[]}]}',
+        "Example input: # Checked statements ## Cause - Example Institute reports "
+        "that a 2018 funding cut reduced the outreach budget. (cites F04) ## Step - "
+        "Example Register states that the reduced budget forced staff reductions "
+        "through 2019. (cites F05) ## Outcome - Example Register records that the "
+        "outreach program closed in 2020. (cites F06)",
+        '{"sentences":[{"text":"According to Example Institute, a 2018 funding cut '
+        'reduced the outreach budget, and Example Register says the reduced budget '
+        'forced staff reductions through 2019.","finding_labels":["F04","F05"],'
+        '"items":[]},{"text":"Example Register records that the outreach program '
+        'closed in 2020.","finding_labels":["F06"],"items":[]}]}',
     ),
 )
 
@@ -474,6 +472,10 @@ class ReportWriterTask(AgentTask):
     passages: dict[str, str] = Field(default_factory=dict)
     """Finding id -> its bounded registry passage (spec §6.2, D5), computed once
     at task-build time for the whole registry -- not only for cited findings."""
+    self_descriptions: dict[str, str] = Field(default_factory=dict)
+    """Read id -> the read's own ``derivative_self_description`` (D1), computed
+    once per read at task-build time -- several findings can share one read,
+    so this is keyed by read id, not finding id."""
     defects: list[ReviewDefect] = Field(default_factory=list)
     """The material defects this draft must answer, in the review's own order.
 
@@ -514,8 +516,13 @@ class WrittenReport(ContractModel):
 
 
 def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
-                     sub_topics: Sequence[SubTopic] = ()) -> list[tuple[str, Finding]]:
-    """One label per citable finding: answers to required targets first, then the rest.
+                     sub_topics: Sequence[SubTopic] = (),
+                     sources: Sequence[ScoredSource] = ()) -> list[tuple[str, Finding]]:
+    """One label per citable finding: answers to required targets first, then
+    the rest. Within each group, its source's own ``authority_score``,
+    descending, with a missing score last (D1, D3) -- so the strongest
+    sources of a target get the first labels, and a weaker source never
+    outranks the target's own best evidence merely by extracting first.
 
     The answers are resolved against every target, so an optional sibling
     still keeps a figure about its subject off a required target's answers
@@ -528,8 +535,19 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
     answered = {t: ids for t, ids in answered_target_ids(
         citable, targets, sub_topics=sub_topics).items() if t in required}
     first = list(dict.fromkeys(fid for ids in answered.values() for fid in ids))
-    rank = {fid: n for n, fid in enumerate(first)}
-    ordered = sorted(citable, key=lambda f: rank.get(finding_fingerprint(f), len(rank)))
+    group = dict.fromkeys(first, 0)
+    src_by_url = sources_by_url(sources)
+
+    def sort_key(finding: Finding) -> tuple[int, int, float]:
+        source = src_by_url.get(normalize_source_url(finding.source_url))
+        score = source.authority_score if source is not None else None
+        return (
+            group.get(finding_fingerprint(finding), 1),
+            0 if score is not None else 1,
+            -score if score is not None else 0.0,
+        )
+
+    ordered = sorted(citable, key=sort_key)
     return [(f"F{n:02d}", finding) for n, finding in enumerate(ordered, start=1)]
 
 
@@ -558,6 +576,24 @@ def statement_passages(findings: Sequence[Finding],
             read, finding.locator, finding.snippet
         )
     return passages
+
+
+def _read_self_descriptions(reads: Mapping[str, ReadRecord]) -> dict[str, str]:
+    """Read id -> the read's own declaration that it is derivative or
+    teaching content (D1), computed once per read, not per finding --
+    several findings can share one read.
+    """
+    # Imported at call time for the same reason ``context_passage`` is
+    # above: V1 owns this module, and nothing here should bind before a
+    # test's own substitution (or V1's own module) can be seen.
+    from deep_research.agents.document_kind import derivative_self_description
+
+    descriptions: dict[str, str] = {}
+    for read_id, read in reads.items():
+        description = derivative_self_description(read)
+        if description:
+            descriptions[read_id] = description
+    return descriptions
 
 
 _RATIONALE_CHARS = 120
@@ -611,7 +647,8 @@ def _source_rationale_line(source: ScoredSource | None) -> str | None:
 
 def registry_lines(label: str, finding: Finding,
                    passages: Mapping[str, str] | None = None,
-                   sources: Mapping[str, ScoredSource] | None = None) -> list[str]:
+                   sources: Mapping[str, ScoredSource] | None = None,
+                   self_descriptions: Mapping[str, str] | None = None) -> list[str]:
     """One finding's registry block: header, source rationale, content,
     snippet, then its figure or statement lines (spec §6.2, D5, D8/D9).
 
@@ -640,6 +677,14 @@ def registry_lines(label: str, finding: Finding,
     )
     if rationale_line:
         lines.append(f"source: {rationale_line}")
+    self_description = (self_descriptions or {}).get(finding.read_id)
+    if self_description:
+        # Run-8 D1: the read's own words on what it is -- a role-play, a
+        # teaching case, or content based on an encyclopedia's or a
+        # chatbot's entries -- reach the writer before it credits the
+        # finding, so a derivative page never gets read as a primary
+        # source merely because its host reads like one.
+        lines.append(f"self-description: {self_description}")
     lines.extend([
         f"content: {finding.content}",
         f"snippet: {finding.snippet or finding.content}",
@@ -897,10 +942,11 @@ def _target_line(
 
 def _registry_block(findings: Sequence[Finding], registry: Sequence[tuple[str, Finding]],
                     passages: Mapping[str, str],
-                    sources: Mapping[str, ScoredSource] | None = None) -> str:
+                    sources: Mapping[str, ScoredSource] | None = None,
+                    self_descriptions: Mapping[str, str] | None = None) -> str:
     wanted = {finding_fingerprint(f) for f in findings}
     blocks = [
-        "\n".join(registry_lines(label, finding, passages, sources))
+        "\n".join(registry_lines(label, finding, passages, sources, self_descriptions))
         for label, finding in registry
         if finding_fingerprint(finding) in wanted
     ]
@@ -1047,10 +1093,10 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
         material.append(f"# Defects to fix\n{_defect_lines(job.defects)}")
     material.append(
         f"# Verified findings for this part\n"
-        f"{_registry_block(job.findings, task.registry, task.passages, src_by_url)}"
+        f"{_registry_block(job.findings, task.registry, task.passages, src_by_url, task.self_descriptions)}"
     )
     context_block = (
-        _registry_block(job.context_findings, task.registry, task.passages, src_by_url)
+        _registry_block(job.context_findings, task.registry, task.passages, src_by_url, task.self_descriptions)
         if job.context_findings else "(none)"
     )
     material.append(f"# Context only\n{context_block}")
@@ -1062,6 +1108,7 @@ def bottom_line_messages(
     task: ReportWriterTask, sections: Sequence[ReportSection], *,
     previous: Sequence[ReportPoint] = (), defects: Sequence[ReviewDefect] = (),
     disputed_statement_ids: frozenset[str] = frozenset(),
+    outcome_statement_ids: frozenset[str] = frozenset(),
 ) -> list[ChatMessage]:
     """The bottom-line request (spec §6.6): fed only the checked, kept section
     statements a caller passes in ``sections`` -- filtering to consistent or
@@ -1077,10 +1124,16 @@ def bottom_line_messages(
     themselves, then every other checked statement that cites one of the
     same findings -- never an untouched statement that merely shares the
     marked points' target.
+
+    ``outcome_statement_ids`` (Run-8 D4/D5) is the same kind of union for
+    the writer's kept points marked ``outcome: true`` -- the mechanism's
+    own last step. Listed under "# Outcome" so a mechanism's bottom line
+    can end on it, credited and dated as the statement states it.
     """
     label_by_id = {finding_fingerprint(f): label for label, f in task.registry}
     blocks: list[str] = []
     dispute_lines: list[str] = []
+    outcome_lines: list[str] = []
     marked_labels: set[str] = set()
     other_points: list[tuple[str, set[str]]] = []
     for section in sections:
@@ -1101,6 +1154,8 @@ def bottom_line_messages(
                 marked_labels.update(labels)
             else:
                 other_points.append((line, set(labels)))
+            if point.statement.statement_id in outcome_statement_ids:
+                outcome_lines.append(line)
         if lines:
             blocks.append(f"## {section.title}\n" + "\n".join(lines))
     sharing_lines = [line for line, labels in other_points if labels & marked_labels]
@@ -1127,6 +1182,8 @@ def bottom_line_messages(
             "point above states them -- or leaves it out; never state the "
             "disputed step, figure or provision as settled."
         )
+    if outcome_lines:
+        material.append("# Outcome\n" + "\n".join(outcome_lines))
     if previous:
         material.append(f"# Your previous bottom line\n{_rendered_previous_bottom_line(previous)}")
     if defects:
@@ -1652,6 +1709,13 @@ class _Candidate:
     disputed labels (ReRevZ2 C7), which the bottom line reads to list
     disputed steps and to guard a sentence that states one as settled
     (audit D1)."""
+    outcome: bool = False
+    """Run-8 D4/D5: the writer's own ``point.outcome`` -- a point marked
+    ``outcome: true`` states the mechanism's own last step, the outcome
+    the question's subject reached. Read by ``_run_part`` for a *kept*
+    candidate to record the part's outcome statement ids, which the
+    bottom line lists under "# Outcome" and requires a kept sentence to
+    credit, on a mechanism answer."""
 
 
 def _finding_label(finding: Finding) -> str:
@@ -1714,7 +1778,8 @@ def _consider_section_point(
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=cited_findings, items=list(point.items),
-                  had_label_group=had_label_group, disputes=point.disputes)
+                  had_label_group=had_label_group, disputes=point.disputes,
+                  outcome=point.outcome)
         for n, piece in enumerate(pieces, start=1)
     ]
 
@@ -1774,7 +1839,8 @@ def _consider_bottom_line_point(
                   where=where if len(pieces) == 1 else f"{where} part {n}",
                   text=piece, finding_labels=wanted,
                   findings=cited_findings, items=list(point.items),
-                  had_label_group=had_label_group, disputes=point.disputes)
+                  had_label_group=had_label_group, disputes=point.disputes,
+                  outcome=point.outcome)
         for n, piece in enumerate(pieces, start=1)
     ]
 
@@ -2039,6 +2105,12 @@ class _PartOutcome:
     points -- which *specific* point in this part was the mark, so the
     §6.8 fallback can prefer it over a naive first pick that only touches
     one of the disputed labels without stating the dispute."""
+    outcome_statement_ids: frozenset[str] = frozenset()
+    """Run-8 D4/D5: the statement ids of this part's kept points marked
+    ``outcome: true`` -- the mechanism's own last step. ``_run_bottom_line``
+    unions this across every part to build the "# Outcome" block and the
+    guard that re-asks once when a mechanism's bottom line names no
+    outcome."""
 
 
 async def _run_part(
@@ -2102,6 +2174,7 @@ async def _run_part(
     points: list[ReportPoint] = []
     disputed_labels: set[str] = set()
     disputed_statement_ids: set[str] = set()
+    outcome_statement_ids: set[str] = set()
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
             candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
@@ -2114,6 +2187,8 @@ async def _run_part(
             if candidate.disputes:
                 disputed_labels.update(candidate.finding_labels)
                 disputed_statement_ids.add(point.statement_id)
+            if candidate.outcome:
+                outcome_statement_ids.add(point.statement_id)
 
     title = _section_title(draft.title, job.sub_topic_title)
     section = ReportSection(title=title, points=points, coverage_id=job.coverage_id) if points else None
@@ -2126,13 +2201,19 @@ async def _run_part(
                         errors=[*draft_errors, *check_errors], verdicts=verdict_map,
                         rejected=rejected, dropped_marks=dropped_marks,
                         disputed_labels=frozenset(disputed_labels),
-                        disputed_statement_ids=frozenset(disputed_statement_ids))
+                        disputed_statement_ids=frozenset(disputed_statement_ids),
+                        outcome_statement_ids=frozenset(outcome_statement_ids))
 
 
 def _bottom_line_fallback(
     outcomes: Sequence[_PartOutcome], required_coverage_ids: set[str],
     disputed_labels: frozenset[str] = frozenset(),
     label_by_finding_id: Mapping[str, str] = _EMPTY_MAPPING,
+    findings_by_id: Mapping[str, Finding] | None = None,
+    sources: Mapping[str, ScoredSource] | None = None,
+    authority_floor: float = 0.0,
+    self_descriptions: Mapping[str, str] | None = None,
+    any_above_floor: bool = False,
 ) -> tuple[list[ReportPoint], dict[str, str], set[str]]:
     """§6.8: up to ``MAX_BOTTOM_LINE_SENTENCES`` kept checked points, the
     first of each part with a required target then the first of the other
@@ -2152,7 +2233,17 @@ def _bottom_line_fallback(
     target can carry a dozen statements, and target scoping preferred
     the marked point over every one of them, not only the ones that
     actually cite a disputed finding.
+
+    Run-8 D1/D6/D7: the fallback exists only to stand in for an
+    unchecked bottom line, and must honour the same per-statement floor
+    the checked path does -- a below-floor or declared-derivative
+    statement stays in its section rather than being picked here,
+    exactly when ``any_above_floor`` (some other checked statement in
+    this run does meet the floor).
     """
+    findings_by_id = findings_by_id or {}
+    sources = sources or {}
+    self_descriptions = self_descriptions or {}
     with_required: list[_PartOutcome] = []
     others: list[_PartOutcome] = []
     for outcome in outcomes:
@@ -2177,6 +2268,11 @@ def _bottom_line_fallback(
             source_id = source_point.statement.statement_id
             verdict = outcome.verdicts.get(source_id, "unchecked")
             if verdict not in ("consistent", "corrected"):
+                continue
+            if any_above_floor and not _statement_meets_authority_floor(
+                source_point.statement.finding_ids, findings_by_id, sources, authority_floor,
+                self_descriptions,
+            ):
                 continue
             kept.append((source_point, source_id, verdict))
         if not kept:
@@ -2203,14 +2299,25 @@ def _bottom_line_fallback(
 def _statement_meets_authority_floor(
     finding_ids: Sequence[str], findings_by_id: Mapping[str, Finding],
     sources: Mapping[str, ScoredSource], authority_floor: float,
+    self_descriptions: Mapping[str, str] | None = None,
 ) -> bool:
     """D6/D7 bullet 3, and D8/D9's inclusive floor: whether one of
     ``finding_ids``' sources is citable and above ``authority_floor`` -- the
     bottom line's own per-statement floor test (Y2.1: ``is_context_only``
-    no longer makes a comparison like this one; this filter is unchanged)."""
+    no longer makes a comparison like this one; this filter is unchanged).
+
+    Run-8 D1: a finding whose read declares itself derivative or teaching
+    content counts as below the floor, whatever its host's own
+    ``authority_score`` reads -- the same guard a low-confidence or
+    sub-floor source already gets, so a role-play's own high host score
+    never lets it stand in for a primary source.
+    """
+    self_descriptions = self_descriptions or {}
     for finding_id in finding_ids:
         finding = findings_by_id.get(finding_id)
         if finding is None:
+            continue
+        if finding.read_id in self_descriptions:
             continue
         source = sources.get(normalize_source_url(finding.source_url))
         if source is None or source.low_confidence:
@@ -2383,6 +2490,7 @@ async def _run_bottom_line(
         if any(
             _statement_meets_authority_floor(
                 point.statement.finding_ids, findings_by_id, src_by_url, task.authority_floor,
+                task.self_descriptions,
             )
             for point in kept_points
         ):
@@ -2402,6 +2510,7 @@ async def _run_bottom_line(
                 point for point in kept_points
                 if _statement_meets_authority_floor(
                     point.statement.finding_ids, findings_by_id, src_by_url, task.authority_floor,
+                    task.self_descriptions,
                 )
             ]
         if not kept_points:
@@ -2425,6 +2534,21 @@ async def _run_bottom_line(
     disputed_labels = _bottom_line_disputed_labels(
         checked_sections, label_by_finding_id, marked_labels, marked_statement_ids,
     )
+    # Run-8 D4/D5: the mechanism's own last step, the same way disputed_labels
+    # scopes the dispute guard -- the kept, writer-marked ``outcome: true``
+    # statements' own labels, computed from ``checked_sections`` so the
+    # guard below never demands a citation to something the floor already
+    # withheld.
+    outcome_statement_ids = frozenset().union(*(outcome.outcome_statement_ids for outcome in outcomes))
+    outcome_labels: set[str] = set()
+    for section in checked_sections:
+        for point in section.points:
+            if point.statement is not None and point.statement.statement_id in outcome_statement_ids:
+                outcome_labels.update(
+                    label_by_finding_id[fid] for fid in point.statement.finding_ids
+                    if fid in label_by_finding_id
+                )
+    outcome_labels = frozenset(outcome_labels)
 
     if not checked_sections:
         # P1-b(i): a part whose draft succeeded but whose Statement Check
@@ -2472,7 +2596,8 @@ async def _run_bottom_line(
     if is_redraft:
         _, _, bottom_line_defects = _route_defects(task.defects, task.previous, task.targets)
     messages = bottom_line_messages(task, checked_sections, previous=previous_points,
-                                    defects=bottom_line_defects, disputed_statement_ids=marked_statement_ids)
+                                    defects=bottom_line_defects, disputed_statement_ids=marked_statement_ids,
+                                    outcome_statement_ids=outcome_statement_ids)
     draft, draft_errors = await _attempt_bottom_line_draft(
         provider, messages, agent_name=REPORT_WRITER_NAME, fingerprint=fingerprint,
     )
@@ -2481,6 +2606,9 @@ async def _run_bottom_line(
         fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
             outcomes, required_coverage, disputed_labels=disputed_labels,
             label_by_finding_id=label_by_finding_id,
+            findings_by_id=findings_by_id, sources=src_by_url,
+            authority_floor=task.authority_floor, self_descriptions=task.self_descriptions,
+            any_above_floor=any_above_floor,
         )
         error = agent_error(
             agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
@@ -2496,6 +2624,21 @@ async def _run_bottom_line(
         )
     )
 
+    # Run-8 D4/D5: a mechanism answer whose kept bottom line cites no
+    # outcome-marked statement's finding is missing the mechanism's own
+    # last step -- the same one re-ask the dispute guard uses, merged
+    # into a single re-ask rather than two.
+    missing_outcome = (
+        task.answer_kind == "explanation" and bool(outcome_statement_ids)
+        and not any(
+            {
+                label_by_finding_id[fid] for fid in point.statement.finding_ids
+                if fid in label_by_finding_id
+            } & outcome_labels
+            for point in points if point.statement is not None
+        )
+    )
+
     # D1/D2: one re-ask, carrying the Statement Check's own refusal reasons
     # the same way a redraft carries defects, when it refused a drafted
     # sentence -- the run-5 refusal dropped a mechanism step with no retry.
@@ -2505,7 +2648,7 @@ async def _run_bottom_line(
     # outage or a partial refusal, which would otherwise swap a checked
     # bottom line for unchecked or worse text. Attempt 1's own refusal
     # records stay in the log either way (P2-1).
-    if refusals:
+    if refusals or missing_outcome:
         reask_defects = [
             ReviewDefect(
                 defect_id=f"bottom-line-reask-{n:02d}", kind="missing_support", severity="major",
@@ -2526,8 +2669,21 @@ async def _run_bottom_line(
             )
             for n, (text, reason) in enumerate(refusals, start=1)
         ]
+        if missing_outcome:
+            reask_defects.append(
+                ReviewDefect(
+                    defect_id=f"bottom-line-reask-{len(reask_defects) + 1:02d}",
+                    kind="missing_support", severity="major",
+                    problem=(
+                        'The bottom line names no outcome. End it with the outcome '
+                        'the statements under "Outcome" state, credited and dated as '
+                        'they state it.'
+                    ),
+                )
+            )
         reask_messages = bottom_line_messages(task, checked_sections, previous=points,
-                                              defects=reask_defects, disputed_statement_ids=marked_statement_ids)
+                                              defects=reask_defects, disputed_statement_ids=marked_statement_ids,
+                                              outcome_statement_ids=outcome_statement_ids)
         reask_draft, reask_draft_errors = await _attempt_bottom_line_draft(
             provider, reask_messages, agent_name=REPORT_WRITER_NAME, fingerprint=fingerprint,
         )
@@ -2554,6 +2710,9 @@ async def _run_bottom_line(
         fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
             outcomes, required_coverage, disputed_labels=disputed_labels,
             label_by_finding_id=label_by_finding_id,
+            findings_by_id=findings_by_id, sources=src_by_url,
+            authority_floor=task.authority_floor, self_descriptions=task.self_descriptions,
+            any_above_floor=any_above_floor,
         )
         if fallback_points:
             error = agent_error(
@@ -3010,12 +3169,13 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             targets=targets,
             findings=findings,
             sources=list(state.evaluated_sources),
-            registry=finding_registry(findings, targets, state.sub_topics),
+            registry=finding_registry(findings, targets, state.sub_topics, state.evaluated_sources),
             facts=fact_rows(findings, targets, state.sub_topics),
             not_found=not_found_targets(state.sub_topics, answered_for_report, state.acquisition_state_by_target),
             answered=answered,
             reads=dict(state.read_records),
             passages=statement_passages(findings, state.read_records),
+            self_descriptions=_read_self_descriptions(state.read_records),
             defects=material_defects(state.report_review) if _is_redraft_hop(state) else [],
             previous=state.composition if _is_redraft_hop(state) else None,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),

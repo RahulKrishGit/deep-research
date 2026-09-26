@@ -933,3 +933,14 @@ def test_a_writer_point_draft_without_the_disputes_field_still_validates() -> No
     point = WriterPointDraft.model_validate(legacy_payload)
 
     assert point.disputes is False
+
+
+def test_a_writer_point_draft_without_the_outcome_field_still_validates() -> None:
+    """A writer reply drafted before the mechanism-outcome rule existed
+    carries no ``outcome`` key and still validates, defaulting to not
+    stating the outcome."""
+    legacy_payload = {"text": "Example Tester rates the model 4.5 out of 5."}
+
+    point = WriterPointDraft.model_validate(legacy_payload)
+
+    assert point.outcome is False
