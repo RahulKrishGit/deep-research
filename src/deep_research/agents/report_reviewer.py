@@ -124,7 +124,7 @@ Preflight validates it exactly like an agent, so a misconfigured reviewer
 fails the run before any collaborator exists.
 """
 
-REPORT_REVIEW_PROMPT_VERSION = "report-review-5"
+REPORT_REVIEW_PROMPT_VERSION = "report-review-6"
 """The prompt and reply contract this review's requests are versioned under.
 
 Version 2 was the whole-report Critic-era packet, which carried checked claims,
@@ -140,6 +140,12 @@ backing statement and fact-row ids, each finding block gains a ``status:``
 line, and the system prompt no longer tells the reviewer a sentence carries a
 label *beside* it in the report -- labels are code-built material this packet
 shows, never printed prose (spec §3.1 rule 8).
+Version 6 (D5/D13) gives each finding the same bounded passage the writer and
+the Statement Check read around a snippet with no kept figure, and reworks the
+rule for a sentence that credits a body or states a fact its cited findings do
+not carry: it is judged against that finding's snippet *or* passage, so a
+credit or fact the passage names but the snippet's own cut drops is supported,
+not a false defect.
 The version is what keeps a stored judgement of the older packet from being
 read as a judgement of this one.
 """
@@ -304,13 +310,15 @@ REPORT_REVIEW_SYSTEM_PROMPT = (
     "figure it states. That mismatch is a defect you record against that "
     "statement's id. Judge a statement that states no figure, or one in a "
     "unit this report does not label (a price, a count, a rating), or one no "
-    "cited finding carries, against the snippets of the findings it cites "
+    "cited finding carries, against its cited findings' snippet or passage "
     "and against their figure labels, and record as unsupported one that "
     "asserts more than those findings state; a pick, ranking or verdict "
     "stated as fact, rather than as the judgement of the source that made "
-    "it, asserts more. A sentence that credits a body its cited findings do "
-    "not name — \"according to X\" beside findings that attribute the "
-    "figure to no one or to another organisation — is unsupported. The "
+    "it, asserts more. A sentence that credits a body its cited findings' "
+    "snippet or passage does not name — \"according to X\" beside findings "
+    "whose snippet or passage attributes the figure to no one or to another "
+    "organisation — is unsupported; a body or fact the passage names is "
+    "supported even where the snippet alone does not carry it. The "
     "table is assembled by code from the statements' option marks and the "
     "verified figures: a cell crediting a source with a verdict or pick its "
     "backing statement does not carry is a defect against that statement's "
@@ -481,7 +489,13 @@ class ReviewFindingView(ContractModel):
     (organisation and attribution first, then kind with a forecast's release);
     the snippet is the verbatim passage the Evidence Verifier verified. This is
     the evidence a statement is judged against, so it is shown whole and never
-    re-worded. ``status`` is the finding's own verified/corrected/quoted
+    re-worded. ``passage`` is the same bounded window around the snippet the
+    writer and the Statement Check read (``statement_passages`` in
+    ``report_writer.py``, D5/D13): a sentence that credits a body or states a
+    fact the snippet alone does not carry is still supported when the passage
+    carries it, so a footnote or an attribution line just past the snippet's
+    own cut is not a false defect. ``None`` for a finding this run has no read
+    passage for. ``status`` is the finding's own verified/corrected/quoted
     outcome (spec §11.1), rendered in the same words the evidence log uses.
     """
 
@@ -490,6 +504,7 @@ class ReviewFindingView(ContractModel):
     source_title: str = Field(min_length=1)
     host: str = Field(min_length=1)
     snippet: str = Field(min_length=1)
+    passage: str | None = None
     figure_labels: list[str] = Field(default_factory=list)
     status: str = ""
 
@@ -613,7 +628,10 @@ def build_report_review_input(
         answer_contract=state.answer_contract,
         reader_content=state.report or "",
         statements=statements,
-        findings=_finding_views(composition),
+        findings=_finding_views(
+            composition,
+            composition.statement_passages if composition is not None else None,
+        ),
         fact_rows=_fact_row_lines(composition),
         table_lines=_table_lines(composition),
         not_found=[target.question for target in composition.not_found]
@@ -713,6 +731,7 @@ def _statement_labels(composition: ReportComposition) -> dict[str, str]:
 
 def _finding_views(
     composition: ReportComposition | None,
+    passages: Mapping[str, str] | None = None,
 ) -> list[ReviewFindingView]:
     """One view per cited finding, paired with its own registered label.
 
@@ -721,9 +740,15 @@ def _finding_views(
     one page share a fingerprint, and that map hands the later edition's
     snippet and figure labels to both labels (P2), so a statement citing the
     earlier one would be judged against the wrong evidence.
+
+    ``passages`` is the finding id -> bounded passage map the writer and the
+    Statement Check read from (``statement_passages`` in ``report_writer.py``,
+    D5/D13) -- the composition's own field, never a second computation of it.
+    A finding this run has no read passage for carries ``None``.
     """
     if composition is None:
         return []
+    passages = passages or {}
     views: list[ReviewFindingView] = []
     for label, finding in _finding_registry_pairs(composition):
         if label is None:
@@ -737,6 +762,7 @@ def _finding_views(
                 source_title=finding.source_title,
                 host=publisher_identity(finding.source_url),
                 snippet=finding.snippet or finding.content,
+                passage=passages.get(finding_fingerprint(finding)) or None,
                 figure_labels=[
                     _figure_label_for(finding, result.context)
                     for result in _kept_results(finding)
@@ -1086,17 +1112,21 @@ def _render_statements(packet: ReportReviewInput) -> str:
 
 
 def _render_findings(packet: ReportReviewInput) -> str:
-    """Every cited finding whole: its labels, its page, its status, and its snippet."""
+    """Every cited finding whole: its labels, its page, its status, its
+    snippet, and the bounded passage around it when this run read one."""
     blocks: list[str] = []
     for finding in packet.findings:
-        blocks.append(
-            f"### {finding.label}\n"
-            f"source: {finding.source_title} — {finding.host}\n"
-            f"status: {finding.status or 'verified'}\n"
+        lines = [
+            f"### {finding.label}",
+            f"source: {finding.source_title} — {finding.host}",
+            f"status: {finding.status or 'verified'}",
             f"figure labels: "
-            f"{' | '.join(finding.figure_labels) or '(no figure was kept)'}\n"
-            f"snippet:\n{finding.snippet}"
-        )
+            f"{' | '.join(finding.figure_labels) or '(no figure was kept)'}",
+            f"snippet:\n{finding.snippet}",
+        ]
+        if finding.passage:
+            lines.append(f"passage:\n{finding.passage}")
+        blocks.append("\n".join(lines))
     return "\n\n".join(blocks) or "(no verified finding was cited)"
 
 
@@ -1177,9 +1207,10 @@ def _cited_findings_block(packet: ReportReviewInput) -> str:
         "# Cited findings\n"
         "The verified findings the statements rest on, with the reader "
         "labels built from their verified context, each finding's own "
-        "verified/corrected/quoted status, and the snippet the Evidence "
-        "Verifier checked against the page. This is the evidence a "
-        "sentence is judged against.\n" + _render_findings(packet)
+        "verified/corrected/quoted status, its snippet and, where this run "
+        "read one, the bounded passage around it. This is the evidence a "
+        "sentence is judged against: a credited body or fact named in "
+        "either is supported.\n" + _render_findings(packet)
     )
 
 

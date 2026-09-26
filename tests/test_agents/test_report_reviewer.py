@@ -628,6 +628,31 @@ def test_the_finding_block_carries_the_snippet_host_and_figure_labels() -> None:
     assert EIA_SNIPPET in _render(built)
 
 
+def test_the_finding_view_carries_the_bounded_passage_around_its_snippet() -> None:
+    """D5/D13: a body only the bounded passage around a snippet names -- a
+    footnote or a "Key takeaways from ..." line just past the snippet's own
+    cut -- must reach the reviewer as the writer and the Statement Check
+    read it, not just the snippet the writer trimmed to.
+    """
+    finding = _written_finding()
+    finding_id = finding_fingerprint(finding)
+    passage = "Key takeaways from Example Institute's research include: " + EIA_SNIPPET
+    composition = _written_composition().model_copy(
+        update={"statement_passages": {finding_id: passage}}
+    )
+    built = build_report_review_input(
+        state_with_written_report(composition=composition)
+    )
+    assert built.findings[0].passage == passage
+    assert f"passage:\n{passage}" in _render(built)
+
+
+def test_a_finding_with_no_read_passage_carries_none() -> None:
+    built = packet()
+    assert built.findings[0].passage is None
+    assert "passage:" not in _render(built)
+
+
 def _second_eia_finding() -> object:
     """A second EIA finding whose reader label is identical to the first's.
 
@@ -2101,8 +2126,14 @@ def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -
 # --- spec §11.1: the renamed packet sections, the table, finding status -----
 
 
-def test_the_prompt_version_is_report_review_5() -> None:
-    assert REPORT_REVIEW_PROMPT_VERSION == "report-review-5"
+def test_the_prompt_version_is_report_review_6() -> None:
+    assert REPORT_REVIEW_PROMPT_VERSION == "report-review-6"
+
+
+def test_the_unsupported_credit_rule_now_reads_snippet_or_passage() -> None:
+    """D5/D13: a credited body or fact the passage names, not just the
+    snippet, must not be recorded as unsupported."""
+    assert "snippet or passage" in REPORT_REVIEW_SYSTEM_PROMPT
 
 
 def test_the_prompt_no_longer_says_the_code_built_label_it_ends_with() -> None:
