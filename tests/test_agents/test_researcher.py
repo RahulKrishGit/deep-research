@@ -7212,12 +7212,28 @@ _CROSS_TOPIC_OWN_PREAMBLE = (
     "activity, and this report covers every site inspected in the current "
     "cycle across the region. "
 ) * 3
+# Padding so this chunk crosses a passage-split boundary on its own,
+# ahead of the sentence a finding actually cites (RevX1Sweep P2-2): the
+# skip test needs a *second*, never-cited passage that also shares a word
+# with the target's own question, or the skip it names is invisible --
+# the only shared-word passage is already consumed by the bound finding,
+# so a broken skip check would still find nothing left to ask about.
+_CROSS_TOPIC_FILLER = (
+    "The report also lists every crew that took part in the inspection "
+    "cycle and the equipment each crew checked along the way. "
+) * 3
 _CROSS_TOPIC_OVERLAP_SENTENCE = (
     "Published assessments trace the outage's underlying cause to a "
     "corroded busbar in the substation, a separate review states."
 )
+_CROSS_TOPIC_OVERLAP_SENTENCE_2 = (
+    "Published assessments also state the outage's underlying cause may "
+    "involve a failed transformer nearby, other engineers add."
+)
 _CROSS_TOPIC_BODY = (
-    f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n{_CROSS_TOPIC_OVERLAP_SENTENCE}"
+    f"{_CROSS_TOPIC_OWN_PREAMBLE}\n\n"
+    f"{_CROSS_TOPIC_FILLER}{_CROSS_TOPIC_OVERLAP_SENTENCE}\n\n"
+    f"{_CROSS_TOPIC_OVERLAP_SENTENCE_2}"
 )
 
 
@@ -7493,3 +7509,112 @@ async def test_the_cross_topic_sweep_sends_at_most_one_packet_per_read(
         if _CROSS_TOPIC_TARGET_ID in finding.target_ids
     ]
     assert len(bound) == 1
+
+
+_CROSS_TOPIC_MISSING_TARGET_ID = "topic-02-target-01"
+_CROSS_TOPIC_MISSING_TARGET_QUESTION = (
+    "What annual budget does the utility disclose for control-room "
+    "renovations?"
+)
+
+
+def _cross_topic_reading_sub_topic_with_own_target(priority: int = 1) -> SubTopic:
+    """The reading sub-topic, this time with its own required target whose
+    own words are nowhere on the page. It stays missing after round 1 and
+    buys an extra pass that re-admits the very same read.
+    """
+    return _cross_topic_reading_sub_topic(priority).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_CROSS_TOPIC_MISSING_TARGET_ID,
+                    coverage_id="topic-02",
+                    question=_CROSS_TOPIC_MISSING_TARGET_QUESTION,
+                    measure=(
+                        "the annual budget the utility discloses for "
+                        "control-room renovations"
+                    ),
+                    required=True,
+                )
+            ]
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_later_pass_does_not_re_sweep_a_read_the_run_already_bound(
+    tracker: Tracker,
+) -> None:
+    """RevX1Sweep P3-1: the skip reads the run's whole record, not this
+    pass's findings alone.
+
+    Round 1 binds sub-topic A's required target from sub-topic B's read via
+    the cross-topic sweep, while sub-topic B's own (unrelated) required
+    target stays missing. Round 2 re-admits the very same read for
+    sub-topic B (``max_sub_topics=1`` keeps sub-topic A itself from running
+    again, the same way it kept it from running in round 1), with the
+    plan's full target list still in view. If the skip check only consulted
+    this pass's own (empty) findings, it would ask about sub-topic A's
+    target again on a read that already answered it.
+
+    This also exercises RevX1Sweep P3-2: round 1's own extraction produces
+    only unbound findings for sub-topic B (its own target is never found on
+    the page), so the cross-topic finding the sweep adds must not turn its
+    own ``target_obligation_completed`` telemetry false.
+    """
+    completer1 = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _cross_topic_sweep_reply],
+    )
+    round1 = await _run_cross_topic_state(
+        tracker,
+        completer1,
+        sub_topics=[
+            _cross_topic_reading_sub_topic_with_own_target(),
+            _cross_topic_required_sub_topic(),
+        ],
+    )
+    assert len(_extraction_requests(completer1)) == 2
+    bound_round1 = [
+        finding
+        for finding in round1.result.findings
+        if _CROSS_TOPIC_TARGET_ID in finding.target_ids
+    ]
+    assert len(bound_round1) == 1
+    # P3-2: an admitted-but-all-unbound own extraction, plus a cross-topic
+    # finding the sweep adds, must still report this topic's own obligation
+    # advancing exactly as it did before the cross-topic sweep existed.
+    completed_round1 = next(
+        event
+        for event in round1.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    assert completed_round1.metadata["target_obligation_completed"] is True
+
+    completer2 = ScriptedCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent2 = _cross_topic_agent(tracker, completer2)
+    # No ``extra_pass_target_ids``: ``_planned_targets`` would otherwise
+    # confine this pass's own candidate list to it, which would leave
+    # sub-topic A's target out regardless of the fix under test.
+    # ``max_sub_topics=1`` (set by ``_cross_topic_agent``) is what keeps
+    # sub-topic A itself from running again, exactly as it did in round 1.
+    round2_state = _state(
+        sub_topics=[
+            _cross_topic_reading_sub_topic_with_own_target(),
+            _cross_topic_required_sub_topic(),
+        ],
+        raw_findings=round1.state_update["raw_findings"],
+        evidence_units=round1.state_update["evidence_units"],
+        read_records=round1.state_update["read_records"],
+    )
+
+    async with tracker.session_span("session-2", "q"):
+        await agent2.run(round2_state)
+
+    # One request: the page's own re-admitted main call. No second,
+    # cross-topic-sweep request for a target the run's own record already
+    # answers, even though this pass's own findings alone do not show it.
+    assert len(_extraction_requests(completer2)) == 1

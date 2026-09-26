@@ -1085,13 +1085,15 @@ def extraction_messages(
         "condition label a page prints beside a name: "
         "a label reading \"(test conditions)\" states how or where something "
         "was measured, not a judgement of it, and reporting that label as a "
-        "verdict is the same error as reporting page furniture. Nor is a "
-        "page's own account of what it covers -- an episode or course "
-        "description, an \"in this episode\" blurb, a table of contents, or "
-        "a summary or \"key takeaways\" box -- or a reader comment posted "
-        "below the content: a summary box that restates the page's own "
-        "findings in the page's voice may still be used, but only where the "
-        "page's body states the same thing too.\n"
+        "verdict is the same error as reporting page furniture. Nor is the "
+        "summary box shown beside or above an article, including one a page "
+        "generates rather than an author writes; nor an episode or course "
+        "blurb, a table of contents, or a reader comment posted below the "
+        "content. That box may still be used, but only where the passages "
+        "shown include the body and it states the same thing too. A "
+        "document's own abstract, executive summary or key-findings "
+        "section, stating its results in its own voice, is the page's own "
+        "statement, not a box beside it.\n"
         "- Every finding MUST copy read_id and locator exactly as the "
         "# Retrieved evidence section below prints them, and MUST carry a "
         "snippet: one or two sentences copied character for character from "
@@ -3313,50 +3315,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     },
                 )
             )
-            if batches_by_page:
-                # Every owing page's own batches run concurrently (S6, user
-                # ruling on RES-6 §4): a shared cross-page budget would let
-                # one page's owed passages crowd out a second page's, which
-                # is the content-dropping cap the ruling forbids. Merged back
-                # in the pages' own fixed priority order -- never completion
-                # order -- for the same determinism reason the main per-page
-                # merge keeps one. A provider failure costs the batch it
-                # happened in: the findings already extracted stand, the
-                # remaining batches (this page's own and every other owing
-                # page's) are still asked, and every owed unit a page asked
-                # about keeps its own disposition, which is what the ledger
-                # discloses.
-                owed_results = await asyncio.gather(
-                    *(
-                        self._retry_owed_batches_for_page(
-                            task,
-                            run,
-                            policy,
-                            read_id,
-                            page_batches,
-                            gate=gate,
-                            retrieved=retrieved,
-                            known_reads=known_reads,
-                            valid_target_ids=valid_target_ids,
-                            planned_targets=planned_targets,
-                            unanswered=unanswered,
-                            question=question,
-                            coverage_titles=coverage_titles,
-                        )
-                        for read_id, page_batches in batches_by_page.items()
-                    )
-                )
-                asked: set[str] = set()
-                for owed in owed_results:
-                    findings = [*findings, *owed.findings]
-                    rejected = [*rejected, *owed.rejected]
-                    errors.extend(owed.errors)
-                    admitted_keys.extend(owed.admitted_keys)
-                    unplanned_target_ids.extend(owed.unplanned_target_ids)
-                    dropped_figures.extend(owed.dropped_figures)
-                    asked.update(owed.asked_evidence_ids)
-            else:
-                asked = set()
             # The obligation this pass completed is the ACTIVE topic's, and a
             # finding bound to another topic's target does not complete it.
             # Mining a read for every planned target would otherwise let one
@@ -3365,9 +3323,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # an extraction that named an id outside the plan) is attributed
             # through this very topic later, which is what the old reading —
             # "some passage of this topic was used" — already said. Hoisted
-            # above the cross-topic sweep below, which needs this topic's own
-            # target ids to leave them to the sweep above instead of asking
-            # about them twice.
+            # here, before the cross-topic sweep below, which needs this
+            # topic's own target ids to leave them to the sweep above instead
+            # of asking about them twice.
             own_target_ids = {
                 target.target_id
                 for target in counted_evidence_targets(
@@ -3385,7 +3343,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # active target's own query selected, and at most one bounded
             # packet is sent per read -- a runaway guard, not a content cap --
             # so a read left with several targets still unbound still costs
-            # one call, never one per target.
+            # one call, never one per target. Computed from this main
+            # extraction's own findings, before the own-topic sweep above's
+            # own packets are even sent -- both sweeps go out in the same
+            # round trip below (RevX1Sweep P2-1) -- at the accepted cost that
+            # a target the own sweep alone binds is not seen here and may be
+            # asked about twice.
+            #
+            # The bound check reads the run's whole record, not only this
+            # pass's own findings (RevX1Sweep P3-1): an extra pass may
+            # re-admit a read this topic already held, and the target that
+            # read already bound may have been bound by an earlier pass, not
+            # this one. ``used`` includes ``mined_earlier`` for the same
+            # reason: a passage an earlier pass already mined is not owed a
+            # second, reworded finding.
             cross_topic_required_targets = [
                 target
                 for target in planned_targets
@@ -3402,9 +3373,16 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     if policy.target_id is None
                     or policy.target_id in unit.target_ids
                 )
+                run_findings = (
+                    self._run_source_state.raw_findings
+                    if self._run_source_state is not None
+                    else ()
+                )
                 for read_id in own_read_ids:
                     owed_here = _required_targets_unbound_by_read(
-                        cross_topic_required_targets, findings, read_id
+                        cross_topic_required_targets,
+                        [*run_findings, *findings],
+                        read_id,
                     )
                     if not owed_here:
                         continue
@@ -3418,7 +3396,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                                 else (policy.target_id,)
                             ),
                             targets=owed_here,
-                            used=admitted_keys,
+                            used=[*mined_earlier, *admitted_keys],
                         )
                         if unit.read_id == read_id
                     ]
@@ -3436,38 +3414,77 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             owed_cross_topic_units = [
                 unit for batch in cross_topic_batches.values() for unit in batch
             ]
-            if cross_topic_batches:
-                # One packet per owing read, every read's own packet
-                # concurrent with every other's, under the same per-page gate
-                # the sweep above and each page's own main call ran under.
-                cross_topic_results = await asyncio.gather(
+            # One round trip for both sweeps (RevX1Sweep P2-1): the own-topic
+            # packets and the cross-topic packets run in the same gather,
+            # under the same per-page gate, instead of the cross-topic round
+            # waiting on the own-topic round's whole trip to finish first.
+            # Sliced back apart by count afterwards, not zipped, so each
+            # keeps the fixed, read-ordered sequence its own dict built --
+            # own owed first, then cross-topic (RevX1Sweep P2-1).
+            combined_jobs = [
+                (read_id, page_batches, unanswered)
+                for read_id, page_batches in batches_by_page.items()
+            ] + [
+                (read_id, [batch], cross_topic_unanswered[read_id])
+                for read_id, batch in cross_topic_batches.items()
+            ]
+            if combined_jobs:
+                all_results = await asyncio.gather(
                     *(
                         self._retry_owed_batches_for_page(
                             task,
                             run,
                             policy,
                             read_id,
-                            [batch],
+                            page_batches,
                             gate=gate,
                             retrieved=retrieved,
                             known_reads=known_reads,
                             valid_target_ids=valid_target_ids,
                             planned_targets=planned_targets,
-                            unanswered=cross_topic_unanswered[read_id],
+                            unanswered=page_unanswered,
                             question=question,
                             coverage_titles=coverage_titles,
                         )
-                        for read_id, batch in cross_topic_batches.items()
+                        for read_id, page_batches, page_unanswered in combined_jobs
                     )
                 )
-                for owed in cross_topic_results:
-                    findings = [*findings, *owed.findings]
-                    rejected = [*rejected, *owed.rejected]
-                    errors.extend(owed.errors)
-                    admitted_keys.extend(owed.admitted_keys)
-                    unplanned_target_ids.extend(owed.unplanned_target_ids)
-                    dropped_figures.extend(owed.dropped_figures)
-                    asked.update(owed.asked_evidence_ids)
+            else:
+                all_results = []
+            own_owed_results = all_results[: len(batches_by_page)]
+            cross_topic_results = all_results[len(batches_by_page) :]
+            asked: set[str] = set()
+            for owed in own_owed_results:
+                findings = [*findings, *owed.findings]
+                rejected = [*rejected, *owed.rejected]
+                errors.extend(owed.errors)
+                admitted_keys.extend(owed.admitted_keys)
+                unplanned_target_ids.extend(owed.unplanned_target_ids)
+                dropped_figures.extend(owed.dropped_figures)
+                asked.update(owed.asked_evidence_ids)
+            # This topic's own telemetry, captured before the cross-topic
+            # findings below are merged in (RevX1Sweep P3-2): a cross-topic
+            # finding is always bound to another topic's target, and folding
+            # it into ``bound`` first would let it turn an all-unbound-own-
+            # findings pass from "completed" into "not completed" -- a
+            # regression the cross-topic sweep must not cause, since it says
+            # nothing about whether THIS topic's own obligation advanced.
+            bound = [finding for finding in findings if finding.target_ids]
+            completed = policy.target_id is not None and bool(admitted_keys)
+            if completed and own_target_ids and bound:
+                completed = any(
+                    own_target_ids.intersection(finding.target_ids)
+                    for finding in bound
+                )
+            target_obligation_completed = completed
+            for owed in cross_topic_results:
+                findings = [*findings, *owed.findings]
+                rejected = [*rejected, *owed.rejected]
+                errors.extend(owed.errors)
+                admitted_keys.extend(owed.admitted_keys)
+                unplanned_target_ids.extend(owed.unplanned_target_ids)
+                dropped_figures.extend(owed.dropped_figures)
+                asked.update(owed.asked_evidence_ids)
             # Unit-level, so a passage is "used" only when that exact passage
             # produced an admitted finding. What the pass asked about and left
             # unmined says so in its own reason rather than "irrelevant";
@@ -3488,14 +3505,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 ],
                 failed_read_ids=failed_read_ids,
             )
-            bound = [finding for finding in findings if finding.target_ids]
-            completed = policy.target_id is not None and bool(admitted_keys)
-            if completed and own_target_ids and bound:
-                completed = any(
-                    own_target_ids.intersection(finding.target_ids)
-                    for finding in bound
-                )
-            target_obligation_completed = completed
         if unplanned_target_ids:
             # Recorded even though the finding was kept: an id the plan never
             # issued is invisible in state otherwise, and every later stage
