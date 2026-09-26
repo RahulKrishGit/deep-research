@@ -841,6 +841,32 @@ def test_factual_kind_keeps_qualitative_required_target_figures() -> None:
     assert table.shape == "findings"
 
 
+def test_constraints_ignores_cited_figures_bound_to_no_quantity_target() -> None:
+    """D10: for a constraints answer, a row cited by a kept statement no
+    longer qualifies unless it also answers a quantity target -- the closed
+    "cited" fallback must not resurrect these rows. A regression that drops
+    "constraints" from ``_QUANTITY_ONLY_ANSWER_KINDS``, or that checks the
+    cited fallback ahead of the D10 branch, would build a table here."""
+    row_a, finding_a = _row("K001", url="https://a.test/x", value="10", unit="GW")
+    row_b, finding_b = _row("K002", url="https://b.test/y", value="20", unit="GW")
+    composition = _composition(
+        answer_kind="constraints",
+        findings=[finding_a, finding_b],
+        fact_rows=[row_a, row_b],
+        sections=[
+            _section(
+                "topic-x",
+                "Section",
+                [
+                    _cite(finding_fingerprint(finding_a), statement_id="S1"),
+                    _cite(finding_fingerprint(finding_b), statement_id="S2"),
+                ],
+            )
+        ],
+        statement_verdicts=_verdicts("S1", "S2"),
+    )
+    assert build_table(composition) is None
+
 
 # =============================================================================
 # (3) Marks on unchecked statements are ignored.
