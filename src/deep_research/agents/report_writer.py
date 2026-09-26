@@ -59,6 +59,7 @@ from deep_research.agents.report import (
     report_scope,
     written_citations,
 )
+from deep_research.agents.report_table import build_table as _build_table
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.verified_facts import (
@@ -83,6 +84,7 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    AcquisitionState,
     AnswerKind,
     BottomLineDraft,
     ContractModel,
@@ -92,6 +94,7 @@ from deep_research.utils.types import (
     ItemMark,
     ItemMarkDraft,
     NotFoundTarget,
+    PageCredit,
     ReadRecord,
     RejectedDraftPoint,
     ReportComposition,
@@ -108,6 +111,7 @@ from deep_research.utils.types import (
     ScoredSource,
     SectionDraft,
     SubTopic,
+    UnreachablePage,
     WriterPointDraft,
 )
 
@@ -351,6 +355,11 @@ class ReportWriterTask(AgentTask):
     previous: ReportComposition | None = None
     """The prior pass's composition, read only on a redraft: a part with no
     routed defect is carried over from here unchanged (spec §6.9)."""
+    acquisition_state_by_target: dict[str, AcquisitionState] = Field(default_factory=dict)
+    """Keyed by ``coverage_id`` (the field name is the type's own historical
+    name; every caller in this codebase keys it by sub-topic). Spec §6.7's
+    ``unreachable`` is built from each required sub-topic's own
+    ``denied_urls`` and ``candidate_records`` here."""
 
 
 class WrittenReport(ContractModel):
@@ -1446,6 +1455,98 @@ def _renumber(
     return new_summary, new_sections, remap
 
 
+# --- §6.7 assembly (T4 compose): the table, page credits, unreachable ------
+
+
+def _findings_by_url(findings: Sequence[Finding]) -> dict[str, Finding]:
+    """Normalized source URL -> the first citable finding seen for it."""
+    by_url: dict[str, Finding] = {}
+    for finding in findings:
+        normalized = normalize_source_url(finding.source_url)
+        if normalized not in by_url:
+            by_url[normalized] = finding
+    return by_url
+
+
+def _page_credit(
+    url: str, *, findings_by_url: Mapping[str, Finding], reads: Mapping[str, ReadRecord],
+    sources: Sequence[ScoredSource],
+) -> PageCredit:
+    """Spec §6.7/§8: the publisher from the page's own words (or the host),
+    and the date in order: the Source Evaluator's validated
+    ``publication_date``; else the read's own ``page_published``; else its
+    ``page_updated`` (``date_kind`` marks which); never a figure's
+    ``statement_date`` or its vintage -- those are the figure's, not the
+    page's.
+    """
+    # Imported at call time, matching this module's other evidence_verifier
+    # seams: no import cycle (evidence_verifier never imports this module at
+    # top level), and it keeps the substitution point tests use consistent.
+    from deep_research.agents.evidence_verifier import evaluated_page_date, page_owner
+
+    finding = findings_by_url.get(url)
+    read = reads.get(finding.read_id) if finding is not None else None
+    publisher = page_owner(read) if read is not None else publisher_identity(url)
+    if read is not None:
+        validated = evaluated_page_date(sources, read)
+        if validated:
+            return PageCredit(publisher=publisher, date=validated, date_kind="published")
+        if read.page_published:
+            return PageCredit(publisher=publisher, date=read.page_published, date_kind="published")
+        if read.page_updated:
+            return PageCredit(publisher=publisher, date=read.page_updated, date_kind="updated")
+    return PageCredit(publisher=publisher, date=None, date_kind=None)
+
+
+def _unreachable_pages(
+    sub_topics: Sequence[SubTopic], acquisition_state_by_target: Mapping[str, AcquisitionState],
+) -> list[UnreachablePage]:
+    """Spec §6.7/§10: for each sub-topic with >= 1 required target, its own
+    denied URLs with the candidate record's title and denial reason,
+    deduplicated, in plan order."""
+    pages: list[UnreachablePage] = []
+    seen: set[str] = set()
+    for topic in sub_topics:
+        if not any(target.required for target in topic.evidence_targets):
+            continue
+        state = acquisition_state_by_target.get(topic.coverage_id)
+        if state is None:
+            continue
+        for url in state.denied_urls:
+            normalized = normalize_source_url(url)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            record = state.candidate_records.get(normalized) or state.candidate_records.get(url)
+            pages.append(UnreachablePage(
+                url=url,
+                title=record.title if record is not None else "",
+                reason=(record.denial_reason or "") if record is not None else "",
+            ))
+    return pages
+
+
+def _assemble_composition(composition: ReportComposition, task: ReportWriterTask) -> ReportComposition:
+    """Spec §6.7's remaining bullets, in the stated order: the table (driven
+    by ``answer_kind``, already frozen on ``composition``), then page
+    credits for every URL the table or a kept statement now cites, then the
+    unreachable pages. Table builders and citation order are pure functions
+    of ``composition`` alone (T2/T3); nothing here re-reads a page.
+    """
+    table = _build_table(composition)
+    composition = composition.model_copy(update={"table": table})
+    findings_by_url = _findings_by_url(composition.findings)
+    page_credits = {
+        citation.url: _page_credit(
+            citation.url, findings_by_url=findings_by_url, reads=task.reads, sources=task.sources,
+        )
+        for citation in written_citations(composition)
+    }
+    composition = composition.model_copy(update={"page_credits": page_credits})
+    unreachable = _unreachable_pages(task.sub_topics, task.acquisition_state_by_target)
+    return composition.model_copy(update={"unreachable": unreachable})
+
+
 async def compose_written_report(
     task: ReportWriterTask,
     *,
@@ -1468,7 +1569,7 @@ async def compose_written_report(
     label_urls = {label: f.source_url for label, f in task.registry}
 
     if not task.registry:
-        return ReportComposition(
+        empty = ReportComposition(
             question=task.question, session_id=task.session_id, iteration=task.iteration,
             max_extra_passes=task.max_extra_passes, as_of=task.as_of, scope=task.scope,
             sub_topics=list(task.sub_topics), sources=list(task.sources), findings=list(task.findings),
@@ -1481,6 +1582,7 @@ async def compose_written_report(
             )],
             answer_kind=task.answer_kind,
         )
+        return _assemble_composition(empty, task)
 
     citable = citable_findings(task.findings)
     placements, _unplaced = report_parts(citable, task.targets, task.sub_topics)
@@ -1565,7 +1667,7 @@ async def compose_written_report(
     all_rejected.extend(bottom_line_rejected)
     dropped_marks = [f"{remap.get(key, key)}: {message}" for key, message in raw_dropped_marks]
 
-    return ReportComposition(
+    composed = ReportComposition(
         question=task.question, session_id=task.session_id, iteration=task.iteration,
         max_extra_passes=task.max_extra_passes, as_of=task.as_of, scope=task.scope,
         sub_topics=list(task.sub_topics), sources=list(task.sources), findings=list(task.findings),
@@ -1577,6 +1679,7 @@ async def compose_written_report(
         generated_on=task.generated_on, errors=all_errors, answer_kind=task.answer_kind,
         dropped_marks=dropped_marks,
     )
+    return _assemble_composition(composed, task)
 
 
 def finding_memory_payload(finding: Finding, *, session_id: str) -> tuple[str, dict[str, object]]:
@@ -1710,6 +1813,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             passages=statement_passages(findings, state.read_records),
             defects=material_defects(state.report_review),
             previous=state.composition,
+            acquisition_state_by_target=dict(state.acquisition_state_by_target),
         )
 
     async def _compose_result(self, task: ReportWriterTask) -> WrittenReport:

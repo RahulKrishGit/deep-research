@@ -1098,7 +1098,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # and a no-figure finding is labelled `quoted` rather than `verified`
     # (its completion event gained a matching count): `99faed0d857d` ->
     # `8b1ad6b04834`.
-    "evidence_verifier": "8b1ad6b04834",
+    # T4 compose (spec §6.5, §6.10): check_statements gained an optional
+    # shared ``gate``, and the corrected_text cap now interpolates
+    # ``report_writer.MAX_POINT_CHARS`` (1200) instead of a separate literal
+    # 600, so the two limits cannot drift apart. Module code only, no prompt
+    # wording changed beyond the number itself: `8b1ad6b04834` ->
+    # `d3ceb843c8ec`.
+    "evidence_verifier": "d3ceb843c8ec",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1138,7 +1144,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # quality_report_filename out of report_writer.py into report.py, so the
     # writer no longer duplicates them; module code only, no prompt text
     # changed: `1f445621ab34` -> `65bfda8f7618`.
-    "report_writer": "65bfda8f7618",
+    # T4 compose (spec §6.7): composition.table/page_credits/unreachable are
+    # now filled -- report_table.build_table, page_owner/evaluated_page_date
+    # for the Sources dates (never a figure's statement_date or vintage),
+    # and acquisition_state_by_target's denied_urls for unreachable pages.
+    # Module code only, no prompt wording changed: `65bfda8f7618` ->
+    # `0b9c9239f932`.
+    "report_writer": "0b9c9239f932",
 }
 
 # The judge half of the same contract. A Judge prompt change moves this value and

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_writer import (
     BOTTOM_LINE_INSTRUCTION,
     BOTTOM_LINE_SYSTEM_PROMPT,
@@ -37,13 +38,16 @@ from deep_research.agents.report_writer import (
     sources_by_url,
     statement_passages,
 )
+from deep_research.agents.sources import normalize_source_url
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderResponseError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    AcquisitionState,
     BottomLineDraft,
+    CandidateRecord,
     FindingVerification,
     ItemMarkDraft,
     ReportSection,
@@ -52,6 +56,7 @@ from deep_research.utils.types import (
     ReviewDefect,
     ScoredSource,
     SectionDraft,
+    SourceTemporal,
     SubTopic,
     WriterPointDraft,
 )
@@ -941,3 +946,109 @@ async def test_build_task_excludes_a_context_only_answer_from_the_not_found_comp
 
     assert target.target_id in task.answered
     assert any(nf.target_id == target.target_id for nf in task.not_found)
+
+
+# --- T4 compose (spec §6.7): the table, page credits, unreachable ----------
+
+
+@pytest.mark.asyncio
+async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_page_through_to_rendering(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Spec §6.7: build_table, page_credits (a published date and an
+    updated-only date) and unreachable all reach the composition and render."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    published_read = make_read("10.4 GW in 2024.", url="https://a.test/1", title="Org One page")
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation="Org One",
+                 target_ids=["topic-01-target-01"])
+    f1 = f1.model_copy(update={"read_id": published_read.read_id})
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation="Org Two",
+                 target_ids=["topic-01-target-01"], kind="forecast", period="2025")
+    published_source = ScoredSource(
+        url="https://a.test/1", title="Org One page", authority_score=0.8, recency_score=0.8,
+        relevance_score=0.8, overall_score=0.8, rationale="Directly on point.",
+        temporal=SourceTemporal(publication_date="2026-01-05"),
+    )
+    updated_read = make_read("5 GW in 2025.", url="https://a.test/2", title="Org Two page")
+    updated_read = updated_read.model_copy(update={"page_updated": "2026-02-10"})
+    f2 = f2.model_copy(update={"read_id": updated_read.read_id})
+    topic = _topic("topic-01", "Capacity added", [target])
+    denied_candidate = CandidateRecord(candidate_id="c1", url="https://a.test/denied",
+                                       title="A denied page", discovered_via="search",
+                                       status="denied", denial_reason="access_denied")
+    acquisition = AcquisitionState(denied_urls=["https://a.test/denied"],
+                                   candidate_records={"https://a.test/denied": denied_candidate})
+    state = ResearchState(
+        session_id="s1", original_question="Q?", sub_topics=[topic],
+        verified_findings=[f1, f2], evaluated_sources=[published_source],
+        read_records={updated_read.read_id: updated_read, published_read.read_id: published_read},
+        acquisition_state_by_target={"topic-01": acquisition},
+    )
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+        ]),
+        BottomLineDraft(sentences=[]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert composition.table is not None
+    assert composition.table.shape == "findings"
+    assert len(composition.table.rows) == 2
+    credit_1 = composition.page_credits[normalize_source_url("https://a.test/1")]
+    assert credit_1.date == "2026-01-05" and credit_1.date_kind == "published"
+    credit_2 = composition.page_credits[normalize_source_url("https://a.test/2")]
+    assert credit_2.date == "2026-02-10" and credit_2.date_kind == "updated"
+    assert [page.url for page in composition.unreachable] == ["https://a.test/denied"]
+    assert composition.unreachable[0].title == "A denied page"
+    assert composition.unreachable[0].reason == "access_denied"
+
+    markdown = render_written_report(composition)
+    evidence = render_finding_log(composition)
+    assert "| What was measured | Result |" in markdown
+    assert "(2026-01-05)" in markdown
+    assert "(updated 2026-02-10)" in markdown
+    assert "A denied page" in markdown
+    assert "access was denied" in markdown
+    assert "A denied page" in evidence
+
+
+@pytest.mark.asyncio
+async def test_a_figures_statement_date_never_becomes_a_page_credits_date(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Spec §6.7/§8: never a figure's statement_date or its vintage -- those
+    are the figure's dates, not the page's."""
+    finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation="Org One",
+                       target_ids=["topic-01-target-01"], statement_date="2020-06-15")
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=[topic],
+                          verified_findings=[finding])
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    credit = composition.page_credits[normalize_source_url("https://a.test/1")]
+    assert credit.date != "2020-06-15"
+    assert credit.date is None
+    assert credit.date_kind is None
+
+
+def test_the_statement_check_correction_cap_follows_max_point_chars() -> None:
+    """The Statement Check's corrected_text cap must equal MAX_POINT_CHARS,
+    interpolated, never a separate literal that could drift from it."""
+    from deep_research.agents.evidence_verifier import STATEMENT_CHECK_INSTRUCTION
+
+    assert f"more than {MAX_POINT_CHARS} characters" in STATEMENT_CHECK_INSTRUCTION
+    assert "600 characters" not in STATEMENT_CHECK_INSTRUCTION

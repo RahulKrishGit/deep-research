@@ -64,6 +64,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.report_writer import MAX_POINT_CHARS
 from deep_research.agents.sources import publisher_identity
 from deep_research.agents.steps import ReActRun
 from deep_research.agents.verified_facts import (
@@ -1107,7 +1108,7 @@ STATEMENT_CHECK_INSTRUCTION = (
     "- corrected_text: for corrected, the minimally reworded sentence, built "
     "only from the cited findings' own words (snippets, evidence words, "
     "passages) and a document name as the page line's title names it, and no "
-    "more than 600 characters; a longer correction is "
+    f"more than {MAX_POINT_CHARS} characters; a longer correction is "
     "refused whole, so mark such a sentence inconsistent instead; otherwise "
     "empty.\n"
     "- reason: one short sentence.\n"
