@@ -3270,6 +3270,28 @@ def test_said_still_credits_across_a_company_suffix_abbreviation() -> None:
     assert relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Acme Inc")
 
 
+def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_curly_quote() -> None:
+    """D11a follow-up (ReRevV4): a sentence end followed by a closing curly
+    double quote is still a sentence end -- 'According to team.\u201d Beta
+    grew fast.' must not credit Beta with the previous sentence's cue."""
+    snippet = "According to team.\u201d Beta grew fast in 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Beta")
+
+
+def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_straight_quote() -> None:
+    """D11a follow-up (ReRevV4): the same holds for a closing straight
+    single quote -- 'According to team.' Beta grew fast.' must not credit
+    Beta."""
+    snippet = "According to team.' Beta grew fast in 2019."
+    read = make_read(
+        snippet, url="https://example-register.test/notes", title="Notes"
+    )
+    assert not relay_attribution_on_page(read, "page-1-chunk-0", snippet, "Beta")
+
+
 def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None:
     """A stale locator falls back to a bounded window centred on the snippet,
     never the unbounded page: a distant, unrelated mention on the far side of
