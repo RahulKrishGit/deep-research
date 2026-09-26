@@ -77,7 +77,7 @@ from deep_research.agents.report_writer import (
     # The other half of R1: one label string per cited finding.
     _finding_label,
 )
-from deep_research.agents.sources import publisher_identity
+from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.observability import Tracker
 from deep_research.providers import (
     ChatMessage,
@@ -106,6 +106,7 @@ from deep_research.utils.types import (
     ReportPoint,
     ReportSection,
     ReportStatement,
+    TableCell,
     ReportReview,
     ResearchError,
     ResearchState,
@@ -795,27 +796,71 @@ def _finding_status_label(finding: Finding) -> str:
     return _FINDING_STATUS_LABELS.get(status, status)
 
 
+def _table_entry_publisher(url: str, composition: ReportComposition) -> str:
+    credit = composition.page_credits.get(normalize_source_url(url))
+    return credit.publisher if credit is not None else publisher_identity(url)
+
+
+def _table_cell_text(
+    cell: TableCell,
+    composition: ReportComposition,
+    *,
+    shape: str,
+    is_last_column: bool,
+) -> str:
+    """One reviewer-facing cell's own text (spec §11.1; R1's fix round).
+
+    An options-table cell's verbatim span lives in ``cell.text`` (the
+    "Option" column) or in its ``entries`` (a part cell or Recommended by),
+    never in both; a findings-table cell's text is already ``cell.text``
+    except its own Source column, which names its finding ids instead. Only
+    an entryless, textless, finding-less cell -- an option with nothing
+    marked for that part -- ever reads as an em dash.
+    """
+    if cell.text:
+        return cell.text
+    if shape == "findings" and is_last_column:
+        return ", ".join(cell.finding_ids)
+    if not cell.entries:
+        return ""
+    parts: list[str] = []
+    for entry in cell.entries:
+        publisher = _table_entry_publisher(entry.source_url, composition)
+        if entry.text:
+            parts.append(f"{entry.text} — {publisher}")
+        elif is_last_column and entry.date:
+            parts.append(f"{publisher} ({entry.date})")
+        else:
+            parts.append(publisher)
+    return "; ".join(parts)
+
+
 def _table_lines(composition: ReportComposition | None) -> list[str]:
     """The question-shaped table's own rows, one line per row (spec §11.1).
 
-    Each line carries the row's cell texts, headed by their column names, and
-    the statement and fact-row ids backing it -- the same ids R1 asks the
-    reviewer's own ``# Table`` block to police a mis-credited cell against.
+    Each line carries every cell's own text -- the writer's verbatim span
+    when it marked one, else the page(s) behind it -- headed by its column
+    name, with that cell's own backing statement ids attached to it, so a
+    mis-credited cell can be pinned to the statement that supposedly backs
+    it (R1) rather than only to the row.
     """
     if composition is None or composition.table is None:
         return []
     table = composition.table
+    last = len(table.columns) - 1
     lines: list[str] = []
     for row in table.rows:
-        cells = "; ".join(
-            f"{column}: {cell.text or '—'}"
-            for column, cell in zip(table.columns, row)
-        )
-        statement_ids = sorted({sid for cell in row for sid in cell.statement_ids})
+        segments: list[str] = []
+        for position, (column, cell) in enumerate(zip(table.columns, row)):
+            text = _table_cell_text(
+                cell, composition, shape=table.shape, is_last_column=position == last
+            )
+            segment = f"{column}: {text or '—'}"
+            if cell.statement_ids:
+                segment += f" [statements: {', '.join(sorted(cell.statement_ids))}]"
+            segments.append(segment)
         row_ids = sorted({rid for cell in row for rid in cell.row_ids})
-        parts = [f"- {cells}"]
-        if statement_ids:
-            parts.append(f"  backing statements: {', '.join(statement_ids)}")
+        parts = ["- " + "; ".join(segments)]
         if row_ids:
             parts.append(f"  backing fact rows: {', '.join(row_ids)}")
         lines.append("\n".join(parts))
@@ -1113,6 +1158,69 @@ def _render_manifest(packet: ReportReviewInput) -> str:
     )
 
 
+def _reader_statements_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Reader statements\n"
+        "Every sentence the report prints, with the code-built reader label "
+        "its cited figures would carry -- built by code, never printed "
+        "beside the sentence -- and the finding labels it cites (F01…, "
+        "whose snippets and figure labels follow below). A defect may "
+        "cite a statement id from this list and no other.\n"
+        + _render_statements(packet)
+    )
+
+
+def _cited_findings_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Cited findings\n"
+        "The verified findings the statements rest on, with the reader "
+        "labels built from their verified context, each finding's own "
+        "verified/corrected/quoted status, and the snippet the Evidence "
+        "Verifier checked against the page. This is the evidence a "
+        "sentence is judged against.\n" + _render_findings(packet)
+    )
+
+
+def _verified_figures_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Verified figures\n"
+        "The report's own verified figures, each with the label a "
+        "sentence stating it would carry. A forecast's label carries its "
+        "issuer and its release, or says the page stated no release; an "
+        "actual's label says actual.\n" + _render_fact_rows(packet)
+    )
+
+
+def _table_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Table\n"
+        "The question-shaped table code assembled from the statements' "
+        "option marks and the verified figures, one line per row, with "
+        "the backing statement and fact-row ids. A cell crediting a "
+        "source with a verdict or pick its backing statement does not "
+        "carry is a defect against that statement's id.\n"
+        + _render_table(packet)
+    )
+
+
+def _not_found_block(packet: ReportReviewInput) -> str:
+    return (
+        "# What the report could not confirm\n"
+        "The obligations no verified finding answered. The report must "
+        "list these and must not present them as answered.\n"
+        + _render_not_found(packet)
+    )
+
+
+def _deterministic_block(packet: ReportReviewInput) -> str:
+    return (
+        "# Deterministic checks\n"
+        "Integrity results the run computed for itself. A failed check is a "
+        "fact about the candidate, not a verdict — and none of these "
+        "numbers is a target to reach.\n" + _render_deterministic(packet)
+    )
+
+
 def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
     """The one request a review makes: the report, its statements, its findings.
 
@@ -1152,51 +1260,12 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
             f"{packet.reader_content.rstrip()}\n"
             f"{_report_fence(packet.reader_content)}"
         ),
-        (
-            "# Reader statements\n"
-            "Every sentence the report prints, with the code-built reader label "
-            "its cited figures would carry -- built by code, never printed "
-            "beside the sentence -- and the finding labels it cites (F01…, "
-            "whose snippets and figure labels follow below). A defect may "
-            "cite a statement id from this list and no other.\n"
-            + _render_statements(packet)
-        ),
-        (
-            "# Cited findings\n"
-            "The verified findings the statements rest on, with the reader "
-            "labels built from their verified context, each finding's own "
-            "verified/corrected/quoted status, and the snippet the Evidence "
-            "Verifier checked against the page. This is the evidence a "
-            "sentence is judged against.\n" + _render_findings(packet)
-        ),
-        (
-            "# Verified figures\n"
-            "The report's own verified figures, each with the label a "
-            "sentence stating it would carry. A forecast's label carries its "
-            "issuer and its release, or says the page stated no release; an "
-            "actual's label says actual.\n" + _render_fact_rows(packet)
-        ),
-        (
-            "# Table\n"
-            "The question-shaped table code assembled from the statements' "
-            "option marks and the verified figures, one line per row, with "
-            "the backing statement and fact-row ids. A cell crediting a "
-            "source with a verdict or pick its backing statement does not "
-            "carry is a defect against that statement's id.\n"
-            + _render_table(packet)
-        ),
-        (
-            "# What the report could not confirm\n"
-            "The obligations no verified finding answered. The report must "
-            "list these and must not present them as answered.\n"
-            + _render_not_found(packet)
-        ),
-        (
-            "# Deterministic checks\n"
-            "Integrity results the run computed for itself. A failed check is a "
-            "fact about the candidate, not a verdict — and none of these "
-            "numbers is a target to reach.\n" + _render_deterministic(packet)
-        ),
+        _reader_statements_block(packet),
+        _cited_findings_block(packet),
+        _verified_figures_block(packet),
+        _table_block(packet),
+        _not_found_block(packet),
+        _deterministic_block(packet),
         f"# Manifest of what you were shown\n{_render_manifest(packet)}",
     ]
     return [
@@ -2122,9 +2191,11 @@ def remap_review_for_redraft(
         defect.model_copy(
             update={
                 "statement_ids": [
-                    id_map.get(statement_id, statement_id)
+                    id_map[statement_id]
                     for statement_id in defect.statement_ids
-                ]
+                    if statement_id in id_map
+                ],
+                "coverage_ids": _coverage_ids_for(defect, previous_composition),
             }
         )
         for defect in previous_review.defects
@@ -2203,7 +2274,7 @@ def build_scoped_report_review_input(
             severity=defect.severity,
             statement_ids=list(defect.statement_ids),
             target_ids=list(defect.target_ids),
-            coverage_ids=_coverage_ids_for(defect, composition),
+            coverage_ids=list(defect.coverage_ids),
             problem=defect.problem,
         )
         for defect in previous_review.defects
@@ -2226,25 +2297,34 @@ def build_scoped_report_review_input(
 # --- the scoped request ------------------------------------------------------
 
 
-SCOPED_REPORT_REVIEW_SYSTEM_PROMPT = (
-    "You are the terminal reviewer of a research report that was redrafted "
-    "once, after your own previous review of it. You have no tools: "
-    "everything you may rely on is in this request.\n"
+_SCOPED_REVIEW_ADDITION = (
     "\n"
+    "\n"
+    "This report was redrafted once, after your own previous review of it. "
     "The whole report is shown below, for context and cross-part coherence. "
     "Only some of it changed: the changed statement ids are named below, and "
     "so are the ids that did not change and are not being asked again.\n"
     "\n"
     "For each defect your previous review recorded, say whether the redraft "
-    "resolved it or whether it remains. Look for a new defect only among the "
-    "changed statement ids, or in a contradiction a changed statement now "
-    "introduces with the rest of the report; do not raise a new defect "
-    "against an unchanged statement standing alone. Re-score the seven "
-    "report-level dimensions for the whole report as it now stands.\n"
-    "\n"
-    "Report every defect you find as a typed defect, and only against ids in "
-    "this request."
+    "resolved it or whether it remains. Judge every changed statement by "
+    "exactly the standard above. Look for a new defect naming a statement id "
+    "only among the changed ones, or in a contradiction a changed statement "
+    "now introduces with an unchanged one; a defect that names no statement "
+    "at all -- an unanswered obligation, a table or source problem -- is not "
+    "restricted this way. Re-score the seven report-level dimensions for the "
+    "whole report as it now stands."
 )
+
+SCOPED_REPORT_REVIEW_SYSTEM_PROMPT = REPORT_REVIEW_SYSTEM_PROMPT + _SCOPED_REVIEW_ADDITION
+"""The scoped re-review's own developer message (T5 addendum).
+
+Built as the full review's own system prompt plus a short scoped-rules
+paragraph, rather than restated from scratch, so a changed statement is
+judged by exactly the full review's standard -- what a disposition means,
+the figure-label rules, the table mis-credit rule, "a fact that is not in
+the findings you were shown is not established" -- and the scoped addition
+states only what is different about this call.
+"""
 
 SCOPED_REPORT_REVIEW_INSTRUCTION = (
     "The reply carries these fields:\n"
@@ -2256,8 +2336,10 @@ SCOPED_REPORT_REVIEW_INSTRUCTION = (
     "- previous_defect_resolutions: one entry per previous defect id you "
     "were shown, each with whether the redraft resolved it.\n"
     "- new_defects: any new typed defects you found, each naming the "
-    "statement ids it affects; every one must name at least one changed "
-    "statement id.\n"
+    "statement ids and target ids it affects; one naming only unchanged "
+    "statement ids is refused, but a defect naming no statement at all -- an "
+    "unanswered obligation, a table or source problem scoped only to a "
+    "target or a fact row -- is never restricted this way.\n"
     "- rationale: why the report scores as it does now.\n"
     "Every id you cite must be one this request showed you. A changed "
     "statement you leave without a disposition is recorded not_reviewed."
@@ -2285,8 +2367,10 @@ _SCOPED_REVIEW_REPLY_EXAMPLES = (
 def _render_scoped_defect_contract(scoped: ScopedReportReviewInput) -> str:
     return (
         f"{REVIEW_DEFECT_RULES}\n"
-        "- A new defect must name at least one changed statement id; a new "
-        "defect naming only unchanged statement ids is refused.\n"
+        "- A new defect naming only unchanged statement ids is refused; one "
+        "naming no statement at all -- scoped only to a target, a fact row, "
+        "or the report as a whole -- is never refused for that reason, and "
+        "the D11 coverage floor still applies to it.\n"
         f"- Return at most {review_defect_limit(scoped.base)} new defects in "
         "total, on top of the previous defects you are resolving."
     )
@@ -2310,7 +2394,9 @@ def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]
 
     The whole report and every statement are still shown whole, for context
     and cross-part coherence -- only the disposition-judging and new-defect
-    burden is scoped to the changed statement ids.
+    burden is scoped to the changed statement ids. Every section a full
+    review shows is reused verbatim here (P1: the scoped material must not
+    drop the explanatory lines a full review's judgement rests on).
     """
     packet = scoped.base
     static = [
@@ -2360,25 +2446,12 @@ def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]
             "Say, for each one, whether the redraft resolved it.\n"
             + _render_previous_defects(scoped)
         ),
-        (
-            "# Reader statements\n"
-            "Every sentence the report prints, with the code-built reader "
-            "label its cited figures would carry and the finding labels it "
-            "cites.\n" + _render_statements(packet)
-        ),
-        (
-            "# Cited findings\n"
-            "The verified findings the statements rest on.\n"
-            + _render_findings(packet)
-        ),
-        "# Verified figures\n" + _render_fact_rows(packet),
-        "# Table\n" + _render_table(packet),
-        (
-            "# What the report could not confirm\n"
-            "The obligations no verified finding answered.\n"
-            + _render_not_found(packet)
-        ),
-        "# Deterministic checks\n" + _render_deterministic(packet),
+        _reader_statements_block(packet),
+        _cited_findings_block(packet),
+        _verified_figures_block(packet),
+        _table_block(packet),
+        _not_found_block(packet),
+        _deterministic_block(packet),
         f"# Manifest of what you were shown\n{_render_manifest(packet)}",
     ]
     return [
@@ -2426,29 +2499,34 @@ def _merge_previous_defect_resolutions(
     *,
     known_statement_ids: set[str],
 ) -> tuple[list[ReviewDefect], list[str], list[str]]:
-    """Split the previous defects into resolved and unresolved.
+    """Carry every previous defect forward, resolved or not.
 
-    A previous defect the reply never mentions is kept unresolved: silence
-    about a known problem is not the same as fixing it. A statement id a
-    defect named that no longer exists in this packet (one of the parts the
-    redraft itself rewrote) is dropped from its scope the same way an unknown
-    id is dropped from a fresh defect -- the defect stays, addressed by
-    whatever target ids it still carries.
+    T5 addendum item 4: a resolved defect is recorded, not silently dropped
+    -- ``ReviewDefect.resolution`` says which, and ``.material`` reads it, so
+    a resolved defect no longer blocks acceptance but still shows in the
+    merged review's own defect history. A previous defect the reply never
+    mentions is kept unresolved: silence about a known problem is not the
+    same as fixing it. A statement id a defect named that no longer exists
+    in this packet (one of the parts the redraft itself rewrote) is dropped
+    from its scope the same way an unknown id is dropped from a fresh
+    defect -- the defect stays, addressed by whatever target and coverage
+    ids it still carries.
     """
     resolved_by_id = {
         resolution.defect_id.strip(): resolution.resolved
         for resolution in resolutions
         if resolution.defect_id.strip()
     }
-    unresolved: list[ReviewDefect] = []
+    carried: list[ReviewDefect] = []
     resolved_ids: list[str] = []
     unresolved_ids: list[str] = []
     for defect in previous_defects:
-        if resolved_by_id.get(defect.defect_id):
+        resolved = bool(resolved_by_id.get(defect.defect_id))
+        if resolved:
             resolved_ids.append(defect.defect_id)
-            continue
-        unresolved_ids.append(defect.defect_id)
-        unresolved.append(
+        else:
+            unresolved_ids.append(defect.defect_id)
+        carried.append(
             ReviewDefect(
                 defect_id=defect.defect_id,
                 kind=cast(GapKind, defect.kind),
@@ -2459,10 +2537,12 @@ def _merge_previous_defect_resolutions(
                     if statement_id in known_statement_ids
                 ],
                 target_ids=list(defect.target_ids),
+                coverage_ids=list(defect.coverage_ids),
                 problem=defect.problem,
+                resolution="resolved" if resolved else "unresolved",
             )
         )
-    return unresolved, resolved_ids, unresolved_ids
+    return carried, resolved_ids, unresolved_ids
 
 
 def _scoped_new_defects(
@@ -2471,24 +2551,30 @@ def _scoped_new_defects(
     scoped: ScopedReportReviewInput,
     existing_ids: set[str],
 ) -> tuple[list[ReviewDefect], list[str]]:
-    """New defects, kept only when they name a changed statement id.
+    """New defects, refused only when every statement id they name is
+    unchanged.
 
     T5 addendum: "new defects are accepted only in changed parts, or when
     they cite a contradiction with a changed part" -- a defect naming a
     changed id together with the unchanged one it contradicts still names a
-    changed id, so this one rule covers both.
+    changed id, so this one rule covers both. A defect that names *no*
+    statement at all -- a required-target coverage gap (D11), a table or
+    source mis-credit scoped only to fact-row ids, a report-level problem --
+    is not restricted by this rule at all: it goes through :func:`_defects`
+    exactly as a full review's would, D11 floor included, because there is
+    no "which statement" for the scoping rule to apply to.
     """
     defects, notes = _defects(drafts, packet=scoped.base)
     changed = set(scoped.changed_statement_ids)
     kept: list[ReviewDefect] = []
     next_index = 1
     for defect in defects:
-        if not (set(defect.statement_ids) & changed):
+        if defect.statement_ids and not (set(defect.statement_ids) & changed):
             notes.append(
                 f"A new defect ({defect.kind}, naming "
-                f"{', '.join(defect.statement_ids) or 'no statement'}) was "
-                "dropped: a scoped re-review may not raise a new defect "
-                "against unchanged statements alone."
+                f"{', '.join(defect.statement_ids)}) was dropped: a scoped "
+                "re-review may not raise a new defect naming only unchanged "
+                "statements."
             )
             continue
         candidate = f"review-{next_index:02d}"
@@ -2567,14 +2653,14 @@ async def _review_scoped_packet(
     except ReportReviewContractViolation as violation:
         return _failed_review(packet, str(violation), status="incomplete")
 
-    unresolved_defects, resolved_ids, unresolved_ids = (
+    carried_defects, resolved_ids, unresolved_ids = (
         _merge_previous_defect_resolutions(
             scoped.previous_defects,
             reply.previous_defect_resolutions,
             known_statement_ids=set(packet.expected_statement_ids),
         )
     )
-    existing_ids = {defect.defect_id for defect in unresolved_defects}
+    existing_ids = {defect.defect_id for defect in carried_defects}
     new_defects, defect_notes = _scoped_new_defects(
         reply.new_defects, scoped=scoped, existing_ids=existing_ids
     )
@@ -2586,7 +2672,7 @@ async def _review_scoped_packet(
     for statement_id in packet.expected_statement_ids:
         dispositions.setdefault(statement_id, UNREVIEWED_STATEMENT_DISPOSITION)
 
-    all_defects = [*unresolved_defects, *new_defects]
+    all_defects = [*carried_defects, *new_defects]
     derived, derived_statements = _derived_defects(packet, dispositions, all_defects)
 
     scores = reply.dimensions.as_dimensions()

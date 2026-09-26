@@ -1076,10 +1076,33 @@ class ReviewDefect(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     statement_ids: list[str] = Field(default_factory=list)
     problem: str = Field(min_length=1)
+    coverage_ids: list[str] = Field(default_factory=list)
+    """Which part(s) (plan sub-topic coverage ids) this defect names.
+
+    Computed by code from the composition the defect was recorded against
+    (T5 scoped-re-review addendum), so a defect a scoped re-review carries
+    forward across a redraft's renumbering still names the right part even
+    once its own statement id no longer exists in the redrafted
+    composition. Empty for a defect no caller ever addressed this way.
+    """
+    resolution: Literal["resolved", "unresolved"] | None = None
+    """Set only on a defect a scoped re-review (T5 addendum) carried forward
+    from the previous review: whether the redraft resolved it. ``None`` for
+    every defect a review recorded fresh -- a full review's own defects, or
+    a scoped review's own new ones.
+    """
 
     @property
     def material(self) -> bool:
-        """True when this defect must be closed before the report is accepted."""
+        """True when this defect must be closed before the report is accepted.
+
+        A defect a scoped re-review marked ``resolution="resolved"`` (T5
+        addendum) is recorded -- the merged review keeps the full previous-
+        defect history rather than silently dropping the ones the redraft
+        fixed -- but it no longer blocks acceptance, whatever its severity.
+        """
+        if self.resolution == "resolved":
+            return False
         return self.severity in GAP_MATERIAL_SEVERITIES
 
 

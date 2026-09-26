@@ -536,7 +536,7 @@ class FakeReviewer:
     over unchanged content costs nothing.
     """
 
-    def __init__(self, reviews: Sequence[ReportReview] = ()) -> None:
+    def __init__(self, reviews: Sequence[ReportReview | BaseException] = ()) -> None:
         self._reviews = list(reviews) or [fake_report_review()]
         self.packets: list[object] = []
         self.review_records: tuple[ResearchError, ...] = ()
@@ -561,6 +561,8 @@ class FakeReviewer:
         self.packets.append(packet)
         position = min(len(self.packets) - 1, len(self._reviews) - 1)
         review = self._reviews[position]
+        if isinstance(review, BaseException):
+            raise review
         update: dict[str, object] = {"input_fingerprint": fingerprint}
         if review.status == "scored":
             # The composition fingerprint travels with every scored review, or
@@ -593,13 +595,19 @@ class FakeReviewer:
 
         Mirrors ``.review()``'s bookkeeping over ``scoped.base`` (the packet a
         full review of the same content would build), since that is what the
-        merged record is stamped against (T5 addendum).
+        merged record is stamped against (T5 addendum). A queued
+        ``BaseException`` is raised instead of returned, the same contract
+        ``.review()`` and ``FakeAgent`` honour, so a graph test can script a
+        scoped call that fails outright (P2: the fallback-to-full-review
+        gate).
         """
         base = getattr(scoped, "base", scoped)
         fingerprint = getattr(base, "fingerprint", "")
         self.packets.append(scoped)
         position = min(len(self.packets) - 1, len(self._reviews) - 1)
         review = self._reviews[position]
+        if isinstance(review, BaseException):
+            raise review
         update: dict[str, object] = {"input_fingerprint": fingerprint}
         if review.status == "scored":
             update["composition_fingerprint"] = getattr(

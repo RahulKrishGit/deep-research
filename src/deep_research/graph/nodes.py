@@ -20,7 +20,7 @@ recorded error would hide it.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeAlias, runtime_checkable
 
@@ -93,7 +93,7 @@ from deep_research.graph.state import (
     load_state,
 )
 from deep_research.observability import RunTelemetryCollector
-from deep_research.providers import ProviderConfigurationError
+from deep_research.providers import ProviderConfigurationError, ProviderError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
@@ -102,6 +102,7 @@ from deep_research.utils.types import (
     ReportQualitySnapshot,
     ReportReview,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
     advance_research_iteration,
@@ -282,8 +283,11 @@ def report_writer_node(
     changing invalidates the stored review by construction
     (``merge_research_state``), which is right for a genuinely new report but
     would throw away exactly what a scoped re-review needs. When this pass
-    ran with a scored ``report_review`` already in hand (a redraft, spec
-    §6.9), :func:`remap_review_for_redraft` is asked -- with both the
+    ran with a scored ``report_review`` already in hand *and* arrived here
+    through the writer-redraft hop specifically (not an extra research pass
+    that merely still has an old material defect on hand --
+    :func:`_arrived_via_redraft_hop` reads the event log to tell the two
+    apart), :func:`remap_review_for_redraft` is asked -- with both the
     composition that review judged and the one this pass just produced still
     local Python objects -- to carry it onto the new statement ids. It comes
     back ``None`` unless every part the new composition marks carried over is
@@ -313,6 +317,7 @@ def report_writer_node(
             previous_review is not None
             and previous_review.status == "scored"
             and pre_state.composition is not None
+            and _arrived_via_redraft_hop(pre_state.events)
         ):
             remapped = remap_review_for_redraft(
                 previous_review,
@@ -324,6 +329,31 @@ def report_writer_node(
         return _with(state, update)
 
     return node
+
+
+def _arrived_via_redraft_hop(events: Sequence[ResearchEvent]) -> bool:
+    """Whether the writer-redraft hop, not an extra research pass, is what
+    most recently ran before this writer call (T5 addendum, P2).
+
+    ``state.report_review`` surviving with material defects on hand does not
+    by itself say *why* the writer is running again: an extra pass bought by
+    a missing required target loops back through the whole research chain
+    with the same review (and its defects) still in place, and that pass's
+    carried-over parts may now have new evidence and new fact rows behind
+    them that a scoped re-review would never be asked to re-judge. The two
+    hops are told apart by their own marker events: ``writer_redraft_node``
+    always runs immediately before this node with nothing in between
+    (``graph.report.redraft_requested``), while an extra pass re-enters
+    through the researcher, the source evaluator and the evidence verifier
+    first (``graph.extra_pass.started``). Scanning from the most recent event
+    for whichever marker comes first settles it without a new state field.
+    """
+    for event in reversed(events):
+        if event.event_type == "graph.report.redraft_requested":
+            return True
+        if event.event_type == "graph.extra_pass.started":
+            return False
+    return False
 
 
 @runtime_checkable
@@ -892,9 +922,25 @@ async def _review_report(
     scoped = None
     if previous is not None and previous.status == "scored":
         scoped = build_scoped_report_review_input(state, previous_review=previous)
+    scoped_failure: str | None = None
     try:
         if scoped is not None:
-            review = await reviewer.review_scoped(scoped)
+            try:
+                scoped_status: str | None = None
+                review = await reviewer.review_scoped(scoped)
+                if review.status != "scored":
+                    scoped_status = review.status
+            except ProviderError:
+                scoped_status = "provider_failed"
+                review = None
+            if scoped_status is not None:
+                # The addendum's own promise: a scoped call that could not be
+                # made -- a provider failure, an invalid reply, or one that
+                # judged an id this packet does not carry -- is not the final
+                # word. One full, fresh review (never the stale ``previous``)
+                # is tried before the run settles for an unjudged report.
+                scoped_failure = scoped_status
+                review = await reviewer.review(packet, previous=None)
         else:
             review = await reviewer.review(packet, previous=previous)
     except (RequestAttemptLimitError, ProviderConfigurationError) as error:
@@ -926,6 +972,19 @@ async def _review_report(
                 ),
             ],
             False,
+        )
+    if scoped_failure is not None:
+        # T5 addendum: the fallback happened -- recorded here rather than as
+        # its own error, since (unlike every other entry in ``errors``) the
+        # ordinary outcome is that this full review *did* produce a verdict.
+        review = review.model_copy(
+            update={
+                "rationale": (
+                    f"A scoped re-review after the redraft was {scoped_failure} "
+                    "and could not be used; this is a full review of the "
+                    "whole report instead. " + review.rationale
+                ).strip()
+            }
         )
     errors: list[ResearchError] = list(reviewer.review_records)
     if review.status != "scored":

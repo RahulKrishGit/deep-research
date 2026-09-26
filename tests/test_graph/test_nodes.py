@@ -20,6 +20,7 @@ from deep_research.agents.report_reviewer import (
 from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
+from deep_research.graph.events import extra_pass_started_event, redraft_requested_event
 from deep_research.graph.nodes import (
     GraphNode,
     agent_node,
@@ -1014,7 +1015,11 @@ def _redraft_review(old: ReportComposition) -> ReportReview:
 
 
 def _writer_redraft_state() -> ResearchState:
-    """A writer pass about to redraft: the old composition and its full review."""
+    """A writer pass about to redraft: the old composition, its full review,
+    and the redraft hop's own marker event (the P2 gate reads this to tell
+    a redraft from an extra research pass -- ``writer_redraft_node``'s own
+    output, reused here rather than run, so this fixture agrees with the
+    real hop's event shape)."""
     old, _new = _redraft_compositions()
     base = _pass_state()
     return base.model_copy(
@@ -1024,6 +1029,10 @@ def _writer_redraft_state() -> ResearchState:
             "report_evidence": render_finding_log(old),
             "report_review": _redraft_review(old),
             "writer_redrafts": 1,
+            "events": [
+                *base.events,
+                redraft_requested_event(iteration=0, redrafts=1, material_defects=1),
+            ],
         }
     )
 
@@ -1113,6 +1122,86 @@ async def test_the_reviewer_node_falls_back_to_a_full_review_without_a_verified_
 
     assert len(reviewer.packets) == 1
     assert not isinstance(reviewer.packets[0], ScopedReportReviewInput)
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_is_not_scored() -> None:
+    """P2: the addendum's own promise -- a scoped call that could not be
+    made falls back to one full, fresh review, rather than ending in
+    ``review_unavailable`` where a full review might have produced a
+    verdict."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([
+        fake_report_review(status="incomplete"),
+        fake_report_review(reviewed_statement_ids=("S010", "S011", "S012")),
+    ])
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 2
+    assert isinstance(reviewer.packets[0], ScopedReportReviewInput)
+    assert not isinstance(reviewer.packets[1], ScopedReportReviewInput)
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_raises() -> None:
+    """P2, the other trigger: a scoped call that raises outright (a provider
+    error) falls back the same way as one that merely returns unscored."""
+    from deep_research.providers import ProviderResponseError
+
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([
+        ProviderResponseError("boom", failure_origin="sdk"),
+        fake_report_review(reviewed_statement_ids=("S010", "S011", "S012")),
+    ])
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 2
+    assert isinstance(reviewer.packets[0], ScopedReportReviewInput)
+    assert not isinstance(reviewer.packets[1], ScopedReportReviewInput)
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_rewrite_gets_a_full_review_not_a_remap() -> None:
+    """P2: the remap must fire only through the writer-redraft hop, never
+    across an extra-pass iteration boundary, even with a scored review and
+    a defect-bearing ``state.report_review`` still in hand."""
+    state = _writer_redraft_state()
+    # Overwrite the redraft hop's own marker with an extra-pass one: this
+    # writer call is arriving through the research loop-back, not the
+    # redraft hop, even though a scored review with material defects is
+    # still on the state (exactly what an extra pass bought for a missing
+    # target, alongside an unrelated material defect, looks like).
+    state = state.model_copy(
+        update={
+            "events": [
+                *state.events[:-1],
+                extra_pass_started_event(
+                    iteration=0, max_extra_passes=1, targets=["topic-01-target-01"]
+                ),
+            ]
+        }
+    )
+    _old, new = _redraft_compositions()
+
+    loaded = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+
+    assert loaded.report_review is None
 
 
 # --- the terminal publication ------------------------------------------------

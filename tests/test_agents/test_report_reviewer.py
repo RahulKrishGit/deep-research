@@ -35,6 +35,7 @@ from deep_research.agents.report import (
 )
 from deep_research.agents.report_reviewer import (
     _fact_row_line,
+    _table_lines,
     REPORT_REVIEWER_ROLE,
     REPORT_REVIEW_PROMPT_VERSION,
     REPORT_REVIEW_SYSTEM_PROMPT,
@@ -2149,7 +2150,7 @@ def test_the_packet_carries_a_table_block_with_backing_ids() -> None:
     built = build_report_review_input(state_with_written_report(composition=_table_composition()))
     rendered = _render(built)
     assert "# Table" in rendered
-    assert "backing statements: S001" in rendered
+    assert "[statements: S001]" in rendered
     assert "backing fact rows: K001" in rendered
     assert "10.4 GW" in rendered
 
@@ -2398,9 +2399,13 @@ async def test_a_resolved_defect_is_recorded_as_resolved_and_an_unresolved_one_a
 
     review = await reviewer.review_scoped(scoped)
 
-    ids = {defect.defect_id for defect in review.defects}
-    assert "review-01" in ids
-    assert "review-02" not in ids
+    by_id = {defect.defect_id: defect for defect in review.defects}
+    assert by_id["review-01"].resolution == "unresolved"
+    assert by_id["review-02"].resolution == "resolved"
+    # A resolved defect is recorded, not silently dropped, but no longer
+    # blocks acceptance whatever its original severity (T5 addendum item 4).
+    assert not by_id["review-02"].material
+    assert by_id["review-01"].material
     assert "Resolved by the redraft: review-02" in review.rationale
     assert "Still unresolved: review-01" in review.rationale
 
@@ -2473,7 +2478,7 @@ async def test_a_new_defect_claimed_on_an_unchanged_part_is_refused() -> None:
 
     problems = [defect.problem for defect in review.defects]
     assert "Part A alone reads a little repetitive." not in problems
-    assert "may not raise a new defect against unchanged statements alone" in review.rationale
+    assert "may not raise a new defect naming only unchanged statements" in review.rationale
 
 
 @pytest.mark.asyncio
@@ -2588,3 +2593,274 @@ def test_the_scoped_packet_fingerprint_differs_from_the_full_packets() -> None:
 def test_the_scoped_prompt_asks_for_each_previous_defects_own_resolution() -> None:
     assert "say whether the redraft resolved it" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
     assert "previous_defect_resolutions" in SCOPED_REPORT_REVIEW_INSTRUCTION
+
+
+# --- reviewer round (RevFormatT5): P0/P1 fixes -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_target_only_coverage_defect_in_a_scoped_reply_stays_major() -> None:
+    """P0 repro: a new defect naming no statement at all (a report-level or
+    target-scoped coverage gap) must not be dropped, and D11's floor must
+    still force it material in the scoped path exactly as a full review
+    would -- a findings-table mis-credit works the same way, since its own
+    defect carries only fact-row ids and no statement id either.
+    """
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    assert TARGET_ID in scoped.base.required_target_ids
+
+    reply = ScopedReportReviewDraft(
+        dimensions=ReviewDimensionScores(**_scores()),
+        statement_dispositions=[
+            StatementDispositionDraft(statement_id="S010", disposition="supported"),
+            StatementDispositionDraft(statement_id="S012", disposition="supported"),
+        ],
+        previous_defect_resolutions=[
+            PreviousDefectResolutionDraft(defect_id="review-01", resolved=True),
+        ],
+        new_defects=[
+            ReviewDefectDraft(
+                kind="coverage", severity="minor", statement_ids=[], target_ids=[TARGET_ID],
+                problem="The redraft still leaves this required target unanswered.",
+            )
+        ],
+        rationale="Coverage is still missing.",
+    )
+    reviewer = ReportReviewer(provider=ScriptedCompleter(outputs=[reply]))
+
+    review = await reviewer.review_scoped(scoped)
+
+    coverage_defects = [d for d in review.defects if d.kind == "coverage"]
+    assert coverage_defects, "the target-only coverage defect must not be dropped"
+    assert coverage_defects[0].severity == "major"
+    assert not semantic_review_passes(review)
+
+
+@pytest.mark.asyncio
+async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_statement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1 repro, with the real writer's own renumbering: a redrafted part
+    shrinks by one point, which shifts a carried-over part's statement ids.
+    A previous defect against the redrafted part's own (now gone) statement
+    must never be carried onto the carried-over part's shifted statement
+    just because the old id string happens to collide with the new one.
+    """
+    from deep_research.agents.report_writer import ReportWriterTask, compose_written_report
+    from deep_research.utils.types import BottomLineDraft, SectionDraft, SubTopic
+    from deep_research.utils.types import WriterPointDraft as _WriterPointDraft
+
+    class _Verdict:
+        def __init__(self, label: str) -> None:
+            self.label = label
+            self.verdict = "consistent"
+            self.corrected_text = ""
+            self.reason = "the finding states it"
+
+    async def consistent(
+        provider, items, *, question, fingerprint=None,
+        batch_size=None, concurrency=None, gate=None,
+    ):
+        del provider, question, fingerprint, batch_size, concurrency, gate
+        return {item.label: _Verdict(item.label) for item in items}, []
+
+    monkeypatch.setattr(
+        "deep_research.agents.evidence_verifier.check_statements", consistent
+    )
+
+    target_a = make_target("topic-01-target-01")
+    target_b = make_target("topic-02-target-01")
+    topic_a = SubTopic(
+        coverage_id="topic-01", title="Part A", rationale="It matters.",
+        search_queries=["a"], success_criteria=["a"], priority=1, evidence_targets=[target_a],
+    )
+    topic_b = SubTopic(
+        coverage_id="topic-02", title="Part B", rationale="It matters.",
+        search_queries=["b"], success_criteria=["b"], priority=2, evidence_targets=[target_b],
+    )
+    read_a = make_read(url="https://a.test/1", title="Page A")
+    finding_a = make_finding(
+        read_a, "Part A's finding.", figures=[figure("10.4", "GW", "2024", "actual")],
+        target_ids=["topic-01-target-01"],
+    )
+    finding_a = finding_a.model_copy(update={
+        "verification": FindingVerification(
+            status="verified",
+            figure_results=[FigureResult(
+                figure=finding_a.figures[0], matched=True, evidence_words="10.4 GW",
+                context=FigureContext(period="2024", scope=None, attribution="own",
+                                       organisation="Org A", kind="actual"),
+            )],
+        )
+    })
+    read_b = make_read(url="https://a.test/2", title="Page B")
+    finding_b = make_finding(
+        read_b, "Part B's finding.", figures=[figure("5.0", "GW", "2025", "actual")],
+        target_ids=["topic-02-target-01"],
+    )
+    finding_b = finding_b.model_copy(update={
+        "verification": FindingVerification(
+            status="verified",
+            figure_results=[FigureResult(
+                figure=finding_b.figures[0], matched=True, evidence_words="5.0 GW",
+                context=FigureContext(period="2025", scope=None, attribution="own",
+                                       organisation="Org B", kind="actual"),
+            )],
+        )
+    })
+
+    def _task(*, defects, previous):
+        return ReportWriterTask(
+            session_id=SESSION_ID, instruction=QUESTION, question=QUESTION,
+            iteration=0, max_extra_passes=1, as_of="2026-08-01", scope="United States",
+            generated_on="2026-08-01",
+            sub_topics=[topic_a, topic_b], targets=[target_a, target_b],
+            findings=[finding_a, finding_b], sources=[],
+            registry=[("F01", finding_a), ("F02", finding_b)],
+            facts=[], not_found=[],
+            answered={
+                "topic-01-target-01": [finding_fingerprint(finding_a)],
+                "topic-02-target-01": [finding_fingerprint(finding_b)],
+            },
+            defects=defects, previous=previous,
+        )
+
+    first_completer = ScriptedCompleter(
+        outputs=[
+            SectionDraft(
+                title="Part A",
+                points=[
+                    _WriterPointDraft(text="Part A's first point.", finding_labels=["F01"]),
+                    _WriterPointDraft(text="Part A's second point, which is wrong.", finding_labels=["F01"]),
+                ],
+            ),
+            SectionDraft(
+                title="Part B",
+                points=[_WriterPointDraft(text="Part B's point.", finding_labels=["F02"])],
+            ),
+            BottomLineDraft(
+                sentences=[_WriterPointDraft(text="Bottom line before the redraft.", finding_labels=["F01"])]
+            ),
+        ]
+    )
+    old = await compose_written_report(
+        _task(defects=[], previous=None), provider=first_completer, section_concurrency=1
+    )
+
+    wrong_statement_id = old.sections[0].points[1].statement.statement_id
+    old_first_id = old.sections[0].points[0].statement.statement_id
+    old_b_id = old.sections[1].points[0].statement.statement_id
+    defect = ReviewDefect(
+        defect_id="review-01", kind="missing_support", severity="major",
+        statement_ids=[wrong_statement_id], target_ids=["topic-01-target-01"],
+        problem="Part A's second point is not backed by the finding.",
+    )
+
+    second_completer = ScriptedCompleter(
+        outputs=[
+            SectionDraft(
+                title="Part A",
+                points=[_WriterPointDraft(text="Part A's corrected point.", finding_labels=["F01"])],
+            ),
+            BottomLineDraft(
+                sentences=[_WriterPointDraft(text="Bottom line after the redraft.", finding_labels=["F01"])]
+            ),
+        ]
+    )
+    new = await compose_written_report(
+        _task(defects=[defect], previous=old), provider=second_completer, section_concurrency=1
+    )
+
+    statuses = {part.coverage_id: part.status for part in new.parts}
+    assert statuses["topic-01"] == "written"
+    assert statuses["topic-02"] == "carried_over"
+    carried_section = next(section for section in new.sections if section.coverage_id == "topic-02")
+    carried_id = carried_section.points[0].statement.statement_id
+    # The renumbering shifted part B's carried statement onto the defect's
+    # stale old id -- the exact collision the fix must not fall for.
+    assert carried_id == wrong_statement_id
+
+    previous_review = ReportReview(
+        status="scored", dimensions=_scores(0.85), defects=[defect],
+        per_statement_dispositions={
+            old_first_id: "supported",
+            wrong_statement_id: "unsupported",
+            old_b_id: "supported",
+        },
+        reviewed_statement_ids=[old_first_id, wrong_statement_id, old_b_id],
+        input_fingerprint="old-fp", composition_fingerprint=composition_semantic_fingerprint(old),
+        rubric_version=REVIEW_RUBRIC_VERSION, rationale="The first full review.",
+    )
+
+    remapped = remap_review_for_redraft(previous_review, previous_composition=old, composition=new)
+
+    assert remapped is not None
+    assert set(remapped.per_statement_dispositions) == {carried_id}
+    remapped_defect = next(d for d in remapped.defects if d.defect_id == "review-01")
+    assert remapped_defect.statement_ids == []
+    assert remapped_defect.coverage_ids == ["topic-01"]
+
+
+def test_the_table_block_shows_real_option_cell_text_and_publishers() -> None:
+    """P1 repro: the packet's own '# Table' block must show the reader's own
+    cell content -- the writer's marks over checked statements -- not an em
+    dash for every options-table cell, and must pin each cell's own backing
+    statement ids so a mis-credit can be found.
+    """
+    from deep_research.agents.report_table import options_table
+    from tests.test_agents.test_report_table import _fable_composition
+
+    composition = _fable_composition()
+    table = options_table(composition)
+    composition = composition.model_copy(update={"table": table})
+
+    lines = _table_lines(composition)
+    rendered = "\n".join(lines)
+
+    assert "the best wireless headphones" in rendered
+    assert "sound score of 4.8 out of 5" in rendered
+    assert "SoundGuys" in rendered
+    assert "[statements:" in rendered
+    xm6_line = lines[0]
+    # The cells the fixture actually marks must not read as empty, even
+    # though "—" also appears as the credit separator inside populated ones.
+    assert "Sound quality: —" not in xm6_line
+    assert "Microphone: —" not in xm6_line
+
+
+def test_the_scoped_developer_message_carries_the_full_reviews_judging_rules() -> None:
+    """P1: changed statements must be judged by exactly the full review's
+    standard, so the scoped developer message must carry its rules."""
+    assert "against their figure labels" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
+    assert "according to X" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
+    assert (
+        "a fact that is not in the findings you were shown is not "
+        "established by anything you know" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT.casefold()
+    )
+
+
+def test_the_scoped_messages_reuse_the_full_reviews_section_intros() -> None:
+    old, new, previous_review = _redraft_fixture()
+    remapped = remap_review_for_redraft(
+        previous_review, previous_composition=old, composition=new
+    )
+    assert remapped is not None
+    scoped = build_scoped_report_review_input(_redraft_state(new), previous_review=remapped)
+    assert scoped is not None
+    rendered = "\n\n".join(m.content for m in scoped_review_messages(scoped))
+
+    assert "must list these and must not present them as answered" in rendered
+    assert (
+        "The report's own verified figures, each with the label a sentence "
+        "stating it would carry" in rendered
+    )
+    assert (
+        "The question-shaped table code assembled from the statements' "
+        "option marks" in rendered
+    )
