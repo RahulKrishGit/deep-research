@@ -508,6 +508,21 @@ def test_section_instruction_describes_the_option_marks():
     assert "picked" in SECTION_INSTRUCTION and "items" in SECTION_INSTRUCTION
 
 
+def test_section_instruction_defines_picked_and_by_for_a_relayed_recommendation():
+    """Whole-branch review P1-1: a relayed pick (a body the page reports as
+    recommending an option, not the page's own voice) is not ambiguous."""
+    assert ("picked true when the finding reports a recommendation by the body it "
+           "attributes" in SECTION_INSTRUCTION)
+    assert "by the finding whose page reports the recommendation" in SECTION_INSTRUCTION
+
+
+def test_section_instruction_keeps_the_criterion_in_the_verdict_span():
+    """Whole-branch review P2-2: the "shortest span" rule must not cut the
+    criterion the sentence states the verdict by."""
+    assert "including the criterion the sentence states it by" in SECTION_INSTRUCTION
+
+
+
 def test_section_instruction_describes_the_redraft_rule():
     assert "only the edits" in SECTION_INSTRUCTION
 
@@ -795,6 +810,79 @@ def _scored_review(defects):
 
 
 @pytest.mark.asyncio
+async def test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P0-1: an extra research pass is a new iteration, not a writer
+    redraft, even though the prior iteration's review still has a material
+    defect on file. Carrying that review's defects/previous section into a
+    new iteration would silently carry a part over unchanged and drop the
+    pass's own new evidence -- only a true redraft hop (the same iteration
+    re-run after review) carries them."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                 target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                 target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    # The extra pass's own new evidence, not present in the pass-0 review.
+    f3 = _checked("https://a.test/3", "12.1 GW in 2024, revised.", "12.1", "GW",
+                 organisation=EIA, target_ids=["topic-01-target-01"])
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2])]
+
+    previous_statement_1 = ReportStatement(statement_id="S001", text="10.4 GW in 2024.",
+                                           finding_ids=[finding_fingerprint(f1)], target_ids=["topic-01-target-01"])
+    previous_section_1 = ReportSection(title="First", coverage_id="topic-01",
+                                       points=[ReportPointFor("10.4 GW in 2024.", previous_statement_1)])
+    from deep_research.utils.types import ReportComposition
+    previous = ReportComposition(question="Q?", session_id="s1", sections=[previous_section_1],
+                                 summary=[], sub_topics=topics, iteration=0)
+    defect = ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
+                          target_ids=["topic-01-target-01"], problem="Needs the release date.")
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=topics, iteration=1,
+                          verified_findings=[f1, f2, f3], composition=previous,
+                          report_review=_scored_review([defect]))
+
+    calls: list[str] = []
+
+    def _label_for(body: str, content: str) -> str:
+        header = body[: body.index(f"content: {content}")].rsplit("## ", 1)[-1]
+        return header.split(":", 1)[0]
+
+    def route(messages, schema):
+        body = messages[-1].content
+        if schema.__name__ == "BottomLineDraft":
+            calls.append("bottom_line")
+            return BottomLineDraft(sentences=[])
+        if "12.1 GW in 2024, revised." in body:
+            calls.append("topic-01")
+            label = _label_for(body, "12.1 GW in 2024, revised.")
+            return SectionDraft(title="First",
+                                points=[WriterPointDraft(text="12.1 GW in 2024, revised.",
+                                                        finding_labels=[label])])
+        calls.append("topic-02")
+        label = _label_for(body, "5 GW in 2025.")
+        return SectionDraft(title="Second",
+                            points=[WriterPointDraft(text="5 GW in 2025.", finding_labels=[label])])
+
+    completer = ScriptedCompleter(outputs=[route, route, route])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    assert task.defects == []
+    assert task.previous is None
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert calls.count("topic-01") == 1
+    assert calls.count("topic-02") == 1
+    statuses = {p.coverage_id: p.status for p in composition.parts}
+    assert statuses["topic-01"] == "written"
+    assert statuses["topic-02"] == "written"
+
+
+
+@pytest.mark.asyncio
 async def test_the_output_is_identical_whatever_order_the_calls_complete_in(checker, tracker: Tracker, tmp_path: Path) -> None:
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
@@ -919,6 +1007,53 @@ async def test_a_corrected_verdict_replaces_the_sentence(writer, checker) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_title_with_a_digit_falls_back_to_the_sub_topic_title(writer, checker) -> None:
+    """Whole-branch review P2-1: a drafted title prints raw and becomes an
+    options-table column header, so a quantity in it falls back to the
+    sub-topic's own title instead of printing unchecked."""
+    state = _one_part_state()
+    task = writer.build_task(state)
+    writer.provider._outputs.extend([
+        SectionDraft(title="65 GW by 2027",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider)
+
+    assert composition.sections[0].title == "Capacity added"
+
+
+@pytest.mark.asyncio
+async def test_a_title_with_a_verdict_word_falls_back_to_the_sub_topic_title(writer, checker) -> None:
+    """Whole-branch review P2-1: a verdict word in a drafted title (a small
+    general lexicon) falls back the same way a quantity does."""
+    state = _one_part_state()
+    task = writer.build_task(state)
+    writer.provider._outputs.extend([
+        SectionDraft(title="The Best Option",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider)
+
+    assert composition.sections[0].title == "Capacity added"
+
+
+def test_section_title_cuts_at_a_word_boundary_not_mid_word():
+    """Whole-branch review P2-1: spec §6.4 rule 7's 80-character bound is a
+    word-boundary cut, never a mid-word one."""
+    from deep_research.agents.report_writer import _section_title
+    long_title = ("A" * 75) + " " + ("B" * 20)
+
+    title = _section_title(long_title, "Fallback title")
+
+    assert title == "A" * 75
+
+
+
+@pytest.mark.asyncio
 async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> None:
     state = _one_part_state()
     task = writer.build_task(state)
@@ -933,6 +1068,34 @@ async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> Non
 
     assert composition.sections == []
     assert composition.rejected_points[0].reason == "not in the findings"
+    # P1-3: a part whose every drafted point was refused is undrafted, not
+    # silently "written" with nothing to show -- the renderer's per-part and
+    # every-part-failed disclosures both key off this.
+    assert composition.parts[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_report_with_only_refused_points_discloses_it_not_the_no_source_fallback(
+    writer, checker,
+) -> None:
+    """P1-3 repro (b): with a verified finding on file but every drafted
+    point refused, the report must say its sections could not be written --
+    never the §10 "no source we could check answers this question" sentence,
+    which is reserved for a pass that cites nothing at all."""
+    state = _one_part_state()
+    task = writer.build_task(state)
+    checker.verdicts["P01.01"] = _verdict("inconsistent", reason="not in the findings")
+    writer.provider._outputs.extend([
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[]),
+    ])
+
+    composition = await compose_written_report(task, provider=writer.provider)
+    markdown = render_written_report(composition)
+
+    assert "No source we could check answers this question." not in markdown
+    assert "could not be written this time" in markdown
 
 
 @pytest.mark.asyncio
@@ -1097,6 +1260,50 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
     assert "A denied page" in markdown
     assert "access was denied" in markdown
     assert "A denied page" in evidence
+
+
+@pytest.mark.asyncio
+async def test_the_pages_own_metadata_date_outranks_the_evaluators_admitted_date(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """P1-2: the Source Evaluator sees only excerpts and can admit a content
+    date (a date the page's own text merely mentions) as the publication
+    date; the page's own read metadata, when the page carries one, is never
+    second-guessed by it."""
+    target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    read = make_read("10.4 GW in 2024.", url="https://a.test/1", title="Org One page")
+    read = read.model_copy(update={"page_published": "2026-09-17"})
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation="Org One",
+                 target_ids=["topic-01-target-01"])
+    f1 = f1.model_copy(update={"read_id": read.read_id})
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation="Org Two",
+                 target_ids=["topic-01-target-01"], kind="forecast", period="2025")
+    source = ScoredSource(
+        url="https://a.test/1", title="Org One page", authority_score=0.8, recency_score=0.8,
+        relevance_score=0.8, overall_score=0.8, rationale="Directly on point.",
+        temporal=SourceTemporal(publication_date="2025-05-15"),
+    )
+    topic = _topic("topic-01", "Capacity added", [target])
+    state = ResearchState(
+        session_id="s1", original_question="Q?", sub_topics=[topic],
+        verified_findings=[f1, f2], evaluated_sources=[source],
+        read_records={read.read_id: read},
+    )
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added", points=[
+            WriterPointDraft(text="10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="5 GW in 2025.", finding_labels=["F02"]),
+        ]),
+        BottomLineDraft(sentences=[]),
+    ])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    credit = composition.page_credits[normalize_source_url("https://a.test/1")]
+    assert credit.date == "2026-09-17"
+    assert credit.date_kind == "published"
 
 
 @pytest.mark.asyncio

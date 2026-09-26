@@ -115,14 +115,18 @@ REPORT_WRITER_NAME = "report_writer"
 # _DEFECT_PROBLEM_CHARS 400 -> 2000, the old DEFAULT_MAX_SECTIONS = 4 cap is
 # deleted outright (every plan part gets its section, one call per part, no
 # part dropped for count), and no new cap is added on points per section or
-# findings per part. _SECTION_TITLE_CHARS keeps its pre-existing value (120)
-# rather than the spec's 80: it is a structural backstop against a
-# pathological reply, not a quality-shaping cap, and the ruling asked it to
-# stay. MAX_BOTTOM_LINE_SENTENCES (4) stays: it is the top of the bottom
-# line's own 2-4 sentence shape (WRI-4), not a truncation of content.
+# findings per part. MAX_BOTTOM_LINE_SENTENCES (4) stays: it is the top of
+# the bottom line's own 2-4 sentence shape (WRI-4), not a truncation of
+# content.
+# Whole-branch review P2-1: _SECTION_TITLE_CHARS moved to the spec's 80 (a
+# drafted title prints raw and becomes an options-table column header, so
+# the earlier 120 was too wide a backstop) and its cut is now a word
+# boundary, never mid-word; a title carrying a digit/quantity or a verdict
+# word (spec §6.4 rule 7's own concern) falls back to the sub-topic's own
+# title instead of printing unchecked.
 MAX_POINT_CHARS = 1200
 MAX_BOTTOM_LINE_SENTENCES = 4
-_SECTION_TITLE_CHARS = 120
+_SECTION_TITLE_CHARS = 80
 _MARK_SPAN_CHARS = 80
 CONTEXT_ONLY_RELEVANCE = 0.5
 # Spec §17 Q6 chose 7 (= max_sub_topics) so every part starts at once; a
@@ -232,10 +236,11 @@ SECTION_INSTRUCTION = (
     "choose among or compare) your point is about, in items: name exactly as your "
     "point's text writes it, and the same way every time it recurs; verdict the "
     "shortest span of your point's text giving that source's verdict, score or price "
-    "for it; picked true only when the finding reports that its source recommends, "
-    "picks or ranks the option first; by the finding label the mark rests on, required "
-    "when the point cites more than one site. Leave items empty for a point about no "
-    "option.\n"
+    "for it, including the criterion the sentence states it by; picked true when the "
+    "finding reports a recommendation by the body it attributes -- the page itself, or "
+    "a named organisation the page reports; by the finding whose page reports the "
+    "recommendation, required when the point cites more than one site. Leave items "
+    "empty for a point about no option.\n"
     "- On a redraft, return your previous section with only the edits the listed "
     "defects need; keep every other point word for word.\n"
     "- Never use a verdict or corroboration word (verified, confirmed, corroborated, "
@@ -683,6 +688,19 @@ def material_defects(review: ReportReview | None) -> list[ReviewDefect]:
     return list(review.material_defects)
 
 
+def _is_redraft_hop(state: ResearchState) -> bool:
+    """P0-1: a redraft (the same iteration re-run after review) carries the
+    review's defects and the previous composition forward; a new iteration
+    (an extra research pass) does not, even when a material defect is still
+    on file from the iteration that bought the pass -- that review is
+    against the composition the pass is about to replace with fresh
+    evidence, not against this iteration's own draft, so carrying it here
+    would silently apply "minimal edits" to a part that instead needs its
+    new finding written from scratch.
+    """
+    return state.composition is not None and state.composition.iteration == state.iteration
+
+
 def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
     """One bounded line per defect: its id, kind, scope, and its own sentence.
 
@@ -857,6 +875,33 @@ def _has_unnamed_subject(text: str) -> bool:
     if _UNNAMED_SUBJECT.match(text.strip()):
         return True
     return any(_UNNAMED_SUBJECT.match(match.group(1).strip()) for match in _QUOTED_SPAN.finditer(text))
+
+
+#: Whole-branch review P2-1: a small, general verdict lexicon -- a drafted
+#: title carrying one of these (or a digit/quantity) prints raw as an
+#: options-table column header, so it falls back to the sub-topic's own
+#: title instead. Matched on whole words only, with simple inflections
+#: (\w* lets "recommended"/"recommends", "tops"/"topped", "winners" through).
+_TITLE_VERDICT_WORD = re.compile(
+    r"\b(?:best|worst|top\w*|winner\w*|leading|recommend\w*|pick\w*)\b", re.IGNORECASE,
+)
+_TITLE_DIGIT = re.compile(r"\d")
+
+
+def _section_title(drafted_title: str, sub_topic_title: str) -> str:
+    """Spec §6.4 rule 7's title, cut at ``_SECTION_TITLE_CHARS`` on a word
+    boundary; a title stating a digit/quantity or a verdict word (spec §17's
+    own concern: a raw, unchecked title becomes an options-table column
+    header) falls back to the sub-topic's own title instead."""
+    title = " ".join(drafted_title.split())
+    if not title or _TITLE_DIGIT.search(title) or _TITLE_VERDICT_WORD.search(title):
+        return sub_topic_title
+    if len(title) <= _SECTION_TITLE_CHARS:
+        return title
+    cut = title[:_SECTION_TITLE_CHARS]
+    boundary = cut.rfind(" ")
+    return cut[:boundary] if boundary > 0 else cut
+
 
 
 def _cosmetic_contains(haystack: str, needle: str) -> bool:
@@ -1336,9 +1381,14 @@ async def _run_part(
             points.append(point)
             verdict_map[point.statement_id] = verdict_string
 
-    title = " ".join(draft.title.split())[:_SECTION_TITLE_CHARS] or job.sub_topic_title
+    title = _section_title(draft.title, job.sub_topic_title)
     section = ReportSection(title=title, points=points, coverage_id=job.coverage_id) if points else None
-    return _PartOutcome(job=job, section=section, status="written",
+    # P1-3: a draft that kept nothing (every point refused) is undisclosed
+    # and unwritten, not "written" -- "written" with no section silently
+    # hides a part that had findings, so the every-part-failed wording never
+    # fires and the per-part evidence-log pointer never prints for it.
+    status = "written" if points else "failed"
+    return _PartOutcome(job=job, section=section, status=status,
                         errors=[*draft_errors, *check_errors], verdicts=verdict_map,
                         rejected=rejected, dropped_marks=dropped_marks)
 
@@ -1560,11 +1610,14 @@ def _page_credit(
     sources: Sequence[ScoredSource],
 ) -> PageCredit:
     """Spec §6.7/§8: the publisher from the page's own words (or the host),
-    and the date in order: the Source Evaluator's validated
-    ``publication_date``; else the read's own ``page_published``; else its
-    ``page_updated`` (``date_kind`` marks which); never a figure's
-    ``statement_date`` or its vintage -- those are the figure's, not the
-    page's.
+    and the date in order: the read's own ``page_published``; else its
+    ``page_updated`` (``date_kind`` marks which); else the Source
+    Evaluator's validated ``publication_date``, used only when the page
+    carries no metadata date of its own -- the evaluator sees only excerpts
+    and can admit a date the page's text merely mentions (P1-2: a content
+    date such as a product's release date is not the page's own date) --
+    never a figure's ``statement_date`` or its vintage: those are the
+    figure's, not the page's.
     """
     # Imported at call time, matching this module's other evidence_verifier
     # seams: no import cycle (evidence_verifier never imports this module at
@@ -1575,13 +1628,13 @@ def _page_credit(
     read = reads.get(finding.read_id) if finding is not None else None
     publisher = page_owner(read) if read is not None else publisher_identity(url)
     if read is not None:
-        validated = evaluated_page_date(sources, read)
-        if validated:
-            return PageCredit(publisher=publisher, date=validated, date_kind="published")
         if read.page_published:
             return PageCredit(publisher=publisher, date=read.page_published, date_kind="published")
         if read.page_updated:
             return PageCredit(publisher=publisher, date=read.page_updated, date_kind="updated")
+        validated = evaluated_page_date(sources, read)
+        if validated:
+            return PageCredit(publisher=publisher, date=validated, date_kind="published")
     return PageCredit(publisher=publisher, date=None, date_kind=None)
 
 
@@ -1926,8 +1979,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             answered=answered,
             reads=dict(state.read_records),
             passages=statement_passages(findings, state.read_records),
-            defects=material_defects(state.report_review),
-            previous=state.composition,
+            defects=material_defects(state.report_review) if _is_redraft_hop(state) else [],
+            previous=state.composition if _is_redraft_hop(state) else None,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
         )
 
