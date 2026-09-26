@@ -28,6 +28,7 @@ evidence.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 import unicodedata
@@ -1186,6 +1187,94 @@ def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
     return neighbouring_passage_text(read, locator)
 
 
+# How many raw characters of look-back ``_incremental_normalised_boundaries``
+# reads on each side of a new passage before deciding what changed: enough
+# to carry a line-break hyphen, a numeric-range hyphen, or the combining
+# marks NFC composes, across the cut. A run of raw whitespace longer than
+# this is the one seam it cannot see whole; the verification step below
+# catches that case and falls back to the exact computation instead of
+# trusting a wrong boundary.
+_SEAM_TAIL_CHARS = 16
+
+
+def _cosmetic_length(text: str, *, join_hyphenation: bool) -> int:
+    return len(cosmetic_text(text, join_hyphenation=join_hyphenation))
+
+
+def _exact_normalised_boundaries(
+    raw_passages: Sequence[str], *, join_hyphenation: bool
+) -> list[int]:
+    """Each passage's cumulative normalised-prefix boundary, renormalising
+    the whole growing prefix every step.
+
+    Exact, and O(page length squared): the fallback
+    :func:`_incremental_normalised_boundaries` is checked against when its
+    own bounded look-back cannot be trusted.
+    """
+    boundaries: list[int] = []
+    prefix = ""
+    for part in raw_passages:
+        boundaries.append(_cosmetic_length(prefix, join_hyphenation=join_hyphenation))
+        prefix += part
+    return boundaries
+
+
+def _incremental_normalised_boundaries(
+    raw_passages: Sequence[str], *, join_hyphenation: bool
+) -> tuple[list[int], int]:
+    """Each passage's cumulative normalised-prefix boundary, computed from
+    the previous boundary and a bounded look-back tail instead of
+    renormalising the whole growing prefix every step.
+
+    ``cosmetic_text`` only changes text locally -- a whitespace run, a
+    line-break hyphen or numeric-range join, an NFC composition, a case
+    fold -- so the last ``_SEAM_TAIL_CHARS`` raw characters carry every
+    seam a newly appended passage could complete, and the delta the new
+    passage contributes is read from ``tail + part`` alone rather than the
+    whole prefix so far. This is what keeps admission linear in page length
+    instead of quadratic. Returns the per-passage boundaries and the final
+    cumulative total, which the caller checks against the exact total
+    before trusting them.
+    """
+    boundaries: list[int] = []
+    prefix = ""
+    boundary = 0
+    for part in raw_passages:
+        boundaries.append(boundary)
+        tail = prefix[-_SEAM_TAIL_CHARS:]
+        boundary += _cosmetic_length(
+            tail + part, join_hyphenation=join_hyphenation
+        ) - _cosmetic_length(tail, join_hyphenation=join_hyphenation)
+        prefix += part
+    return boundaries, boundary
+
+
+@functools.lru_cache(maxsize=128)
+def _locate_snippet_body(
+    read_id: str, join_hyphenation: bool, raw_passages: tuple[str, ...]
+) -> tuple[str, tuple[int, ...]]:
+    """The read's whole raw body normalised once, with each passage's
+    cumulative boundary into it.
+
+    Cached per ``(read_id, join_hyphenation)`` -- keyed on the passages
+    themselves too, so a cache entry can never answer for content it was
+    not built from -- because :func:`locate_snippet` runs once per finding
+    and one page admits many. The boundaries come from the incremental,
+    linear-time computation, verified against a single exact pass over the
+    whole body and silently replaced by the exact, quadratic computation
+    only on the rare seam the incremental one cannot see whole.
+    """
+    boundaries, incremental_total = _incremental_normalised_boundaries(
+        raw_passages, join_hyphenation=join_hyphenation
+    )
+    full_text = cosmetic_text("".join(raw_passages), join_hyphenation=join_hyphenation)
+    if incremental_total != len(full_text):
+        boundaries = _exact_normalised_boundaries(
+            raw_passages, join_hyphenation=join_hyphenation
+        )
+    return full_text, tuple(boundaries)
+
+
 def locate_snippet(
     read: ReadRecord, snippet: str, *, claimed_locator: str = ""
 ) -> str | None:
@@ -1210,6 +1299,9 @@ def locate_snippet(
     are read together. Normalising each side alone first, before either has
     ever seen the other, leaves the hyphen or the range marker exactly where
     the cut fell and never finds the word or the number the page states.
+    ``_locate_snippet_body`` does that normalisation, and its boundary
+    computation, once per read and caches it: this call itself never
+    renormalises the whole page.
 
     Returns the id of the passage the match's first character falls in, or
     ``None`` when no contiguous, verbatim span of ``snippet`` exists
@@ -1222,16 +1314,11 @@ def locate_snippet(
     if not normalized_snippet:
         return None
     claimed_index = keys.index(claimed_locator) if claimed_locator in keys else None
-    raw_passages = [read.passages[key] for key in keys]
+    raw_passages = tuple(read.passages[key] for key in keys)
     for join_hyphenation in (True, False):
-        boundaries: list[int] = []
-        prefix = ""
-        for part in raw_passages:
-            boundaries.append(
-                len(cosmetic_text(prefix, join_hyphenation=join_hyphenation))
-            )
-            prefix += part
-        full_text = cosmetic_text(prefix, join_hyphenation=join_hyphenation)
+        full_text, boundaries = _locate_snippet_body(
+            read.read_id, join_hyphenation, raw_passages
+        )
         starts: list[int] = []
         search_from = 0
         while True:
