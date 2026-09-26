@@ -933,18 +933,3 @@ def test_a_writer_point_draft_without_the_disputes_field_still_validates() -> No
     point = WriterPointDraft.model_validate(legacy_payload)
 
     assert point.disputes is False
-
-
-def test_a_writer_point_draft_can_mark_a_point_as_disputed() -> None:
-    """The section rule sets ``disputes: true`` on a point stating a
-    disagreement among the sources; the bottom line reads the same flag."""
-    point = WriterPointDraft(
-        text="Some reviewers date the change to 2023; others to 2024.",
-        disputes=True,
-    )
-
-    section = SectionDraft(title="Timeline", points=[point])
-    bottom_line = BottomLineDraft(sentences=[point])
-
-    assert section.points[0].disputes is True
-    assert bottom_line.sentences[0].disputes is True

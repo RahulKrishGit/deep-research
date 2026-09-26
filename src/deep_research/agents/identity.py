@@ -274,7 +274,17 @@ def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
     halves: an attribution without its quote is not admitted, so a record that
     already carries a named body keeps both of its own halves rather than
     taking the loser's name beside its own phrase.
+
+    A dispute finding (``Finding.disputes``) and a plain one are never
+    merged into each other, whatever identity or passage key they land on
+    (RevZ1, run 7 fix wave review, P2): unioning ``target_ids`` would bind
+    the survivor to a target its own text does not dispute when it is the
+    dispute record that wins, and a plain ``model_copy`` would drop the
+    flag silently when it is the plain record that wins. The winner is
+    kept exactly as extracted and the loser's own record is dropped.
     """
+    if winner.disputes != loser.disputes:
+        return winner
     target_ids = list(dict.fromkeys([*winner.target_ids, *loser.target_ids]))
     dates = {
         name: getattr(winner, name) or getattr(loser, name)

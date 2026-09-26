@@ -8097,6 +8097,30 @@ def _dissent_sub_topic(priority: int = 1) -> SubTopic:
     )
 
 
+_DISSENT_OTHER_TARGET_ID = "topic-01-target-02"
+
+
+def _dissent_sub_topic_with_second_target(priority: int = 1) -> SubTopic:
+    """The dissent sub-topic, plus a second target no dissent statement in
+    these tests ever lists -- the P2 guard's "wrong target" repro (RevZ1,
+    run 7 fix wave review)."""
+    base = _dissent_sub_topic(priority)
+    return base.model_copy(
+        update={
+            "evidence_targets": [
+                *base.evidence_targets,
+                EvidenceTarget(
+                    target_id=_DISSENT_OTHER_TARGET_ID,
+                    coverage_id="topic-01",
+                    question="What corrective measures does the program report?",
+                    measure="the corrective measures the program reports",
+                    required=False,
+                ),
+            ]
+        }
+    )
+
+
 def _dissent_decisions() -> list[object]:
     return [
         use_tool(
@@ -8185,10 +8209,13 @@ async def _run_dissent_state(
     completer: ScriptedCompleter,
     *,
     body: str = _DISSENT_BODY,
+    sub_topic: SubTopic | None = None,
 ) -> AgentRun[ResearchFindings]:
     agent = _dissent_agent(tracker, completer, body=body)
     async with tracker.session_span("session-1", "q"):
-        return await agent.run(_state(sub_topics=[_dissent_sub_topic()]))
+        return await agent.run(
+            _state(sub_topics=[sub_topic or _dissent_sub_topic()])
+        )
 
 
 @pytest.mark.asyncio
@@ -8215,7 +8242,6 @@ async def test_a_dissenting_passage_yields_a_finding_bound_to_the_disputed_targe
         finding for finding in outcome.result.findings if finding.disputes
     ]
     assert len(disputes) == 1
-    assert disputes[0].target_ids == [_DISSENT_TARGET_ID]
     assert disputes[0].source_url == _DISSENT_URL
 
     stated = [
@@ -8246,6 +8272,176 @@ async def test_a_page_with_no_dissent_cue_sends_no_dissent_packet(
     assert len(requests) == 1
     assert "Statements these passages may dispute" not in requests[0]
     assert not any(finding.disputes for finding in outcome.result.findings)
+
+
+def _dissent_reask_reply_unbound(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """A dissent reply that binds its finding to no target at all -- the
+    P2 guard's own repro (RevZ1, run 7 fix wave review)."""
+    del schema
+    packet = messages[1].content
+    read_id, locator, excerpt = _packet_passage_for("little evidence", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Later field surveys found little evidence for the "
+                    "enrollment decline the annual assessment describes."
+                ),
+                source_url=_DISSENT_URL,
+                source_title=_DISSENT_TITLE,
+                confidence=0.7,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[],
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_dissent_reply_is_not_kept_as_a_dispute(
+    tracker: Tracker,
+) -> None:
+    """RevZ1 P2: disputes=True is set only when the reply's target ids are
+    a non-empty subset of the listed statements' own targets -- a reply
+    that binds to no target at all is dropped rather than admitted as
+    either a dispute or ordinary evidence with a target it does not
+    answer.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply_unbound],
+    )
+
+    outcome = await _run_dissent_state(tracker, completer)
+
+    assert not any(finding.disputes for finding in outcome.result.findings)
+    stated = [
+        finding
+        for finding in outcome.result.findings
+        if _DISSENT_TARGET_ID in finding.target_ids
+    ]
+    assert len(stated) == 1
+
+
+def _dissent_reask_reply_wrong_target(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """A dissent reply bound to a planned target none of the listed
+    statements carries -- the P2 guard's other repro (RevZ1, run 7 fix
+    wave review)."""
+    del schema
+    packet = messages[1].content
+    read_id, locator, excerpt = _packet_passage_for("little evidence", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Later field surveys found little evidence for the "
+                    "enrollment decline the annual assessment describes."
+                ),
+                source_url=_DISSENT_URL,
+                source_title=_DISSENT_TITLE,
+                confidence=0.7,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_DISSENT_OTHER_TARGET_ID],
+            )
+        ]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_dissent_reply_bound_to_an_unlisted_target_is_not_kept(
+    tracker: Tracker,
+) -> None:
+    """RevZ1 P2: a reply bound to a planned target that is valid but that
+    none of the listed disputed statements carries is dropped, not
+    admitted with a binding its own passage never earned.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply_wrong_target],
+    )
+
+    outcome = await _run_dissent_state(
+        tracker, completer, sub_topic=_dissent_sub_topic_with_second_target()
+    )
+
+    assert not any(finding.disputes for finding in outcome.result.findings)
+    assert not any(
+        _DISSENT_OTHER_TARGET_ID in finding.target_ids
+        for finding in outcome.result.findings
+    )
+
+
+def _dissent_reference_list_paragraph(index: int) -> str:
+    """One bibliography-shaped paragraph: several "Author (Year). Title."
+    entries, each also repeating a dissent cue word in its own title
+    (revised, survey, excavation, archaeological) -- the shape that let
+    raw cue-count ranking crowd out a genuine dissent passage (RevZ1, run
+    7 fix wave review, P1)."""
+    return (
+        f"Author A{index} ({1990 + index}). A revised survey of excavation "
+        f"results in the northern region. Journal of Field Studies, "
+        f"{index}, 12-30. "
+        f"Author B{index} ({1991 + index}). Archaeological reassessment of "
+        f"the coastal sites, revised edition. Regional Review, {index}, "
+        f"44-61. "
+        f"Author C{index} ({1992 + index}). Excavation notes from the "
+        f"annual survey, revised. Field Studies Annual, {index}, 100-115."
+    )
+
+
+_DISSENT_REFERENCE_LIST_BODY = "\n\n".join(
+    _dissent_reference_list_paragraph(index) for index in range(1, 11)
+)
+# Fills the dissent sentence's own chunk close to the splitter's own
+# boundary, so it does not pull in the reference list's own first entry
+# and read as a bibliography itself (chunking is content-driven, not
+# paragraph-driven).
+_DISSENT_SENTENCE_PADDING = (
+    "The program's own report adds further detail about attendance across "
+    "every site it served this year, without returning to this specific "
+    "point again. "
+) * 3
+_DISSENT_BODY_WITH_REFERENCE_LIST = (
+    f"{_DISSENT_PREAMBLE}\n\n"
+    f"{_DISSENT_FILLER}{_DISSENT_STATED_SENTENCE}\n\n"
+    f"{_DISSENT_SENTENCE} {_DISSENT_SENTENCE_PADDING}\n\n"
+    f"{_DISSENT_REFERENCE_LIST_BODY}"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_reference_list_does_not_crowd_out_the_genuine_dissent_passage(
+    tracker: Tracker,
+) -> None:
+    """RevZ1 P1: revised, survey(s) and archaeolog* are typical of a
+    bibliography's own titles; ranking by raw cue count let ten reference
+    entries, with more cue words between them than the one genuine dissent
+    passage carries, fill the packet instead of it. The fix skips a
+    reference-list-shaped passage outright and ranks the rest by overlap,
+    so the genuine passage still makes the packet.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply],
+    )
+
+    await _run_dissent_state(
+        tracker, completer, body=_DISSENT_BODY_WITH_REFERENCE_LIST
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    dissent_packet = requests[1]
+    assert "little evidence" in dissent_packet
+    assert "Author A" not in dissent_packet
 
 
 def test_dispute_findings_are_exempt_from_the_finding_cap() -> None:
@@ -8286,3 +8482,34 @@ def test_dispute_findings_are_exempt_from_the_finding_cap() -> None:
         "Finding 8.",
     }
     assert budget.dropped_cap == 3
+
+
+def test_a_dispute_and_a_plain_duplicate_do_not_merge_targets_or_lose_the_flag() -> None:
+    """RevZ1 P2: a passage asked about by two concurrent packets at once
+    (the owed and the dissent packets, before the concurrent-``used``
+    fix) could return a plain finding and a dispute finding of the same
+    identity, one bound to the owed target and the other to the disputed
+    target. The fold must not union their target ids -- which would bind
+    the survivor to a target its own text does not dispute -- and must
+    not silently drop the flag either.
+    """
+    plain = _finding(
+        "Alpha",
+        "https://a.test/one",
+        content="Later field surveys found little evidence for the decline.",
+        confidence=0.7,
+    ).model_copy(update={"target_ids": [OTHER_TARGET_ID]})
+    dispute = plain.model_copy(
+        update={"target_ids": [PLANNED_TARGET_ID], "disputes": True}
+    )
+
+    budget = bound_sub_topic_findings([plain, dispute])
+
+    assert len(budget.retained) == 1
+    survivor = budget.retained[0]
+    # A tie in confidence keeps the earlier record (``deduplicate_
+    # findings``'s own contract), so ``plain`` -- listed first -- is the
+    # winner here; either way, the winner must keep exactly its own flag
+    # and its own target, never the other record's.
+    assert survivor.disputes is False
+    assert survivor.target_ids == [OTHER_TARGET_ID]

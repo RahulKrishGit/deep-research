@@ -132,6 +132,13 @@ MAX_DISPUTE_EXEMPT_PER_TARGET = 4
 # packet cannot hold stays unmined, and the passages that owe the most are the
 # ones asked about first.
 MAX_OWED_PASSAGES_PER_BATCH = 8
+# How many disputed statements the dissent re-ask's own packet may list
+# (RevZ1, run 7 fix wave review, P1): built only from the passages that
+# actually made the packet, capped at the top few by overlap -- without a
+# cap, a pool of hundreds of retained findings turns into a packet of
+# hundreds of D-lines, tens of thousands of characters the model must
+# still pick the right target ids out of.
+MAX_DISPUTED_STATEMENTS = 8
 # The cross-topic sweep's own floor (Fable's audit of run 6, Appendix 2): one
 # shared token let chrome and bibliography passages fill every packet slot
 # -- 42 packets and 269k output tokens for ten weak findings, none of them
@@ -1075,7 +1082,9 @@ def _units_owing_cross_topic_words(
 # candidate the token-overlap test below then has to earn. "surveys",
 # "excavations" and "archaeolog*" name a discipline that revises an earlier
 # account, not a domain: any field's own later fieldwork can revise an
-# earlier claim the same way.
+# earlier claim the same way. They are also exactly the words a reference
+# list's own titles repeat (RevZ1, run 7 fix wave review, P1), which is
+# what :func:`_is_reference_list` exists to keep out of this selector.
 _DISSENT_CUE = re.compile(
     r"\b("
     r"however"
@@ -1103,24 +1112,99 @@ _DISSENT_CUE = re.compile(
     re.IGNORECASE,
 )
 MIN_DISSENT_SHARED_TOKENS = 2
+# A "(Year)." marker recurring densely is a bibliography entry's own shape
+# ("Smith, J. (2001). Title. Journal, 5, 12-30."), whatever else a
+# passage's prose contains (RevZ1, run 7 fix wave review, P1): unlike a
+# page's link rail, a reference list carries plenty of sentence
+# terminators, so :func:`_is_chrome_or_bibliography`'s own no-terminator
+# rule never catches it, and ranking by raw cue count let ten such entries
+# outrank and crowd out the one genuine dissent passage they outnumbered.
+_REFERENCE_ENTRY_MARKER = re.compile(r"\(\d{4}\)\.")
+_REFERENCE_LIST_MIN_ENTRIES = 2
+_REFERENCE_LIST_MAX_ENTRY_SPAN = 400
+
+
+def _is_reference_list(text: str) -> bool:
+    """True when ``text`` reads as a run of "Author (Year). Title." entries.
+
+    Judged by how densely a "(Year)." marker recurs, not by matching a
+    citation format exactly: a passage that cites one work in an aside is
+    not a reference list, a run of several close together is.
+    """
+    markers = _REFERENCE_ENTRY_MARKER.findall(text)
+    if len(markers) < _REFERENCE_LIST_MIN_ENTRIES:
+        return False
+    return len(text) / len(markers) <= _REFERENCE_LIST_MAX_ENTRY_SPAN
+
+
+# The share of the retained pool's own snippets a word may appear in
+# before it stops counting as one of that snippet's own distinctive words,
+# and the smallest pool this filter applies to at all (RevZ1, run 7 fix
+# wave review, P1). Below the floor, any word two of the pool's few
+# snippets happen to share would already clear "more than 20%", which
+# would strip a small pool's own snippets down to nothing rather than
+# catch the plan-wide repetition the filter exists for.
+_POOL_FREQUENT_WORD_SHARE = 0.2
+_POOL_FREQUENT_WORD_MIN_POOL = 5
+
+
+def _pool_frequent_words(
+    snippet_words: Sequence[frozenset[str]],
+) -> frozenset[str]:
+    """Words present in more than :data:`_POOL_FREQUENT_WORD_SHARE` of the
+    retained pool's own snippets, or none at all under
+    :data:`_POOL_FREQUENT_WORD_MIN_POOL` of them.
+
+    A run's whole finding pool repeats its own subject words across almost
+    every snippet the same way a plan's own targets repeat theirs
+    (:func:`_generic_plan_tokens`), and without stripping them too, a long
+    passage shares two such words with nearly every finding the run has
+    ever kept: the measurement behind this fix found 120 of 120 qualifying
+    passages passing against a median of 357 of the pool's 567 findings.
+    """
+    total = len(snippet_words)
+    if total < _POOL_FREQUENT_WORD_MIN_POOL:
+        return frozenset()
+    counts: dict[str, int] = {}
+    for words in snippet_words:
+        for word in words:
+            counts[word] = counts.get(word, 0) + 1
+    floor = total * _POOL_FREQUENT_WORD_SHARE
+    return frozenset(word for word, count in counts.items() if count > floor)
+
+
 # A read's own passages are addressed ``chunk-0``, ``chunk-1``... or
 # ``page-N-chunk-0``, ``page-N-chunk-1``... (``evidence.passages_from_
 # chunks``); the sentence that resolves what a disputing passage disputes
 # often sits on the far side of one of these boundaries, not inside the
 # passage that carries the cue.
-_LOCATOR_CHUNK_INDEX = re.compile(r"^(?P<prefix>.*chunk-)(?P<index>\d+)$")
+_LOCATOR_CHUNK_INDEX = re.compile(r"^(?:page-(?P<page>\d+)-)?chunk-(?P<index>\d+)$")
 
 
-def _adjacent_locators(locator: str) -> list[str]:
-    """The locator(s) immediately before and after ``locator``, in the same
-    read's own chunk sequence, or none for a locator this pattern misses.
+def _adjacent_locators(locator: str, available: Collection[str]) -> list[str]:
+    """The locator(s) immediately before and after ``locator``, in the
+    read's own chunk order, or none for a locator this pattern misses.
+
+    Crosses from a page's own last chunk to the next page's own chunk 0
+    when ``available`` holds no further chunk of the same page (RevZ1, run
+    7 fix wave review, P1): the sentence that resolves what a disputing
+    passage disputes is exactly as likely to sit just past a page break as
+    a plain chunk boundary, and the read's own pagination must not hide it.
     """
     match = _LOCATOR_CHUNK_INDEX.match(locator)
     if match is None:
         return []
-    prefix = match.group("prefix")
+    page = match.group("page")
     index = int(match.group("index"))
-    neighbours = [f"{prefix}{index + 1}"]
+    prefix = f"page-{page}-chunk-" if page is not None else "chunk-"
+    neighbours: list[str] = []
+    forward = f"{prefix}{index + 1}"
+    if forward in available:
+        neighbours.append(forward)
+    elif page is not None:
+        crossed = f"page-{int(page) + 1}-chunk-0"
+        if crossed in available:
+            neighbours.append(crossed)
     if index > 0:
         neighbours.append(f"{prefix}{index - 1}")
     return neighbours
@@ -1133,22 +1217,41 @@ def _dissent_units_for_read(
     retained: Sequence[Finding],
     generic: frozenset[str],
     used: Collection[tuple[str, str]],
+    max_passages: int = MAX_OWED_PASSAGES_PER_BATCH,
+    max_statements: int = MAX_DISPUTED_STATEMENTS,
 ) -> tuple[list[EvidenceUnit], list[Finding]]:
     """One read's own admitted units that plausibly dispute, qualify or
-    date a retained finding's own snippet (D2, Fable's audit of run 7).
+    date a retained, targeted finding's own snippet (D2, Fable's audit of
+    run 7).
 
-    A unit qualifies directly when it carries a dissent cue and shares at
-    least :data:`MIN_DISSENT_SHARED_TOKENS` key tokens -- the tokenizer's
-    own words, the plan's generic ones stripped, the same test the
-    cross-topic sweep uses -- with some retained finding's snippet. A unit
-    adjacent to a qualifying one, in the read's own chunk order, is
-    included too, whether or not it independently qualifies.
+    A unit anchors a dissent when it carries a dissent cue, is not a
+    passage :func:`_is_chrome_or_bibliography` or :func:`_is_reference_list`
+    reads as chrome or a bibliography, and shares at least
+    :data:`MIN_DISSENT_SHARED_TOKENS` distinctive tokens with some retained
+    finding's snippet -- the plan's own generic words stripped, *and* any
+    word :func:`_pool_frequent_words` finds repeated across the retained
+    pool itself (RevZ1, run 7 fix wave review, P1): without that second
+    strip, a long passage shares two such words with almost every finding
+    the run has ever kept, whatever it is actually about. Only a finding
+    with its own target ids can be disputed -- an unbound retained finding
+    has no obligation a disputing passage could bind to.
 
-    Returns the qualifying units, ranked by dissent-cue count and then by
-    token overlap (the passages that owe the most asked about first, same
-    principle as the owed and cross-topic sweeps) -- uncapped; the caller
-    bounds the packet -- and the distinct retained findings at least one
-    qualifying unit disputes, for the packet to list.
+    An anchor's own neighbours, in the read's own chunk order, are placed
+    immediately after it, whether or not they independently qualify,
+    unless they too read as chrome or a bibliography. Anchors are ranked
+    by their own distinct dissent cues, capped at one, then by token
+    overlap (RevZ1 P1): revised, survey(s), excavation(s) and archaeolog*
+    are exactly the words a reference list's own titles repeat, and
+    ranking by raw cue count let such entries outrank the dissent they
+    outnumbered.
+
+    Returns the qualifying units in that order, capped at
+    ``max_passages`` -- the caller's own packet bound -- and the distinct
+    retained findings that a unit *in that capped set* disputes, ranked by
+    overlap and capped at ``max_statements``: built only from what
+    actually reaches the packet, and only that many statements, so a pool
+    of hundreds of findings does not turn into a packet of hundreds of
+    D-lines (RevZ1 P1).
     """
     admitted = set(used)
     by_locator = {
@@ -1156,49 +1259,82 @@ def _dissent_units_for_read(
         for unit in evidence.values()
         if unit.read_id == read_id
     }
-    disputable = [finding for finding in retained if finding.snippet]
+    disputable = [
+        finding
+        for finding in retained
+        if finding.snippet and finding.target_ids
+    ]
     snippet_words = [
         set(_tokens(finding.snippet)) - generic for finding in disputable
     ]
+    pool_generic = generic | _pool_frequent_words(snippet_words)
+    distinctive_words = [words - pool_generic for words in snippet_words]
+
+    def _reads_as_reference_or_chrome(text: str) -> bool:
+        return _is_chrome_or_bibliography(text) or _is_reference_list(text)
+
     anchor_ranks: dict[str, tuple[int, int]] = {}
-    disputed_indexes: set[int] = set()
+    anchor_disputes: dict[str, dict[int, int]] = {}
     for locator, unit in by_locator.items():
         if (unit.read_id, unit.locator) in admitted:
             continue
-        cue_count = len(_DISSENT_CUE.findall(unit.excerpt))
-        if not cue_count:
+        if _reads_as_reference_or_chrome(unit.excerpt):
             continue
-        stated = set(_tokens(unit.excerpt)) - generic
-        overlaps = [
-            index
-            for index, words in enumerate(snippet_words)
+        distinct_cues = {
+            match.group(0).lower()
+            for match in _DISSENT_CUE.finditer(unit.excerpt)
+        }
+        if not distinct_cues:
+            continue
+        stated = set(_tokens(unit.excerpt)) - pool_generic
+        overlaps = {
+            index: len(stated & words)
+            for index, words in enumerate(distinctive_words)
             if len(stated & words) >= MIN_DISSENT_SHARED_TOKENS
-        ]
+        }
         if not overlaps:
             continue
         anchor_ranks[locator] = (
-            cue_count,
-            max(len(stated & snippet_words[index]) for index in overlaps),
+            min(len(distinct_cues), 1),
+            max(overlaps.values()),
         )
-        disputed_indexes.update(overlaps)
+        anchor_disputes[locator] = overlaps
     if not anchor_ranks:
         return [], []
-    selected: dict[str, tuple[int, int]] = dict(anchor_ranks)
-    for locator in list(anchor_ranks):
-        for neighbour_locator in _adjacent_locators(locator):
-            if neighbour_locator in selected:
+
+    ordered_locators: list[str] = []
+    seen: set[str] = set()
+    for locator in sorted(
+        anchor_ranks, key=lambda locator: anchor_ranks[locator], reverse=True
+    ):
+        if locator in seen:
+            continue
+        ordered_locators.append(locator)
+        seen.add(locator)
+        for neighbour_locator in _adjacent_locators(locator, by_locator):
+            if neighbour_locator in seen:
                 continue
             neighbour = by_locator.get(neighbour_locator)
             if neighbour is None:
                 continue
             if (neighbour.read_id, neighbour.locator) in admitted:
                 continue
-            selected[neighbour_locator] = (0, 0)
-    ordered_locators = sorted(
-        selected, key=lambda locator: selected[locator], reverse=True
-    )
-    units = [by_locator[locator] for locator in ordered_locators]
-    disputed = [disputable[index] for index in sorted(disputed_indexes)]
+            if _reads_as_reference_or_chrome(neighbour.excerpt):
+                continue
+            ordered_locators.append(neighbour_locator)
+            seen.add(neighbour_locator)
+
+    units = [by_locator[locator] for locator in ordered_locators][:max_passages]
+    packet_locators = {unit.locator for unit in units}
+    best_overlap: dict[int, int] = {}
+    for locator in packet_locators:
+        for index, overlap in anchor_disputes.get(locator, {}).items():
+            if overlap > best_overlap.get(index, 0):
+                best_overlap[index] = overlap
+    ranked_indexes = sorted(
+        best_overlap, key=lambda index: best_overlap[index], reverse=True
+    )[:max_statements]
+    disputed = [disputable[index] for index in ranked_indexes]
     return units, disputed
 
 
@@ -1542,12 +1678,11 @@ def extraction_messages(
     if dissent_passages:
         dissent_lines = [
             "# Statements these passages may dispute",
-            "The passages below carry a cue of disagreement or revision "
-            "and share words with a statement the run has already kept "
-            "from other evidence. They are candidates, not answers: only "
-            "a passage that actually disputes, qualifies or dates a step, "
-            "cause, figure or provision one of these statements gives is "
-            "a finding.",
+            "Some passages below carry a cue of disagreement or revision "
+            "and share words with a statement the run has already kept. "
+            "They are candidates, not answers: only a passage that "
+            "actually disputes, qualifies or dates a step, cause, figure "
+            "or provision one of these statements gives is a finding.",
         ]
         if disputed_statements:
             dissent_lines.append(
@@ -3373,14 +3508,43 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_figures=dropped_figures,
             )
             if dissent_statements is not None:
-                # Set post-admission (minimal blast radius): ``build_findings``
-                # itself stays ignorant of the dissent re-ask, and a
-                # dissent finding is otherwise indistinguishable from any
-                # other admitted finding all the way through validation.
-                retry_findings = [
-                    finding.model_copy(update={"disputes": True})
-                    for finding in retry_findings
-                ]
+                # Validated post-admission (RevZ1, run 7 fix wave review,
+                # P2): every returned finding was previously marked
+                # disputes=True unconditionally, trusting the reply's own
+                # read_id/locator and target_ids without checking either
+                # against what the packet actually asked about. Kept only
+                # when its own passage is one the packet actually sent and
+                # its target ids are a non-empty subset of the disputed
+                # statements' own targets -- an unbound reply, or one bound
+                # to a target none of them names, is dropped rather than
+                # admitted as a dispute or as ordinary evidence carrying a
+                # target it does not answer. ``build_findings`` itself
+                # stays ignorant of the dissent re-ask (minimal blast
+                # radius).
+                batch_keys = {(unit.read_id, unit.locator) for unit in batch}
+                disputed_target_ids = {
+                    target_id
+                    for statement in dissent_statements
+                    for target_id in statement.target_ids
+                }
+                validated: list[Finding] = []
+                for finding in retry_findings:
+                    bound = set(finding.target_ids)
+                    if (finding.read_id, finding.locator) not in batch_keys or (
+                        not bound or not bound <= disputed_target_ids
+                    ):
+                        admitted_keys.remove((finding.read_id, finding.locator))
+                        rejected.append(
+                            f"{read_id}: dissent reply names a passage "
+                            "outside its own packet, or is not bound to a "
+                            "listed disputed statement's own target, "
+                            "dropped"
+                        )
+                        continue
+                    validated.append(
+                        finding.model_copy(update={"disputes": True})
+                    )
+                retry_findings = validated
             findings.extend(retry_findings)
             # Prefixed with this page's own read id (RevSelectionR3 P3,
             # ReRevS6): two different pages that both return a malformed
@@ -3845,6 +4009,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             dissent_statements_by_read: dict[str, list[Finding]] = {}
             if admitted_read_order:
                 retained_for_dissent = [*run_findings, *findings]
+                # A passage the same gather's own owed or cross-topic
+                # packet already carries is excluded here too (RevZ1, run
+                # 7 fix wave review, P2): those packets are built above but
+                # not yet sent, so ``admitted_keys`` alone cannot yet know
+                # they claim it, and without this a passage could be asked
+                # about twice at once, in two concurrent packets.
+                concurrent_batch_keys = {
+                    (unit.read_id, unit.locator)
+                    for page_batches in batches_by_page.values()
+                    for batch in page_batches
+                    for unit in batch
+                } | {
+                    (unit.read_id, unit.locator)
+                    for batch in cross_topic_batches.values()
+                    for unit in batch
+                }
                 for read_id in admitted_read_order:
                     if read_id in failed_read_ids:
                         continue
@@ -3853,17 +4033,16 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         read_id=read_id,
                         retained=retained_for_dissent,
                         generic=generic_tokens,
-                        used=[*mined_earlier, *admitted_keys],
+                        used=[
+                            *mined_earlier,
+                            *admitted_keys,
+                            *concurrent_batch_keys,
+                        ],
                     )
                     if not dissent_units:
                         continue
-                    dissent_batches[read_id] = dissent_units[
-                        :MAX_OWED_PASSAGES_PER_BATCH
-                    ]
+                    dissent_batches[read_id] = dissent_units
                     dissent_statements_by_read[read_id] = disputed
-            owed_dissent_units = [
-                unit for batch in dissent_batches.values() for unit in batch
-            ]
             # One round trip for all three sweeps (RevX1Sweep P2-1, extended
             # to the dissent re-ask): every packet runs in the same gather,
             # under the same per-page gate, instead of waiting on an
@@ -3961,11 +4140,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 unmined_quantity_ids=owed_figure_ids,
                 unmined_target_ids=[
                     unit.evidence_id
-                    for unit in [
-                        *owed_own_words,
-                        *owed_cross_topic_units,
-                        *owed_dissent_units,
-                    ]
+                    for unit in [*owed_own_words, *owed_cross_topic_units]
                     if unit.evidence_id in asked
                     and unit.evidence_id not in set(owed_figure_ids)
                 ],
