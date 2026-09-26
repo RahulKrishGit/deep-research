@@ -548,6 +548,8 @@ class Finding(ContractModel):
     """Every figure ``snippet`` states, from the researcher's admitted passage."""
     verification: FindingVerification | None = None
     """``None`` until the Evidence Verifier has judged this finding."""
+    disputes: bool = False
+    """True when this finding disputes, qualifies or dates a step, cause, figure or provision another retained finding states (the dissent re-ask sets it)."""
 
     @model_validator(mode="after")
     def normalize_binding_and_dates(self) -> "Finding":
@@ -1777,6 +1779,8 @@ class WriterPointDraft(ContractModel):
     text: str
     finding_labels: list[str] = Field(default_factory=list)
     items: list[ItemMarkDraft] = Field(default_factory=list)
+    disputes: bool = False
+    """True when the writer marks this point as stating a disagreement or dispute among the sources (the section rule "mark such a point disputes: true"); the bottom line reads it to list disputed steps. Default False keeps older replies valid."""
 
 
 class SectionDraft(ContractModel):

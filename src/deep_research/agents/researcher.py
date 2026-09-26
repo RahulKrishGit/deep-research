@@ -118,6 +118,13 @@ MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 48
 # one required target from making the cap meaningless. An obligation's answer
 # is one claim and its strongest restatement, not twenty-five of them.
 MAX_EXEMPT_PER_REQUIRED_TARGET = 2
+# How many dispute findings (D2, Fable's audit of run 7) one disputed
+# statement's own target ids may keep outside those caps -- same guarantee,
+# same shape as the required-target exemption above, since the caps would
+# otherwise drop a page's own rejection of a step exactly as readily as they
+# drop a required target's answer. A handful of pages disputing the same
+# statement is still one dissent, not unbounded volume.
+MAX_DISPUTE_EXEMPT_PER_TARGET = 4
 # How the bounded re-extraction is bounded at its input. The pre-flights that
 # handed one call every owed passage of a topic's read ended at a 32,768- or
 # 49,152-token output from about 10,000 tokens of input, so a packet carries at
@@ -750,6 +757,22 @@ def render_planned_targets(
     return "\n".join(lines)
 
 
+def render_disputable_statements(findings: Sequence[Finding]) -> str:
+    """One line per retained finding a dissent re-ask's passages may dispute.
+
+    ``D1``, ``D2``... are local to this one packet, never the reader-facing
+    finding labels a later stage assigns: the model needs something short to
+    reason about while it reads, and the target ids beside each line are
+    what actually binds a disputing passage's own finding to the right
+    obligation.
+    """
+    lines: list[str] = []
+    for index, finding in enumerate(findings, start=1):
+        targets = ", ".join(finding.target_ids) or "-"
+        lines.append(f"- D{index} [{targets}]: {finding.content}")
+    return "\n".join(lines)
+
+
 # A passage "states a figure in the target's own measure unit" when a numeral
 # stands beside a unit of the base that target names. The bases are power (W)
 # and energy (Wh), and the unit vocabulary is ``utils.types``' own, so what a
@@ -1047,6 +1070,138 @@ def _units_owing_cross_topic_words(
     return owing
 
 
+# D2's own cues (Fable's audit of run 7): case-insensitive, and deliberately
+# broad -- the cue alone never sends a packet, it only makes a passage a
+# candidate the token-overlap test below then has to earn. "surveys",
+# "excavations" and "archaeolog*" name a discipline that revises an earlier
+# account, not a domain: any field's own later fieldwork can revise an
+# earlier claim the same way.
+_DISSENT_CUE = re.compile(
+    r"\b("
+    r"however"
+    r"|challenged"
+    r"|rejected"
+    r"|disputed"
+    r"|contested"
+    r"|no longer(?: widely)? accepted"
+    r"|little evidence"
+    r"|no (?:good )?evidence"
+    r"|overstated"
+    r"|exaggerated"
+    r"|revised"
+    r"|revisionist"
+    r"|myth"
+    r"|misconception"
+    r"|contrary to"
+    r"|in fact"
+    r"|recent (?:scholarship|research|studies|work)"
+    r"|(?:scholars|historians|researchers|experts) (?:now|today|increasingly)"
+    r"|surveys?"
+    r"|excavations?"
+    r"|archaeolog\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+MIN_DISSENT_SHARED_TOKENS = 2
+# A read's own passages are addressed ``chunk-0``, ``chunk-1``... or
+# ``page-N-chunk-0``, ``page-N-chunk-1``... (``evidence.passages_from_
+# chunks``); the sentence that resolves what a disputing passage disputes
+# often sits on the far side of one of these boundaries, not inside the
+# passage that carries the cue.
+_LOCATOR_CHUNK_INDEX = re.compile(r"^(?P<prefix>.*chunk-)(?P<index>\d+)$")
+
+
+def _adjacent_locators(locator: str) -> list[str]:
+    """The locator(s) immediately before and after ``locator``, in the same
+    read's own chunk sequence, or none for a locator this pattern misses.
+    """
+    match = _LOCATOR_CHUNK_INDEX.match(locator)
+    if match is None:
+        return []
+    prefix = match.group("prefix")
+    index = int(match.group("index"))
+    neighbours = [f"{prefix}{index + 1}"]
+    if index > 0:
+        neighbours.append(f"{prefix}{index - 1}")
+    return neighbours
+
+
+def _dissent_units_for_read(
+    evidence: Mapping[str, EvidenceUnit],
+    *,
+    read_id: str,
+    retained: Sequence[Finding],
+    generic: frozenset[str],
+    used: Collection[tuple[str, str]],
+) -> tuple[list[EvidenceUnit], list[Finding]]:
+    """One read's own admitted units that plausibly dispute, qualify or
+    date a retained finding's own snippet (D2, Fable's audit of run 7).
+
+    A unit qualifies directly when it carries a dissent cue and shares at
+    least :data:`MIN_DISSENT_SHARED_TOKENS` key tokens -- the tokenizer's
+    own words, the plan's generic ones stripped, the same test the
+    cross-topic sweep uses -- with some retained finding's snippet. A unit
+    adjacent to a qualifying one, in the read's own chunk order, is
+    included too, whether or not it independently qualifies.
+
+    Returns the qualifying units, ranked by dissent-cue count and then by
+    token overlap (the passages that owe the most asked about first, same
+    principle as the owed and cross-topic sweeps) -- uncapped; the caller
+    bounds the packet -- and the distinct retained findings at least one
+    qualifying unit disputes, for the packet to list.
+    """
+    admitted = set(used)
+    by_locator = {
+        unit.locator: unit
+        for unit in evidence.values()
+        if unit.read_id == read_id
+    }
+    disputable = [finding for finding in retained if finding.snippet]
+    snippet_words = [
+        set(_tokens(finding.snippet)) - generic for finding in disputable
+    ]
+    anchor_ranks: dict[str, tuple[int, int]] = {}
+    disputed_indexes: set[int] = set()
+    for locator, unit in by_locator.items():
+        if (unit.read_id, unit.locator) in admitted:
+            continue
+        cue_count = len(_DISSENT_CUE.findall(unit.excerpt))
+        if not cue_count:
+            continue
+        stated = set(_tokens(unit.excerpt)) - generic
+        overlaps = [
+            index
+            for index, words in enumerate(snippet_words)
+            if len(stated & words) >= MIN_DISSENT_SHARED_TOKENS
+        ]
+        if not overlaps:
+            continue
+        anchor_ranks[locator] = (
+            cue_count,
+            max(len(stated & snippet_words[index]) for index in overlaps),
+        )
+        disputed_indexes.update(overlaps)
+    if not anchor_ranks:
+        return [], []
+    selected: dict[str, tuple[int, int]] = dict(anchor_ranks)
+    for locator in list(anchor_ranks):
+        for neighbour_locator in _adjacent_locators(locator):
+            if neighbour_locator in selected:
+                continue
+            neighbour = by_locator.get(neighbour_locator)
+            if neighbour is None:
+                continue
+            if (neighbour.read_id, neighbour.locator) in admitted:
+                continue
+            selected[neighbour_locator] = (0, 0)
+    ordered_locators = sorted(
+        selected, key=lambda locator: selected[locator], reverse=True
+    )
+    units = [by_locator[locator] for locator in ordered_locators]
+    disputed = [disputable[index] for index in sorted(disputed_indexes)]
+    return units, disputed
+
+
 def _units_owing_own_words(
     evidence: Mapping[str, EvidenceUnit],
     *,
@@ -1189,6 +1344,8 @@ def extraction_messages(
     planned_targets: Sequence[EvidenceTarget] = (),
     owed_passages: bool = False,
     owed_targets: Sequence[EvidenceTarget] = (),
+    dissent_passages: bool = False,
+    disputed_statements: Sequence[Finding] = (),
     question: str | None = None,
     coverage_titles: Mapping[str, str] | None = None,
 ) -> list[ChatMessage]:
@@ -1212,8 +1369,19 @@ def extraction_messages(
     ``owed_targets`` names those unanswered obligations, in the plan's own
     words. It is what lets the model bind an owed passage to the obligation it
     answers rather than re-reporting it unbound: a passage that states a
-    required target's own words is exactly the evidence a binding can be made
-    from, and the target's question is the binding instruction.
+    required target's own words is exactly the evidence a binding can be
+    made from, and the target's question is the binding instruction.
+
+    ``dissent_passages`` marks the dissent re-ask's own request (D2, Fable's
+    audit of run 7). Its packet carries passages that carry a cue of
+    disagreement or revision and share words with a statement the run has
+    already kept, so the request says the packet is for finding what
+    disputes, qualifies or dates that statement, never for restating it.
+
+    ``disputed_statements`` lists those statements, each with the target
+    ids a disputing passage should be bound to: what a disputing passage
+    overturns is exactly what tells the model which obligation its own
+    finding answers.
 
     ``question`` is the run's original question. The extraction judges what
     bears on the question and what merely sits on the page, and until this
@@ -1371,6 +1539,32 @@ def extraction_messages(
             "requires."
         )
         sections.append("\n".join(owed_lines))
+    if dissent_passages:
+        dissent_lines = [
+            "# Statements these passages may dispute",
+            "The passages below carry a cue of disagreement or revision "
+            "and share words with a statement the run has already kept "
+            "from other evidence. They are candidates, not answers: only "
+            "a passage that actually disputes, qualifies or dates a step, "
+            "cause, figure or provision one of these statements gives is "
+            "a finding.",
+        ]
+        if disputed_statements:
+            dissent_lines.append(
+                "The statements these passages may dispute are:"
+            )
+            dissent_lines.append(
+                render_disputable_statements(disputed_statements)
+            )
+        dissent_lines.append(
+            "Return one finding per passage that disputes, qualifies or "
+            "dates one of these statements: snippet the disputing "
+            "sentence, and bind the finding to that statement's own "
+            "target ids, in the same registry shape the contract above "
+            "requires. Return an empty list when none of these passages "
+            "does."
+        )
+        sections.append("\n".join(dissent_lines))
     sections.append(
         (
             "# Retrieved evidence\n"
@@ -2037,6 +2231,7 @@ def bound_sub_topic_findings(
     max_findings: int = MAX_FINDINGS_PER_SUB_TOPIC,
     max_sources: int = MAX_UNIQUE_SOURCES_PER_SUB_TOPIC,
     max_exempt_per_target: int = MAX_EXEMPT_PER_REQUIRED_TARGET,
+    max_dispute_exempt_per_target: int = MAX_DISPUTE_EXEMPT_PER_TARGET,
 ) -> BoundedFindings:
     """Fold restatements, then bound one sub-topic's kept evidence.
 
@@ -2059,6 +2254,15 @@ def bound_sub_topic_findings(
     extraction that binds its whole output to a required target keeps all of
     it — twenty-five restatements of one obligation, and a per-sub-topic cap
     that bounds nothing.
+
+    A dispute finding (``Finding.disputes``, D2, Fable's audit of run 7) is
+    exempt the same way, grouped by the target ids it is bound to rather
+    than by required-target membership: at most
+    ``max_dispute_exempt_per_target`` dispute findings per shared target id
+    escape the caps, the most confident first, since the dissent re-ask
+    exists to put a page's own rejection of a step into the report and a
+    confidence ranking over a page's findings can drop it exactly as
+    readily as it drops a required target's own answer.
 
     Selection is not by confidence alone. Findings are grouped by
     *publisher* — not by URL — ranked by their strongest finding and then
@@ -2088,10 +2292,15 @@ def bound_sub_topic_findings(
     the same complete document resolve to one work, while a finding with no
     read in the registry stays its own unresolved entry.
     """
-    if max_findings < 1 or max_sources < 1 or max_exempt_per_target < 1:
+    if (
+        max_findings < 1
+        or max_sources < 1
+        or max_exempt_per_target < 1
+        or max_dispute_exempt_per_target < 1
+    ):
         raise ValueError(
-            "max_findings, max_sources and max_exempt_per_target must be at "
-            "least 1"
+            "max_findings, max_sources, max_exempt_per_target and "
+            "max_dispute_exempt_per_target must be at least 1"
         )
 
     deduplicated = deduplicate_findings(findings)
@@ -2107,6 +2316,24 @@ def bound_sub_topic_findings(
             key=lambda index: deduplicated[index].confidence, reverse=True
         )
         exempt_indexes.update(bound_indexes[:max_exempt_per_target])
+    dispute_target_ids = {
+        target_id
+        for index, finding in enumerate(deduplicated)
+        if finding.disputes
+        for target_id in finding.target_ids
+    }
+    for target_id in dispute_target_ids:
+        dispute_bound_indexes = [
+            index
+            for index, finding in enumerate(deduplicated)
+            if finding.disputes and target_id in finding.target_ids
+        ]
+        dispute_bound_indexes.sort(
+            key=lambda index: deduplicated[index].confidence, reverse=True
+        )
+        exempt_indexes.update(
+            dispute_bound_indexes[:max_dispute_exempt_per_target]
+        )
     exempt = [
         finding
         for index, finding in enumerate(deduplicated)
@@ -3064,9 +3291,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         unanswered: Sequence[EvidenceTarget],
         question: str | None,
         coverage_titles: Mapping[str, str],
+        dissent_statements: Sequence[Finding] | None = None,
     ) -> _OwedPageResult:
         """One page's own owed re-ask: up to ``MAX_OWED_BATCHES`` packets of
-        its own owed passages alone (S6).
+        its own owed passages alone (S6). ``dissent_statements`` switches
+        the packet from an owed re-ask to the dissent re-ask (D2, Fable's
+        audit of run 7): when given, every batch's own finding is marked
+        ``disputes=True`` after admission, bound to whichever of
+        ``dissent_statements`` its own content disputes.
 
         Run under the same per-page ``extraction_concurrency`` gate that
         page's own main call ran under (``gate=None`` only for the legacy
@@ -3103,8 +3335,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                             focus_ids=[unit.evidence_id for unit in batch],
                         ),
                         planned_targets=planned_targets,
-                        owed_passages=True,
-                        owed_targets=unanswered,
+                        owed_passages=dissent_statements is None,
+                        owed_targets=(
+                            () if dissent_statements is not None else unanswered
+                        ),
+                        dissent_passages=dissent_statements is not None,
+                        disputed_statements=dissent_statements or (),
                         question=question,
                         coverage_titles=coverage_titles,
                     ),
@@ -3136,6 +3372,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_target_ids=unplanned_target_ids,
                 dropped_figures=dropped_figures,
             )
+            if dissent_statements is not None:
+                # Set post-admission (minimal blast radius): ``build_findings``
+                # itself stays ignorant of the dissent re-ask, and a
+                # dissent finding is otherwise indistinguishable from any
+                # other admitted finding all the way through validation.
+                retry_findings = [
+                    finding.model_copy(update={"disputes": True})
+                    for finding in retry_findings
+                ]
             findings.extend(retry_findings)
             # Prefixed with this page's own read id (RevSelectionR3 P3,
             # ReRevS6): two different pages that both return a malformed
@@ -3533,6 +3778,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             ]
             cross_topic_batches: dict[str, list[EvidenceUnit]] = {}
             cross_topic_unanswered: dict[str, list[EvidenceTarget]] = {}
+            run_findings = (
+                self._run_source_state.raw_findings
+                if self._run_source_state is not None
+                else ()
+            )
+            # The plan's own repeated subject words (Fable's audit of run 6,
+            # Appendix 2): computed once per pass over every planned target,
+            # shared by the cross-topic sweep below and the dissent re-ask
+            # further down, not just the cross-topic candidates, because a
+            # target this sub-topic owns is as much a source of the plan's
+            # shared vocabulary as one it does not.
+            generic_tokens = _generic_plan_tokens(planned_targets)
             if cross_topic_required_targets:
                 own_read_ids = dict.fromkeys(
                     unit.read_id
@@ -3540,17 +3797,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     if policy.target_id is None
                     or policy.target_id in unit.target_ids
                 )
-                run_findings = (
-                    self._run_source_state.raw_findings
-                    if self._run_source_state is not None
-                    else ()
-                )
-                # The plan's own repeated subject words (Fable's audit of run
-                # 6, Appendix 2): computed once per pass over every planned
-                # target, not just the cross-topic candidates, because a
-                # target this sub-topic owns is as much a source of the
-                # plan's shared vocabulary as one it does not.
-                generic_tokens = _generic_plan_tokens(planned_targets)
                 for read_id in own_read_ids:
                     owed_here = _required_targets_unbound_by_read(
                         cross_topic_required_targets,
@@ -3582,19 +3828,58 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             owed_cross_topic_units = [
                 unit for batch in cross_topic_batches.values() for unit in batch
             ]
-            # One round trip for both sweeps (RevX1Sweep P2-1): the own-topic
-            # packets and the cross-topic packets run in the same gather,
-            # under the same per-page gate, instead of the cross-topic round
-            # waiting on the own-topic round's whole trip to finish first.
-            # Sliced back apart by count afterwards, not zipped, so each
-            # keeps the fixed, read-ordered sequence its own dict built --
-            # own owed first, then cross-topic (RevX1Sweep P2-1).
+            # D2: the dissent re-ask, one packet per admitted read (Fable's
+            # audit of run 7, CODE 1). A page can hold both a stated step
+            # and, elsewhere on that same page or a different one the run
+            # has read, another page's rejection, qualification or dating
+            # of it -- the main extraction only ever asks what a passage
+            # states, never what it disputes about a claim the run has
+            # already kept, and the same omission has recurred across four
+            # heads. Checked only for a read this pass itself admitted (S6's
+            # own per-page architecture is what "that read's main
+            # extraction" refers to); the retained pool is this sub-topic's
+            # own findings so far, on top of the run's whole record, so a
+            # passage on a page read for this topic can dispute a finding
+            # another topic's read produced, and the reverse.
+            dissent_batches: dict[str, list[EvidenceUnit]] = {}
+            dissent_statements_by_read: dict[str, list[Finding]] = {}
+            if admitted_read_order:
+                retained_for_dissent = [*run_findings, *findings]
+                for read_id in admitted_read_order:
+                    if read_id in failed_read_ids:
+                        continue
+                    dissent_units, disputed = _dissent_units_for_read(
+                        owed_eligible_evidence,
+                        read_id=read_id,
+                        retained=retained_for_dissent,
+                        generic=generic_tokens,
+                        used=[*mined_earlier, *admitted_keys],
+                    )
+                    if not dissent_units:
+                        continue
+                    dissent_batches[read_id] = dissent_units[
+                        :MAX_OWED_PASSAGES_PER_BATCH
+                    ]
+                    dissent_statements_by_read[read_id] = disputed
+            owed_dissent_units = [
+                unit for batch in dissent_batches.values() for unit in batch
+            ]
+            # One round trip for all three sweeps (RevX1Sweep P2-1, extended
+            # to the dissent re-ask): every packet runs in the same gather,
+            # under the same per-page gate, instead of waiting on an
+            # earlier sweep's whole round trip to finish first. Sliced back
+            # apart by count afterwards, not zipped, so each keeps the
+            # fixed, read-ordered sequence its own dict built -- own owed
+            # first, then cross-topic, then dissent.
             combined_jobs = [
-                (read_id, page_batches, unanswered)
+                (read_id, page_batches, unanswered, None)
                 for read_id, page_batches in batches_by_page.items()
             ] + [
-                (read_id, [batch], cross_topic_unanswered[read_id])
+                (read_id, [batch], cross_topic_unanswered[read_id], None)
                 for read_id, batch in cross_topic_batches.items()
+            ] + [
+                (read_id, [batch], (), dissent_statements_by_read[read_id])
+                for read_id, batch in dissent_batches.items()
             ]
             if combined_jobs:
                 all_results = await asyncio.gather(
@@ -3613,14 +3898,21 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                             unanswered=page_unanswered,
                             question=question,
                             coverage_titles=coverage_titles,
+                            dissent_statements=page_dissent_statements,
                         )
-                        for read_id, page_batches, page_unanswered in combined_jobs
+                        for read_id, page_batches, page_unanswered, page_dissent_statements
+                        in combined_jobs
                     )
                 )
             else:
                 all_results = []
             own_owed_results = all_results[: len(batches_by_page)]
-            cross_topic_results = all_results[len(batches_by_page) :]
+            cross_topic_results = all_results[
+                len(batches_by_page) : len(batches_by_page) + len(cross_topic_batches)
+            ]
+            dissent_results = all_results[
+                len(batches_by_page) + len(cross_topic_batches) :
+            ]
             asked: set[str] = set()
             for owed in own_owed_results:
                 findings = [*findings, *owed.findings]
@@ -3631,12 +3923,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_figures.extend(owed.dropped_figures)
                 asked.update(owed.asked_evidence_ids)
             # This topic's own telemetry, captured before the cross-topic
-            # findings below are merged in (RevX1Sweep P3-2): a cross-topic
-            # finding is always bound to another topic's target, and folding
-            # it into ``bound`` first would let it turn an all-unbound-own-
-            # findings pass from "completed" into "not completed" -- a
-            # regression the cross-topic sweep must not cause, since it says
-            # nothing about whether THIS topic's own obligation advanced.
+            # and dissent findings below are merged in (RevX1Sweep P3-2):
+            # either kind is always bound to whatever statement it answers
+            # or disputes, not necessarily this topic's own target, and
+            # folding them into ``bound`` first would let one turn an
+            # all-unbound-own-findings pass from "completed" into "not
+            # completed" -- a regression neither sweep must cause, since
+            # neither says anything about whether THIS topic's own
+            # obligation advanced.
             bound = [finding for finding in findings if finding.target_ids]
             completed = policy.target_id is not None and bool(admitted_keys)
             if completed and own_target_ids and bound:
@@ -3645,7 +3939,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     for finding in bound
                 )
             target_obligation_completed = completed
-            for owed in cross_topic_results:
+            for owed in [*cross_topic_results, *dissent_results]:
                 findings = [*findings, *owed.findings]
                 rejected = [*rejected, *owed.rejected]
                 errors.extend(owed.errors)
@@ -3667,7 +3961,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 unmined_quantity_ids=owed_figure_ids,
                 unmined_target_ids=[
                     unit.evidence_id
-                    for unit in [*owed_own_words, *owed_cross_topic_units]
+                    for unit in [
+                        *owed_own_words,
+                        *owed_cross_topic_units,
+                        *owed_dissent_units,
+                    ]
                     if unit.evidence_id in asked
                     and unit.evidence_id not in set(owed_figure_ids)
                 ],

@@ -8024,3 +8024,265 @@ async def test_a_passage_sharing_only_the_plans_generic_word_is_not_selected(
     requests = _extraction_requests(completer)
     assert len(requests) == 1
     assert "Passages owed a finding" not in requests[0]
+
+
+# ---------------------------------------------------------------------------
+# D2: the dissent re-ask (Fable's audit of run 7, CODE 1)
+# ---------------------------------------------------------------------------
+#
+# Across four heads' audits the same class of statement has gone unmined: a
+# page states a step, cause, figure or provision as fact in one place, and
+# elsewhere -- on that same page or one the run read for another sub-topic
+# -- carries another source's rejection, qualification or dating of it. The
+# main extraction only ever asks a passage what it states, never what it
+# disputes about a claim the run has already kept, so the disagreement is
+# never asked about. The dissent re-ask runs after a read's own main
+# extraction, the same S6 shape as the owed and cross-topic re-asks: a
+# passage that carries a cue of disagreement or revision and shares words
+# with a retained finding's own snippet is a candidate, and a finding it
+# yields is marked ``disputes=True``, bound to the disputed finding's own
+# target ids.
+
+_DISSENT_TARGET_ID = "topic-01-target-01"
+_DISSENT_TARGET_QUESTION = (
+    "What trend do published assessments describe in the outreach "
+    "program's enrollment?"
+)
+_DISSENT_URL = "https://outreach-notices.test/reports/enrollment-trend"
+_DISSENT_TITLE = "Outreach program enrollment report"
+_DISSENT_PREAMBLE = (
+    "Community outreach coordinators publish a yearly summary of program "
+    "activity, and this report reviews attendance across every site the "
+    "program served during the period. "
+) * 3
+_DISSENT_FILLER = (
+    "The report also lists every volunteer who took part in the outreach "
+    "effort and the neighborhoods each volunteer visited during the year. "
+) * 3
+_DISSENT_STATED_SENTENCE = (
+    "The annual assessment states enrollment saw a steep decline in the "
+    "outreach program between 2015 and 2019."
+)
+_DISSENT_SENTENCE = (
+    "However, later field surveys found little evidence for the decline "
+    "the annual assessment describes in the outreach program."
+)
+_DISSENT_BODY = (
+    f"{_DISSENT_PREAMBLE}\n\n"
+    f"{_DISSENT_FILLER}{_DISSENT_STATED_SENTENCE}\n\n"
+    f"{_DISSENT_SENTENCE}"
+)
+# Same body, minus the dissenting paragraph: nothing left on the page carries
+# a cue of disagreement or revision.
+_DISSENT_BODY_NO_CUE = (
+    f"{_DISSENT_PREAMBLE}\n\n" f"{_DISSENT_FILLER}{_DISSENT_STATED_SENTENCE}"
+)
+
+
+def _dissent_sub_topic(priority: int = 1) -> SubTopic:
+    return _sub_topic(
+        "Outreach program enrollment", priority, coverage_id="topic-01"
+    ).model_copy(
+        update={
+            "evidence_targets": [
+                EvidenceTarget(
+                    target_id=_DISSENT_TARGET_ID,
+                    coverage_id="topic-01",
+                    question=_DISSENT_TARGET_QUESTION,
+                    measure="the enrollment trend published assessments describe",
+                    required=False,
+                )
+            ]
+        }
+    )
+
+
+def _dissent_decisions() -> list[object]:
+    return [
+        use_tool(
+            "Find the report.",
+            "web_search",
+            '{"query": "outreach program enrollment trend"}',
+        ),
+        use_tool(
+            "Read the report.", "web_scraper", f'{{"url": "{_DISSENT_URL}"}}'
+        ),
+        finish("The report covers enrollment.", "Enrollment trend reported."),
+    ]
+
+
+def _dissent_main_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The reading sub-topic's own finding, bound to its own target."""
+    del schema
+    read_id, locator, excerpt = _packet_passage_for(
+        "steep decline", messages[1].content
+    )
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "The annual assessment states enrollment saw a steep "
+                    "decline in the outreach program between 2015 and 2019."
+                ),
+                source_url=_DISSENT_URL,
+                source_title=_DISSENT_TITLE,
+                confidence=0.8,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_DISSENT_TARGET_ID],
+            )
+        ]
+    )
+
+
+def _dissent_reask_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """The dispute finding the dissent re-ask is asked to return."""
+    del schema
+    packet = messages[1].content
+    assert "Statements these passages may dispute" in packet
+    assert _DISSENT_TARGET_ID in packet
+    read_id, locator, excerpt = _packet_passage_for("little evidence", packet)
+    return SubTopicFindingsDraft(
+        findings=[
+            FindingDraft(
+                content=(
+                    "Later field surveys found little evidence for the "
+                    "enrollment decline the annual assessment describes."
+                ),
+                source_url=_DISSENT_URL,
+                source_title=_DISSENT_TITLE,
+                confidence=0.7,
+                read_id=read_id,
+                locator=locator,
+                snippet=excerpt,
+                target_ids=[_DISSENT_TARGET_ID],
+            )
+        ]
+    )
+
+
+def _dissent_agent(
+    tracker: Tracker, completer: ScriptedCompleter, *, body: str = _DISSENT_BODY
+) -> ResearcherAgent:
+    return _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient(
+            [search_response(title=_DISSENT_TITLE, url=_DISSENT_URL)]
+        ),
+        http=page_client(title=_DISSENT_TITLE, body=body),
+        max_sub_topics=1,
+    )
+
+
+async def _run_dissent_state(
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    body: str = _DISSENT_BODY,
+) -> AgentRun[ResearchFindings]:
+    agent = _dissent_agent(tracker, completer, body=body)
+    async with tracker.session_span("session-1", "q"):
+        return await agent.run(_state(sub_topics=[_dissent_sub_topic()]))
+
+
+@pytest.mark.asyncio
+async def test_a_dissenting_passage_yields_a_finding_bound_to_the_disputed_target(
+    tracker: Tracker,
+) -> None:
+    """A page whose admitted text carries a passage disputing a step it also
+    states elsewhere yields a re-ask packet and a finding with
+    ``disputes=True`` bound to the disputed statement's own target.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply],
+    )
+
+    outcome = await _run_dissent_state(tracker, completer)
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 2
+    assert "Statements these passages may dispute" not in requests[0]
+    assert "Statements these passages may dispute" in requests[1]
+
+    disputes = [
+        finding for finding in outcome.result.findings if finding.disputes
+    ]
+    assert len(disputes) == 1
+    assert disputes[0].target_ids == [_DISSENT_TARGET_ID]
+    assert disputes[0].source_url == _DISSENT_URL
+
+    stated = [
+        finding
+        for finding in outcome.result.findings
+        if not finding.disputes and _DISSENT_TARGET_ID in finding.target_ids
+    ]
+    assert len(stated) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_page_with_no_dissent_cue_sends_no_dissent_packet(
+    tracker: Tracker,
+) -> None:
+    """A page whose admitted text carries no cue of disagreement or revision
+    is never sent a dissent re-ask.
+    """
+    completer = ScriptedCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply],
+    )
+
+    outcome = await _run_dissent_state(
+        tracker, completer, body=_DISSENT_BODY_NO_CUE
+    )
+
+    requests = _extraction_requests(completer)
+    assert len(requests) == 1
+    assert "Statements these passages may dispute" not in requests[0]
+    assert not any(finding.disputes for finding in outcome.result.findings)
+
+
+def test_dispute_findings_are_exempt_from_the_finding_cap() -> None:
+    """A dispute finding is the finding the dissent re-ask exists to protect
+    (D2, Fable's audit of run 7), not corroborating volume, so a confidence
+    ranking must not be the thing that drops it.
+
+    Eight findings from one page and a finding cap of three; the two marked
+    ``disputes=True`` are the least confident of the eight, well below the
+    cap's own cutoff -- dropped by an ordinary confidence ranking exactly
+    when the dissent re-ask exists to keep them.
+    """
+    findings = [
+        _finding(
+            "Alpha",
+            "https://a.test/one",
+            content=f"Finding {index}.",
+            confidence=confidence,
+        )
+        for index, confidence in enumerate(
+            [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], start=1
+        )
+    ]
+    disputes = [
+        finding.model_copy(
+            update={"disputes": True, "target_ids": [PLANNED_TARGET_ID]}
+        )
+        for finding in findings[:2]
+    ]
+
+    budget = bound_sub_topic_findings([*disputes, *findings[2:]], max_findings=3)
+
+    assert {finding.content for finding in budget.retained} == {
+        "Finding 1.",
+        "Finding 2.",
+        "Finding 6.",
+        "Finding 7.",
+        "Finding 8.",
+    }
+    assert budget.dropped_cap == 3

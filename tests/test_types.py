@@ -906,3 +906,45 @@ def test_section_and_bottom_line_drafts_carry_point_option_marks() -> None:
 
     assert section.points[0].items == [mark]
     assert bottom_line.sentences[0].items == [mark]
+
+
+def test_a_finding_without_the_disputes_field_still_validates() -> None:
+    """A finding persisted before the dissent re-ask (D2) carries no
+    ``disputes`` key and still validates, defaulting to not disputing."""
+    legacy_payload = {
+        "content": "A finding.",
+        "source_url": "https://example.com/source",
+        "source_title": "Example source",
+        "extracted_at": "2026-07-25T12:00:00Z",
+        "confidence": 0.8,
+        "related_sub_topic": "Adoption",
+    }
+
+    finding = Finding.model_validate(legacy_payload)
+
+    assert finding.disputes is False
+
+
+def test_a_writer_point_draft_without_the_disputes_field_still_validates() -> None:
+    """A writer reply drafted before the section rule existed carries no
+    ``disputes`` key and still validates, defaulting to not disputing."""
+    legacy_payload = {"text": "Example Tester rates the model 4.5 out of 5."}
+
+    point = WriterPointDraft.model_validate(legacy_payload)
+
+    assert point.disputes is False
+
+
+def test_a_writer_point_draft_can_mark_a_point_as_disputed() -> None:
+    """The section rule sets ``disputes: true`` on a point stating a
+    disagreement among the sources; the bottom line reads the same flag."""
+    point = WriterPointDraft(
+        text="Some reviewers date the change to 2023; others to 2024.",
+        disputes=True,
+    )
+
+    section = SectionDraft(title="Timeline", points=[point])
+    bottom_line = BottomLineDraft(sentences=[point])
+
+    assert section.points[0].disputes is True
+    assert bottom_line.sentences[0].disputes is True
