@@ -93,7 +93,7 @@ from deep_research.utils.types import REVIEW_DIMENSIONS, ReadRecord, ResearchSta
 # The public progress summary stays at its shipped length. A scenario may ask
 # for a different one to prove a case cannot pass by enlarging logs, but the
 # default a release case runs at is the production value.
-OBSERVATION_SUMMARY_CHARS = 200
+OBSERVATION_SUMMARY_CHARS = 2000
 
 # The instant every replay run stamps its dates from. A replay reproduces one
 # declared run rather than printing a document today, so the harness pins the

@@ -503,6 +503,17 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
             ),
         ),
         max_extra_passes=1,
+        # This case tests the D4 extra-pass mechanism itself, not whatever
+        # the shipped tool_budget_overrides/max_iterations happen to be: it
+        # needs the six refused rosters to exhaust the opening pass's whole
+        # turn budget, so it pins the researcher's own budget and the
+        # decision-turn cap rather than drifting with config.yaml's limits
+        # lift (tool_budget_overrides.researcher 20 -> 40, max_iterations
+        # 7 -> 15).
+        agent_overrides={
+            "tool_budget_overrides": {"researcher": 20},
+            "max_iterations": 7,
+        },
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,
@@ -1482,10 +1493,20 @@ def _decision_context_late_candidate() -> ReplayScenario:
                     # checked against their own evidence, so a note that
                     # withheld even the subject would be refused as a drafted
                     # answer rather than read as a page with nothing to say.
+                    # Their titles carry padding prose (never read as a claim,
+                    # since the read is judged on ``claim``/``issuer`` below,
+                    # not on the title) so the candidate manifest -- title and
+                    # url per candidate -- still overflows the public
+                    # observation summary's clamp (200 -> 2000 chars in the
+                    # limits lift) with the same four candidates and the same
+                    # four reads the case always made: the case's own point is
+                    # that the late candidate below still reaches the request
+                    # despite that overflow.
                     _page(
                         "agency12.example.test",
                         "cover-note",
-                        "Adoption cover note",
+                        "Adoption cover note "
+                        + "with a publication date and no measured value " * 20,
                         "the Acme widget adoption rate cover note lists a title "
                         "and a publication date and states no measured value",
                         issuer="Acme Institute 12",
@@ -1494,7 +1515,8 @@ def _decision_context_late_candidate() -> ReplayScenario:
                     _page(
                         "agency12.example.test",
                         "method-note",
-                        "Adoption method note",
+                        "Adoption method note "
+                        + "describing the method and no measured value " * 20,
                         "the Acme widget adoption rate method note describes the "
                         "method and states no measured value",
                         issuer="Acme Institute 12",
@@ -1611,6 +1633,17 @@ def _missing_target_triggers_one_extra_pass() -> ReplayScenario:
                 3, "Widget exports", "Acme widget export volume", "3.4 million units"
             ),
         ),
+        # This case tests the D4 extra-pass mechanism itself, not whatever
+        # the shipped tool_budget_overrides/max_iterations happen to be: it
+        # needs the six refused registers to exhaust the opening pass's whole
+        # turn budget, so it pins the researcher's own budget and the
+        # decision-turn cap rather than drifting with config.yaml's limits
+        # lift (tool_budget_overrides.researcher 20 -> 40, max_iterations
+        # 7 -> 15).
+        agent_overrides={
+            "tool_budget_overrides": {"researcher": 20},
+            "max_iterations": 7,
+        },
         expectation=CaseExpectation(
             terminal_quality="accepted",
             exit_code=0,

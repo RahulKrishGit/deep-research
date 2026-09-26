@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from deep_research.tools.passage_selection import select_relevant_passages
+from deep_research.tools.passage_selection import (
+    select_passages_by_budget,
+    select_relevant_passages,
+)
 
 
 def test_a_plural_query_term_matches_its_singular_form() -> None:
@@ -140,24 +143,147 @@ def test_a_focused_short_match_outranks_a_diffuse_long_one() -> None:
     ) == ["short"]
 
 
-def test_a_link_dense_passage_is_never_ranked_even_when_it_names_the_query() -> None:
-    """D1: navigation is never admitted, however many query words it repeats.
+def test_real_review_site_navigation_shapes_are_link_dense() -> None:
+    """Fix-round P0/P1: the detector must hold on real chunk-0 shapes, not
+    toy strings with zero stop words. Built from the audited run's five
+    reads (SoundGuys, CNET, What Hi-Fi, Business Insider, Tom's Hardware):
+    each opens on its own masthead, category nav and "how we test" /
+    "what to look for" style labels, which is exactly the shape a plain
+    connective-word ratio could not separate from real prose (0.10-0.18 on
+    these five, overlapping real spec/pros-cons prose at 0.083-0.12)."""
+    from deep_research.tools.passage_selection import is_link_dense
 
-    Navigation strings nouns together with almost none of the connective
-    words a written sentence needs. A block shaped like that must never
-    outrank real prose, however many times it repeats a query word as a
-    link label.
-    """
+    soundguys_nav = (
+        "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews Guides "
+        "About Us Contact Search Menu Best Headphones for 2026: Tested and "
+        "Reviewed Best overall Best for Android Best on a budget Best for "
+        "calls Best noise cancelling Best true wireless How we test What to "
+        "look for Skip to main content"
+    )
+    cnet_nav = (
+        "CNET Tech Money Home Wellness Deals Best Products Reviews How We "
+        "Test Search Log In Subscribe Best Headphones to Buy in 2026, Tested "
+        "and Reviewed Best overall Best budget Best for calls Best noise "
+        "cancelling Best battery life How we test headphones What to look "
+        "for Skip to main content Continue Reading Below"
+    )
+    whathifi_nav = (
+        "What Hi-Fi Best Buys News Reviews Deals Awards Advice Sign in "
+        "Subscribe Search Best Headphones 2026: The Top Wireless And Wired "
+        "Models We Have Tested Best overall Best budget Best for calls Best "
+        "noise cancelling How we test What to look for when choosing "
+        "headphones Skip to main content"
+    )
+    business_insider_nav = (
+        "Business Insider Tech Reviews Guides Deals Newsletters Subscribe "
+        "Account Search The Best Headphones We Have Tested in 2026 Best "
+        "overall Best budget pick Best for calls Best noise cancelling How "
+        "we test our headphone picks What to look for when buying "
+        "headphones Skip to main content Menu"
+    )
+    toms_hardware_nav = (
+        "Tom's Hardware Reviews News Best Picks Forums Deals Subscribe "
+        "Search Menu Best Gaming Headsets in 2026 Best overall Best budget "
+        "pick Best wireless Best for calls and chat How we test our headset "
+        "picks What to look for before you buy Skip to main content Sign up "
+        "for our newsletter"
+    )
+    for nav in (
+        soundguys_nav,
+        cnet_nav,
+        whathifi_nav,
+        business_insider_nav,
+        toms_hardware_nav,
+    ):
+        assert is_link_dense(nav), nav[:40]
+
+
+def test_pros_cons_verdict_and_foreign_prose_are_not_link_dense() -> None:
+    """The rule gates on sentence structure, never on English connective
+    frequency: a pros/cons box, a verdict line, a feature list and a German
+    or Spanish paragraph all break into ordinary clauses and must never be
+    caught the way the old stop-word ratio caught them."""
+    from deep_research.tools.passage_selection import is_link_dense
+
+    pros_cons = (
+        "Pros and cons. Lightweight and comfortable for long listening "
+        "sessions. Excellent noise cancelling and clear microphone quality "
+        "on calls. Cons: touch controls are occasionally unresponsive. "
+        "Battery life is merely average compared to rivals."
+    )
+    verdict_box = (
+        "Verdict. Best overall noise-cancelling headphones, with excellent "
+        "microphone quality for calls and industry-leading battery life."
+    )
+    feature_list = (
+        "Key features. Adaptive noise cancelling. Clear microphone pickup "
+        "on calls. Multipoint Bluetooth pairing. Thirty-hour battery life. "
+        "Wear detection that pauses playback automatically."
+    )
+    german = (
+        "Diese Kopfhoerer bieten eine hervorragende microphone quality fuer "
+        "calls und Videokonferenzen. Die Klangqualitaet ist ebenfalls "
+        "beeindruckend und die Akkulaufzeit haelt einen ganzen Arbeitstag "
+        "durch."
+    )
+    spanish = (
+        "Estos auriculares ofrecen una excelente microphone quality para "
+        "calls y videollamadas. La calidad de sonido tambien es "
+        "impresionante y la bateria dura toda la jornada laboral."
+    )
+    for prose in (pros_cons, verdict_box, feature_list, german, spanish):
+        assert not is_link_dense(prose), prose[:40]
+
+
+def test_a_short_title_page_and_a_real_opener_are_not_link_dense() -> None:
+    """A short title page and a genuine title-plus-lede opener both keep
+    their guaranteed lede: brevity and ordinary sentence breaks are what
+    the digit/word-count floor and the clause check are for."""
+    from deep_research.tools.passage_selection import is_link_dense
+
+    short_title_page = "Annual Outlook 2025 - Issuer - April 2025"
+    real_opener = (
+        "Best Headphones for 2026: Tested and Reviewed. We spent three "
+        "months testing dozens of headphones for sound quality and comfort. "
+        "Microphone performance mattered just as much, so every pair was "
+        "tested on real calls before it made our list."
+    )
+    assert not is_link_dense(short_title_page)
+    assert not is_link_dense(real_opener)
+
+
+def test_distinct_coverage_outweighs_one_repeated_term() -> None:
+    """Fix-round P0: a chunk repeating one query word must not outrank a
+    chunk that covers more of the query once each. The old plain-count
+    density let a navigation-shaped chunk repeating "best" and "headphones"
+    outrank the passage naming the microphone verdict (SoundGuys chunk-0
+    1.315 vs chunk-56 1.091); a saturating term frequency plus a read-level
+    inverse document frequency fixes it directly."""
+    query = "best wireless headphones microphone call quality noise cancelling"
+    repeats_one_term = (
+        "Best headphones best headphones best headphones best headphones "
+        "best headphones best headphones for every budget and every use "
+        "case this year."
+    )
+    covers_the_query = (
+        "The microphone on this wireless headphone delivers clear call "
+        "quality with effective noise cancelling, easily the best we tested."
+    )
+    passages = {"repeats": repeats_one_term, "covers": covers_the_query}
+    assert select_relevant_passages(passages, query, 1) == ["covers"]
+
+
+def test_a_short_document_falls_back_to_a_single_passage() -> None:
+    """A read with only one or two passages ranks sensibly: with no other
+    passage to compare against, the one that matches still wins over the
+    one that does not."""
     passages = {
-        "nav": (
-            "Camera Battery Display Storage Price Review Specs Compare Deals "
-            "News Battery Storage Battery Storage Battery Storage Battery "
-            "Storage Support Warranty Shipping Returns Accessories Battery"
-        ),
-        "verdict": "Battery storage capacity was the best we measured this year.",
+        "only": "The battery lasts twelve hours on a single charge.",
+        "other": "Shipping resumes on Monday after the regional holiday.",
     }
-
-    assert select_relevant_passages(passages, "battery storage", 1) == ["verdict"]
+    assert select_relevant_passages(passages, "battery hours charge", 1) == [
+        "only"
+    ]
 
 
 def test_a_data_row_with_no_connective_words_is_not_navigation() -> None:
@@ -179,3 +305,43 @@ def test_a_data_row_with_no_connective_words_is_not_navigation() -> None:
     assert select_relevant_passages(passages, "queue delay commissioning", 1) == [
         "row"
     ]
+
+
+def test_a_passage_with_no_shared_term_is_still_admitted() -> None:
+    """Whole-page admission means every passage, not only the matches.
+
+    A passage that shares no word with the query is still part of the page
+    the run read, and a semantic answer can share no word with the query
+    that names it -- ranking is not the filter for what becomes a unit.
+    Ranked matches are admitted first; every passage that shares no term
+    then fills whatever budget remains, in reader order, so a read's full
+    text becomes evidence rather than only the sentences that happen to
+    echo the query's own words.
+    """
+    passages = {
+        "unrelated": "Shipping resumes on Monday after the regional holiday.",
+        "answer": "The battery lasts twelve hours on a single charge.",
+    }
+
+    assert select_passages_by_budget(passages, "battery hours charge", 1000) == [
+        "answer",
+        "unrelated",
+    ]
+
+
+def test_a_zero_term_passage_yields_to_a_ranked_match_under_a_tight_budget() -> None:
+    """The unmatched fill never displaces a ranked match that already fits.
+
+    A budget too small for both passages keeps the ranked match and drops
+    the unmatched one, the same "kept only while it still fits" rule the
+    ranked pass already follows.
+    """
+    passages = {
+        "unrelated": "Shipping resumes on Monday after the regional holiday.",
+        "answer": "The battery lasts twelve hours on a single charge.",
+    }
+    budget = len(passages["answer"])
+
+    assert select_passages_by_budget(
+        passages, "battery hours charge", budget
+    ) == ["answer"]

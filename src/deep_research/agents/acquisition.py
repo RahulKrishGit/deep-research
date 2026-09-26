@@ -691,13 +691,36 @@ def select_passages_with_lede(
     ``lede`` is the read's own first locator, not necessarily the first key of
     ``passages``: a caller selecting from a subset (a continuation batch) must
     not mistake the subset's first entry for the read's opening passage.
+
+    Whole-page admission: once the ranked matches and the lede guarantee are
+    settled, whatever the query matched nothing in still fills the budget
+    that remains, in reader order, after both -- the header keeps its place
+    at the front and the ranked matches keep theirs, and only the passages
+    neither rule placed are ordered by where the page put them.
     """
-    selected = select_passages_by_budget(passages, query, budget)
-    if lede not in passages or lede in selected:
-        return selected
-    if is_link_dense(passages[lede]):
-        return selected
-    return [lede, *selected]
+    ranked = select_passages_by_budget(passages, query, budget, admit_unmatched=False)
+    dense_lede = lede in passages and lede not in ranked and is_link_dense(passages[lede])
+    selected = [lede, *ranked] if (lede in passages and lede not in ranked and not dense_lede) else ranked
+    used = sum(len(passages[locator]) for locator in selected)
+    filled = set(selected)
+    if dense_lede:
+        # A link-dense lede is never admitted at all: not forced to the
+        # front, and not picked up again by the generic fill below just
+        # because it also happens to share no term with the query.
+        filled.add(lede)
+    for locator, text in passages.items():
+        if locator in filled:
+            continue
+        if not isinstance(locator, str) or not locator.strip():
+            continue
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text_len = len(text)
+        if used + text_len > budget:
+            continue
+        selected.append(locator)
+        used += text_len
+    return selected
 
 
 def _within_budget(
@@ -728,7 +751,7 @@ def admit_read_result(
     target_id: str | None = None,
     query: str = "source evidence",
     origin: OriginName = "researcher",
-    selected_limit: int = 4,
+    admission_chars: int = 200_000,
     retrieved_at: str | None = None,
     sequence: int = 0,
     configuration_fingerprint: str = "acquisition-v1",
@@ -751,8 +774,8 @@ def admit_read_result(
     passages that bear on the claim, and an unrelated lede admitted there is
     noise that turns a free ``no_candidate`` outcome into a paid adjudication.
     """
-    if selected_limit < 1:
-        raise ValueError("selected_limit must be at least 1")
+    if admission_chars < 1:
+        raise ValueError("admission_chars must be at least 1")
     read = build_read_record_from_tool_result(
         result,
         session_id=session_id,
@@ -764,7 +787,7 @@ def admit_read_result(
     if recorded_reads:
         read = _adopt_recorded_read(read, recorded_reads)
     target_ids = () if target_id is None else (target_id,)
-    budget = selected_limit * WEB_PASSAGE_CHARS
+    budget = admission_chars
     selected_locators = (
         select_passages_with_lede(
             read.passages,
@@ -773,7 +796,9 @@ def admit_read_result(
             lede=next(iter(read.passages)),
         )
         if include_lede
-        else select_passages_by_budget(read.passages, query, budget)
+        else select_passages_by_budget(
+            read.passages, query, budget, admit_unmatched=False
+        )
     )
     evidence: dict[str, EvidenceUnit] = {}
     dispositions: list[EvidenceDisposition] = []
@@ -1107,7 +1132,7 @@ class AcquisitionPolicy:
     """
     boundary_audits: dict[str, Any] = field(default_factory=dict)
     retrieved_at: Callable[[], str] = _utc_now_iso
-    selected_passages_per_read: int = 4
+    read_admission_chars: int = 200_000
     passage_batch_limit: int = _DEFAULT_PASSAGE_BATCH_LIMIT
     configuration_fingerprint: str = "acquisition-v1"
     cache: MutableMapping[str, ReadRecord] | None = None
@@ -1133,8 +1158,8 @@ class AcquisitionPolicy:
     _passage_batches: dict[str, int] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
-        if self.selected_passages_per_read < 1:
-            raise ValueError("selected_passages_per_read must be at least 1")
+        if self.read_admission_chars < 1:
+            raise ValueError("read_admission_chars must be at least 1")
         if self.passage_batch_limit < 1:
             raise ValueError("passage_batch_limit must be at least 1")
         if self.state.target_id is None and self.target_id is not None:
@@ -1325,7 +1350,7 @@ class AcquisitionPolicy:
                 continue
             handed_over.append(read_id)
             texts = {locator: read.passages[locator] for locator in locators}
-            budget = self.selected_passages_per_read * WEB_PASSAGE_CHARS
+            budget = self.read_admission_chars
             selected = select_passages_with_lede(
                 texts,
                 self.query,
@@ -1839,7 +1864,7 @@ class AcquisitionPolicy:
                     selected = select_passages_with_lede(
                         validated.passages,
                         self.query,
-                        self.selected_passages_per_read * WEB_PASSAGE_CHARS,
+                        self.read_admission_chars,
                         lede=next(iter(validated.passages)),
                     )
                     target_ids = (
@@ -1903,7 +1928,7 @@ class AcquisitionPolicy:
             target_id=self.target_id,
             query=self.query,
             origin=self.origin,
-            selected_limit=self.selected_passages_per_read,
+            admission_chars=self.read_admission_chars,
             retrieved_at=self.retrieved_at(),
             sequence=self._next_sequence(),
             configuration_fingerprint=self.configuration_fingerprint,
@@ -2245,21 +2270,24 @@ def build_acquisition_context(
     text is omitted and its ID is listed for continuation. No serialized
     search/PDF payload is sliced into a misleading prefix.
 
-    ``focus_ids`` names the units this packet is *about* — the bounded
-    re-extraction's owed passages — and their evidence rows, passages, and
-    reads are rendered directly after the state, ahead of the other reads'
-    passage dumps. Order is the only priority a bounded packet has: the
-    audited run's release is 27 passages whose first sixteen are navigation,
-    so a packet that renders the read before the unit it was narrowed to
-    spends its whole budget on menu text and asks the model for a passage it
-    never shows. Empty (the ordinary packet) leaves the order untouched.
+    ``focus_ids`` names the units an *owed re-extraction* packet is about.
+    Such a packet renders only the state rows, the focused units' own rows
+    (evidence, passage, read header), and nothing else: with whole-page
+    admission (D1 fix-round 2) a read's own admitted set can be hundreds of
+    units, and an owed call that also re-sent the whole rest of the packet
+    would resend a page the first extraction call already saw in full.
+    ``dispositions`` are never rendered here at all -- they stay in
+    ``state``/the run's own disposition list, not duplicated into packet
+    text that scales with the unit count.
 
-    ``query`` orders each read's own passage dump by rank against it (D2),
-    spending the packet's budget on the passages that answer the query
-    first, instead of the read's raw document order that put a page's own
-    navigation ahead of the mid-page chunk that actually answered it.
-    ``None`` (a caller with no query of its own) keeps the dump in document
-    order, exactly as before.
+    ``query`` orders each read's own passage dump, and its own unit rows, by
+    rank against it (D2), spending the packet's budget on the passages that
+    answer the query first, instead of the read's raw document order that
+    put a page's own navigation ahead of the mid-page chunk that actually
+    answered it. ``None`` (a caller with no query of its own) keeps the dump
+    in document order, exactly as before. A locator with its own unit row is
+    never *also* dumped: doubling every admitted passage is exactly what
+    made whole-page admission blow the packet's budget on its own duplicate.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2355,6 +2383,11 @@ def build_acquisition_context(
         ),
         *focus_rows,
     ]
+    if focused:
+        # Owed re-extraction: focus rows are the whole packet. The rest of
+        # this function's rows would resend the full read set an earlier,
+        # unbounded extraction call already saw.
+        return _packed_rows(rows, limit)
     # The reads the selected evidence came from are rendered immediately
     # ahead of that evidence, because ``build_findings`` requires every
     # finding to copy its read's own resolved_url and title verbatim: a
@@ -2368,12 +2401,11 @@ def build_acquisition_context(
             rows.append((f"read:{read_id}", _render_read(read)))
     # The selected units come before the reads' own passage dumps, because
     # they are what the packet is *for*: each row carries the excerpt the
-    # selection chose. A caller's budget is bounded — the researcher's is
-    # 24,000 characters — and the audited run's topic-01 packet spent all of
-    # it on four reads' passages, dropping the market monitor's evidence
-    # behind a ``packet_overflow`` marker with nothing mined from it. Context
-    # the caller did not select never crowds out the evidence it did.
+    # selection chose. A caller's budget is bounded, and context the caller
+    # did not select never crowds out the evidence it did.
+    unit_keys: set[str] = set()
     for evidence_id, unit in selected_evidence.items():
+        unit_keys.add(f"passage:{unit.read_id}/{unit.locator}")
         if f"evidence:{evidence_id}" in focused_ids:
             continue
         targets = ",".join(unit.target_ids) or "-"
@@ -2411,6 +2443,9 @@ def build_acquisition_context(
         rows.append(
             (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
         )
+    # A locator with its own unit row above is never dumped again: with
+    # whole-page admission almost every passage of a selected read has one,
+    # so re-rendering it here would double the packet for no reason.
     for read_id, read in selected_reads.items():
         order = (
             _ranked_locators(read.passages, query)
@@ -2418,26 +2453,28 @@ def build_acquisition_context(
             else list(read.passages)
         )
         for locator in order:
-            if f"passage:{read_id}/{locator}" in focused_ids:
+            key = f"passage:{read_id}/{locator}"
+            if key in focused_ids or key in unit_keys:
                 continue
             text = read.passages[locator]
             rows.append(
                 (
-                    f"passage:{read_id}/{locator}",
+                    key,
                     f"passage read_id={read_id} locator={locator} text={text}",
                 )
             )
-    for disposition in dispositions:
-        if target_id is not None and target_id not in disposition.target_ids:
-            continue
-        rows.append(
-            (
-                f"disposition:{disposition.item_id}",
-                f"disposition item_id={disposition.item_id} "
-                f"stage={disposition.stage} reason={disposition.reason}",
-            )
-        )
+    return _packed_rows(rows, limit)
 
+
+# How many omitted ids the continuation line names outright before it
+# collapses to a count: with whole-page admission an overflowing sub-topic
+# can omit hundreds of ids, and a continuation line that lists all of them
+# is itself long enough to blow the packet's own remaining budget.
+_CONTINUATION_IDS_SHOWN = 20
+
+
+def _packed_rows(rows: Sequence[tuple[str, str]], limit: int) -> str:
+    """Greedily pack ``rows`` into ``limit`` characters, atomic per row."""
     lines: list[str] = []
     used = 0
     omitted: list[str] = []
@@ -2449,13 +2486,16 @@ def build_acquisition_context(
         else:
             omitted.append(identifier)
     if omitted:
-        continuation = "- continuation_ids=" + ",".join(omitted)
+        shown = omitted[:_CONTINUATION_IDS_SHOWN]
+        remaining = len(omitted) - len(shown)
+        continuation = "- continuation_ids=" + ",".join(shown)
+        if remaining:
+            continuation += f" (and {remaining} more)"
         if used + len(continuation) + 1 <= limit:
             lines.append(continuation)
         else:
             lines.append("- " + _CONTEXT_OVERFLOW)
     return "\n".join(lines)
-
 
 __all__ = [
     "AcquisitionAction",

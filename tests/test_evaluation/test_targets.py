@@ -25,6 +25,7 @@ from deep_research.evaluation.targets import (
     TRACE_TAG,
     RepetitionCounter,
     _classify_failure,
+    _redact_source_urls,
     build_target,
     correlation_metadata,
     trace_tags,
@@ -322,12 +323,34 @@ async def test_a_live_researcher_records_only_source_url_fingerprints(
     ).hexdigest()
     assert output.dependencies.source_url_fingerprints == [expected]
     assert all(
-        len(step.observation_summary) <= 200 for step in output.trajectory
+        len(step.observation_summary) <= 2000 for step in output.trajectory
     )
     assert "https://example.com/sodium-ion-energy-density" not in " ".join(
         step.observation_summary for step in output.trajectory
     )
     assert "example.com" not in repr(output.dependencies)
+
+
+def test_a_url_deep_inside_a_long_observation_is_still_redacted() -> None:
+    """The clamp is a length bound, not the privacy boundary.
+
+    A raw source URL sitting well past where a 200-character clamp used to
+    cut every observation short must not survive just because the clamp
+    grew to 2000: redaction runs before any length handling, so the
+    boundary holds at whatever the clamp is.
+    """
+    url = "https://example.com/sodium-ion-energy-density"
+    padding = "x" * 1900
+    text = f"{padding} {url} more text after it"
+
+    redacted = _redact_source_urls(text)
+
+    assert url not in redacted
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert f"source:{expected}" in redacted
+    assert redacted[:1900] == padding
 
 
 @pytest.mark.asyncio

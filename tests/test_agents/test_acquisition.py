@@ -21,6 +21,7 @@ from deep_research.agents.acquisition import (
     build_read_record_from_tool_result,
     cache_reuse_problem,
     next_acquisition_action,
+    select_passages_with_lede,
 )
 from deep_research.agents.evidence import (
     EvidenceContractError,
@@ -565,7 +566,8 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
     character budget (D1) as everything else: here both the lede and the
     ranked passage are short enough to share it, so both are admitted, in
     rank order; the header never depends on a separate rule to be shown at
-    all, and the passage neither of them took is still accounted for.
+    all, and a genuinely over-budget passage neither of them took is still
+    accounted for.
     """
     lede = (
         "The U.S. installed 18.9 GW of utility, C&I, and residential battery "
@@ -586,11 +588,15 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
         "page-1-chunk-2",
     ]
 
+    # A budget that fits the lede and the ranked passage but not the third:
+    # whole-page admission still fills unmatched passages that fit (proven
+    # by ``test_a_passage_with_no_shared_term_is_still_admitted``), so this
+    # is the genuinely-over-budget case, not a query mismatch.
     admission = admit_read_result(
         result,
         session_id="session-1",
         query="grid-scale battery storage capacity additions megawatt hours 2025",
-        selected_limit=1,
+        admission_chars=len(lede) + len(ranked) + 10,
     )
 
     assert admission is not None
@@ -602,7 +608,8 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
         lede,
         ranked,
     }
-    # The passage neither the ranking nor the lede took is still accounted for.
+    # The passage neither the ranking, the lede, nor the whole-page fill
+    # could fit is still accounted for.
     assert [item.item_id for item in admission.dispositions] == [
         f"{read.read_id}/page-1-chunk-2"
     ]
@@ -628,11 +635,11 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
         session_id="session-1",
         query=query,
         origin="researcher",
-        selected_limit=1,
+        admission_chars=600,
         include_lede=False,
     )
     extracting = admit_read_result(
-        result, session_id="session-1", query=query, selected_limit=1
+        result, session_id="session-1", query=query, admission_chars=600
     )
 
     assert verifying is not None and extracting is not None
@@ -646,21 +653,32 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
 
 
 def test_a_navigation_lede_is_never_forced_into_selection() -> None:
-    """D1: a link-dense opening passage is never admitted as the lede.
+    """Fix-round P0: a link-dense opening passage is never admitted as the
+    lede, on the real shape of the audited run's own reads.
 
     The lede rule exists for a wire release's own headline (see
-    :func:`select_passages_with_lede`), but the audited run's reads often
-    open on a site's own navigation bar instead, and the rule forced that
-    navigation into every packet regardless of relevance. A lede this
-    link-dense must never be forced in; an ordinary prose opening still is
+    :func:`select_passages_with_lede`), but the audited run's reads open on
+    a site's own masthead and nav rail instead -- measured link-dense on
+    all five real chunk-0s (SoundGuys, CNET, What Hi-Fi, Business Insider,
+    Tom's Hardware) -- and the old rule forced that navigation into every
+    packet regardless of relevance. A lede this link-dense is never forced
+    in; an ordinary prose opening still is
     (``test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones``).
+    Whole-page admission fills the unrelated third passage in behind the
+    matched one (neither took part in the query), but the link-dense nav
+    still never becomes a unit at all -- that exclusion is not a query
+    mismatch a generic fill could paper over.
     """
     navigation = (
-        "Reviews Deals News Forum Search Sign In Subscribe Newsletter Store "
-        "Support Community Careers Contact Privacy Terms Accessibility"
+        "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
+        "Guides About Us Contact Search Menu Best Headphones for 2026: "
+        "Tested and Reviewed Best overall Best for Android Best on a "
+        "budget Best accessories Best true wireless How we test What to "
+        "look for Skip to main content"
     )
     verdict = (
-        "The microphone performed well in calls and voice quality was clear."
+        "The microphone on this model delivers clear call quality with "
+        "effective noise cancelling, easily the best we tested."
     )
     unrelated = "Shipping resumes on Monday after the regional holiday."
     result = _chunked_document_result(navigation, verdict, unrelated)
@@ -668,14 +686,182 @@ def test_a_navigation_lede_is_never_forced_into_selection() -> None:
     admission = admit_read_result(
         result,
         session_id="session-1",
-        query="microphone call quality",
-        selected_limit=1,
+        query="microphone call quality noise cancelling",
+        admission_chars=600,
     )
 
     assert admission is not None
     assert [unit.locator for unit in admission.evidence.values()] == [
-        "page-1-chunk-1"
+        "page-1-chunk-1",
+        "page-1-chunk-2",
     ]
+
+
+_FIX_ROUND_QUERY = (
+    "best wireless headphones microphone call quality noise cancelling "
+    "which is the best headphones to buy 2026 for best audio quality and "
+    "best mic"
+)
+
+
+def _fix_round_fillers(site: str) -> dict[str, str]:
+    """Generic same-page sections a real buying guide repeats throughout.
+
+    These give the read-level inverse document frequency something to work
+    with: "best", "wireless", "2026" and "noise cancelling" are the page's
+    own topic words, appearing on nearly every section, not just its nav.
+    """
+    return {
+        f"filler-a-{site}": (
+            "The best wireless headphones for 2026 combine comfort and "
+            "noise cancelling with strong sound quality. We compared the "
+            "best wireless picks across every price range in 2026."
+        ),
+        f"filler-b-{site}": (
+            "Choosing the best noise cancelling headphones for 2026 "
+            "depends on how you plan to use them. The best wireless "
+            "headphones for travel differ from the best wireless "
+            "headphones for the gym in our 2026 list."
+        ),
+        f"filler-c-{site}": (
+            "Every wireless headphone on our 2026 best headphones list "
+            "was tested for weeks. The best noise cancelling models here "
+            "were judged on comfort and sound quality across the whole "
+            "2026 lineup."
+        ),
+    }
+
+
+def test_none_of_the_five_real_chunk_zeros_is_forced_first() -> None:
+    """Fix-round proof (1): none of the audited run's five real chunk-0s is
+    forced first as the lede, through :func:`select_passages_with_lede`
+    itself -- not through ``is_link_dense`` in isolation.
+    """
+    soundguys_nav = (
+        "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
+        "Guides About Us Contact Search Menu Best Headphones for 2026: "
+        "Tested and Reviewed Best overall Best for Android Best on a "
+        "budget Best for calls Best noise cancelling Best true wireless "
+        "How we test What to look for Skip to main content"
+    )
+    cnet_nav = (
+        "CNET Tech Money Home Wellness Deals Best Products Reviews How We "
+        "Test Search Log In Subscribe Best Headphones to Buy in 2026, "
+        "Tested and Reviewed Best overall Best budget Best for calls Best "
+        "noise cancelling Best battery life How we test headphones What "
+        "to look for Skip to main content Continue Reading Below"
+    )
+    whathifi_nav = (
+        "What Hi-Fi Best Buys News Reviews Deals Awards Advice Sign in "
+        "Subscribe Search Best Headphones 2026: The Top Wireless And "
+        "Wired Models We Have Tested Best overall Best budget Best for "
+        "calls Best noise cancelling How we test What to look for when "
+        "choosing headphones Skip to main content"
+    )
+    business_insider_nav = (
+        "Business Insider Tech Reviews Guides Deals Newsletters Subscribe "
+        "Account Search The Best Headphones We Have Tested in 2026 Best "
+        "overall Best budget pick Best for calls Best noise cancelling "
+        "How we test our headphone picks What to look for when buying "
+        "headphones Skip to main content Menu"
+    )
+    toms_hardware_nav = (
+        "Tom's Hardware Reviews News Best Picks Forums Deals Subscribe "
+        "Search Menu Best Gaming Headsets in 2026 Best overall Best "
+        "budget pick Best wireless Best for calls and chat How we test "
+        "our headset picks What to look for before you buy Skip to main "
+        "content Sign up for our newsletter"
+    )
+    answer = (
+        "The microphone quality and overall audio quality on this pair "
+        "stood out most, with the clearest call performance and best mic "
+        "we tested in 2026."
+    )
+    budget = len(answer) + 20
+    for site, nav in (
+        ("soundguys", soundguys_nav),
+        ("cnet", cnet_nav),
+        ("whathifi", whathifi_nav),
+        ("businessinsider", business_insider_nav),
+        ("tomshardware", toms_hardware_nav),
+    ):
+        # A tight budget -- smaller than the nav rail itself -- forces a
+        # real choice: the answer's own microphone/quality/mic vocabulary
+        # ranks it in; the nav rail is excluded from ranking on its own
+        # relevance, and must stay excluded rather than being forced back
+        # in as "the lede".
+        assert len(nav) > budget, site
+        passages = {"chunk-0": nav, "chunk-answer": answer}
+        selected = select_passages_with_lede(
+            passages, _FIX_ROUND_QUERY, budget, lede="chunk-0"
+        )
+        assert selected == ["chunk-answer"], site
+
+
+def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
+    """Fix-round proof (2): on each page, the passage Fable identified as
+    the answer ranks above that page's own chunk-0, for the sub-topic's
+    query as S2 builds it (target questions plus the original question).
+    """
+    soundguys_nav = (
+        "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
+        "Guides About Us Contact Search Menu Best Headphones for 2026: "
+        "Tested and Reviewed Best overall Best for Android Best on a "
+        "budget Best for calls Best noise cancelling Best true wireless "
+        "How we test What to look for Skip to main content"
+    )
+    # SoundGuys FAQ chunk-55/56 (Fable A1): "best headphones for calls and
+    # meetings ... clear voice capture and good noise suppression".
+    soundguys_answer = (
+        "Best headphones for calls and meetings: the Sony WH-1000XM6 and "
+        "JBL Tour One M3 both have a clear, well recorded microphone with "
+        "good noise suppression, some of the best microphone quality we "
+        "have measured this year."
+    )
+    cnet_nav = (
+        "CNET Tech Money Home Wellness Deals Best Products Reviews How We "
+        "Test Search Log In Subscribe Best Headphones to Buy in 2026, "
+        "Tested and Reviewed Best overall Best budget Best for calls Best "
+        "noise cancelling Best battery life How we test headphones What "
+        "to look for Skip to main content Continue Reading Below"
+    )
+    # CNET chunk-8/9 (Fable A1): "Excellent voice-calling performance with
+    # more mics" against the XM6's 9.3 score.
+    cnet_answer = (
+        "The Sony WH-1000XM6 scores 9.3 for excellent voice-calling "
+        "performance with more microphones than the previous model, the "
+        "best microphone quality of any wireless headphones we tested in "
+        "2026."
+    )
+    whathifi_nav = (
+        "What Hi-Fi Best Buys News Reviews Deals Awards Advice Sign in "
+        "Subscribe Search Best Headphones 2026: The Top Wireless And "
+        "Wired Models We Have Tested Best overall Best budget Best for "
+        "calls Best noise cancelling How we test What to look for when "
+        "choosing headphones Skip to main content"
+    )
+    # What Hi-Fi chunk-25 (Fable A1): best call results on over-ear
+    # headphones.
+    whathifi_answer = (
+        "The WH-1000XM6 gets the best call results of any over-ear "
+        "headphones we tested in 2026, thanks to a microphone that "
+        "handles background noise well and delivers the best microphone "
+        "quality on wireless calls."
+    )
+    for site, nav, answer in (
+        ("soundguys", soundguys_nav, soundguys_answer),
+        ("cnet", cnet_nav, cnet_answer),
+        ("whathifi", whathifi_nav, whathifi_answer),
+    ):
+        passages = {
+            "chunk-0": nav,
+            "chunk-answer": answer,
+            **_fix_round_fillers(site),
+        }
+        ranked = select_relevant_passages(
+            passages, _FIX_ROUND_QUERY, len(passages)
+        )
+        assert ranked.index("chunk-answer") < ranked.index("chunk-0"), site
 
 
 def test_admission_spends_a_character_budget_not_a_fixed_count() -> None:
@@ -696,7 +882,7 @@ def test_admission_spends_a_character_budget_not_a_fixed_count() -> None:
         result,
         session_id="session-1",
         query="call quality",
-        selected_limit=4,
+        admission_chars=2400,
     )
 
     assert admission is not None
@@ -797,8 +983,9 @@ def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
     Splitting a page must not turn the passage bound into a silent drop:
     everything the selection did not take stays visible as a disposition, so
     a passage nobody selected is never read as a passage that does not exist.
-    The batch here is the bound plus the read's own opening passage, which is
-    the one part of a page selection may not leave behind.
+    This page's own chunk-0 mixes its real headline with the site's nav rail
+    (fix-round P0: measured link-dense on the real EIA page), so it is not a
+    genuine header and is not forced in; only the ranked, budgeted answer is.
     """
     result = _eia_web_result()
     read = build_read_record_from_tool_result(result, session_id="session-1")
@@ -809,14 +996,13 @@ def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
         result,
         session_id="session-1",
         query="18.2 GW battery storage forecast for 2025",
-        selected_limit=1,
+        admission_chars=600,
     )
 
     assert admission is not None
     selected = {unit.locator for unit in admission.evidence.values()}
-    # The bound, plus the read's own opening passage, and no more.
-    assert len(selected) == 2
-    assert "chunk-0" in selected
+    # The navigation-mixed chunk-0 is not forced in; only the answer is.
+    assert "chunk-0" not in selected
     carrying = next(
         unit
         for unit in admission.evidence.values()
@@ -1695,7 +1881,7 @@ def _policy(
     candidate_urls: Sequence[str] = (_STUDY_URL,),
     remaining_calls: int = 5,
     remaining_model_turns: int = _MODEL_TURNS,
-    selected_passages_per_read: int = 4,
+    read_admission_chars: int = 200_000,
     target_id: str | None = "target-1",
     reads: dict[str, ReadRecord] | None = None,
     evidence: dict[str, EvidenceUnit] | None = None,
@@ -1711,21 +1897,23 @@ def _policy(
         session_id="session-1",
         target_id=target_id,
         query=query,
-        selected_passages_per_read=selected_passages_per_read,
+        read_admission_chars=read_admission_chars,
         reads=reads if reads is not None else {},
         evidence=evidence if evidence is not None else {},
         dispositions=dispositions if dispositions is not None else [],
     )
 
 
-def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
+def test_a_page_that_matches_no_query_term_is_still_admitted_in_full() -> None:
     """A page that matches no query term is not "there is no evidence".
 
-    A page whose text shares no term with the query scores nothing, so the
-    first (query-scored) batch takes only the read's opening passage — the
-    one selection may never leave behind — and the gate then says "extract".
-    The local step has to hand the rest over anyway, in reader order, or the
-    target is frozen out of acquisition for the rest of the pass.
+    A page whose text shares no term with the query scores nothing on
+    :func:`select_relevant_passages`'s own ranking, but whole-page admission
+    fills every passage the ranking left unmatched, in reader order, up to
+    the read's character budget: both of this document's pages become
+    evidence in the very first pass, and the target is never frozen out of
+    acquisition waiting on a continuation batch that whole-page admission no
+    longer needs.
     """
     policy = _policy()
     policy.after_action(
@@ -1734,23 +1922,7 @@ def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
         )
     )
     read_id = next(iter(policy.reads))
-    locator = f"{read_id}/page-2-chunk-0"
 
-    assert policy.state.pending_passage_ids == [locator]
-    assert next_acquisition_action(policy.state) == "extract"
-    assert [unit.locator for unit in policy.evidence.values()] == [
-        "page-1-chunk-0"
-    ]
-
-    decision = ReActDecision(
-        thought="Search again.",
-        action="use_tool",
-        tool_name="web_search",
-        tool_input_json='{"query": "another angle"}',
-    )
-    allowed = policy.before_action(decision, {"query": "another angle"})
-
-    assert allowed.allowed is True
     assert policy.state.pending_passage_ids == []
     assert next_acquisition_action(policy.state) != "extract"
     assert {unit.locator for unit in policy.evidence.values()} == {
@@ -1764,12 +1936,15 @@ def test_a_selection_miss_hands_over_a_bounded_second_passage_batch() -> None:
 def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
     """Two batches, then an explicit disposition — never a third batch.
 
-    Twelve scored passages, four per batch: batch one takes four, the
-    continuation batch takes four more, and the last four leave the pending
-    list for good. The persisted state can therefore never re-enter "extract",
-    which is what froze a target behind an append-only list.
+    Twelve scored passages, an explicit small per-read cap of four passages'
+    worth of characters (the owed re-extraction bound stays even though
+    whole-page admission's own default no longer forces it): batch one takes
+    four, the continuation batch takes four more, and the last four leave
+    the pending list for good. The persisted state can therefore never
+    re-enter "extract", which is what froze a target behind an append-only
+    list.
     """
-    policy = _policy(remaining_calls=3)
+    policy = _policy(remaining_calls=3, read_admission_chars=4 * WEB_PASSAGE_CHARS)
     policy.after_action(
         _document_step(_paged_result(12, text="queue delay commissioning"))
     )
@@ -2038,6 +2213,7 @@ def test_a_bound_of_one_batch_hands_everything_over_immediately() -> None:
         target_id="target-1",
         query="queue delay commissioning",
         passage_batch_limit=1,
+        read_admission_chars=4 * WEB_PASSAGE_CHARS,
     )
     policy.after_action(
         _document_step(_paged_result(6, text="queue delay commissioning"))
@@ -2121,7 +2297,7 @@ def test_a_retryable_extraction_failure_leaves_the_reads_pending() -> None:
     the next pass (or a resumed run) can see exactly what is still owed — and
     only a successful extraction clears them.
     """
-    policy = _policy(remaining_calls=3)
+    policy = _policy(remaining_calls=3, read_admission_chars=4 * WEB_PASSAGE_CHARS)
     policy.after_action(
         _document_step(_paged_result(8, text="queue delay commissioning"))
     )
@@ -2549,7 +2725,7 @@ def test_a_selected_passage_is_not_marked_used_by_a_sibling_passage() -> None:
     ``irrelevant`` disposition instead of being skipped because its URL — the
     URL both passages share — produced a finding.
     """
-    policy = _policy(selected_passages_per_read=2)
+    policy = _policy()
     policy.after_action(
         _document_step(_paged_result(2, text="queue delay commissioning"))
     )
@@ -2683,7 +2859,7 @@ def _gateway_policy(
     remaining_calls: int = 4,
     remaining_model_turns: int = _MODEL_TURNS,
     query: str = "queue delay commissioning",
-    selected_passages_per_read: int = 4,
+    read_admission_chars: int = 200_000,
     cache: dict[str, ReadRecord] | None = None,
     reads: dict[str, ReadRecord] | None = None,
     evidence: dict[str, EvidenceUnit] | None = None,
@@ -2700,7 +2876,7 @@ def _gateway_policy(
         session_id="session-1",
         target_id=target_id,
         query=query,
-        selected_passages_per_read=selected_passages_per_read,
+        read_admission_chars=read_admission_chars,
         reads=reads if reads is not None else {},
         evidence=evidence if evidence is not None else {},
         cache=cache,
@@ -3053,14 +3229,12 @@ def _search_step_result(
 
 @pytest.mark.asyncio
 async def test_a_late_csv_row_reaches_the_extraction_packet(tracker) -> None:
-    """A CSV row past the first passage batch still reaches extraction.
+    """Every CSV row reaches extraction, whatever its rank.
 
-    The reader chunks rows two at a time. Padded to a realistic row length
-    (D1's budget is real characters, not a count a toy fixture happens to
-    produce), the first batch's budget covers the highest-scoring chunks and
-    the row carrying the units and the footnote is in neither. Only the
-    bounded continuation batch can hand it over; without one, the target is
-    frozen and the measurement never reaches extraction.
+    Whole-page admission (fix-round 3): the reader chunks rows two at a
+    time, and every chunk of this small CSV is admitted in one pass, so the
+    row carrying the units and the footnote reaches extraction immediately
+    -- with no continuation batch, and no row silently dropped by rank.
     """
     pad = (
         " measured over the complete twelve month observation window used "
@@ -3095,24 +3269,16 @@ async def test_a_late_csv_row_reaches_the_extraction_packet(tracker) -> None:
         ).execute(source=url)
 
     assert result.success is True
-    policy = _gateway_policy(
-        candidate_urls=[url], remaining_calls=3, selected_passages_per_read=2
-    )
+    policy = _gateway_policy(candidate_urls=[url], remaining_calls=3)
     policy.after_action(_document_step(result, url))
 
-    assert len(policy.state.pending_passage_ids) > 0
-    assert not any(
-        "Basin C,41,152" in unit.excerpt for unit in policy.evidence.values()
-    )
-
-    policy.complete_extraction()
-
+    assert policy.state.pending_passage_ids == []
     selected = " ".join(unit.excerpt for unit in policy.evidence.values())
     assert "Basin C,41,152" in selected
     assert "units are months and million USD" in selected
     assert "12 percent reported a negative net benefit" in selected
-    assert policy.state.pending_passage_ids == []
     assert all(unit.excerpt in body for unit in policy.evidence.values())
+
 
 
 @pytest.mark.asyncio
@@ -3229,10 +3395,9 @@ async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
 ) -> None:
     """A cover/contents report's late table and footnotes reach the packet.
 
-    ``selected_passages_per_read=2`` keeps this small, 1.8 KB fixture from
-    fitting a single character budget (D1) whole: a realistic page's own
-    passage sizes are what force a genuine first-batch/continuation split,
-    not a document this size on its own.
+    Whole-page admission (fix-round 3): every passage of this small, 1.8 KB
+    fixture is admitted in one pass, so the late table and footnote reach the
+    extraction packet immediately, with no continuation batch needed at all.
     """
     filename = "usgs-shaped-report.md"
     result = await _read_fixture(tracker, filename)
@@ -3246,30 +3411,20 @@ async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
         candidate_urls=[url],
         remaining_calls=3,
         query=_FIXTURE_QUERY,
-        selected_passages_per_read=2,
     )
     policy.after_action(_document_step(result, url))
 
+    assert policy.state.pending_passage_ids == []
     first_units = " ".join(unit.excerpt for unit in policy.evidence.values())
-    assert policy.state.pending_passage_ids
-    assert "Basin C is withheld" not in first_units
+    assert "Basin C is withheld" in first_units
 
-    first_packet = policy.context(limit=24000)
-    # The complete read record stays visible in the packet — it is truncated
-    # only as a whole record, never mid-passage — while the passage that no
-    # batch has selected yet is not yet citable evidence.
-    assert "Basin C is withheld" in first_packet
-
-    policy.complete_extraction()
-
-    packet = policy.context(limit=24000)
+    packet = policy.context(limit=400000)
     assert "Queue delay (months)" in packet
     assert "Basin A | 34 | 128" in packet
     assert "million USD" in packet
     assert "Basin C is withheld" in packet
     selected = " ".join(unit.excerpt for unit in policy.evidence.values())
     assert "Basin C is withheld" in selected
-    assert policy.state.pending_passage_ids == []
     # Every excerpt is verbatim text of the document that was actually read.
     for unit in policy.evidence.values():
         assert unit.excerpt in document
