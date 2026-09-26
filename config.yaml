@@ -107,7 +107,7 @@ memory:
 agents:
   # Spec 7.3 (D9/PD-27): the only concurrency bounds. Lower one from live
   # results without a code change; Task 4.14's telemetry names the knob to turn.
-  # Raised from 5 to max_sub_topics (7) on 2026-09-25: five of the nine live
+  # Raised from 5 to max_sub_topics (10) on 2026-09-25: five of the nine live
   # probe plans had six or seven sub-topics, so at 5 a pass ran a second wave
   # of research; the pre-flights peaked at 2-3 calls in flight with 0 rate
   # limits. Lower it again if the run telemetry reports rate limits.
@@ -130,7 +130,7 @@ agents:
     batch_size: 12
     max_total_sources: 100
   # Spec §7.2: the ReAct loop stops after this many model turns whatever the
-  # tool budget (react.py), so the researcher's 20-call budget below needs
+  # tool budget (react.py), so the researcher's 40-call budget below needs
   # this raised from five.
   max_iterations: 15
   tool_budget: 10
@@ -138,9 +138,9 @@ agents:
   # planner's budget is 1 because the session's own startup memory recall IS
   # its procedural lookup: the planner runs no second hidden recall, and its
   # one permitted lookup happens only when startup recall returned no
-  # guidance. Spec §7.2 sets the researcher's own per-sub-topic budget to 20,
-  # and it is the only agent that searches: the source evaluator, the evidence
-  # verifier and the report writer all run tool-free by contract (§5.2, §5.4).
+  # guidance. The researcher's own per-sub-topic budget is 40, and it is the
+  # only agent that searches: the source evaluator, the evidence verifier
+  # and the report writer all run tool-free by contract (§5.2, §5.4).
   tool_budget_overrides:
     planner: 1
     researcher: 40
@@ -148,7 +148,7 @@ agents:
     evidence_verifier: 0
     report_writer: 0
   # How many planned sub-topics one Researcher pass attempts
-  # (AGENTS_MAX_SUB_TOPICS overrides this). Seven is the Planner's own
+  # (AGENTS_MAX_SUB_TOPICS overrides this). Ten is the Planner's own
   # ceiling: a lower cap dropped the last parts of a six- or seven-part
   # question under Not found. How many run at once is
   # agents.sub_topic_concurrency.
@@ -160,8 +160,8 @@ agents:
   evidence_packet_chars: 400000
   # Every ReAct decision turns own, much smaller budget.
   decision_context_chars: 24000
-  prompt_context_entries: 8
-  observation_summary_chars: 200
+  prompt_context_entries: 20
+  observation_summary_chars: 2000
   # Operation-specific output budgets. Each is DeepSeek's documented maximum,
   # 393,216 tokens, like llm.max_tokens (user decision 2026-09-25: no agent
   # fails on an output-length limit now). They stay separate keys, each with

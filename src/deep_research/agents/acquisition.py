@@ -203,10 +203,20 @@ UNMINED_TARGET_REASON = "unmined_target"
 # The disposition for a unit whose own page's extraction call itself failed
 # this pass (S6, RevSelectionR3 P1): the provider never actually mined this
 # passage, so ``irrelevant`` -- a judgement the extraction never got the
-# chance to make -- would misstate what happened. The read id stays owed
-# (``AcquisitionPolicy.complete_extraction``'s own ``except_read_ids``), so a
-# later pass can still ask about it; this reason is what the ledger shows in
-# the meantime.
+# chance to make -- would misstate what happened. This reason is what the
+# ledger shows instead. The read id is excluded from *this call's own*
+# ``AcquisitionPolicy.complete_extraction`` (its ``except_read_ids``), so it
+# is not marked consumed the moment it failed; that is not a durable
+# "still owed" record across passes, though -- a later pass's own
+# ``complete_extraction`` call consumes whatever it finds pending on its
+# own terms, and ``pending_extraction_ids`` only ever holds a read at all
+# when its admission deferred passages past its own budget. What actually
+# gives a failed page a further chance is that its units are never removed
+# from the evidence registry: a later pass with nothing new to read falls
+# back to one legacy-shaped call over the whole registry (see
+# ``extract_findings``'s own fallback), and the owed-batch mechanism can
+# still pick its passages up if they turn out to owe a figure or a
+# required target's own words.
 EXTRACTION_FAILED_REASON = "extraction_failed"
 
 

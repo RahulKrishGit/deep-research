@@ -2971,11 +2971,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         ReAct-loop-level ``provider_error``: stop researching further
         sub-topics, but keep every finding already collected.
         ``"output_limit"`` is the legacy single-call path's own truncated
-        reply, or S6's own signal for a partial page failure that still
-        leaves the batch owed rather than consumed. Both failures defer the
-        batch. The fourth is the target-obligation flag this extraction
-        completed, which the caller reports in the sub-topic's own completed
-        event.
+        reply, or S6's own signal for a partial page failure. In a mixed
+        result only the failed page's own units are excluded from this
+        pass's ``complete_extraction`` (so they are not marked consumed the
+        moment they failed) and disposed of as ``EXTRACTION_FAILED_REASON``
+        rather than ``irrelevant``; every succeeded page's own batch is
+        still consumed as usual. The fourth is the target-obligation flag
+        this extraction completed, which the caller reports in the
+        sub-topic's own completed event.
         """
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"

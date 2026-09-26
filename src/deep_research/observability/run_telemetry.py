@@ -51,9 +51,14 @@ __all__ = [
 #: calls always carry one; evaluation and ad-hoc harnesses need not.
 UNATTRIBUTED_AGENT = "unattributed"
 
-#: The concurrency knob each agent's calls are bounded by (§7.3). The three are
-#: the caps a run can be fanning out under; anything else at the peak falls
-#: back to the researcher's, the cap that bounds the widest fan-out.
+#: The concurrency knob each agent's own stage is bounded by (§7.3). These
+#: four are the per-stage caps a run can be fanning out under; anything else
+#: at the peak falls back to the researcher's, the cap that bounds the
+#: widest fan-out. ``agents.extraction_concurrency`` is a fifth concurrency
+#: knob (S6) but not a per-stage one: it bounds how many of the researcher's
+#: own per-page extraction calls run at once, a narrower bound layered
+#: *under* ``sub_topic_concurrency`` rather than a stage of its own, so it
+#: is not a key of this mapping.
 _CONCURRENCY_KNOBS = {
     "evidence_verifier": "agents.verifier_concurrency",
     "researcher": "agents.sub_topic_concurrency",

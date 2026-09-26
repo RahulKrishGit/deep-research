@@ -513,6 +513,12 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             4,
         ),
         (
+            "AGENTS_EXTRACTION_CONCURRENCY",
+            ("agents", "extraction_concurrency"),
+            "8",
+            8,
+        ),
+        (
             "AGENTS_WRITER_SECTION_CONCURRENCY",
             ("agents", "writer_section_concurrency"),
             "3",
@@ -1322,12 +1328,24 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)
-    # Spec 7.3 (D9/PD-27): the four concurrency caps, one assertion each.
+    # Spec 7.3 (D9/PD-27): the four per-stage concurrency caps, one
+    # assertion each, plus extraction_concurrency (S6), a fifth
+    # concurrency knob that bounds the researcher's own per-page
+    # extraction calls rather than a stage of its own.
     assert settings.agents.sub_topic_concurrency == 10
     assert settings.agents.source_scoring_concurrency == 6
     assert settings.agents.verifier_batch_size == 5
     assert settings.agents.verifier_concurrency == 16
+    assert settings.agents.extraction_concurrency == 16
     # Spec §6.10/§17 Q6: the parallel writer's own concurrency bound; a
     # controller ruling for this build raised the shipped default from 7 to
     # 10 ("no strong limits").
     assert settings.agents.writer_section_concurrency == 10
+    # P1-4 (WholeBranchReview): the S1 limits lift raised the code defaults
+    # to 20 and 2000, but the shipped YAML kept overriding them at 8 and
+    # 200 -- silently reverting the lift for every production run while
+    # the e2e harness ran at the lifted value. Asserted against the real
+    # shipped file, not a synthetic YAML, so this fails the moment the two
+    # drift apart again.
+    assert settings.agents.prompt_context_entries == 20
+    assert settings.agents.observation_summary_chars == 2000
