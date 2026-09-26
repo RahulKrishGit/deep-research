@@ -1701,10 +1701,10 @@ def extraction_messages(
             "dates one of these statements: snippet the disputing "
             "sentence, and put in target_ids only that statement's own "
             "ids, copied from its D-line, and no other target, even "
-            "where the contract above would bind more -- a finding bound "
-            "to any other target is dropped. Everything else keeps the "
-            "registry shape the contract above requires. Return an empty "
-            "list when none of these passages does."
+            "where the contract above would bind more -- a target "
+            "outside them is dropped from the finding. Everything else "
+            "keeps the registry shape the contract above requires. "
+            "Return an empty list when none of these passages does."
         )
         sections.append("\n".join(dissent_lines))
     sections.append(
