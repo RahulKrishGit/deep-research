@@ -3,6 +3,7 @@
 from deep_research.agents.acquisition import (
     AcquisitionAction,
     AcquisitionPolicy,
+    EXTRACTION_FAILED_REASON,
     ManifestSequence,
     UNMINED_QUANTITY_REASON,
     UNMINED_TARGET_REASON,
@@ -460,6 +461,7 @@ from deep_research.tools.passage_selection import (
 __all__ = [
     "AcquisitionAction",
     "AcquisitionPolicy",
+    "EXTRACTION_FAILED_REASON",
     "ManifestSequence",
     "UNMINED_QUANTITY_REASON",
     "UNMINED_TARGET_REASON",

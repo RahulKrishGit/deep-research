@@ -2485,6 +2485,28 @@ def test_a_retryable_extraction_failure_leaves_the_reads_pending() -> None:
     assert policy.state.pending_extraction_ids == []
 
 
+def test_complete_extraction_keeps_the_given_reads_pending() -> None:
+    """``except_read_ids`` (S6, RevSelectionR3 P1): a per-read defer rather
+    than clearing every pending read.
+
+    A page whose own extraction call failed keeps its read id pending --
+    its passages were never actually mined -- while every other read whose
+    batch was handed over is still consumed here, exactly as
+    ``complete_extraction`` with no exception has always done.
+    """
+    policy = _policy(remaining_calls=3, read_admission_chars=4 * WEB_PASSAGE_CHARS)
+    policy.after_action(
+        _document_step(_paged_result(8, text="queue delay commissioning"))
+    )
+    read_id = next(iter(policy.reads))
+    policy.defer_extraction()
+    assert policy.state.pending_extraction_ids == [read_id]
+
+    policy.complete_extraction(except_read_ids=[read_id])
+
+    assert policy.state.pending_extraction_ids == [read_id]
+
+
 def _failed_read_step(
     tool_name: str,
     url: str,

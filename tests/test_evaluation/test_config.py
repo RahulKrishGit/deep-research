@@ -1092,8 +1092,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # already read by an earlier pass) now falls back to one legacy-shaped
     # extraction call over the topic's accumulated evidence instead of
     # making none at all, moving the source a fifth time: `8279c0b4d587` ->
-    # `3af571b120bc`.
-    "researcher": "3af571b120bc",
+    # `3af571b120bc`. RevSelectionR3's review of S6 (task ownership so no
+    # page task outlives a failed loop, a failed page's units disposed of
+    # as ``extraction_failed`` instead of ``irrelevant``, owed re-extraction
+    # rebounded per page and run concurrently, a decision turn no longer
+    # wiping accumulated per-page overflow, merged rejections prefixed with
+    # their read id) moved the source a sixth time, no prompt sentence
+    # changing: `3af571b120bc` -> `06a492b0d768`.
+    "researcher": "06a492b0d768",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

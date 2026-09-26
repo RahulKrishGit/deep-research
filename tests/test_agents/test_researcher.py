@@ -6397,20 +6397,25 @@ class _PerPageCompleter:
         self.react_packets: list[str] = []
         self._in_flight = 0
         self.max_in_flight = 0
+        # Precise (start, end) perf_counter windows per structured call
+        # (1-indexed), so a test can prove two *specific* calls overlapped
+        # in time rather than merely that the completer's peak concurrency
+        # was 2 at some point, which the main pass alone already produces.
+        self.call_windows: dict[int, tuple[float, float]] = {}
 
     async def complete_react(
         self, messages, tools, *, agent_name=None, max_tokens=None
     ):
         self.react_packets.append("\n".join(message.content for message in messages))
+        self._react_call_count += 1
+        if self._react_call_count == self._sync_after_react_call:
+            while not self.completions:
+                await asyncio.sleep(0)
         if not self._decisions:
             raise AssertionError("no scripted decision left for a native ReAct turn")
         decision = self._decisions.pop(0)
         if isinstance(decision, BaseException):
             raise decision
-        self._react_call_count += 1
-        if self._react_call_count == self._sync_after_react_call:
-            while not self.completions:
-                await asyncio.sleep(0)
         return native_turn_from_decision(decision)
 
     async def complete_structured(
@@ -6433,6 +6438,7 @@ class _PerPageCompleter:
         call_index = len(self.calls)
         self._in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        started = perf_counter()
         try:
             delay = self._delays_by_call.get(call_index, self._delay)
             if delay:
@@ -6449,6 +6455,7 @@ class _PerPageCompleter:
         finally:
             self._in_flight -= 1
             self.completions.append(read_id)
+            self.call_windows[call_index] = (started, perf_counter())
 
 
 _PAGE_A_URL = "https://a.example.test/page"
@@ -6799,3 +6806,181 @@ async def test_owed_re_extraction_targets_only_the_page_that_owed_passages(
     # re-extraction packet shows the model.
     assert f"read_id={page_b_read_id}" not in retry_packet
     assert f"passage read_id={page_b_read_id}" not in retry_packet
+
+
+@pytest.mark.asyncio
+async def test_two_pages_that_both_owe_passages_get_their_own_concurrent_re_asks(
+    tracker: Tracker,
+) -> None:
+    """Owed re-extraction is bounded per page, not shared across a sub-topic.
+
+    Both page A's and page B's own text share a word with the required
+    target's own question, and neither page's main extraction binds it, so
+    both pages owe their own re-ask. A shared 8x2 budget across the whole
+    sub-topic would let whichever page ranked first crowd out the other's
+    own re-ask entirely; each page must get its own, and they must overlap
+    in time rather than run one after another (user ruling: no strong
+    limits, only runaway guards).
+    """
+    sub_topic = _sub_topic("Alpha", 1).model_copy(
+        update={"evidence_targets": [_owed_page_target()]}
+    )
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(),
+        output_factory=lambda *args: SubTopicFindingsDraft(findings=[]),
+        delays_by_call={3: 0.1, 4: 0.1},
+    )
+
+    outcome = await _run_two_page_sub_topic(
+        tracker,
+        completer,
+        sub_topic=sub_topic,
+        body_a=_OWED_BODY,
+        body_b=(
+            "A separate registrant category exists for late renewal "
+            "filings, according to a related registry notice."
+        ),
+    )
+
+    assert outcome.result is not None
+    # Two main calls, then two owed retries -- one per page, never combined
+    # into a single shared-budget packet.
+    assert len(completer.structured_packets) == 4
+    owed_packets = [
+        packet
+        for packet in completer.structured_packets
+        if "Passages owed a finding" in packet
+    ]
+    assert len(owed_packets) == 2
+    page_a_read_id = completer.calls[0]
+    page_b_read_id = completer.calls[1]
+    assert any(f"read_id={page_a_read_id}" in packet for packet in owed_packets)
+    assert any(f"read_id={page_b_read_id}" in packet for packet in owed_packets)
+    # The two owed calls (indices 3 and 4) overlapped in time: call 3's
+    # window had not ended before call 4's began.
+    start_3, end_3 = completer.call_windows[3]
+    start_4, end_4 = completer.call_windows[4]
+    assert start_3 < end_4 and start_4 < end_3
+
+
+@pytest.mark.asyncio
+async def test_a_page_task_never_outlives_the_run_after_a_later_decision_fails(
+    tracker: Tracker,
+) -> None:
+    """RevSelectionR3 P1: a page task started before a later decision fails
+    must be cancelled and awaited, not left running after ``agent.run``
+    returns -- and its own finding, already paid for, must not be thrown
+    away just because a later decision in the same loop failed.
+
+    Page A is read, its background extraction call is forced to complete
+    (the sync-wait before the third decision) before the third react turn
+    raises a transport failure, which ``run_react_loop`` catches
+    (``propagate_provider_errors=False``) and folds into a ``ReActRun`` with
+    ``succeeded=False``. Page A's own finding was already paid for by the
+    time the loop gave up, and must survive; no task the loop started may
+    still be running once ``agent.run`` has returned.
+    """
+    completer = _PerPageCompleter(
+        decisions=[
+            use_tool("Find sources.", "web_search", '{"query": "alpha 2026"}'),
+            use_tool("Read page A.", "web_scraper", f'{{"url": "{_PAGE_A_URL}"}}'),
+            ProviderTimeoutError("transport failure"),
+        ],
+        sync_after_react_call=3,
+    )
+    baseline = asyncio.all_tasks()
+
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+
+    orphaned = [task for task in asyncio.all_tasks() - baseline if not task.done()]
+    assert orphaned == []
+    assert outcome.result is not None
+    assert [finding.source_url for finding in outcome.result.findings] == [
+        _PAGE_A_URL
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_still_running_page_task_is_cancelled_when_the_loop_fails(
+    tracker: Tracker,
+) -> None:
+    """RevSelectionR3 P1's own repro: a page task still in flight (not yet
+    complete) when a later decision fails must be cancelled and awaited, not
+    left running unobserved after ``agent.run`` returns.
+
+    Page A's own extraction is slow (0.2s) and the third decision fails
+    immediately (no sync-wait), so the task is provably still pending --
+    ``page_task.done()`` is false -- at the moment the loop gives up.
+    """
+    completer = _PerPageCompleter(
+        decisions=[
+            use_tool("Find sources.", "web_search", '{"query": "alpha 2026"}'),
+            use_tool("Read page A.", "web_scraper", f'{{"url": "{_PAGE_A_URL}"}}'),
+            ProviderTimeoutError("transport failure"),
+        ],
+        delay=0.2,
+    )
+    baseline = asyncio.all_tasks()
+
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+
+    orphaned = [task for task in asyncio.all_tasks() - baseline if not task.done()]
+    assert orphaned == []
+    assert outcome.result is not None
+    assert outcome.result.findings == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pages_units_are_not_labelled_irrelevant(
+    tracker: Tracker,
+) -> None:
+    """RevSelectionR3 P1: a failed page's units get their own disposition,
+    and stay owed rather than consumed.
+
+    Page A's own extraction call hits the output limit; page B's succeeds.
+    The provider never actually mined page A's selected passages, so they
+    must not be judged ``irrelevant`` -- a verdict the extraction never got
+    the chance to make. Whole-page admission's own "still owed" record for a
+    read with nothing deferred is simply that its units are never marked
+    consumed and never disappear from the registry: ``pending_extraction_
+    ids`` only ever holds a read whose own admission deferred passages past
+    its budget (S1's continuation-batch mechanism), which a small
+    synthetic page never does, so that field is not the signal to check
+    here -- the disposition, and the units still being visible to a later
+    pass, are.
+    """
+    completer = _PerPageCompleter(
+        decisions=_two_scrape_decisions(),
+        fail_at_call=1,
+        fail_with=_output_limit_error(),
+    )
+
+    outcome = await _run_two_page_sub_topic(tracker, completer)
+
+    assert outcome.result is not None
+    page_a_read_id = completer.calls[0]
+    page_b_read_id = completer.calls[1]
+    assert page_a_read_id is not None and page_b_read_id is not None
+    units = outcome.state_update["evidence_units"]
+    page_a_units = [
+        evidence_id
+        for evidence_id, unit in units.items()
+        if unit.read_id == page_a_read_id
+    ]
+    # Still in the registry, available to a later pass, never dropped for
+    # having failed.
+    assert page_a_units
+    reasons = {
+        (item.stage, item.item_id): item.reason
+        for item in outcome.state_update["evidence_dispositions"]
+    }
+    for evidence_id in page_a_units:
+        assert reasons[("extraction", evidence_id)] == "extraction_failed"
+    # Page B's own units, whose call succeeded, never get this reason.
+    page_b_units = [
+        evidence_id
+        for evidence_id, unit in units.items()
+        if unit.read_id == page_b_read_id
+    ]
+    for evidence_id in page_b_units:
+        assert reasons.get(("extraction", evidence_id)) != "extraction_failed"

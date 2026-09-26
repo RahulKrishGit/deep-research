@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -199,6 +199,15 @@ UNMINED_QUANTITY_REASON = "unmined_quantity"
 # words and still reported the obligation unbound, which the ledger has to be
 # able to say.
 UNMINED_TARGET_REASON = "unmined_target"
+
+# The disposition for a unit whose own page's extraction call itself failed
+# this pass (S6, RevSelectionR3 P1): the provider never actually mined this
+# passage, so ``irrelevant`` -- a judgement the extraction never got the
+# chance to make -- would misstate what happened. The read id stays owed
+# (``AcquisitionPolicy.complete_extraction``'s own ``except_read_ids``), so a
+# later pass can still ask about it; this reason is what the ledger shows in
+# the meantime.
+EXTRACTION_FAILED_REASON = "extraction_failed"
 
 
 def next_acquisition_action(state: AcquisitionState) -> AcquisitionAction:
@@ -1216,8 +1225,10 @@ class AcquisitionPolicy:
                 }
             )
 
-    def complete_extraction(self) -> None:
-        """Terminate the local extraction handoff.
+    def complete_extraction(
+        self, *, except_read_ids: Collection[str] = ()
+    ) -> None:
+        """Terminate the local extraction handoff, except the given reads.
 
         ``pending_extraction_ids`` are the reads whose current batch was handed
         to the extractor. A passage batch still owed is taken now — bounded,
@@ -1227,11 +1238,23 @@ class AcquisitionPolicy:
         run. Only the read IDs whose batch was handed over are consumed here,
         and they are consumed *because the extraction succeeded*: a handoff
         that produced no result is deferred instead (``defer_extraction``).
+
+        ``except_read_ids`` (S6, RevSelectionR3 P1): a page whose own
+        extraction call failed keeps its read id in
+        ``pending_extraction_ids`` -- its passages were never actually
+        mined, so the batch stays owed for that read alone, exactly like a
+        whole-topic ``defer_extraction`` did before per-page calls existed,
+        while every read whose own call succeeded is still consumed here.
         """
         self.extract_passage_batch()
+        kept = set(except_read_ids)
         self.state = self.state.model_copy(
             update={
-                "pending_extraction_ids": [],
+                "pending_extraction_ids": [
+                    read_id
+                    for read_id in self.state.pending_extraction_ids
+                    if read_id in kept
+                ],
             }
         )
 
@@ -1253,6 +1276,7 @@ class AcquisitionPolicy:
         *,
         unmined_quantity_ids: Sequence[str] = (),
         unmined_target_ids: Sequence[str] = (),
+        failed_read_ids: Collection[str] = (),
     ) -> None:
         """Account for exactly the selected units no accepted finding used.
 
@@ -1287,11 +1311,22 @@ class AcquisitionPolicy:
         ``irrelevant``: the extraction never saw it at all, so it cannot have
         judged it beside the point. Capacity, not relevance, is why it is
         unaccounted for.
+
+        ``failed_read_ids`` (S6, RevSelectionR3 P1): every unit of a page
+        whose own extraction call failed this pass is disposed of as
+        :data:`EXTRACTION_FAILED_REASON`, checked before every other reason —
+        a call that never returned cannot have walked past a figure or an
+        obligation's own words, and it certainly never judged the passage
+        beside the point. ``admitted``/``unmined_quantity_ids``/
+        ``unmined_target_ids`` are this pass's own findings and owed-batch
+        results, which a failed page's units are never part of, but the
+        precedence check is explicit rather than assumed.
         """
         used = {(read_id, locator) for read_id, locator in admitted}
         unmined_quantities = set(unmined_quantity_ids)
         unmined_targets = set(unmined_target_ids)
         overflowed = self._packet_overflow_evidence_ids
+        failed_reads = set(failed_read_ids)
         target_id = self.target_id
         known = {(item.stage, item.item_id) for item in self.dispositions}
         for evidence_id, unit in self.evidence.items():
@@ -1301,7 +1336,9 @@ class AcquisitionPolicy:
                 continue
             if ("extraction", evidence_id) in known:
                 continue
-            if evidence_id in unmined_quantities:
+            if unit.read_id in failed_reads:
+                reason = EXTRACTION_FAILED_REASON
+            elif evidence_id in unmined_quantities:
                 reason = UNMINED_QUANTITY_REASON
             elif evidence_id in unmined_targets:
                 reason = UNMINED_TARGET_REASON
@@ -2249,11 +2286,21 @@ class AcquisitionPolicy:
             omitted_evidence_ids=omitted,
             read_ids=read_ids,
         )
-        if read_ids is None:
-            # The single whole-sub-topic packet (a decision turn, or the
-            # pre-S6 one-call extraction path): this call's own overflow is
-            # the whole story, so it replaces whatever an earlier call in
-            # this same policy's lifetime recorded.
+        if for_decision:
+            # A decision turn's own packet never determines extraction
+            # overflow at all (RevSelectionR3 P3): every decision turn calls
+            # this with ``read_ids=None``, and treating that the same as the
+            # legacy whole-sub-topic extraction packet's own ``read_ids is
+            # None`` wiped whatever per-page overflow an earlier page
+            # extraction call in this same policy's lifetime had already
+            # recorded. Left untouched here, whatever the last extraction
+            # call recorded stands until the next one.
+            pass
+        elif read_ids is None:
+            # The single whole-sub-topic packet (the pre-S6 one-call
+            # extraction path): this call's own overflow is the whole story,
+            # so it replaces whatever an earlier call in this same policy's
+            # lifetime recorded.
             self._packet_overflow_evidence_ids = set(omitted)
         else:
             # S6: one page's own extraction packet. Several pages of one

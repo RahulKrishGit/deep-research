@@ -957,33 +957,41 @@ def _ordered_owed_units(
     )
 
 
-def _owed_batches(units: Sequence[EvidenceUnit]) -> list[list[EvidenceUnit]]:
-    """The bounded packets a re-extraction asks about, in order.
+def _owed_batches_by_page(
+    units: Sequence[EvidenceUnit],
+) -> dict[str, list[list[EvidenceUnit]]]:
+    """The bounded packets a re-extraction asks about, in order, per page.
 
     At most :data:`MAX_OWED_PASSAGES_PER_BATCH` passages per packet and at
-    most :data:`MAX_OWED_BATCHES` packets: a packet that carried a whole
-    topic's read is what ran the extraction away to its output cap, so what
-    the bound cannot hold is left unmined and reported rather than sent.
+    most :data:`MAX_OWED_BATCHES` packets -- **per page**, not shared across
+    a sub-topic's pages (user ruling: no strong limits, only runaway guards;
+    a shared budget that let one page's owed passages crowd out another
+    page's could drop a required target's only remaining chance of an
+    answer, which is exactly the kind of content-dropping cap the ruling
+    forbids). A packet that carried a whole page's read is what ran the
+    extraction away to its output cap, so what one page's own bound cannot
+    hold is left unmined and reported rather than sent -- but a second page
+    owing its own passages still gets its own two packets regardless.
 
     A batch never mixes two pages' units (S6): each page's own extraction
     left its own passages owed, so a re-extraction packet stays scoped to
     the one page it retries, exactly like that page's own main extraction
-    call. Pages are visited in the priority order their own highest-ranked
-    owed unit appears in ``units`` -- the same order a single shared queue
-    already used -- and are batched among themselves; the batch cap still
-    bounds the whole sub-topic, not each page, so a page with many owed
-    passages can exhaust it and leave a later page's owed passages unmined
-    this pass.
+    call. The returned mapping's own key order is the priority order each
+    page's own highest-ranked owed unit appears in ``units`` -- the same
+    order a single shared queue already used -- so a caller that runs one
+    page's batches per page, concurrently, still asks the highest-priority
+    page's own passages without waiting on another page's queue position.
     """
     grouped: dict[str, list[EvidenceUnit]] = {}
     for unit in units:
         grouped.setdefault(unit.read_id, []).append(unit)
-    batches = [
-        page_units[start : start + MAX_OWED_PASSAGES_PER_BATCH]
-        for page_units in grouped.values()
-        for start in range(0, len(page_units), MAX_OWED_PASSAGES_PER_BATCH)
-    ]
-    return batches[:MAX_OWED_BATCHES]
+    return {
+        read_id: [
+            page_units[start : start + MAX_OWED_PASSAGES_PER_BATCH]
+            for start in range(0, len(page_units), MAX_OWED_PASSAGES_PER_BATCH)
+        ][:MAX_OWED_BATCHES]
+        for read_id, page_units in grouped.items()
+    }
 
 
 def extraction_messages(
@@ -2315,6 +2323,35 @@ class _LoopWithExtraction(NamedTuple):
     react: ReActRun
     extraction_tasks: dict[str, "asyncio.Task[_PageExtraction]"]
     admitted_read_order: list[str]
+    extraction_gate: asyncio.Semaphore
+
+
+@dataclass(frozen=True, slots=True)
+class _OwedPageResult:
+    """One page's own bounded owed re-extraction (S6).
+
+    Each owing page gets its own up-to-``MAX_OWED_BATCHES`` batches, and
+    every owing page's own batches run concurrently under the same
+    ``extraction_concurrency`` gate that page's own main call ran under --
+    a shared budget across a sub-topic's pages would let one page's owed
+    passages crowd out another's, which is exactly the content-dropping cap
+    the user's "no strong limits" ruling forbids. ``findings``/``rejected``/
+    ``admitted_keys``/``unplanned_target_ids``/``dropped_figures`` are this
+    page's own local accumulators, merged into the sub-topic's shared ones
+    only after every owing page's task has returned, in a fixed page order
+    -- never completion order -- for the same determinism reason the main
+    per-page merge keeps one.
+    """
+
+    read_id: str
+    findings: list[Finding] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
+    errors: list[ResearchError] = field(default_factory=list)
+    admitted_keys: list[tuple[str, str]] = field(default_factory=list)
+    unplanned_target_ids: list[str] = field(default_factory=list)
+    dropped_figures: list[str] = field(default_factory=list)
+    asked_evidence_ids: list[str] = field(default_factory=list)
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -2334,6 +2371,31 @@ class _SubTopicOutcome:
     events: list[ResearchEvent]
     target_id: str | None
     target_state: AcquisitionState | None
+
+
+async def _cancel_and_gather_pages(
+    page_extractions: Mapping[str, "asyncio.Task[_PageExtraction]"],
+) -> None:
+    """Cancel every per-page task not already done, then await all of them
+    (S6, RevSelectionR3 P1).
+
+    Called on every path that stops waiting for a sub-topic's background
+    extraction tasks without having awaited each one to completion: a loop
+    that failed, a merge that raised, or a caller that is giving up on the
+    pass for some other reason. Without this, a task already scheduled keeps
+    calling the provider after the pass has halted, its result is silently
+    discarded, and a non-``ProviderError`` it later raises can only surface
+    as an unretrieved task exception -- never as anything this run reports.
+    ``return_exceptions=True`` is what makes a cancelled task's own
+    ``CancelledError`` (and any other exception a task ends with) safe to
+    await here instead of propagating out of this cleanup itself.
+    """
+    for page_task in page_extractions.values():
+        if not page_task.done():
+            page_task.cancel()
+    if page_extractions:
+        await asyncio.gather(*page_extractions.values(), return_exceptions=True)
+
 
 
 class ResearcherAgent(BaseAgent[ResearchFindings]):
@@ -2763,6 +2825,107 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             elapsed_s=round(perf_counter() - started_at, 1),
         )
 
+    async def _retry_owed_batches_for_page(
+        self,
+        task: SubTopicTask,
+        run: ReActRun,
+        policy: AcquisitionPolicy,
+        read_id: str,
+        batches: Sequence[list[EvidenceUnit]],
+        *,
+        gate: asyncio.Semaphore | None,
+        retrieved: Sequence[str],
+        known_reads: Mapping[str, ReadRecord] | None,
+        valid_target_ids: Sequence[str] | None,
+        planned_targets: Sequence[EvidenceTarget],
+        unanswered: Sequence[EvidenceTarget],
+        question: str | None,
+        coverage_titles: Mapping[str, str],
+    ) -> _OwedPageResult:
+        """One page's own owed re-ask: up to ``MAX_OWED_BATCHES`` packets of
+        its own owed passages alone (S6).
+
+        Run under the same per-page ``extraction_concurrency`` gate that
+        page's own main call ran under (``gate=None`` only for the legacy
+        caller that scheduled no per-page tasks at all, which never runs more
+        than one page's owed batches concurrently in the first place), so
+        several owing pages' own re-asks overlap instead of running one after
+        another. Every accumulator is local to this page's own call: the
+        caller merges every page's own result back in a fixed page order
+        after every owing page's task has returned, never completion order.
+        """
+        findings: list[Finding] = []
+        rejected: list[str] = []
+        errors: list[ResearchError] = []
+        admitted_keys: list[tuple[str, str]] = []
+        unplanned_target_ids: list[str] = []
+        dropped_figures: list[str] = []
+        asked_ids: list[str] = []
+        for batch in batches:
+            asked_ids.extend(unit.evidence_id for unit in batch)
+
+            async def _call() -> SubTopicFindingsDraft:
+                return await self.provider.complete_structured(
+                    extraction_messages(
+                        task,
+                        run,
+                        evidence_chars=self._evidence_chars,
+                        acquisition_context=build_acquisition_context(
+                            policy.state,
+                            policy.reads,
+                            {unit.evidence_id: unit for unit in batch},
+                            limit=self._decision_context_chars,
+                            target_id=policy.target_id,
+                            dispositions=policy.dispositions,
+                            focus_ids=[unit.evidence_id for unit in batch],
+                        ),
+                        planned_targets=planned_targets,
+                        owed_passages=True,
+                        owed_targets=unanswered,
+                        question=question,
+                        coverage_titles=coverage_titles,
+                    ),
+                    SubTopicFindingsDraft,
+                    agent_name=self.name,
+                    # The one call whose cap was not lifted: it looped to its
+                    # cap at 32,768 and at 49,152 tokens, so a larger cap only
+                    # lengthened the runaway.
+                    max_tokens=self.config.re_extraction_max_tokens,
+                )
+
+            try:
+                if gate is not None:
+                    async with gate:
+                        retry_draft = await _call()
+                else:
+                    retry_draft = await _call()
+            except ProviderError as error:
+                errors.append(owed_extraction_provider_error(run, error))
+                continue
+            retry_findings, retry_rejected = build_findings(
+                retry_draft,
+                sub_topic=task.sub_topic,
+                extracted_at=self._clock().isoformat(),
+                known_urls=retrieved,
+                known_reads=known_reads,
+                valid_target_ids=valid_target_ids,
+                admitted_evidence_keys=admitted_keys,
+                dropped_target_ids=unplanned_target_ids,
+                dropped_figures=dropped_figures,
+            )
+            findings.extend(retry_findings)
+            rejected.extend(retry_rejected)
+        return _OwedPageResult(
+            read_id=read_id,
+            findings=findings,
+            rejected=rejected,
+            errors=errors,
+            admitted_keys=admitted_keys,
+            unplanned_target_ids=unplanned_target_ids,
+            dropped_figures=dropped_figures,
+            asked_evidence_ids=asked_ids,
+        )
+
     async def extract_findings(
         self,
         task: SubTopicTask,
@@ -2770,6 +2933,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         policy: AcquisitionPolicy | None = None,
         page_extractions: Mapping[str, "asyncio.Task[_PageExtraction]"] | None = None,
         admitted_read_order: Sequence[str] = (),
+        gate: asyncio.Semaphore | None = None,
     ) -> tuple[list[Finding], list[ResearchError], ExtractionFailure, bool]:
         """Turn one finished sub-topic loop into validated findings.
 
@@ -2824,6 +2988,28 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             else retrieved_finding_urls(run)
         )
         if not run.succeeded or not retrieved:
+            if page_extractions:
+                # Some pages may have already completed their own
+                # extraction call before the loop failed (a later decision
+                # call's ProviderError, a re-raised ``RequestAttemptLimit
+                # Error``, or the sub-topic simply being cancelled): those
+                # findings were already paid for and must not be thrown
+                # away, even though the run is about to stop researching
+                # further sub-topics. Nothing still in flight should keep
+                # calling the provider after the pass has halted
+                # (RevSelectionR3 P1).
+                salvaged: list[Finding] = []
+                for read_id in admitted_read_order:
+                    page_task = page_extractions.get(read_id)
+                    if page_task is None or not page_task.done():
+                        continue
+                    if page_task.cancelled() or page_task.exception() is not None:
+                        continue
+                    page = page_task.result()
+                    if page.error is None:
+                        salvaged.extend(page.findings)
+                await _cancel_and_gather_pages(page_extractions)
+                return salvaged, [], "", False
             return [], [], "", False
 
         if policy is not None:
@@ -2876,24 +3062,43 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # completion order -- so the sub-topic's output is identical
             # whatever order the concurrent calls actually finish in.
             page_failures: list[str] = []
+            failed_read_ids: set[str] = set()
             pages_run = 0
-            for read_id in admitted_read_order:
-                page_task = page_extractions.get(read_id)
-                if page_task is None:
-                    continue
-                pages_run += 1
-                page = await page_task
-                if page.error is not None:
-                    errors.append(page.error)
-                    page_failures.append(
-                        "provider" if page.failed_provider else "output_limit"
+            try:
+                for read_id in admitted_read_order:
+                    page_task = page_extractions.get(read_id)
+                    if page_task is None:
+                        continue
+                    pages_run += 1
+                    page = await page_task
+                    if page.error is not None:
+                        errors.append(page.error)
+                        page_failures.append(
+                            "provider" if page.failed_provider else "output_limit"
+                        )
+                        failed_read_ids.add(read_id)
+                        continue
+                    findings.extend(page.findings)
+                    admitted_keys.extend(page.admitted_keys)
+                    # Prefixed with this page's own read id (RevSelectionR3
+                    # P3): each page numbers its own rejections from
+                    # "finding 1", so an unprefixed merge could report
+                    # "finding 1: ..." twice for two different pages' own
+                    # drops.
+                    rejected.extend(
+                        f"{read_id}: {reason}" for reason in page.rejected
                     )
-                    continue
-                findings.extend(page.findings)
-                admitted_keys.extend(page.admitted_keys)
-                rejected.extend(page.rejected)
-                unplanned_target_ids.extend(page.unplanned_target_ids)
-                dropped_figures.extend(page.dropped_figures)
+                    unplanned_target_ids.extend(page.unplanned_target_ids)
+                    dropped_figures.extend(page.dropped_figures)
+            except BaseException:
+                # A page task raised something ``_extract_one_page`` itself
+                # never catches (only ``ProviderOutputLimitError``/
+                # ``ProviderError`` are caught there) -- a bug, or an
+                # external cancellation. Every task not yet awaited here
+                # must not keep calling the provider after this loop has
+                # stopped waiting for it (RevSelectionR3 P1).
+                await _cancel_and_gather_pages(page_extractions)
+                raise
             if pages_run and len(page_failures) == pages_run:
                 # Every page's own call failed: nothing was extracted at
                 # all, exactly the legacy single-call early return -- the
@@ -2903,7 +3108,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # outage (every failure unreachable, never one page's own
                 # output-limit trouble) is the run-halting condition a
                 # loop-level ``provider_error`` is; anything else defers the
-                # batch without halting the run.
+                # batch without halting the run. Every read stays in
+                # ``pending_extraction_ids`` (neither ``complete_extraction``
+                # nor ``record_extraction_dispositions`` runs on this path),
+                # exactly the pre-S6 outage behaviour.
                 if all(failure == "provider" for failure in page_failures):
                     return findings, errors, "provider", False
                 return findings, errors, "output_limit", False
@@ -2914,6 +3122,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # findings stand" is the whole point of per-page isolation.
                 sub_topic_extraction_failure = "output_limit"
         else:
+            failed_read_ids = set()
             # The legacy single-call path: no policy (``finalize()``'s own
             # entry point has none of its own to schedule per-page tasks
             # from), a policy this caller built without scheduling any, or
@@ -2980,31 +3189,29 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # run already has a finding from, so it is gated on both.
         mined_earlier = self._admitted_evidence_keys()
 
-        def mine(
-            draft: SubTopicFindingsDraft,
-        ) -> tuple[list[Finding], list[str]]:
-            """Stamp one provider reply into validated findings and drops."""
-            return build_findings(
-                draft,
-                sub_topic=task.sub_topic,
-                extracted_at=self._clock().isoformat(),
-                known_urls=retrieved,
-                known_reads=known_reads,
-                valid_target_ids=valid_target_ids,
-                admitted_evidence_keys=admitted_keys,
-                dropped_target_ids=unplanned_target_ids,
-                dropped_figures=dropped_figures,
-            )
-
         unanswered: list[EvidenceTarget] = []
         if policy is not None:
             own_targets = counted_evidence_targets(task.sub_topic.evidence_targets)
+            # A page whose own extraction call failed this pass is excluded
+            # from the owed-unit sets entirely (RevSelectionR3 P1): the
+            # provider never actually saw or walked past that page's own
+            # passages, so they can be neither "unmined" nor "irrelevant" --
+            # they stay owed instead, via ``except_read_ids`` below.
+            owed_eligible_evidence = (
+                policy.evidence
+                if not failed_read_ids
+                else {
+                    evidence_id: unit
+                    for evidence_id, unit in policy.evidence.items()
+                    if unit.read_id not in failed_read_ids
+                }
+            )
             # The selected passages this sub-topic's own targets ask a figure
             # for and no admitted finding used. Only the units selected for
             # this target are asked, and only its own targets' measure units
             # decide what a passage owes.
             owed_figures = _units_owing_a_figure(
-                policy.evidence,
+                owed_eligible_evidence,
                 target_ids=(
                     () if policy.target_id is None else (policy.target_id,)
                 ),
@@ -3024,17 +3231,18 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # answering half a question.
             unanswered = _unbound_required_targets(own_targets, findings)
             owed_own_words = _units_owing_own_words(
-                policy.evidence,
+                owed_eligible_evidence,
                 target_ids=(
                     () if policy.target_id is None else (policy.target_id,)
                 ),
                 targets=unanswered,
                 used=admitted_keys,
             )
-            # The passages that owe the most are the ones asked about first,
-            # and the packets are bounded: a request that carried every owed
-            # passage of the read is what ran this call away to its output cap.
-            batches = _owed_batches(
+            # The passages that owe the most are the ones asked about first
+            # within each page's own queue, and each page's own packets are
+            # bounded: a request that carried every owed passage of the page
+            # is what ran this call away to its output cap.
+            batches_by_page = _owed_batches_by_page(
                 _ordered_owed_units(
                     [*owed_figures, *owed_own_words],
                     bases=_measure_bases(own_targets),
@@ -3044,65 +3252,54 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     },
                 )
             )
-            if batches:
-                # At most MAX_OWED_BATCHES packets of at most
-                # MAX_OWED_PASSAGES_PER_BATCH passages, never a loop: a first
-                # packet ranks dozens of passages, and the passage that
-                # carries what the target asks for is exactly what a ranking
-                # can bury. Each packet is over its own passages alone, so the
-                # model is not asked to find them again in a packet they were
-                # lost in. A provider failure costs the packet it happened in:
-                # the findings already extracted stand, the remaining packets
-                # are still asked, and every owed unit the pass asked about
-                # keeps its own disposition, which is what the ledger
+            if batches_by_page:
+                # Every owing page's own batches run concurrently (S6, user
+                # ruling on RES-6 §4): a shared cross-page budget would let
+                # one page's owed passages crowd out a second page's, which
+                # is the content-dropping cap the ruling forbids. Merged back
+                # in the pages' own fixed priority order -- never completion
+                # order -- for the same determinism reason the main per-page
+                # merge keeps one. A provider failure costs the batch it
+                # happened in: the findings already extracted stand, the
+                # remaining batches (this page's own and every other owing
+                # page's) are still asked, and every owed unit a page asked
+                # about keeps its own disposition, which is what the ledger
                 # discloses.
-                for batch in batches:
-                    try:
-                        retry_draft = await self.provider.complete_structured(
-                            extraction_messages(
-                                task,
-                                run,
-                                evidence_chars=self._evidence_chars,
-                                acquisition_context=build_acquisition_context(
-                                    policy.state,
-                                    policy.reads,
-                                    {
-                                        unit.evidence_id: unit
-                                        for unit in batch
-                                    },
-                                    limit=self._decision_context_chars,
-                                    target_id=policy.target_id,
-                                    dispositions=policy.dispositions,
-                                    focus_ids=[
-                                        unit.evidence_id for unit in batch
-                                    ],
-                                ),
-                                planned_targets=planned_targets,
-                                owed_passages=True,
-                                owed_targets=unanswered,
-                                question=question,
-                                coverage_titles=coverage_titles,
-                            ),
-                            SubTopicFindingsDraft,
-                            agent_name=self.name,
-                            # The one call whose cap was not lifted: it looped
-                            # to its cap at 32,768 and at 49,152 tokens, so a
-                            # larger cap only lengthened the runaway.
-                            max_tokens=self.config.re_extraction_max_tokens,
+                owed_results = await asyncio.gather(
+                    *(
+                        self._retry_owed_batches_for_page(
+                            task,
+                            run,
+                            policy,
+                            read_id,
+                            page_batches,
+                            gate=gate,
+                            retrieved=retrieved,
+                            known_reads=known_reads,
+                            valid_target_ids=valid_target_ids,
+                            planned_targets=planned_targets,
+                            unanswered=unanswered,
+                            question=question,
+                            coverage_titles=coverage_titles,
                         )
-                    except ProviderError as error:
-                        errors.append(owed_extraction_provider_error(run, error))
-                        continue
-                    retry_findings, retry_rejected = mine(retry_draft)
-                    findings = [*findings, *retry_findings]
-                    rejected = [*rejected, *retry_rejected]
+                        for read_id, page_batches in batches_by_page.items()
+                    )
+                )
+                asked: set[str] = set()
+                for owed in owed_results:
+                    findings = [*findings, *owed.findings]
+                    rejected = [*rejected, *owed.rejected]
+                    errors.extend(owed.errors)
+                    admitted_keys.extend(owed.admitted_keys)
+                    unplanned_target_ids.extend(owed.unplanned_target_ids)
+                    dropped_figures.extend(owed.dropped_figures)
+                    asked.update(owed.asked_evidence_ids)
+            else:
+                asked = set()
             # Unit-level, so a passage is "used" only when that exact passage
             # produced an admitted finding. What the pass asked about and left
             # unmined says so in its own reason rather than "irrelevant";
             # whatever the bound never asked about keeps the plain one.
-            asked = {
-                unit.evidence_id for batch in batches for unit in batch
-            }
             owed_figure_ids = [
                 unit.evidence_id
                 for unit in owed_figures
@@ -3117,6 +3314,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     if unit.evidence_id in asked
                     and unit.evidence_id not in set(owed_figure_ids)
                 ],
+                failed_read_ids=failed_read_ids,
             )
             # The obligation this pass completed is the ACTIVE topic's, and a
             # finding bound to another topic's target does not complete it.
@@ -3178,7 +3376,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 )
             )
         if policy is not None:
-            policy.complete_extraction()
+            policy.complete_extraction(except_read_ids=failed_read_ids)
         if not rejected:
             return findings, errors, sub_topic_extraction_failure, target_obligation_completed
         errors.append(
@@ -3335,21 +3533,30 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         async def record(step: ReActStep) -> None:
             await self._record_step(step, scratchpad=scratchpad)
 
-        react = await run_react_loop(
-            agent_name=self.name,
-            tracker=self.tracker,
-            tools=toolset,
-            decide=decide,
-            max_iterations=self.config.max_iterations,
-            tool_budget=self.config.tool_budget_for(self.name),
-            on_step=record,
-            is_sufficient=self.is_sufficient,
-            summary_limit=self.config.observation_summary_chars,
-            tool_policy=policy,
-            job_id=f"{self.name}/{policy.session_id}/{policy.target_id}",
-            tool_lock=tool_lock,
-            propagate_provider_errors=False,
-        )
+        try:
+            react = await run_react_loop(
+                agent_name=self.name,
+                tracker=self.tracker,
+                tools=toolset,
+                decide=decide,
+                max_iterations=self.config.max_iterations,
+                tool_budget=self.config.tool_budget_for(self.name),
+                on_step=record,
+                is_sufficient=self.is_sufficient,
+                summary_limit=self.config.observation_summary_chars,
+                tool_policy=policy,
+                job_id=f"{self.name}/{policy.session_id}/{policy.target_id}",
+                tool_lock=tool_lock,
+                propagate_provider_errors=False,
+            )
+        except BaseException:
+            # ``run_react_loop`` re-raises some failures rather than folding
+            # them into a ``ReActRun`` (a re-raised ``RequestAttemptLimit
+            # Error``, for one) -- whatever page tasks this loop already
+            # started must not be left running unobserved after the loop
+            # itself has failed to even return (RevSelectionR3 P1).
+            await _cancel_and_gather_pages(extraction_tasks)
+            raise
         react = react.model_copy(
             update={"errors": [*react.errors, *scratchpad.drain_errors()]}
         )
@@ -3357,6 +3564,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             react=react,
             extraction_tasks=extraction_tasks,
             admitted_read_order=admitted_read_order,
+            extraction_gate=extraction_gate,
         )
 
     async def _research_one(
@@ -3386,23 +3594,36 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         policy = self._policy_for_task(task)
         started_at = perf_counter()
         async with self.tracker.agent_span(self.name) as span:
-            loop_result = await self._research_sub_topic(
-                task, policy, scratchpad, tool_lock
-            )
-            react = loop_result.react
-            elapsed_s = round(perf_counter() - started_at, 1)
-            (
-                sub_findings,
-                extraction_errors,
-                extraction_failure,
-                target_obligation_completed,
-            ) = await self.extract_findings(
-                task,
-                react,
-                policy,
-                page_extractions=loop_result.extraction_tasks,
-                admitted_read_order=loop_result.admitted_read_order,
-            )
+            # Own the tasks here (RevSelectionR3 P1): whatever exception
+            # escapes this block, every per-page task this loop started must
+            # be cancelled and awaited before it propagates, so none keeps
+            # calling the provider after this sub-topic's own pass has given
+            # up on it. ``extract_findings`` and ``_research_sub_topic``
+            # each already clean up their own known failure paths; this is
+            # the last-resort net for anything that still gets past them.
+            loop_result: _LoopWithExtraction | None = None
+            try:
+                loop_result = await self._research_sub_topic(
+                    task, policy, scratchpad, tool_lock
+                )
+                react = loop_result.react
+                elapsed_s = round(perf_counter() - started_at, 1)
+                (
+                    sub_findings,
+                    extraction_errors,
+                    extraction_failure,
+                    target_obligation_completed,
+                ) = await self.extract_findings(
+                    task,
+                    react,
+                    policy,
+                    page_extractions=loop_result.extraction_tasks,
+                    admitted_read_order=loop_result.admitted_read_order,
+                    gate=loop_result.extraction_gate,
+                )
+            finally:
+                if loop_result is not None:
+                    await _cancel_and_gather_pages(loop_result.extraction_tasks)
             successful_reads = sum(
                 read.resolved_url in policy.state.read_urls
                 for read in policy.reads.values()
