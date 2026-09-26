@@ -74,10 +74,10 @@ def test_the_planner_gate_rejects_fewer_than_three_subtopics(
     ).passed is False
 
 
-def test_the_planner_gate_rejects_more_than_seven_subtopics(
+def test_the_planner_gate_rejects_more_than_ten_subtopics(
     planner_case, planner_output
 ) -> None:
-    output = planner_output.with_sub_topics(8)
+    output = planner_output.with_sub_topics(11)
 
     assert gate(
         evaluate_agent_gates(output, planner_case), "subtopic_count"

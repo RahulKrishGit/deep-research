@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.planner import MAX_SUB_TOPICS
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import SCENARIOS
 from deep_research.utils.types import MAX_TARGETS_PER_TOPIC
@@ -51,7 +52,7 @@ _METRICS = {
 _REFERENCES = {
     "focused-decomposition": {
         "minimum_sub_topics": 3,
-        "maximum_sub_topics": 7,
+        "maximum_sub_topics": 10,
         "expected_themes": [
             "dendrite formation",
             "interfacial resistance",
@@ -61,7 +62,7 @@ _REFERENCES = {
     },
     "ambiguous-scope": {
         "minimum_sub_topics": 4,
-        "maximum_sub_topics": 7,
+        "maximum_sub_topics": 10,
         "forbidden_assumptions": [
             "specific country",
             "specific vendor",
@@ -75,7 +76,7 @@ _REFERENCES = {
     },
     "scoped-evidence-targets": {
         "minimum_sub_topics": 3,
-        "maximum_sub_topics": 7,
+        "maximum_sub_topics": 10,
         "minimum_targets_per_sub_topic": 1,
         "maximum_targets_per_sub_topic": 6,
     },
@@ -277,6 +278,24 @@ def test_the_scoped_case_declares_the_real_target_ceiling() -> None:
         reference["maximum_targets_per_sub_topic"] == MAX_TARGETS_PER_TOPIC
     )
     assert reference["minimum_targets_per_sub_topic"] == 1
+
+
+@pytest.mark.parametrize(
+    "case_id",
+    ["focused-decomposition", "ambiguous-scope", "scoped-evidence-targets"],
+)
+def test_the_maximum_sub_topics_reference_tracks_the_real_ceiling(
+    case_id: str,
+) -> None:
+    """Every declared ceiling is the planner's own bound, not a copied literal.
+
+    ``subtopic_count`` reads the composition rule from this reference, so a
+    declaration that drifted from ``MAX_SUB_TOPICS`` would police a bound no
+    plan is planned against.
+    """
+    reference = _controlled(case_id).expectations.reference
+
+    assert reference["maximum_sub_topics"] == MAX_SUB_TOPICS
 
 
 def test_the_scoped_case_scripts_no_memory_and_no_search() -> None:

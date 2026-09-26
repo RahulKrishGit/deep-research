@@ -1065,12 +1065,24 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # where the previous round wrongly refused it too. Later heuristic edge
     # cases on this guard are accepted residuals; the writer-side fix in
     # the report-format spec is the main protection. The module source
-    # moved `0e92c7cf1206` -> `4245163b56a8` -> `4c360ee7ebd1`, the second
-    # move from this slice's whole-page admission rework (S1: passage
-    # selection, packet building, and the finding/source caps); no other
-    # agent's text changed, so the other four target pins and the Judge pin
-    # are unchanged.
-    "researcher": "4c360ee7ebd1",
+    # moved `0e92c7cf1206` -> `4245163b56a8`; no other agent's text changed,
+    # so the other four target pins and the Judge pin are unchanged.
+    # Whole-page snippet admission (controller decision, P1): a kept
+    # snippet's admission and its finding's own locator no longer trust the
+    # model's claimed locator or a fixed one-neighbour window --
+    # ``_snippet_admitted_at`` now returns the passage
+    # ``evidence.locate_snippet`` finds the snippet's own words in anywhere
+    # on the page, and ``build_findings`` stamps every downstream field
+    # (attribution, the finding itself, the admitted-evidence key) from that
+    # relocated locator. No prompt string moved; only this module's own
+    # source did, so the other four target pins and the Judge pin are
+    # unchanged. Moved `4245163b56a8` -> `ecb64eeaf882`.
+    # S1's whole-page admission rework (passage selection, packet building,
+    # and the finding/source caps) landed on the same head and moved the
+    # researcher's own module source a second time: `ecb64eeaf882` ->
+    # `5472a4abdedf`. Recomputed after the merge, not carried from either
+    # parent's own value.
+    "researcher": "5472a4abdedf",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1124,7 +1136,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the module source itself; ``agents.prompts`` was untouched, so the
     # other four target pins and the Judge pin are unchanged. Moved
     # `8b1ad6b04834` -> `725d8e9ef930`.
-    "evidence_verifier": "725d8e9ef930",
+    # Close the Context Check gap (controller decision, same P1 round):
+    # ``context_passage`` (and, through it, the report registry's
+    # ``statement_passages`` line) and ``relay_attribution_on_page``'s
+    # primary path now read ``evidence.snippet_span_text`` instead of the
+    # fixed one-neighbour-either-side ``neighbouring_passage_text``, so a
+    # kept snippet spanning three or more passages is windowed by where it
+    # actually ends. No prompt sentence named a passage count, so no
+    # model-read text moved; only the module's own source did. Moved
+    # `725d8e9ef930` -> `c272fd184706`.
+    "evidence_verifier": "c272fd184706",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

@@ -54,9 +54,9 @@ from deep_research.agents.evidence import (
     _stated_dates,
     cosmetic_text,
     excerpt_matches,
-    neighbouring_passage_text,
     own_organisation_on_page,
     relay_attribution_on_page,
+    snippet_span_text,
 )
 from deep_research.agents.figures import figure_in_text, is_a_date
 from deep_research.agents.identity import deduplicate_findings, finding_fingerprint
@@ -393,8 +393,8 @@ def page_owner(read: ReadRecord) -> str:
 
 
 def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) -> str:
-    """§5.2's bounded passage: the snippet's passage and its neighbours, centred on it."""
-    text = neighbouring_passage_text(read, locator or "") or read_text(read)
+    """§5.2's bounded passage: every passage the snippet actually spans, centred on it."""
+    text = snippet_span_text(read, locator or "", snippet or "") or read_text(read)
     if len(text) <= CONTEXT_PASSAGE_CHARS:
         return text
     anchor = text.casefold().find((snippet or "")[:40].casefold())

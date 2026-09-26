@@ -1872,12 +1872,12 @@ def test_a_snippet_spanning_its_passage_and_its_neighbour_is_admitted() -> None:
     assert finding.locator == "chunk-1"
 
 
-def test_a_snippet_from_a_far_passage_is_still_refused() -> None:
-    """The window is the excerpt's passage and its immediate neighbour only.
+def test_a_verbatim_quote_cited_at_a_far_locator_is_admitted_and_relocated() -> None:
+    """Admission reads the whole page; the claimed locator is only a hint.
 
-    A quote three passages away is a different part of the page, however
-    verbatim it is: admitting it would bind an excerpt to a locator the read
-    never placed it at.
+    A quote three passages away is still the read's own words, however far
+    the model's claim sits from where it actually runs: the finding is kept,
+    and its locator moves to the passage the quote truly starts in.
     """
     read = _multi_passage_read(
         passages={
@@ -1893,6 +1893,37 @@ def test_a_snippet_from_a_far_passage_is_still_refused() -> None:
 
     findings, rejected = _build_relay(
         read, "chunk-1", snippet="file the annual return with the county office"
+    )
+
+    assert rejected == []
+    [finding] = findings
+    assert finding.locator == "chunk-3"
+
+
+def test_a_snippet_stitched_from_non_adjacent_passages_is_still_refused() -> None:
+    """Two genuine spans the page never runs together are not one quote.
+
+    The stitched text names words the page states, on either side, but never
+    as one contiguous run: the passage between them states something else
+    entirely, so admitting it would bind an excerpt to words the page never
+    actually wrote together.
+    """
+    read = _multi_passage_read(
+        passages={
+            "chunk-1": "The operator shall file the annual return each year.",
+            "chunk-2": "Filings are reviewed by the district board each spring.",
+            "chunk-3": "with the county office before the last day of the quarter.",
+        },
+        url="https://example.test/stitched-snippet",
+    )
+
+    findings, rejected = _build_relay(
+        read,
+        "chunk-1",
+        snippet=(
+            "The operator shall file the annual return each year. with the "
+            "county office before the last day of the quarter."
+        ),
     )
 
     assert findings == []
