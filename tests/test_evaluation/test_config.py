@@ -1263,7 +1263,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # section titles fall back on a figure or verdict word; rule 8 per Fable
     # (picked/by for a relayed pick, the verdict span keeps its criterion within
     # the mark cap). Moved `74cd71c823a8` -> `a4eafe23b35a`.
-    "report_writer": "a4eafe23b35a",
+    # Whole-branch re-review: each mark records the finding it rests on
+    # (ItemMark.finding_id); an all-refused run is a recoverable
+    # report_writer_all_parts_refused. Moved `a4eafe23b35a` -> `c7fb91fd9f90`.
+    "report_writer": "c7fb91fd9f90",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
