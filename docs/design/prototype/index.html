@@ -1065,6 +1065,18 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    colour stays the loop's kind (amber/grey), never text. */
 .spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
 .spine-wrap[data-loop="settled"] .loop-layer .loop-base{opacity:.7}
+/* ═══ 2026-09-26: the consumer-format report ═══ */
+/* Tables sit in a frame that scrolls sideways; the page itself never does. The findings table
+   (4 columns) fits the desktop column; the options table (up to 6 columns, states.html) pins
+   its Option column over the scroll. */
+.tbl-frame{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.tbl-frame .tbl{margin:0}
+.tbl-frame .tbl td .cite{color:var(--fg)}
+.prose .sources{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose .sources li{margin-bottom:var(--space-2);overflow-wrap:anywhere}
+/* The 0.80 acceptance line on the review meter (types.py:1131). */
+.bar-row .bar{position:relative}
+.bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
 </style>
 </head>
 <body>
@@ -1286,89 +1298,125 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
           <div class="opts" id="reportOpts" data-od-id="report-options"></div>
         </div>
 
-        <div class="with-rail">
+        <div class="with-rail report-main">
           <div class="stack" style="gap:var(--space-6)">
+            <!-- The server's Markdown, rendered as-is: the server owns wording, order, numbering
+                 and the table (spec 2026-09-25 §3). Presentation-only adaptations (spec §4.4): the
+                 title is not repeated, [n] markers become anchors, the sources list carries ids,
+                 the table sits in a horizontally scrolling frame, the evidence-log link is muted text
+                 until the service serves the log (api-gaps E1). One battery-storage report is reused
+                 for every finished session (DESIGN.md §7). -->
             <article class="card stack" style="gap:var(--space-5)" data-od-id="report-body">
               <div class="prose">
-                <h2 style="margin-top:0">Executive Summary</h2>
-                <p>The constraints best supported by this pass's evidence are grid connection, documented almost entirely through U.S. data, and the concentration of battery supply chains in China. In the United States, 2,600 GW of proposed generation and storage projects were waiting for grid access at the end of 2023, typical waits stretch to five years or more, fewer than a quarter of queued projects are expected to reach completion at current rates, and delay carries quantified costs to consumers. <a class="cite" href="#">[8][10][13]</a></p>
-                <p>On the supply side, the IEA reports that China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024, is projected to remain dominant through 2035, and estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk. <a class="cite" href="#">[1][2][4]</a></p>
-                <p>FERC's Order 2023 and Order 2023-A introduced queue reform, including stronger financial and site-control requirements and improved storage modeling, and U.S. queue capacity fell for the first time in 2024, but the evidence does not show the bottleneck resolved. <a class="cite" href="#">[13]</a></p>
-                <p>Several constraint families raised in review remain unevidenced in this pass: tariffs and trade barriers, siting, permitting and fire-code compliance, wholesale market eligibility and accreditation rules, non-U.S. connection regimes, equipment lead times, and financing conditions.</p>
+                <p class="avail" id="repEvidenceLine">Evidence as of 2026-09-16 · 6 sources</p>
+                <h2 style="margin-top:var(--space-4)">Bottom line</h2>
+                <p>Grid connection is the binding constraint on grid-scale battery deployment in the evidence this run could verify, and that evidence is almost entirely from the United States: 2,600 GW of proposed generation and storage were waiting for grid access at the end of 2023, with typical waits of five years or more <a class="cite" href="#src-6">[6]</a>. The supply side is concentrated in one country: China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024 <a class="cite" href="#src-2">[2]</a>. Queue reform under FERC Order 2023 has begun and U.S. queue capacity fell for the first time in 2024, but nothing verified shows the bottleneck resolved <a class="cite" href="#src-6">[6]</a>.</p>
 
-                <h3>Grid connection as the binding timing constraint</h3>
-                <p>Grid connection is the most fully evidenced constraint on grid-scale battery deployment in this pass, although the grid-side evidence is confined to the United States. As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. Research cited from Lawrence Berkeley National Laboratory puts the average wait in U.S. interconnection queues at five years and indicates that, at current rates, less than a quarter of the energy projects entering those queues will make it to completion. <a class="cite" href="#">[13]</a></p>
-                <p>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays stretching from three to seven years in some markets. The delay is not limited to generators, as Google has reported potential transmission grid connection delays of up to 12 years for new data centers. <a class="cite" href="#">[11]</a></p>
+                <div class="tbl-frame" id="repFindingsFrame">
+                  <table class="tbl tbl-findings">
+                    <thead><tr><th>What was measured</th><th>Result</th><th>Who reported it (and when)</th><th class="n">Source</th></tr></thead>
+                    <tbody>
+                      <tr><td class="wrapcell">Proposed U.S. generation and storage awaiting grid access</td><td class="wrapcell">2,600 GW</td><td class="wrapcell">Lawrence Berkeley National Laboratory (end of 2023)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">Typical U.S. interconnection wait</td><td class="wrapcell">5 years or more</td><td class="wrapcell">Lawrence Berkeley National Laboratory (2024)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">Share of queued U.S. projects expected to reach completion</td><td class="wrapcell">under 25%</td><td class="wrapcell">Lawrence Berkeley National Laboratory (2024)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">China's share of global lithium, cobalt, phosphate and graphite processing</td><td class="wrapcell">70–95%</td><td class="wrapcell">IEA, Global Critical Minerals Outlook (2025, for 2024)</td><td class="n"><a class="cite" href="#src-2">[2]</a></td></tr>
+                      <tr><td class="wrapcell">Annual production at risk under full Chinese export controls</td><td class="wrapcell">$6.5 trillion</td><td class="wrapcell">IEA, as reported by Anadolu Agency (2025)</td><td class="n"><a class="cite" href="#src-3">[3]</a></td></tr>
+                      <tr><td class="wrapcell">China's average share of mineral supply, excluding rare earths</td><td class="wrapcell">72% in 2025, from 70% in 2023</td><td class="wrapcell">Congressional Research Service, R48149 (2025)</td><td class="n"><a class="cite" href="#src-4">[4]</a></td></tr>
+                      <tr><td class="wrapcell">Consumer loss per $1 billion of delayed transmission investment</td><td class="wrapcell">$150–370 million per year of delay</td><td class="wrapcell">Enki AI (2026)</td><td class="n"><a class="cite" href="#src-5">[5]</a></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="tbl-foot"><em>Figures verified against their source pages; the source column links to the numbered list below.</em></p>
 
-                <h3>Critical minerals and supply-chain concentration</h3>
-                <p>Battery deployment also depends on a supply chain whose midstream is heavily concentrated in one country. The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a></p>
-                <p>The trend in the evidence runs toward more exposure, not less: excluding rare earths, the average share of mineral supply held by China rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by China's export controls has tripled since 2023. <a class="cite" href="#">[4][6]</a></p>
-
-                <h2>Verified claims</h2>
+                <h2>Grid connection</h2>
                 <ul>
-                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.90</span></li>
-                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70–95% of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a> <span class="cap">confidence 0.88</span></li>
-                  <li>FERC's Order 2023 mandated U.S. interconnection queue reform and included stronger financial and site control requirements to discourage speculative projects, plus improved storage modeling, with Order 2023-A reaffirming most of it. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.92</span></li>
-                  <li>For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay. <a class="cite" href="#">[11]</a> <span class="cap">confidence 0.90</span></li>
+                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>At current rates, less than a quarter of the energy projects entering U.S. interconnection queues are expected to reach completion <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays of three to seven years in some markets; Google has reported potential transmission connection delays of up to 12 years for new data centres <a class="cite" href="#src-5">[5]</a>.</li>
+                  <li>For every $1 billion of delayed transmission investment, consumers lose between $150 million and $370 million in net benefits per year of delay <a class="cite" href="#src-5">[5]</a>.</li>
                 </ul>
 
-                <h2>Uncertainty and conflicting evidence</h2>
-                <p>Several things should temper confidence in the picture above. The grid-side evidence is U.S.-only: non-U.S. connection regimes were sought in this pass but produced no verified claim or retrieved finding. One claim was contradicted: an assertion that the U.S. queue had swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years was rejected, while a verified claim places 2,600 GW in the queue as of the end of 2023. Queue magnitude estimates also conflict, and several central numbers rest on sources this pass flagged low confidence.</p>
+                <h2>Critical minerals and supply-chain concentration</h2>
+                <ul>
+                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite <a class="cite" href="#src-2">[2]</a>.</li>
+                  <li>Excluding rare earths, China's average share of mineral supply rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by its export controls has tripled since 2023 <a class="cite" href="#src-4">[4]</a>.</li>
+                  <li>The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk <a class="cite" href="#src-3">[3]</a>.</li>
+                  <li>Resource nationalism is rising among producer countries, which narrows the routes around any one supplier <a class="cite" href="#src-1">[1]</a>.</li>
+                </ul>
 
-                <h2>Limitations</h2>
-                <ul id="repLimitations"></ul>
-              </div>
+                <h2>Queue reform</h2>
+                <ul>
+                  <li>FERC's Order 2023 mandated interconnection queue reform, including stronger financial and site-control requirements to discourage speculative projects and improved storage modelling; Order 2023-A reaffirmed most of it <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>U.S. queue capacity fell for the first time in 2024, but the verified evidence does not show the bottleneck resolved <a class="cite" href="#src-6">[6]</a>.</li>
+                </ul>
 
-              <div data-od-id="citations-table">
-                <h2 class="sect" style="margin-bottom:var(--space-4)">Citations</h2>
-                <table class="tbl">
-                  <thead><tr><th class="n">#</th><th>Source</th><th class="n">Score</th><th>Band</th></tr></thead>
-                  <tbody>
-                    <tr><td class="n">1</td><td class="wrapcell"><a class="tlink" href="#">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a><br><span class="cap">rff.org</span></td><td class="n">0.76</td><td>normal</td></tr>
-                    <tr><td class="n">2</td><td class="wrapcell"><a class="tlink" href="#">Global Critical Minerals Outlook 2025</a><br><span class="cap">iea.blob.core.windows.net</span></td><td class="n">0.91</td><td>normal</td></tr>
-                    <tr><td class="n">4</td><td class="wrapcell"><a class="tlink" href="#">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a><br><span class="cap">aa.com.tr</span></td><td class="n">0.74</td><td>normal</td></tr>
-                    <tr><td class="n">6</td><td class="wrapcell"><a class="tlink" href="#">Critical Minerals and Materials for Selected Energy Technologies</a><br><span class="cap">congress.gov · CRS R48149</span></td><td class="n">0.78</td><td>normal</td></tr>
-                    <tr><td class="n">11</td><td class="wrapcell"><a class="tlink" href="#">Grid Interconnection Delays 2026: A Threat to US Energy</a><br><span class="cap">enkiai.com · contradicted one claim</span></td><td class="n">0.67</td><td>normal</td></tr>
-                    <tr><td class="n">13</td><td class="wrapcell"><a class="tlink" href="#">Resolving the Interconnection Queue Bottleneck</a><br><span class="cap">novoco.com</span></td><td class="n">0.20</td><td>low confidence</td></tr>
-                  </tbody>
-                </table>
-                <p class="tbl-foot">Six of the report's 80 citations. Row 13 was cited for verified claims and still scored 0.20 — past this run's scoring cap.</p>
+                <h2>What we couldn't confirm</h2>
+                <p>Non-U.S. grid connection regimes were sought, but no page read gave a verified figure. Tariffs and trade barriers, siting and fire-code compliance, wholesale market accreditation rules, equipment lead times and financing conditions were raised in review and have no verified finding in this run.</p>
+
+                <h2>Sources</h2>
+                <ol class="sources" id="repSources">
+                  <li id="src-1">Resources for the Future — <a class="tlink" href="https://www.rff.org/" target="_blank" rel="noopener">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a> (2025)</li>
+                  <li id="src-2">IEA — <a class="tlink" href="https://www.iea.org/" target="_blank" rel="noopener">Global Critical Minerals Outlook 2025</a> (2025)</li>
+                  <li id="src-3">Anadolu Agency — <a class="tlink" href="https://www.aa.com.tr/" target="_blank" rel="noopener">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a> (2025)</li>
+                  <li id="src-4">Congressional Research Service — <a class="tlink" href="https://crsreports.congress.gov/" target="_blank" rel="noopener">Critical Minerals and Materials for Selected Energy Technologies</a> (2025)</li>
+                  <li id="src-5">Enki AI — <a class="tlink" href="https://www.enkiai.com/" target="_blank" rel="noopener">Grid Interconnection Delays 2026: A Threat to US Energy</a> (2026)</li>
+                  <li id="src-6">Novogradac — <a class="tlink" href="https://www.novoco.com/" target="_blank" rel="noopener">Resolving the Interconnection Queue Bottleneck</a> (2024)</li>
+                </ol>
+                <!-- The report's last line. The relative link to the evidence log is rendered as muted text
+                     with the same words until the service serves the log's Markdown (api-gaps E1); with E1 it
+                     switches the toggle to Evidence instead. -->
+                <p class="avail" id="repEvidenceLink">How this was researched: <span class="mono">evidence log</span></p>
               </div>
             </article>
           </div>
 
           <aside class="rail" data-od-id="report-rail" aria-label="Report details">
-            <div class="card stack-2" data-od-id="report-quality">
-              <h2 class="card-title">Quality Snapshot</h2>
-              <p class="avail">Not served by the API. Transcribed from the published report's own evidence table.</p>
+            <div class="card stack-2" data-od-id="report-review">
+              <h2 class="card-title">Review</h2>
               <div class="bars">
-                <div class="bar-row"><span style="color:var(--fg)">Claim confidence</span><span class="bar"><span style="width:90%"></span></span><span class="n">0.90</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Source authority</span><span class="bar"><span style="width:91%"></span></span><span class="n">0.91</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Corroboration</span><span class="bar"><span style="width:100%"></span></span><span class="n">1.00</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span style="width:20%"></span></span><span class="n">0.20</span></div>
+                <div class="bar-row" id="repReviewRow"><span style="color:var(--fg)">Review score</span><span class="bar bar-gate"><span id="repReviewFill"></span></span><span class="n" id="repReviewN">—</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span id="repCitedFill"></span></span><span class="n" id="repCitedN">—</span></div>
               </div>
+              <p class="avail" id="repReviewStatus">—</p>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-coverage">
+              <h2 class="card-title">Coverage</h2>
+              <dl class="kv">
+                <dt>required targets answered</dt><dd id="repCovAnswered">—</dd>
+                <dt>not found</dt><dd id="repCovNotFound">—</dd>
+              </dl>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-evidence">
+              <h2 class="card-title">Evidence</h2>
+              <dl class="kv" id="repEvidenceCounts"></dl>
+              <p class="avail" id="repEvidenceNone" hidden>not measured</p>
             </div>
 
             <div class="card stack-2" data-od-id="report-facts">
-              <h2 class="card-title">Session Facts</h2>
+              <h2 class="card-title">Session facts</h2>
               <dl class="kv">
                 <dt>status</dt><dd id="repFactStatus">—</dd>
-                <dt>iteration</dt><dd id="repFactIteration">—</dd>
+                <dt>pass</dt><dd id="repFactPass">—</dd>
                 <dt>started_at</dt><dd id="repFactStarted">—</dd>
                 <dt>finished_at</dt><dd id="repFactFinished">—</dd>
+                <dt>duration_seconds</dt><dd id="repFactDuration">—</dd>
                 <dt>report_path</dt><dd id="repFactPath">—</dd>
+                <dt>evidence_path</dt><dd id="repFactEvidence">—</dd>
+                <dt>quality_path</dt><dd id="repFactQuality">—</dd>
                 <dt>errors</dt><dd id="repFactErrors">—</dd>
               </dl>
             </div>
 
             <div class="card stack-2" data-od-id="report-cost">
-              <h2 class="card-title">Cost and Usage</h2>
+              <h2 class="card-title">Cost and usage</h2>
               <dl class="kv">
                 <dt>tool calls</dt><dd class="avail">Not recorded</dd>
                 <dt>input tokens</dt><dd class="avail">Not recorded</dd>
                 <dt>output tokens</dt><dd class="avail">Not recorded</dd>
               </dl>
-              <p class="avail">The runner holds these totals, but the session response carries neither. Nothing is rendered as <span class="mono">0</span>.</p>
+              <p class="avail">The response carries no token or tool-call totals. The running stage's tool-call counter is a stream-derived, researcher-only figure and is not copied here. Nothing is rendered as <span class="mono">0</span>.</p>
             </div>
 
             <div class="card stack-2" data-od-id="report-errors">
@@ -1641,6 +1689,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(isNaN(ms) || ms < 0) return null;
     var s = Math.round(ms / 1000);
     return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+  function fmtSeconds(s){
+    if(typeof s !== "number" || !isFinite(s) || s < 0) return null;
+    return Math.floor(s / 60) + "m " + String(Math.round(s % 60)).padStart(2, "0") + "s";
   }
   function fmtClock(iso){
     if(!iso) return null;
@@ -3095,8 +3147,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     /* zero-based, the pass the run ended on; passNumber() adds one at every display site */
     session.iteration = run ? run.pass - 1 : 0;
     if(run) session.passes = run.maxPasses;
-    session.finished = new Date().toISOString();
-    session.durationSeconds = Math.max(0, Math.round((new Date(session.finished) - new Date(session.started)) / 1000));
+    session.durationSeconds = Math.round(play.elapsed);
+    session.finished = new Date(Date.parse(session.started) + session.durationSeconds * 1000).toISOString();
     session.reportPath = "api-output/report.md";
     session.evidencePath = "api-output/report-evidence.md";
     session.qualityPath = "api-output/report-quality.json";
@@ -3137,27 +3189,87 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     });
   }
 
-  /* ═══ report + failed population ═══ */
+  /* ═══ report population ═══ */
+  function ratio(a, b){
+    return (typeof a === "number" && typeof b === "number" && isFinite(a) && b > 0) ? a / b : null;
+  }
+  /* A meter's figure: two decimals, or muted absence text. paintMeters() reads the text back,
+     so an absent figure keeps the default grey fill (DESIGN.md §3.6). */
+  function setMeterN(id, value, absentText){
+    var el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = value === null ? absentText : value;
+    el.classList.toggle("avail", value === null);
+  }
+  function setMeterFill(id, v){
+    var el = document.getElementById(id);
+    if(el) el.style.width = v === null ? "0%" : Math.round(Math.max(0, Math.min(1, v)) * 100) + "%";
+  }
+  function renderEvidenceCounts(ec){
+    var host = document.getElementById("repEvidenceCounts");
+    var none = document.getElementById("repEvidenceNone");
+    if(!host || !none) return;
+    host.textContent = "";
+    if(!ec){ host.hidden = true; none.hidden = false; return; }
+    host.hidden = false; none.hidden = true;
+    /* eleven values in ten rows (spec §4.4 rail card 3) */
+    [["findings", ec.findings], ["verified", ec.verified_findings], ["corrected", ec.corrected_findings],
+     ["quoted", ec.quoted_findings], ["dropped", ec.dropped_findings], ["context unchecked", ec.context_unchecked_findings],
+     ["cited", ec.cited_findings], ["reads", ec.network_reads + " network · " + ec.cache_reads + " cache"],
+     ["unique works", ec.unique_works], ["publishers", ec.publishers]].forEach(function(row){
+      var dt = document.createElement("dt"); dt.textContent = row[0];
+      var dd = document.createElement("dd"); dd.textContent = String(row[1]);
+      host.appendChild(dt); host.appendChild(dd);
+    });
+  }
   function populateReport(session){
-    var dur = fmtDur(session.started, session.finished);
+    var dur = fmtSeconds(session.durationSeconds);
     setText("reportMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded")
-      + (dur ? " · " + dur : "") + " · " + session.iteration + " passes");
+      + (dur ? " · " + dur : "") + " · " + passText(session));
     setText("report-h", session.q);
-    /* The status is not repeated here. The topbar chip is the one place it lives on this
-       stage — the same call the running stage made when its own status chip went, for the
-       same reason: a badge that says what the chrome already says is one more thing to read
-       and nothing to act on. */
+    /* Review card: the meter, the 0.80 line (CSS), the status text = the chip's second clause */
+    var score = (session.review && typeof session.review.score === "number") ? session.review.score : null;
+    setMeterFill("repReviewFill", score);
+    setMeterN("repReviewN", fmtScore(score), "not scored");
+    setText("repReviewStatus", statusNote(session));
+    var ec = session.evidenceCounts || null;
+    var cited = ec ? ratio(ec.cited_assessed_sources, ec.assessed_sources) : null;
+    setMeterFill("repCitedFill", cited);
+    setMeterN("repCitedN", cited === null ? null : cited.toFixed(2), "not measured");
+    paintMeters(document.getElementById("stage-report"));
+    /* Coverage card */
+    var cov = session.coverage || null;
+    var covAnswered = document.getElementById("repCovAnswered");
+    if(covAnswered){
+      covAnswered.textContent = cov ? cov.answered_targets + " of " + cov.required_targets : "not measured";
+      covAnswered.classList.toggle("avail", !cov);
+    }
+    var covNotFound = document.getElementById("repCovNotFound");
+    if(covNotFound){
+      var ids = (cov && cov.not_found_target_ids) || [];
+      covNotFound.textContent = ids.length ? ids.join(" · ") : "none";
+      covNotFound.classList.toggle("avail", !ids.length);
+    }
+    /* Evidence card */
+    renderEvidenceCounts(ec);
+    /* Session facts */
     setText("repFactStatus", session.status);
-    setText("repFactIteration", String(session.iteration));
+    setText("repFactPass", passText(session));
     setText("repFactStarted", session.started);
     setText("repFactFinished", session.finished || "not recorded");
-    setText("repFactErrors", String((session.errors || []).length));
-
-    var path = document.getElementById("repFactPath");
-    if(path){
-      if(session.reportPath){ path.textContent = session.reportPath; path.className = ""; }
-      else { path.textContent = "Not published"; path.className = "avail"; }
+    var durEl = document.getElementById("repFactDuration");
+    if(durEl){
+      var hasDur = typeof session.durationSeconds === "number";
+      durEl.textContent = hasDur ? String(session.durationSeconds) : "not recorded";
+      durEl.className = hasDur ? "" : "avail";
     }
+    [["repFactPath", session.reportPath], ["repFactEvidence", session.evidencePath], ["repFactQuality", session.qualityPath]].forEach(function(p){
+      var el = document.getElementById(p[0]);
+      if(!el) return;
+      if(p[1]){ el.textContent = p[1]; el.className = ""; }
+      else { el.textContent = "Not published"; el.className = "avail"; }
+    });
+    setText("repFactErrors", String((session.errors || []).length));
     var dl = document.getElementById("downloadBtn");
     if(dl) dl.style.display = session.reportPath ? "" : "none";
     var trace = document.getElementById("traceBtn");
@@ -3165,16 +3277,12 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
       else trace.style.display = "none";
     }
+    /* Errors: grouped list with the API's own message beside the enumerated type */
     var errs = session.errors || [];
     var rec = errs.filter(function(x){ return x.recoverable; }).length;
     setText("repErrSummary", rec + " recoverable · " + (errs.length - rec) + " non-recoverable");
     var rl = document.getElementById("repErrList");
     if(rl){
-      /* Every error carries a curated `message` beside its enumerated type, and this list used
-         to render the type alone — so the rail reported what went wrong in enum form and threw
-         away the sentence written to explain it. Built as nodes rather than as markup because
-         the message is free text from the API, and assigning it as text cannot be talked into
-         parsing it. */
       rl.textContent = "";
       if(!errs.length){
         var none = document.createElement("span");
@@ -3199,18 +3307,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
           rl.appendChild(row);
         });
       }
-    }
-    var lim = document.getElementById("repLimitations");
-    if(lim){
-      var partial = session.status === "max_iterations" || session.status === "incomplete";
-      var lines = ["Some steps of this research pass failed; sections of this report may be incomplete.",
-                   "Some sources behind these findings were flagged low confidence.",
-                   "At least one claim was contradicted by an independent source."];
-      if(partial){
-        lines.splice(1, 0, "The refinement budget was exhausted before the critic accepted the report.");
-        lines.push("Four planned sub-topics were never attempted because the cap truncated the plan.");
-      }
-      lim.innerHTML = lines.map(function(t){ return "<li>" + t + "</li>"; }).join("");
     }
   }
   /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts. */
@@ -3336,10 +3432,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     syncSettingsUI();
     renderStarters();
     renderList();
-    /* The quality meters are static fixtures transcribed from the published report, so they are
-       painted once here rather than per session. If they ever become session data, this call
-       belongs in `populateReport()` instead. */
-    paintMeters();
 
     var savedSidebar = "expanded";
     try { savedSidebar = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
