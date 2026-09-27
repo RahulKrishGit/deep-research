@@ -988,7 +988,7 @@ client rule `graph.session.completed.status == "failed"` — never by
 (`agents/report_writer.py:3262`) — because the graph never runs
 `finalize_report` after a halt and no event exists for it.
 
-### `iteration` in two places, and it must agree in both
+### `iteration` on every surface, and it must agree on all of them
 
 The session's pass shows up in the topbar chip, the running header and the report
 header. Three rules, all learned from bugs:
@@ -1673,10 +1673,18 @@ rather than `scrollIntoView`.
 
 The nine reference renders in `docs/design/reference/` are captured by
 `scripts/render_design_reference.mjs`, desktop at 1252×853 and phone at
-390×844, except `09-running-extra-pass.png`: that one is captured at
-1252×1300, taller than the rest, so the whole pipeline card — Reviewing, the
-full settled arc and the counters block — sits inside the frame instead of
-running off the bottom.
+390×844, except `06-states.png`, captured at the full height of `states.html`,
+and `09-running-extra-pass.png`: that one is captured at 1252×1300, taller
+than the rest, so the whole pipeline card — Reviewing, the full settled arc and
+the counters block — sits inside the frame instead of running off the bottom.
+
+Two layout facts differ from the 2026-09-16 renders by design: at ≤ 900px the
+composer bar hides its `thinking` pill (`#pillThinking`) and holds `model` and
+`extra passes` on one row as before, thinking staying visible in the settings
+panel and the settings strip; and on the report stage the `Report | Evidence`
+toggle takes the right end of the head bar, so `Download Report` and the trace
+link wrap to a second row at 1252px and the question block starts about 53px
+lower.
 
 **Three working behaviours are scripted rather than wired, and the UI no longer says so about
 all three.** The run is driven by an event sequence whose names and metadata keys are the
