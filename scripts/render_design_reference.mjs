@@ -171,7 +171,14 @@ await evaluate(`window.drConsole.submit(${JSON.stringify(QUESTION)})`);
 if (await waitForStage('submitted')) { await sleep(450); await shot('02-submitted', 'submitted'); }
 else console.log('FAIL  02-submitted   never reached "submitted" (beat is ~2.2s; it may have passed)');
 
-if (await waitForStage('running')) { await sleep(1800); await shot('03-running', 'running'); }
+if (await waitForStage('running')) {
+  // 2026-09-27 fix: the fixed 1.8s wait landed on Planning (sleep-timed schedule); the reference
+  // showed Researching before F9. advanceTo the planner's own completion event instead, so the
+  // capture is driven by the event that actually starts Researching, not by watch-clock timing.
+  await evaluate('window.drConsole.advanceTo("graph.node.completed")');
+  await sleep(500);
+  await shot('03-running', 'running');
+}
 else console.log('FAIL  03-running     never reached "running"');
 
 const finished = await evaluate('(function(){ try{ window.drConsole.finish(); return true }catch(e){ return String(e) } })()');
