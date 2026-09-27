@@ -628,7 +628,7 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
   animation:halo var(--motion-halo) var(--ease-entrance) infinite;
 }
 .pass[data-state="active"] .pass-n{color:var(--fg)}
-/* a refinement in flight: the dot opens into a ring so the loop is visible at the
+/* a loop in flight: the dot opens into a ring so the extra pass or redraft is visible at the
    moment it happens, not only in a count afterwards */
 .passtrack[data-refining="1"] .pass[data-state="active"] .dot{
   background:var(--surface);
@@ -1036,8 +1036,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 /* A compact two-column key/value list; one column at phone width. */
 .counters{padding-top:var(--space-5);border-top:1px solid var(--border)}
 .counters .kv{margin-top:var(--space-3)}
-.counters .kv dt{white-space:normal}
-.counters .kv dt .cap{display:block;color:var(--muted)}
+.counters .kv dt, #failedCounters dt{white-space:normal}
+.counters .kv dt .cap, #failedCounters dt .cap{display:block;color:var(--muted)}
+#failedCounters dt, #failedCounters dd{line-height:var(--leading-tight)}
 .kv-2{grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr)}
 @media (max-width:900px){ .kv-2{grid-template-columns:auto minmax(0,1fr)} }
 /* An author `display` rule beats the browser's [hidden] rule, so the ↺ span says so itself. */
@@ -1077,7 +1078,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 /* The 0.80 acceptance line on the review meter (types.py:1131). */
 .bar-row .bar{position:relative}
 .bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
-/* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since Task 1's
+/* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since the
    not-found clause) overflowed the topbar and pushed the whole page into horizontal scroll —
    `.chip{white-space:nowrap}` plus no shrink budget anywhere in the topbar's flex chain. The
    chip never wraps (the topbar's height must stay `--topbar`); instead its variable note
@@ -1101,7 +1102,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 }
 .chip-filter:hover{background:var(--border-soft);color:var(--fg)}
 .chip-filter[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
-.chip-filter .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta)}
+.chip-filter .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
 .ev-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
 .ev-list:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--radius-md)}
 .ev-row{
@@ -1127,6 +1128,13 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .ev-detail .ev-cited button{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
 .ev-detail .ev-cited button:hover{border-color:var(--muted)}
 @media (max-width:1120px){ .ev-detail{position:static} }
+/* 2026-09-27 fix: at 1252px the meta line, the Report|Evidence toggle and the two action
+   buttons could not share `.report-head-bar`'s one row at their natural widths, so the row
+   wrapped and pushed the question ~53px lower than the 2026-09-16 design. `#reportMeta` is the
+   one child with prose that can wrap; letting it shrink (min-width:0 overrides the flex-item
+   default of never shrinking below its content's min-content) and wrap onto a second line
+   keeps the toggle and both buttons on the bar's single row, right-aligned. */
+#reportMeta{flex:1 1 240px;min-width:0}
 </style>
 </head>
 <body>
@@ -1306,7 +1314,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
             <div class="spine-wrap" id="spineWrap" data-loop="off">
               <ol class="spine-lg" id="spine" data-od-id="running-spine"></ol>
             </div>
-            <!-- Counters (R1): inside the pipeline card, under its header. They update once per
+            <!-- Counters (R1): inside the pipeline card, below the spine (R1's "under its header"
+                 deliberately not followed — see DESIGN.md §7). They update once per
                  node step, because that is how the stream delivers events (orchestrator.py:312-346);
                  a counter whose event has not arrived reads `not yet`, never 0. -->
             <div class="counters" data-od-id="running-counters">
@@ -1627,10 +1636,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
     evidenceCounts:BATTERY_COUNTS
   };
-  var STATEMENT_CHECK_ERROR = { type:"report_writer_statement_check_failed", recoverable:true, source:"report_writer",
-    message:"The statement check could not judge one batch of sentences; they were kept unchecked and marked in the evidence log." };
-  var CONTEXT_CHECK_ERROR = { type:"evidence_verifier_context_check_failed", recoverable:true, source:"evidence_verifier",
-    message:"The context check could not judge one batch of figures; they were kept and marked context unchecked." };
+  var STATEMENT_CHECK_ERROR = { type:"report_writer_statement_check_failed", recoverable:true, source:"agent.report_writer",
+    message:"The report writer's statement check failed; every drafted point was kept unchanged." };
+  var CONTEXT_CHECK_ERROR = { type:"evidence_verifier_context_check_failed", recoverable:true, source:"agent.evidence_verifier",
+    message:"The Context Check failed for one batch; its findings keep their Figure Match result and are cited only as unchecked context." };
   var SESSIONS = [
     { id:"8f2c1d90", q:"What are the current constraints on grid-scale battery storage deployment?",
       status:"running", routeReason:null, iteration:0, passes:2, started:"2026-09-16T14:02:11Z", finished:null, durationSeconds:null,
@@ -1806,9 +1815,21 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return null;
   }
   /* Settings actually used by a session: { model, thinking, outputDir, extraPasses }. A session
-     keeps its own copy because the API echoes neither the query nor the overrides back (api-gaps 1.3). */
+     keeps its own copy because the API echoes neither the query nor the overrides back (api-gaps 1.3).
+     A seeded fixture carries no `settings` object of its own, so it borrows the global composer's
+     model/thinking/outputDir — but never the composer's live extra-pass value: that would make a
+     fixture's strip drift as the operator fiddles with the composer. Its own `passes` (1 +
+     max_extra_passes) gives the true budget it was submitted with. */
   function sessionSettings(session){
-    return (session && session.settings) || settings;
+    if(session && session.settings) return session.settings;
+    var total = passTotal(session);
+    if(session && total !== null){
+      var derived = {};
+      for(var k in settings) derived[k] = settings[k];
+      derived.extraPasses = total - 1;
+      return derived;
+    }
+    return settings;
   }
   /* The settings strip: five mono chips, in this order, exactly as submitted (there is no
      server echo — api-gaps 1.3). `out` is shown only when a directory was sent. */
@@ -2726,7 +2747,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       node("report_writer", iteration, function(){
         push("report_writer.report.written", "report_writer", "Report drafted.",
           { statements: draft === 2 ? 27 : (draft === 3 ? 31 : 26), citations: draft === 3 ? 34 : 29, refused: draft === 1 ? 2 : 1,
-            fact_rows:7, not_found: draft === 3 ? 0 : missing.length, table:"findings", parts:3, failed_parts:0 });
+            fact_rows:7, not_found: draft === 3 ? 0 : missing.length, table:"findings", parts:3, failed_parts:[] });
       });
       /* A missing required target the writer discloses under "What we couldn't confirm" is not
          a quality-gate hard failure (agents/quality.py:142-144); the route buys the extra pass
@@ -2872,7 +2893,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       active:"planner",          /* the "Now" row: the successor of the last graph.node.completed */
       openNode:null,             /* the last graph.node.started with no graph.node.completed — the halting row */
       pass:1, maxPasses:Math.max(1, Number(passes) || 1),
-      loop:"off", arc:null,      /* data-loop, data-arc (painted by Task 5's setLoopState) */
+      loop:"off", arc:null,      /* data-loop, data-arc (painted by setLoopState) */
       loopPending:false,         /* a loop was routed; the reviewer's own completion is inert */
       tag:null,                  /* { kind, label, text } for the header's loop tag, or null */
       rearmed:{}, rearmedFirst:null,
@@ -3317,8 +3338,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     var covNotFound = document.getElementById("repCovNotFound");
     if(covNotFound){
       var ids = (cov && cov.not_found_target_ids) || [];
-      covNotFound.textContent = ids.length ? ids.join(" · ") : "none";
-      covNotFound.classList.toggle("avail", !ids.length);
+      covNotFound.textContent = !cov ? "not measured" : (ids.length ? ids.join(" · ") : "none");
+      covNotFound.classList.toggle("avail", !cov || !ids.length);
     }
     /* Evidence card */
     renderEvidenceCounts(ec);
@@ -3680,14 +3701,19 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       if(e.key === "ArrowUp"){ e.preventDefault(); evSelect(ev.selected - 1); }
     });
   })();
-  /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts. */
+  /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts.
+     The last two are not graph halts: `sessions.py:262-276,297-315` can mark a session `failed`
+     from the API layer alone, with no `graph.session.completed` and no graph error record, so
+     `populateFailed`'s fallback `hard` carries one of these two API types instead. */
   var HALT_HEADLINES = {
     graph_planning_failed:                 "Planning failed",
     graph_provider_configuration_error:    "Model provider misconfigured",
     graph_agent_configuration_error:       "Agent misconfigured",
     graph_invalid_agent_state:             "Invalid agent state",
     graph_invalid_route:                   "Invalid route",
-    graph_request_attempt_limit_exceeded:  "Request attempt limit reached"
+    graph_request_attempt_limit_exceeded:  "Request attempt limit reached",
+    "api.research.configuration_error":    "Service configuration error",
+    "api.research.failed":                 "Research run failed"
   };
   function populateFailed(session){
     var hard = (session.errors || []).filter(function(x){ return !x.recoverable; })[0]
@@ -3710,11 +3736,14 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
        the last graph.node.started with no graph.node.completed; every graph.node.skipped row is
        `skipped`; Publishing is `skipped` by the client rule status == "failed" — never
        has_report, which can be true after a first-pass writer (report_writer.py:3262) — because
-       the graph never runs finalize_report after a halt and no event exists for it (spec §3.1). */
+       the graph never runs finalize_report after a halt and no event exists for it (spec §3.1).
+       An API-level failure (sessions.py:262-276,297-315) never emits `graph.session.completed`
+       at all, leaving `run.finalStatus` null; falling back to the session's own `status` marks
+       Publishing skipped there too, instead of leaving the row looking merely unreached. */
     var run = newRunState(session.passes);
     HALTED_EVENTS.forEach(function(ev){ applyEvent(run, ev); });
     var marks = marksFor(run, run.openNode);
-    if(run.finalStatus === "failed") marks.finalize_report = "skipped";
+    if((run.finalStatus || session.status) === "failed") marks.finalize_report = "skipped";
     renderSpine(document.getElementById("spineFailed"), marks, run);
     var haltIndex = AGENT_ORDER.indexOf(run.openNode);
     setText("failedHaltedAt", haltIndex >= 0 ? "halted at stage " + (haltIndex + 1) : "halted before the first stage");
@@ -3837,7 +3866,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       motion: function(){ return reducedMotion() ? "reduced" : "full"; },
       submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
       finish: function(){ var s = activeSession(); if(s) finishPlayback(s); },
-      /* 2026-09-26 additions (spec §4.6); Task 5 adds arc() and loop() */
+      /* 2026-09-26 additions (spec §4.6), including arc() and loop() */
       advanceTo: advanceTo,
       arc: function(){
         var wrap = document.getElementById("spineWrap");
