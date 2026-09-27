@@ -148,6 +148,13 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
 .bar-row .track span.bad{background:var(--status-danger)}
 .bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
 @media (max-width:900px){.bar-row{grid-template-columns:118px 1fr 36px}}
+/* ═══ 2026-09-26: tables in a scrolling frame; the options table pins its first column ═══ */
+.tbl-frame{overflow-x:auto;max-width:100%}
+.tbl-options{min-width:760px}
+.tbl-options th:first-child,.tbl-options td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
+.tbl-options tbody tr:hover td:first-child{background:var(--surface)}
+.tbl-foot{font-size:var(--text-sm);color:var(--muted);padding-top:var(--space-3)}
+.kv dd.avail{font-family:var(--font-body);color:var(--muted)}
 </style>
 </head>
 <body>
@@ -173,23 +180,25 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
       <div class="grid-3">
         <div class="card stack-2" data-od-id="chip-running">
           <span class="cap">API status <span class="mono">running</span></span>
-          <span class="chip chip-lg"><span class="dot dot-ok"></span>Running <span class="kind">· iteration 2 of 3</span></span>
-          <p class="avail">Text label always present. The dot is redundant reinforcement and is not the only signal.</p>
+          <span class="chip chip-lg"><span class="dot dot-ok"></span>Running <span class="kind">· pass 2 of 2</span></span>
+          <p class="avail">Text label always present. The pass is read from <span class="mono">graph.node.started</span> and <span class="mono">graph.extra_pass.started</span>; the ceiling is 1 + <span class="mono">max_extra_passes</span>.</p>
         </div>
         <div class="card stack-2" data-od-id="chip-completed">
-          <span class="cap">API status <span class="mono">completed</span> + quality <span class="mono">accepted</span></span>
-          <span class="chip chip-lg"><span class="dot dot-ok"></span>Completed <span class="kind">· quality gates accepted</span></span>
-          <p class="avail">Both conditions required. <span class="mono">status == "completed"</span> alone is not acceptance.</p>
+          <span class="cap">API status <span class="mono">completed</span></span>
+          <span class="chip chip-lg"><span class="dot dot-ok"></span>Completed <span class="kind">· review accepted · 0.86</span></span>
+          <p class="avail"><span class="mono">completed</span> is exactly the route <span class="mono">report_accepted</span>; the score is <span class="mono">semantic_review_score</span>, two decimals.</p>
         </div>
         <div class="card stack-2" data-od-id="chip-partial">
           <span class="cap">API status <span class="mono">max_iterations</span> · <span class="mono">incomplete</span></span>
-          <span class="chip chip-lg"><span class="dot dot-warn"></span>Partially completed <span class="kind">· budget exhausted</span></span>
-          <p class="avail">Same visual weight as Completed. A normal outcome, not a degraded one.</p>
+          <span class="chip chip-lg"><span class="dot dot-warn"></span>Partially completed <span class="kind">· extra passes used · 1 target not found</span></span>
+          <span class="chip chip-lg"><span class="dot dot-warn"></span>Partially completed <span class="kind">· not accepted · 0.71</span></span>
+          <span class="chip chip-lg"><span class="dot dot-warn"></span>Partially completed <span class="kind">· review unavailable</span></span>
+          <p class="avail">Same visual weight as Completed. The clause names the outcome: the extra-pass ceiling was spent, a scored review did not accept (or a gate blocked acceptance), or no review score exists.</p>
         </div>
         <div class="card stack-2" data-od-id="chip-failed">
           <span class="cap">API status <span class="mono">failed</span></span>
-          <span class="chip chip-lg"><span class="dot dot-danger"></span>Failed <span class="kind">· graph_provider_configuration_error</span></span>
-          <p class="avail">Carries the enumerated error type. Never exception text, never provider text.</p>
+          <span class="chip chip-lg"><span class="dot dot-danger"></span>Failed <span class="kind">· halted</span></span>
+          <p class="avail">The halting type is the failed stage's headline, in plain words; the chip says only that the run halted.</p>
         </div>
         <div class="card stack-2" data-od-id="chip-unavailable">
           <span class="cap">Not a status — an absent value</span>
@@ -378,12 +387,12 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
     <div class="demo-head">
       <div class="stack-2">
         <p class="eyebrow">State 3 · session failed</p>
-        <h2 class="demo-title" id="failed-h">The run halted, and no artifact was published</h2>
-        <p class="lead">A failure is a halt mark in state, not an exception out of the run. Everything collected before the halt survives in the session, but a halted run publishes nothing — so the report endpoint answers 409, not 404.</p>
+        <h2 class="demo-title" id="failed-h">The run halted, and nothing was published</h2>
+        <p class="lead">A failure is a halt mark in state, not an exception out of the run. A halting node records its error and emits no completion; every later agent node is skipped; the reviewer's route is <span class="mono">end</span>, so publication never runs and the report endpoint answers 409, not 404.</p>
       </div>
       <div class="card stack-2">
         <span class="cap">Reached when</span>
-        <p class="sm" style="color:var(--fg)">An error type in <span class="mono">HALTING_ERROR_TYPES</span> lands in state, or the runner raises. The route to the end is <span class="mono">halted</span> and the status is <span class="mono">failed</span>.</p>
+        <p class="sm" style="color:var(--fg)">An error type in <span class="mono">HALTING_ERROR_TYPES</span> lands in state. The route to the end is <span class="mono">halted</span> and <span class="mono">graph.session.completed</span> carries <span class="mono">status: "failed"</span>.</p>
       </div>
     </div>
 
@@ -391,13 +400,14 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
       <div class="stack" style="gap:var(--space-5)">
         <div class="failure stack" data-od-id="failed-panel">
           <div class="row-between">
-            <span class="chip chip-lg" style="border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))"><span class="dot dot-danger" aria-hidden="true"></span>Failed</span>
+            <span class="chip chip-lg" style="border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))"><span class="dot dot-danger" aria-hidden="true"></span>Failed <span class="kind">· halted</span></span>
             <span class="avail-mono">session 2ad900b1 · 0m 04s</span>
           </div>
           <hr />
           <div class="stack-2">
-            <h3 class="sub">graph_provider_configuration_error</h3>
-            <p class="sm">The selected chat provider rejected its own configuration before the first agent call. No plan was produced, no research ran, and no report or evidence ledger was written.</p>
+            <h3 class="sub">Model provider misconfigured</h3>
+            <p class="sm">The model provider is not configured, so the research run stopped.</p>
+            <p class="avail">The headline is the halting type in plain words; the enumerated type is the first row below, and the sentence is the API's own <span class="mono">message</span>.</p>
           </div>
           <dl class="kv">
             <dt>error_type</dt><dd>graph_provider_configuration_error</dd>
@@ -405,7 +415,7 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
             <dt>recoverable</dt><dd>false</dd>
             <dt>timestamp</dt><dd>17:22:31Z</dd>
             <dt>finished_at</dt><dd>17:22:31Z</dd>
-            <dt>report_path</dt><dd class="avail" style="font-family:var(--font-body)">Not published</dd>
+            <dt>report_path</dt><dd class="avail">Not published</dd>
             <dt>trace_url</dt><dd class="plain">smith.langchain.com ↗</dd>
           </dl>
           <hr />
@@ -417,13 +427,17 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
 
         <div class="card stack" data-od-id="failed-survived">
           <h3 class="sub">What survived the halt</h3>
-          <p class="sm">The graph does not discard state on failure. Everything the run collected is still in the session, even though none of it was published as an artifact:</p>
-          <div class="grid-3">
-            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">findings</div></div>
-            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">sources evaluated</div></div>
-            <div><div class="mono" style="font-size:var(--text-2xl)">0</div><div class="sm">claims checked</div></div>
-          </div>
-          <p class="avail">Zeroes here are real counts read from state, not absences. An absent value would read <span class="mono">Not recorded</span> — the two look different on purpose.</p>
+          <p class="eyebrow" style="margin:0">counted from the event stream</p>
+          <dl class="kv">
+            <dt>sub-topics researched</dt><dd class="avail">not reached</dd>
+            <dt>tool calls</dt><dd class="avail">not reached</dd>
+            <dt>findings</dt><dd class="avail">not reached</dd>
+            <dt>sources scored</dt><dd class="avail">not reached</dd>
+            <dt>verified / corrected / dropped</dt><dd class="avail">not reached</dd>
+            <dt>sentences / refused</dt><dd class="avail">not reached</dd>
+            <dt>review score</dt><dd class="avail">not reached</dd>
+          </dl>
+          <p class="avail">The running stage's counters, frozen at the halt. A planner halt reaches none of them, so every row reads <span class="mono">not reached</span> — a value never measured, never a zero.</p>
         </div>
       </div>
 
@@ -446,12 +460,16 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
         <div class="card stack" data-od-id="failed-event-tail">
           <h3 class="sub">The event tail stops where the run did</h3>
           <ol class="log">
-            <li><span class="avail-mono">17:22:27Z</span><span><span class="etype">graph.session.started</span> <span class="avail">Session started.</span></span></li>
-            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.started</span> <span class="avail">Node planner started.</span></span></li>
-            <li><span class="avail-mono">17:22:31Z</span><span><span style="color:var(--status-danger)">graph_provider_configuration_error</span> <span class="avail">Graph halted.</span></span></li>
+            <li><span class="avail-mono">17:22:27Z</span><span><span class="etype">graph.session.started</span> <span class="avail">max_extra_passes 1.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.started</span> <span class="avail">planner, iteration 0.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.skipped</span> <span class="avail">researcher — halted.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.skipped</span> <span class="avail">source_evaluator — halted.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.skipped</span> <span class="avail">evidence_verifier — halted.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.skipped</span> <span class="avail">report_writer — halted.</span></span></li>
+            <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.node.skipped</span> <span class="avail">report_reviewer — halted.</span></span></li>
             <li><span class="avail-mono">17:22:31Z</span><span><span class="etype">graph.session.completed</span> <span class="avail">status failed, error_count 1, has_report false.</span></span></li>
           </ol>
-          <p class="avail">Four frames, then the stream closes. There is no terminal sentinel event: the front end learns the run ended when the connection ends, and must then read <span class="mono">GET /status</span> to learn <em>how</em> it ended.</p>
+          <p class="avail">Eight frames, then the stream closes. The halting error is not a frame: it is recorded on the session and shown in the failed panel. There is no terminal sentinel event, so the front end learns the run ended when the connection ends and reads <span class="mono">GET /status</span> to learn <em>how</em>. Publishing has no frame at all — the graph never runs <span class="mono">finalize_report</span> after a halt — so the console marks it skipped from <span class="mono">status: "failed"</span>, never from <span class="mono">has_report</span>.</p>
         </div>
 
         <div class="note" data-od-id="failed-note">
@@ -468,11 +486,11 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
       <div class="stack-2">
         <p class="eyebrow">State 4 · partial report</p>
         <h2 class="demo-title" id="partial-h">A finished partial run still delivers a report</h2>
-        <p class="lead">The refinement budget ran out before the critic accepted. The report exists, is authoritative, and is missing evidence in named places. The interface leads with what the report does say, then states the gaps it declares about itself.</p>
+        <p class="lead">Three outcomes land here: the extra-pass ceiling was spent with a required target still missing (<span class="mono">max_iterations</span>), a scored review did not accept the report or a quality gate blocked acceptance (<span class="mono">incomplete</span>, scored), or no review score exists (<span class="mono">incomplete</span>, unavailable). In every case the report exists, is authoritative, and says itself what it could not confirm.</p>
       </div>
       <div class="card stack-2">
         <span class="cap">Reached when</span>
-        <p class="sm" style="color:var(--fg)"><span class="mono">status</span> is <span class="mono">max_iterations</span> or <span class="mono">incomplete</span>, or the route reason was not <span class="mono">critique_satisfied</span> — in which case even a <span class="mono">completed</span> session renders here with the reason <span class="mono">not yet quality-gated</span>.</p>
+        <p class="sm" style="color:var(--fg)"><span class="mono">status</span> is <span class="mono">max_iterations</span> (route <span class="mono">extra_passes_exhausted</span>) or <span class="mono">incomplete</span> (route <span class="mono">report_not_accepted</span> or <span class="mono">review_unavailable</span>). <span class="mono">completed</span> never lands here: it is exactly the route <span class="mono">report_accepted</span>.</p>
       </div>
     </div>
 
@@ -480,59 +498,43 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
       <div class="stack" style="gap:var(--space-5)">
         <div class="card stack" data-od-id="partial-header">
           <div class="row-between">
-            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· refinement budget exhausted</span></span>
-            <span class="avail-mono">session 7c0d13ff · 14m 02s · 3 of 3 passes</span>
+            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· extra passes used · 1 target not found</span></span>
+            <span class="avail-mono">session 7c0d13ff · 14m 02s · pass 2 of 2</span>
           </div>
           <hr />
           <h3 class="sub">What limits solid-state electrolyte scale-up for EV cells?</h3>
-          <p class="sm">The report is complete as an artifact: all seven sections composed, citations numbered locally, limitations enumerated. What is missing is evidence, and the report says where.</p>
+          <p class="sm">The report is complete as an artifact: bottom line, findings table, parts, sources. What is missing is evidence for one required target, and the report says so under <em>What we couldn't confirm</em>.</p>
           <div class="row wrap">
-            <a class="btn btn-primary" href="#" data-od-id="cta-partial-download">Download report.md</a>
-            <a class="btn btn-ghost" href="#" data-od-id="cta-partial-trace">Open trace <span aria-hidden="true">↗</span></a>
+            <a class="btn btn-primary" href="#" data-od-id="cta-partial-download">Download Report</a>
+            <a class="btn btn-ghost" href="#" data-od-id="cta-partial-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
           </div>
         </div>
 
-        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-limitations">
-          <div class="row-between">
-            <h3 class="sub">Limitations, as the report declares them</h3>
-            <span class="avail-mono">6 recorded</span>
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-outcomes">
+          <h3 class="sub">The three partial outcomes, side by side</h3>
+          <div class="stack-2">
+            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· extra passes used · 1 target not found</span></span>
+            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· not accepted · 0.71</span></span>
+            <span class="chip chip-lg"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed <span class="kind">· review unavailable</span></span>
           </div>
-          <ul class="limitation-list">
-            <li><span class="tag">errors</span><span>Some steps of this research pass failed; sections of this report may be incomplete.</span></li>
-            <li><span class="tag">budget</span><span>The refinement budget was exhausted before the critic accepted the report.</span></li>
-            <li><span class="tag">sources</span><span>Some sources behind these findings were flagged low confidence.</span></li>
-            <li><span class="tag">contradiction</span><span>At least one claim was contradicted by an independent source.</span></li>
-            <li><span class="tag">coverage</span><span>Four planned sub-topics were never attempted because the cap truncated the plan.</span></li>
-            <li><span class="tag">scope</span><span>Grid-side evidence is confined to the United States.</span></li>
-          </ul>
-          <p class="avail">Each line is a limitation the engine enumerated itself, never model prose. The tag is the reason code, so the operator can map a gap to a mechanism.</p>
+          <p class="avail">Same dot, same label, a different clause. The clause is built from <span class="mono">coverage.not_found_target_ids</span>, <span class="mono">semantic_review_status</span> and <span class="mono">semantic_review_score</span>; it is never a constant.</p>
         </div>
 
-        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-ledger">
-          <h3 class="sub">Claim verdicts</h3>
-          <div class="bars">
-            <div class="bar-row">
-              <span style="color:var(--fg)">Verified</span>
-              <span class="track"><span class="ok" style="width:52%"></span></span>
-              <span class="n">12</span>
-            </div>
-            <div class="bar-row">
-              <span style="color:var(--fg)">Unverified</span>
-              <span class="track"><span style="width:26%"></span></span>
-              <span class="n">6</span>
-            </div>
-            <div class="bar-row">
-              <span style="color:var(--fg)">Insufficient evidence</span>
-              <span class="track"><span style="width:17%"></span></span>
-              <span class="n">4</span>
-            </div>
-            <div class="bar-row">
-              <span style="color:var(--fg)">Contradicted</span>
-              <span class="track"><span class="bad" style="width:4.5%"></span></span>
-              <span class="n">1</span>
-            </div>
-          </div>
-          <p class="avail">Bars are filled proportions of 23 checked claims, not outlines. The contradicted count is small and dangerous, so it carries the danger hue rather than a muted grey — the one place a status colour is allowed to be the loudest thing in the row.</p>
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-evidence-counts">
+          <h3 class="sub">Evidence counts</h3>
+          <dl class="kv">
+            <dt>findings</dt><dd>18</dd>
+            <dt>verified</dt><dd>12</dd>
+            <dt>corrected</dt><dd>2</dd>
+            <dt>quoted</dt><dd>1</dd>
+            <dt>dropped</dt><dd>3</dd>
+            <dt>context unchecked</dt><dd>1</dd>
+            <dt>cited</dt><dd>11</dd>
+            <dt>reads</dt><dd>24 network · 7 cache</dd>
+            <dt>unique works</dt><dd>14</dd>
+            <dt>publishers</dt><dd>9</dd>
+          </dl>
+          <p class="avail">Eleven values from <span class="mono">evidence_counts</span>, served on the response once the run ends. When the block is null — a halt before the writer — the card reads <span class="mono">not measured</span>.</p>
         </div>
       </div>
 
@@ -540,29 +542,56 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
         <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-report-head">
           <h3 class="sub">The report itself, opening as usual</h3>
           <div class="prose" style="max-width:100%">
-            <p class="cap" style="margin-bottom:var(--space-3)">Executive summary</p>
-            <p style="font-size:var(--text-sm);line-height:var(--leading-body);color:var(--fg)">The constraints best supported by this pass's evidence are manufacturing yield at the separator and the cost of lithium-scale purification. Two of the four planned sub-topics were never researched, so the report's coverage of recycling economics and of dry-electrode processing rests on a single source each. <a class="cite" href="#">[2][7]</a></p>
-            <p class="cap" style="margin:var(--space-4) 0 var(--space-3)">Limitations</p>
-            <p style="font-size:var(--text-sm);color:var(--muted)">The refinement budget was exhausted before the critic accepted the report; the gaps listed here may reflect process failure rather than an absence of evidence in the literature.</p>
+            <p class="avail" style="margin-bottom:var(--space-3)">Evidence as of 2026-09-16 · 5 sources</p>
+            <p class="cap" style="margin-bottom:var(--space-3)">Bottom line</p>
+            <p style="font-size:var(--text-sm);line-height:var(--leading-body);color:var(--fg)">Manufacturing yield at the separator and the cost of lithium-scale purification are the best-evidenced constraints on solid-state scale-up. Recycling economics rests on a single verified source, and dry-electrode processing on none. <a class="cite" href="#">[2][4]</a></p>
+            <p class="cap" style="margin:var(--space-4) 0 var(--space-3)">What we couldn't confirm</p>
+            <p style="font-size:var(--text-sm);color:var(--muted)">Dry-electrode processing costs: searched twice, three pages read, no verified figure.</p>
           </div>
           <hr />
-          <p class="avail">Identical typography to the accepted report. A partial report is not set in a warning colour, not wrapped in a banner, and not truncated. The status line above it carries the qualification; the document is left alone.</p>
+          <p class="avail">Identical typography to the accepted report. A partial report is not set in a warning colour, not wrapped in a banner, and not truncated. The status chip carries the qualification; the document is left alone.</p>
         </div>
 
-        <div class="card stack-2" data-od-id="partial-quality-panel">
-          <h3 class="sub">Quality snapshot</h3>
-          <div class="grid-2" style="gap:var(--space-4)">
-            <div><div class="mono" style="font-size:var(--text-2xl)">0.64</div><div class="sm">coverage ratio</div></div>
-            <div><div class="mono" style="font-size:var(--text-2xl)">2 of 6</div><div class="sm">sub-topics researched</div></div>
-            <div><div class="mono" style="font-size:var(--text-2xl)">4</div><div class="sm">hard failures</div></div>
-            <div><div class="mono" style="font-size:var(--text-2xl)">23</div><div class="sm">claims checked</div></div>
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="partial-review-coverage">
+          <h3 class="sub">Review and coverage</h3>
+          <div class="bars">
+            <div class="bar-row">
+              <span style="color:var(--fg)">Review score</span>
+              <span class="track"><span style="width:74%"></span></span>
+              <span class="n">0.74</span>
+            </div>
+            <div class="bar-row">
+              <span style="color:var(--fg)">Scored sources cited</span>
+              <span class="track"><span class="ok" style="width:86%"></span></span>
+              <span class="n">0.86</span>
+            </div>
           </div>
-          <p class="avail">These come from the session's <span class="mono">ReportQualitySnapshot</span>. The API does not serve it — this panel is the strongest single argument for adding it, because a partial report's numbers are exactly what an operator needs and exactly what a Markdown body cannot give them structurally.</p>
+          <dl class="kv">
+            <dt>required targets answered</dt><dd>3 of 4</dd>
+            <dt>not found</dt><dd>T04</dd>
+          </dl>
+          <p class="avail">The review meter carries the 0.80 acceptance line; 0.74 sits in the middle band. Coverage names the target ids the run could not answer — ids only, until the evidence endpoint (api-gaps E1) supplies the question text.</p>
+        </div>
+
+        <div class="card stack" style="gap:var(--space-4)" data-od-id="options-table">
+          <h3 class="sub">An options table, six columns wide</h3>
+          <div class="tbl-frame">
+            <table class="tbl tbl-options">
+              <thead><tr><th>Option</th><th>Energy density</th><th>Cycle life</th><th>Cost per kWh</th><th>Thermal risk</th><th>Recommended by</th></tr></thead>
+              <tbody>
+                <tr><td class="wrapcell">Lithium iron phosphate</td><td>160 Wh/kg</td><td>6,000 cycles</td><td>$115</td><td>low</td><td class="wrapcell">Three of five sources <span class="cite">[1][3][5]</span></td></tr>
+                <tr><td class="wrapcell">Nickel manganese cobalt</td><td>250 Wh/kg</td><td>2,500 cycles</td><td>$139</td><td>moderate</td><td class="wrapcell">One source <span class="cite">[2]</span></td></tr>
+                <tr><td class="wrapcell">Sodium-ion</td><td>140 Wh/kg</td><td>4,000 cycles</td><td>not stated</td><td>low</td><td class="wrapcell">One source <span class="cite">[4]</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="tbl-foot"><em>Options compared on the parts the plan named; an empty cell reads not stated.</em></p>
+          <p class="avail">Up to six columns (Option, four parts, Recommended by) cannot fit a 534 px report column, so the table sits in a frame that scrolls sideways while the page does not, and the <span class="mono">Option</span> column stays pinned over the scroll. The findings table (four columns) never needs the frame to overflow.</p>
         </div>
 
         <div class="note attn" data-od-id="partial-vs-failed">
           <div class="note-head"><span class="mk">rule</span>Partial is not failed</div>
-          <p>A partial run produced its deliverable. The screen uses the same layout, the same type scale and the same action ordering as the accepted report, and the difference is carried by one status chip and the limitations the report already enumerates. Escalating a normal outcome into a warning state would train the operator to ignore the state that matters.</p>
+          <p>A partial run produced its deliverable. The screen uses the same layout, the same type scale and the same action ordering as the accepted report, and the difference is carried by one status chip and what the report itself says it could not confirm. Escalating a normal outcome into a warning state would train the operator to ignore the state that matters.</p>
         </div>
       </div>
     </div>
