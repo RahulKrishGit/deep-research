@@ -81,19 +81,14 @@ TASK10_PREFLIGHT_CASES = (
         "strong-and-weak-sources",
     ),
     (
-        "fact_checker",
-        "cross-agent-planner-fix-parity-baseline-fact-checker",
-        "mixed-verdicts",
+        "evidence_verifier",
+        "cross-agent-planner-fix-parity-baseline-evidence-verifier",
+        "relay-labelled-as-relay",
     ),
     (
-        "synthesizer",
-        "cross-agent-planner-fix-parity-baseline-synthesizer",
+        "report_writer",
+        "cross-agent-planner-fix-parity-baseline-report-writer",
         "complete-cited-report",
-    ),
-    (
-        "critic",
-        "cross-agent-planner-fix-parity-baseline-critic",
-        "approve-strong-report",
     ),
     (
         "researcher",

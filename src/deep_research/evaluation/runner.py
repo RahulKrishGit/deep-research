@@ -519,7 +519,8 @@ def build_repetition_result(
         prohibited_call_count=len(output.dependencies.prohibited_calls),
         react_stop_reason=(
             None
-            if output.agent_name in {"source_evaluator", "synthesizer"}
+            if output.agent_name
+            in {"source_evaluator", "evidence_verifier", "report_writer"}
             or output.react is None
             else output.react.stop_reason
         ),
@@ -1411,13 +1412,13 @@ async def run_agent_evaluation(
 
     return result
 
-# --- Task 26: the six-agent controlled suite --------------------------------
+# --- Task 26: the five-agent controlled suite --------------------------------
 
 
 def suite_id(*, now: datetime, git_sha: str) -> str:
     """The suite-level identifier: same timestamp/SHA shape as
     ``experiment_name`` (Task 5), but prefixed ``suite-`` instead of an
-    agent/tier pair, since one suite id names a whole six-agent run."""
+    agent/tier pair, since one suite id names a whole five-agent run."""
     return f"suite-{now.strftime('%Y%m%dT%H%M%SZ')}-{git_sha}"
 
 
@@ -1483,20 +1484,22 @@ async def run_suite_evaluation(
     langsmith_client_factory: Callable[[], Any] = LangSmithClient,
     now: datetime,
     git: GitMetadata,
+    production_parity: bool | None = None,
 ) -> SuiteResult:
-    """Run all six agents' controlled experiments in one pass.
+    """Run all five agents' controlled experiments in one pass.
 
     Tier is hardcoded to ``"controlled"`` for every agent: there is no
     path for a suite run to reach the live tier, and each agent keeps its
     own approved target-reasoning-effort profile (``reasoning_effort=
     None`` per agent, resolved independently by ``build_runtime_config``)
-    -- only ``judge_reasoning_effort`` is a uniform override across all
-    six. An exception anywhere in one agent's setup (config, case lookup,
-    provider construction) or its ``run_agent_evaluation`` call becomes
-    that agent's own ``ExperimentResult`` with status
-    ``"INFRASTRUCTURE FAILURE"``; the loop always continues for the
-    remaining agents. Live runs are manually invoked per-agent, after
-    controlled review -- this function never launches one.
+    -- only ``judge_reasoning_effort`` (and, like it, ``production_parity``)
+    is a uniform override across all five. An exception anywhere in one
+    agent's setup (config, case lookup, provider construction) or its
+    ``run_agent_evaluation`` call becomes that agent's own
+    ``ExperimentResult`` with status ``"INFRASTRUCTURE FAILURE"``; the loop
+    always continues for the remaining agents. Live runs are manually
+    invoked per-agent, after controlled review -- this function never
+    launches one.
 
     Every agent still writes its own ``results.json`` (via
     ``run_agent_evaluation``); this function additionally writes the
@@ -1519,6 +1522,7 @@ async def run_suite_evaluation(
                 experiment_prefix=experiment_prefix,
                 now=now,
                 git=git,
+                production_parity=production_parity,
             )
             cases = list(cases_for(agent_name, "controlled"))
 

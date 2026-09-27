@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import TypeAlias
 
 from deep_research.observability import Tracker
+from deep_research.observability.run_telemetry import RunTelemetryCollector
 from deep_research.providers.capabilities import (
     ResolvedRequestSettings,
     resolve_request_settings,
@@ -43,6 +44,7 @@ def build_chat_provider(
     *,
     api_key: str | None = None,
     request_budget: RequestBudget | None = None,
+    telemetry: RunTelemetryCollector | None = None,
 ) -> ChatAdapter:
     """Select the chat adapter by configured name; never infer, never fall back.
 
@@ -58,6 +60,12 @@ def build_chat_provider(
     accepting and dropping it: a budget that silently goes nowhere is exactly
     the decorative ceiling this machinery exists to replace.
 
+    ``telemetry`` is the run's §7.3 collector, threaded exactly as the budget
+    is: one collector per run, so every provider call of the run reports its
+    seconds, its output tokens against its cap and its truncations to the same
+    object. ``None`` leaves each adapter with a private no-op collector, which
+    is what a harness that builds a provider directly gets.
+
     The DeepSeek target adapter is ``DeepSeekSchemaChatProvider``: plain
     completions still use Chat Completions, but structured output is asked
     for through the provider's native schema, because JSON mode alone left
@@ -65,11 +73,19 @@ def build_chat_provider(
     """
     if config.provider == "deepseek":
         return DeepSeekSchemaChatProvider(
-            config, tracker, api_key=api_key, request_budget=request_budget
+            config,
+            tracker,
+            api_key=api_key,
+            request_budget=request_budget,
+            telemetry=telemetry,
         )
     if config.provider == "openai":
         return OpenAIChatProvider(
-            config, tracker, api_key=api_key, request_budget=request_budget
+            config,
+            tracker,
+            api_key=api_key,
+            request_budget=request_budget,
+            telemetry=telemetry,
         )
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
@@ -83,20 +99,30 @@ def build_judge_provider(
     *,
     api_key: str | None = None,
     request_budget: RequestBudget | None = None,
+    telemetry: RunTelemetryCollector | None = None,
 ) -> JudgeAdapter:
     """Select the judge adapter by configured provider name.
 
     ``request_budget`` follows the same rule as in
     :func:`build_chat_provider`: both judge transports reserve against it, and
-    ``None`` means uncounted.
+    ``None`` means uncounted. ``telemetry`` follows the budget's rule too: one
+    run's collector records the judge's calls alongside every other call's.
     """
     if config.provider == "deepseek":
         return DeepSeekJudgeProvider(
-            config, tracker, api_key=api_key, request_budget=request_budget
+            config,
+            tracker,
+            api_key=api_key,
+            request_budget=request_budget,
+            telemetry=telemetry,
         )
     if config.provider == "openai":
         return OpenAIChatProvider(
-            config, tracker, api_key=api_key, request_budget=request_budget
+            config,
+            tracker,
+            api_key=api_key,
+            request_budget=request_budget,
+            telemetry=telemetry,
         )
     raise ProviderConfigurationError(
         f"Unsupported chat provider {config.provider!r}; "
@@ -132,7 +158,7 @@ def validate_agent_model_configs(
 
     Runs before any memory, tool, provider, or graph construction so an
     unsupported model, thinking mode, or reasoning effort for any of the
-    six agents fails the run before a single collaborator exists. Each
+    named roles fails the run before a single collaborator exists. Each
     agent is resolved exactly once and the validated settings are returned
     in agent order, so a caller can see exactly what the run would send.
     """

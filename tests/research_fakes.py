@@ -16,6 +16,7 @@ from typing import Any
 
 import httpx
 
+from deep_research.agents.evidence import build_read_record
 from deep_research.memory.entries import SourceReputation
 from deep_research.observability import Tracker
 from deep_research.tools.base import BaseTool
@@ -24,6 +25,7 @@ from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
+from deep_research.utils.types import ReadRecord
 
 
 class FakeSearchClient:
@@ -121,6 +123,38 @@ def search_response(
     }
 
 
+# The read registry's record of the page the fake read tools serve by default.
+# ``page_client`` reports this title and this one paragraph, so the scraper
+# extracts exactly one chunk of it. Any scripted extraction output standing in
+# for the provider has to carry these registry fields: the acquisition path
+# requires them, and an optional membership check is one a model can skip.
+QEC_SOURCE_URL = "https://example.test/qec"
+QEC_TITLE = "Quantum error correction in 2025"
+QEC_PASSAGE = (
+    "Quantum error correction in 2025 Logical error rates fell below "
+    "break-even in 2025."
+)
+
+
+def qec_read_record(*, session_id: str = "session-1") -> ReadRecord:
+    """The read record the fake tools produce for that page.
+
+    Derived through the shared builder rather than copied as constants, so the
+    fixture cannot drift away from the contract it stands in for.
+    """
+    return build_read_record(
+        session_id=session_id,
+        reader="web_scraper",
+        requested_url=QEC_SOURCE_URL,
+        resolved_url=QEC_SOURCE_URL,
+        title=QEC_TITLE,
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text=QEC_PASSAGE,
+        passages={"chunk-0": QEC_PASSAGE},
+        extraction_complete=True,
+    )
+
+
 def page_client(
     *,
     title: str = "Quantum error correction in 2025",
@@ -216,30 +250,6 @@ def research_tools(
     ]
 
 
-def fact_checker_tools(
-    tracker: Tracker,
-    *,
-    search: FakeSearchClient | None = None,
-    memory: FakeMemory | None = None,
-    http: httpx.AsyncClient | None = None,
-) -> list[BaseTool]:
-    """Build the four tools ``FactCheckerAgent`` declares, all offline.
-
-    No ``save_to_memory``: the Fact Checker reads evidence and never
-    writes findings.
-    """
-    client = http or page_client()
-    return [
-        WebSearchTool(
-            tracker,
-            client=search or FakeSearchClient([search_response()]),
-        ),
-        WebScraperTool(tracker, client=client),
-        DocumentReaderTool(tracker, client=client),
-        QueryMemoryTool(tracker, memory or FakeMemory()),
-    ]
-
-
 class FakeReputationSource:
     """Serve remembered source reputations without a vector store.
 
@@ -273,13 +283,13 @@ class FakeReputationSource:
         )
 
 
-def synthesizer_tools(
+def report_writer_tools(
     tracker: Tracker,
     *,
     output_root: Path,
     memory: FakeMemory | None = None,
 ) -> list[BaseTool]:
-    """Build the two tools ``SynthesizerAgent`` declares, all offline.
+    """Build the two tools ``ReportWriterAgent`` declares, all offline.
 
     ``WriteDocumentTool`` is the real class writing under a pytest
     ``tmp_path``, so the agent is exercised against the same path
@@ -289,18 +299,3 @@ def synthesizer_tools(
         WriteDocumentTool(tracker, output_root),
         SaveToMemoryTool(tracker, memory or FakeMemory()),
     ]
-
-
-def critic_tools(
-    tracker: Tracker,
-    *,
-    search: FakeSearchClient | None = None,
-    memory: FakeMemory | None = None,
-) -> list[BaseTool]:
-    """Build the two tools ``CriticAgent`` declares, all offline.
-
-    The same pair ``PlannerAgent`` declares — spot-checking a suspected gap
-    is scoping work, not research — so this delegates rather than
-    re-listing them.
-    """
-    return planner_tools(tracker, search=search, memory=memory)

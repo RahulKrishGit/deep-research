@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from deep_research.agents.critic import fallback_critique
+from deep_research.agents.report import collapse_mirror_urls
+from deep_research.agents.sources import normalize_source_url
 from deep_research.agents.steps import ReActObservation, ReActStep
-from deep_research.evaluation.cases import all_cases
+from deep_research.evaluation.cases import all_cases, case_by_id
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     read_url_fingerprints,
@@ -13,15 +14,31 @@ from deep_research.evaluation.evaluators import (
     AGENT_GATE_IDS,
     METRIC_FUNCTIONS,
     code_evaluator,
+    deterministic_metric_scores,
+    deterministic_quality,
     evaluate_agent_gates,
+    evaluate_general_gates,
     evaluate_target,
 )
-from deep_research.evaluation.models import AGENT_NAMES
+from deep_research.evaluation.models import (
+    AGENT_NAMES,
+    DependencyLedger,
+)
 from deep_research.tools.base import ToolResult
+from deep_research.utils.types import (
+    ORIGINAL_QUESTION_OMISSION_REFERENCE,
+)
 
 
 def gate(results, gate_id):
     return next(item for item in results if item.gate_id == gate_id)
+
+
+def metric_score(output, case, metric_id: str) -> float:
+    """One case metric's unit score, resolved through ``METRIC_FUNCTIONS``."""
+    return deterministic_metric_scores(
+        output, case, metric_functions=METRIC_FUNCTIONS
+    )[metric_id]
 
 
 def test_every_case_metric_has_an_implementation() -> None:
@@ -57,14 +74,32 @@ def test_the_planner_gate_rejects_fewer_than_three_subtopics(
     ).passed is False
 
 
-def test_the_planner_gate_rejects_more_than_seven_subtopics(
+def test_the_planner_gate_rejects_more_than_ten_subtopics(
     planner_case, planner_output
 ) -> None:
-    output = planner_output.with_sub_topics(8)
+    output = planner_output.with_sub_topics(11)
 
     assert gate(
         evaluate_agent_gates(output, planner_case), "subtopic_count"
     ).passed is False
+
+
+def test_the_planning_tool_failure_case_uses_the_real_subtopic_ceiling(
+    planner_output,
+) -> None:
+    """A case with no declared ceiling still polices the planner's own bound.
+
+    ``planning-tool-failure`` (cases/planner.py) declares no
+    ``maximum_sub_topics``, so the gate's own default decides it; that
+    default must be ``MAX_SUB_TOPICS``, not a stale literal, or a plan this
+    wide passes every other check and still fails here for no stated reason.
+    """
+    case = case_by_id("planner", "controlled", "planning-tool-failure")
+    output = planner_output.with_sub_topics(9)
+
+    assert gate(
+        evaluate_agent_gates(output, case), "subtopic_count"
+    ).passed is True
 
 
 def test_the_planner_gate_rejects_duplicate_titles(
@@ -220,130 +255,14 @@ def test_the_source_evaluator_gate_requires_the_expected_low_confidence_flag(
     ).passed is False
 
 
-# --- Fact Checker ----------------------------------------------------------
-
-
-def test_the_fact_checker_gate_enforces_independent_domains(
-    fact_checker_dependent_case, fact_checker_dependent_output
-) -> None:
-    """The dependent case declares minimum_independent_domains: a claim
-    whose corroboration is only same-family stays rejected even when the
-    evidence strings paraphrase without pasting URLs — the scripted
-    same-family results the trajectory recorded still resolve to the
-    claim's own family."""
-    assert gate(
-        evaluate_agent_gates(
-            fact_checker_dependent_output, fact_checker_dependent_case
-        ),
-        "independent_domains",
-    ).passed is False
-
-
-def test_two_genuinely_independent_domains_pass_the_gate(
-    fact_checker_dependent_case, fact_checker_dependent_output
-) -> None:
-    """Independent publisher identities must be present on passages."""
-    output = fact_checker_dependent_output.with_verification_passage_urls(
-        [
-            "https://cern.org/outage-audit",
-            "https://eia.gov/outage-bulletin",
-        ]
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_dependent_case),
-        "independent_domains",
-    ).passed is True
-
-
-def test_the_mixed_verdicts_case_passes_without_a_declared_minimum(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """The ordinary case never declares minimum_independent_domains, so the
-    gate cannot fail a well-supported verified claim whose evidence
-    paraphrases instead of pasting URLs."""
-    output = fact_checker_output.with_evidence_texts(
-        [
-            "The IAEA framework covers SMR designs and the NRC applies the "
-            "same review."
-        ]
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case),
-        "independent_domains",
-    ).passed is True
-
-
-def test_the_fact_checker_gate_requires_evidence_on_a_verified_claim(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_empty_evidence()
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is False
-
-
-def test_the_fact_checker_evidence_gate_rejects_a_claims_own_publisher(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        ["https://iaea.org/another-safety-page"]
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is False
-
-
-def test_the_fact_checker_evidence_gate_accepts_contradiction_passages(
-    fact_checker_case, fact_checker_output
-) -> None:
-    result = dict(fact_checker_output.result or {})
-    claims = [dict(item) for item in (result.get("verified_claims") or [])]
-    claim = claims[0]
-    claim["verdict"] = "contradicted"
-    claim["evidence"] = []
-    claim["contradictions"] = ["An independent source disputes the result."]
-    claim["verification_evidence"] = [
-        {
-            **passage,
-            "stance": "contradicts",
-            "excerpt": "An independent source disputes the result.",
-        }
-        for passage in claim["verification_evidence"]
-    ]
-    output = fact_checker_output.model_copy(
-        update={"result": {**result, "verified_claims": claims}}
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case), "evidence_linked"
-    ).passed is True
-
-
-def test_insufficient_evidence_must_stay_low_confidence(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_claim_verdict(
-        "insufficient_evidence", confidence=0.95
-    )
-
-    assert gate(
-        evaluate_agent_gates(output, fact_checker_case),
-        "conservative_insufficiency",
-    ).passed is False
-
-
-# --- Fact Checker: read-bearing passage provenance -------------------------
+# --- Read-bearing provenance ------------------------------------------------
 #
 # Task 5 review, Important 2: the evidence checks validated passage fields and
 # publisher independence but never bound a passage URL to the run's
 # read-bearing tool results, so a search-only or invented URL could still pass
 # the quality gates. These tests drive the REAL classifier over typed steps —
-# the same one ``targets._success_output`` records the artifact with — and
-# require the gate to agree.
+# the same one ``targets._success_output`` records the artifact with, and the
+# field the researcher's kept ``findings_are_read_bearing`` metric reads.
 
 SEARCH_RESULT_URL = "https://third.test/x"
 DOCUMENT_URL = "https://fourth.test/d.csv"
@@ -385,10 +304,6 @@ MEMORY_STEP = _typed_step(
 )
 
 
-def _evidence_gate(output, case):
-    return gate(evaluate_agent_gates(output, case), "evidence_linked")
-
-
 def test_the_read_provenance_classifier_excludes_search_only_hits() -> None:
     """A search result list is discovery: it proves no read."""
     fingerprints, complete = read_url_fingerprints([SEARCH_STEP])
@@ -397,265 +312,146 @@ def test_the_read_provenance_classifier_excludes_search_only_hits() -> None:
 
 
 def test_the_read_provenance_classifier_keeps_every_read_bearing_tool() -> None:
+    """A page scrape and a document read are reads; a memory match is not.
+
+    The positive half of the classifier's contract, and the half the
+    researcher's ``findings_are_read_bearing`` metric depends on: counting a
+    recall as a read (or dropping a document read) would move that metric's
+    score with no other test able to see it.
+    """
     fingerprints, complete = read_url_fingerprints(
         [SEARCH_STEP, SCRAPE_STEP, DOCUMENT_STEP, MEMORY_STEP]
     )
-    recorded, _ = bounded_url_fingerprints(
-        [SEARCH_RESULT_URL, DOCUMENT_URL, MEMORY_URL]
-    )
+    recorded, _ = bounded_url_fingerprints([SEARCH_RESULT_URL, DOCUMENT_URL])
 
     assert complete is True
     assert set(fingerprints) == set(recorded)
+    assert MEMORY_URL not in fingerprints
 
 
-def test_a_search_only_passage_url_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
+# --- Evidence Verifier -----------------------------------------------------
+
+
+def test_the_evidence_verifier_gates_pass_on_its_reference_output(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    """Passages built from a search hit alone: the searched URL was never
-    read, so the classifier records no identity for it."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_steps([SEARCH_STEP])
+    results = evaluate_agent_gates(evidence_verifier_output, evidence_verifier_case)
 
-    assert output.dependencies.read_url_fingerprints == []
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_a_scraped_passage_url_passes_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
-
-    assert read_url_fingerprints([SEARCH_STEP, SCRAPE_STEP])[0] == list(
-        output.dependencies.read_url_fingerprints
+    assert [item.gate_id for item in results] == list(
+        AGENT_GATE_IDS["evidence_verifier"]
     )
-    assert _evidence_gate(output, fact_checker_case).passed is True
+    assert all(item.passed for item in results), results
 
 
-def test_a_document_read_passage_url_passes_the_evidence_gate(
-    fact_checker_case, fact_checker_output
+def test_a_finding_this_run_never_judged_fails_the_gate(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    output = fact_checker_output.with_verification_passage_urls(
-        [DOCUMENT_URL]
-    ).with_read_steps([DOCUMENT_STEP])
+    output = evidence_verifier_output.without_verification()
 
-    assert _evidence_gate(output, fact_checker_case).passed is True
-
-
-def test_a_memory_read_passage_url_passes_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """A provenance-bearing ``query_memory`` match is a read, and counts."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [MEMORY_URL]
-    ).with_read_steps([MEMORY_STEP])
-
-    assert read_url_fingerprints([MEMORY_STEP])[0] == list(
-        output.dependencies.read_url_fingerprints
-    )
-    assert _evidence_gate(output, fact_checker_case).passed is True
-
-
-def test_an_artifact_that_cannot_prove_its_reads_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """Fail closed: an empty provenance field proves nothing."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_urls([])
-
-    assert output.dependencies.read_url_fingerprints == []
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_an_incomplete_read_provenance_ledger_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """A truncated identity list may be missing exactly the passage's URL."""
-    output = fact_checker_output.with_verification_passage_urls(
-        [SEARCH_RESULT_URL]
-    ).with_read_urls([SEARCH_RESULT_URL], complete=False)
-
-    assert output.dependencies.read_url_fingerprints_complete is False
-    assert _evidence_gate(output, fact_checker_case).passed is False
-
-
-def test_a_passage_at_an_unread_independent_domain_fails_the_evidence_gate(
-    fact_checker_case, fact_checker_output
-) -> None:
-    """The old fixture's exact defect: a CERN URL absent from the run.
-
-    Publisher independence is not provenance: an invented independent domain
-    used to satisfy the evidence gate outright.
-    """
-    output = (
-        fact_checker_output.with_verification_passage_urls(
-            ["https://cern.org/outage-audit"]
-        ).with_read_steps([SEARCH_STEP, SCRAPE_STEP])
+    assert (
+        gate(
+            evaluate_agent_gates(output, evidence_verifier_case),
+            "verification_recorded",
+        ).passed
+        is False
     )
 
-    assert _evidence_gate(output, fact_checker_case).passed is False
 
-
-# --- Synthesizer -----------------------------------------------------------
-
-
-def test_the_synthesizer_gate_rejects_an_unknown_citation(
-    synthesizer_case, synthesizer_output
+def test_a_kept_figure_whose_words_are_not_on_its_page_fails_the_gate(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    output = synthesizer_output.with_report_citing(
-        "https://invented.example.com/page"
+    output = evidence_verifier_output.with_invented_evidence_words(
+        "installations of 18.9 GW of grid-scale batteries in 2025"
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case), "citations_known_only"
-    ).passed is False
-
-
-def test_the_synthesizer_gate_requires_limitations_to_be_represented(
-    synthesizer_case, synthesizer_output
-) -> None:
-    output = synthesizer_output.without_limitations()
-
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case),
-        "limitations_represented",
-    ).passed is False
-
-
-def test_the_synthesizer_gate_rejects_a_false_publication_claim(
-    synthesizer_composition_case, synthesizer_composition_output
-) -> None:
-    """Task 6 composes artifacts; it must not claim they were published."""
-    output = synthesizer_composition_output.with_report_text(
-        "The full report was published to the output directory."
+    assert (
+        gate(
+            evaluate_agent_gates(output, evidence_verifier_case),
+            "no_invented_evidence",
+        ).passed
+        is False
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_composition_case),
-        "no_false_publication_claim",
-    ).passed is False
 
-
-def test_the_synthesizer_gate_checks_publication_claims_in_both_artifacts(
-    synthesizer_composition_case, synthesizer_composition_output
+def test_a_drop_with_no_reason_fails_the_gate(
+    invented_evidence_case, invented_evidence_output
 ) -> None:
-    result = dict(synthesizer_composition_output.result or {})
-    output = synthesizer_composition_output.model_copy(
-        update={
-            "result": {
-                **result,
-                "evidence_markdown": "The evidence ledger was saved to disk.",
-            }
-        }
+    output = invented_evidence_output.without_drop_reason()
+
+    assert (
+        gate(
+            evaluate_agent_gates(output, invented_evidence_case),
+            "drop_reasons_named",
+        ).passed
+        is False
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_composition_case),
-        "no_false_publication_claim",
-    ).passed is False
 
-
-def test_the_synthesizer_gate_rejects_a_persistence_call(
-    synthesizer_case, synthesizer_output
+def test_the_evidence_verifier_metrics_are_all_bounded(
+    evidence_verifier_case, evidence_verifier_output
 ) -> None:
-    output = synthesizer_output.model_copy(
-        update={
-            "dependencies": synthesizer_output.dependencies.model_copy(
-                update={"document_writes": 1}
-            )
-        }
+    scores = deterministic_metric_scores(
+        evidence_verifier_output,
+        evidence_verifier_case,
+        metric_functions=METRIC_FUNCTIONS,
     )
 
-    assert gate(
-        evaluate_agent_gates(output, synthesizer_case),
-        "no_persistence_calls",
-    ).passed is False
+    assert scores
+    assert all(0.0 <= score <= 1.0 for score in scores.values()), scores
 
 
-# --- Critic ----------------------------------------------------------------
+# --- Report Writer ---------------------------------------------------------
 
 
-def test_the_critic_gate_requires_a_bounded_score(
-    critic_case, critic_output
+def test_the_report_writer_gates_pass_on_its_reference_output(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = critic_output.with_score(0)
+    results = evaluate_agent_gates(report_writer_output, report_writer_case)
 
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "bounded_component_scores"
-    ).passed is False
-
-
-def test_the_critic_gate_uses_the_production_routing_rule(
-    critic_case, critic_output
-) -> None:
-    """The gate calls ``agents.critic.route_decision`` rather than
-    re-deriving the threshold, so the two can never disagree."""
-    output = critic_output.with_score(9).with_should_continue(True)
-
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "route_consistent"
-    ).passed is False
-
-
-def test_the_critic_gate_accepts_a_typed_provider_fallback_stop(
-    critic_case, critic_output
-) -> None:
-    fallback, _ = fallback_critique(
-        reason="provider_unavailable",
-        iteration=critic_case.state.iteration,
-        max_iterations=critic_case.state.max_iterations,
+    assert [item.gate_id for item in results] == list(
+        AGENT_GATE_IDS["report_writer"]
     )
-    output = critic_output.model_copy(
-        update={
-            "result": {"critique": fallback.model_dump(mode="json")},
-            "errors": [
-                {
-                    "error_type": "critic_review_provider_error",
-                    "source": "agent.critic",
-                    "message": "provider review fallback used",
-                    "timestamp": "2026-08-01T00:00:00+00:00",
-                    "recoverable": False,
-                    "details": {
-                        "operation": "critic_report_review",
-                        "provider_failure": {
-                            "kind": "provider_failure",
-                            "type": "ProviderError",
-                            "retryable": False,
-                            "status_code": None,
-                        },
-                    },
-                }
-            ],
-        }
+    assert all(item.passed for item in results), results
+
+
+def test_evaluate_target_combines_the_writer_gates_and_its_quality(
+    report_writer_case, report_writer_output
+) -> None:
+    report, quality = evaluate_target(
+        report_writer_output, report_writer_case, secrets=()
     )
 
-    assert fallback.should_continue is False
-    assert gate(
-        evaluate_agent_gates(output, critic_case), "route_consistent"
-    ).passed is True
+    ids = {result.gate_id for result in report.results}
+    assert set(AGENT_GATE_IDS["report_writer"]) <= ids
+    assert quality == 1.0, report.failed_gate_ids()
 
 
-def test_the_critic_gate_forbids_continuing_with_no_budget_left(
-    critic_budget_case, critic_budget_output
+def test_a_publication_path_on_a_composition_pass_fails_the_gate(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = critic_budget_output.with_should_continue(True)
+    output = report_writer_output.with_publication_path("report-session-0.md")
 
-    assert gate(
-        evaluate_agent_gates(output, critic_budget_case), "route_consistent"
-    ).passed is False
+    assert (
+        gate(
+            evaluate_agent_gates(output, report_writer_case),
+            "no_false_publication_claim",
+        ).passed
+        is False
+    )
 
 
-def test_the_critic_gate_requires_actionable_critique(
-    critic_gap_case, critic_gap_output
+def test_a_persistence_call_fails_the_gate(
+    report_writer_case, report_writer_output
 ) -> None:
-    output = critic_gap_output.with_gaps([]).with_recommended_queries([])
+    output = report_writer_output.with_persistence_call("save_to_memory")
 
-    assert gate(
-        evaluate_agent_gates(output, critic_gap_case), "critique_actionable"
-    ).passed is False
+    assert (
+        gate(
+            evaluate_agent_gates(output, report_writer_case),
+            "no_persistence_calls",
+        ).passed
+        is False
+    )
 
 
 # --- The LangSmith adapter -------------------------------------------------
@@ -754,3 +550,589 @@ def test_evaluate_target_combines_general_and_agent_gates(
     assert "subtopic_count" in ids
     assert 0.0 <= quality <= 1.0
 
+
+# --- Task 12: scoped evidence targets ---------------------------------------
+#
+# Section 2.1's scoping guarantees are metrics, not gates: each one states a
+# property of a plan that a general gate cannot see, so each needs a positive
+# proof and a mutation that must score zero.
+
+
+def _scoped_topic(output):
+    """The scoped-targets fixture's first sub-topic: the comparison."""
+    return output.result["sub_topics"][0]
+
+
+def test_a_scoped_plan_scores_its_metrics_one(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    for metric_id in (
+        "targets_declared",
+        "targets_have_measure",
+    ):
+        assert (
+            metric_score(scoped_target_output, scoped_targets_case, metric_id)
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            scoped_target_output,
+            scoped_targets_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_targets_have_measure_gate(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """D10's single scoping gate: every target names the measure it asks for.
+
+    The dimension *word* is no longer judged — the unit vocabulary is open —
+    so what the plan owes is the measure itself. The fixture's plan, whose
+    three obligations each state one, passes; a plan carrying a target with an
+    empty measure is not a readable plan at all, so the gate fails closed.
+    """
+    assert (
+        metric_score(
+            scoped_target_output, scoped_targets_case, "targets_have_measure"
+        )
+        == 1.0
+    )
+
+    empty = scoped_target_output.with_target_measure("")
+    assert (
+        metric_score(empty, scoped_targets_case, "targets_have_measure")
+        == 0.0
+    )
+
+
+def test_the_omission_marker_alone_is_not_a_counted_obligation(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A target carrying the reserved omission reference is a marker for a
+    reviewed omission, not an evidence obligation: a plan whose only entry is
+    the marker has declared nothing and cannot be executed."""
+    topic = _scoped_topic(scoped_target_output)
+    marker = {
+        **topic["evidence_targets"][0],
+        "question": ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    }
+    output = scoped_target_output.with_evidence_targets(
+        {str(topic["title"]): [marker]}
+    )
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
+
+
+def test_a_counted_obligation_beside_the_marker_still_counts(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """The filter skips the marker; it does not fail the plan carrying it."""
+    topic = _scoped_topic(scoped_target_output)
+    targets = list(topic["evidence_targets"])
+    marker = {
+        **targets[0],
+        "target_id": "topic-01-target-02",
+        "question": ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    }
+    output = scoped_target_output.with_evidence_targets(
+        {str(topic["title"]): [*targets, marker]}
+    )
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 1.0
+
+
+def test_a_plan_with_no_evidence_targets_scores_targets_declared_zero(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """A plan with an empty target list is a *legacy* plan — one that has to
+    be replanned before it can be executed — never a plan with nothing
+    required."""
+    output = scoped_target_output.without_evidence_targets()
+
+    assert metric_score(output, scoped_targets_case, "targets_declared") == 0.0
+
+
+def test_a_plan_declaring_nothing_fails_the_measure_gate_closed(
+    scoped_targets_case, scoped_target_output
+) -> None:
+    """No obligation means no measure is stated, and the gate fails closed.
+
+    The gate iterates the plan's targets, and ``all()`` over an empty
+    sequence is true, so a plan that declared no obligation would otherwise
+    collect the gate's weight. A metric that checks obligations cannot pass a
+    plan that has none.
+    """
+    output = scoped_target_output.without_evidence_targets()
+
+    assert (
+        metric_score(output, scoped_targets_case, "targets_have_measure")
+        == 0.0
+    )
+    assert (
+        deterministic_quality(
+            output,
+            scoped_targets_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        < 1.0
+    )
+
+
+# --- Task 12: read-bearing acquisition --------------------------------------
+
+
+def _readable_urls(read_bearing_case) -> list[str]:
+    return list(read_bearing_case.expectations.reference["readable_urls"])
+
+
+def test_a_read_bearing_run_scores_its_metrics_one(
+    read_bearing_case, read_bearing_output
+) -> None:
+    for metric_id in (
+        "findings_are_read_bearing",
+        "no_recall_only_source",
+        "sub_topic_coverage",
+        "budget_respected",
+    ):
+        assert (
+            metric_score(read_bearing_output, read_bearing_case, metric_id)
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            read_bearing_output,
+            read_bearing_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_a_finding_citing_an_unread_page_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """The run read one of the two pages it cites; the other finding rests on
+    a page its artifact cannot prove was ever opened."""
+    readable = _readable_urls(read_bearing_case)
+    output = read_bearing_output.with_read_urls([readable[0]])
+
+    assert output.dependencies.read_url_fingerprints_complete is True
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
+
+
+def test_a_recalled_lead_reported_as_a_finding_scores_both_metrics_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """The case's whole risk, and why a general gate cannot see it.
+
+    The remembered entry is not a read, so a finding citing it is not
+    read-bearing — while ``citations_known`` passes, because the case
+    deliberately declares that URL as one of its known sources.
+    """
+    recall_only = read_bearing_case.expectations.reference["recall_only_url"]
+    output = read_bearing_output.with_finding_url(recall_only)
+
+    assert gate(
+        evaluate_general_gates(output, read_bearing_case, secrets=()),
+        "citations_known",
+    ).passed is True
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
+    assert (
+        metric_score(output, read_bearing_case, "no_recall_only_source") == 0.0
+    )
+
+
+def test_an_artifact_that_cannot_prove_its_reads_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """Fail closed, three ways: an incomplete ledger, a ledger that lost its
+    read identities, and a complete ledger that recorded no read at all."""
+    readable = _readable_urls(read_bearing_case)
+    incomplete = read_bearing_output.with_read_urls(readable, complete=False)
+    lost = read_bearing_output.model_copy(
+        update={"dependencies": DependencyLedger()}
+    )
+    empty = read_bearing_output.with_read_urls([])
+
+    assert incomplete.dependencies.read_url_fingerprints_complete is False
+    for output in (incomplete, lost, empty):
+        assert (
+            metric_score(output, read_bearing_case, "findings_are_read_bearing")
+            == 0.0
+        )
+
+
+def test_an_empty_finding_list_scores_zero(
+    read_bearing_case, read_bearing_output
+) -> None:
+    """Reporting nothing is not read-bearing: a run that reads and then says
+    nothing must not collect the metric's weight."""
+    output = read_bearing_output.model_copy(update={"result": {"findings": []}})
+
+    assert (
+        metric_score(output, read_bearing_case, "findings_are_read_bearing")
+        == 0.0
+    )
+
+
+# --- Task 12: work-role independence ----------------------------------------
+
+
+def _work_role_urls(work_role_case) -> list[str]:
+    reference = work_role_case.expectations.reference
+    return [*reference["same_work_urls"], *reference["independent_work_urls"]]
+
+
+def _evaluated_row(output, url: str) -> dict:
+    return next(
+        row for row in output.result["evaluated_sources"] if row["url"] == url
+    )
+
+
+def test_a_work_role_run_scores_its_metrics_one(
+    work_role_case, work_role_output
+) -> None:
+    for metric_id in (
+        "mirror_not_a_new_work",
+        "independent_work_recognized",
+        "one_evaluation_per_source",
+        "bounded_scores",
+    ):
+        assert (
+            metric_score(work_role_output, work_role_case, metric_id) == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            work_role_output,
+            work_role_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_a_repository_copy_labelled_the_original_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The case's risk in its most literal form: the archive copy claims to
+    be the original publication, published by someone else. One work has
+    become two, and every downstream independence count inherits it."""
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror, transport_relation="original", publisher_id="example.org"
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 1.0
+    )
+
+
+def test_an_independent_work_given_the_original_publisher_scores_zero(
+    work_role_case, work_role_output
+) -> None:
+    """Collapsing the university's own study into the survey's publisher
+    reports one publisher where the run retrieved two — the independence
+    count downstream inherits that loss too."""
+    reference = work_role_case.expectations.reference
+    original = _evaluated_row(work_role_output, reference["original_url"])
+    independent = reference["independent_work_urls"][0]
+    output = work_role_output.with_source_identity(
+        independent, publisher_id=original["publisher_id"]
+    )
+
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 0.0
+    )
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
+def test_unknown_identity_asserts_nothing_and_recognizes_nothing(
+    work_role_case, work_role_output
+) -> None:
+    """The asymmetry between the two metrics is the design.
+
+    ``mirror_not_a_new_work`` asks whether the run asserted a false second
+    work; a row that records no identity asserted nothing, so the metric
+    passes. ``independent_work_recognized`` asks whether the run recognized
+    the genuinely separate work; unknown identity cannot recognize it, so the
+    metric fails. Both outcomes belong to the same artifact: labelling
+    everything unknown is exactly the behaviour the second metric exists to
+    refuse, and it is not something to paper over by making the first fail.
+    """
+    output = work_role_output
+    for url in _work_role_urls(work_role_case):
+        output = output.with_source_identity(
+            url,
+            transport_relation="unknown",
+            source_role="unknown",
+            publisher_id=None,
+        )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+    assert (
+        metric_score(output, work_role_case, "independent_work_recognized")
+        == 0.0
+    )
+
+
+def test_a_reprint_with_an_unknown_relation_and_its_own_publisher_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The shape production actually emits, scoring the case's declared risk.
+
+    ``validated_transport_relation`` downgrades a claimed mirror or
+    syndication to ``unknown`` whenever the read does not evidence the
+    issuer, while ``publisher_id`` is assigned from the read identity
+    regardless — so a reprint whose page names nobody arrives as a
+    non-derivative relation carrying a distinct publisher. Three publishers
+    for one report is verbatim this case's stated risk.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="unknown",
+        publisher_id="repository.example.org",
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_a_mirror_row_stamping_its_own_publisher_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The relation a copy records never licenses a publisher of its own.
+
+    A row whose relation is ``mirror`` was skipped before its publisher was
+    ever compared, so a repository record that stamped the *serving host* as
+    the publisher of a page it merely copies passed this metric — which is
+    the rubric's failure verbatim ("The serving host is recorded as the
+    publisher"). No production consumer gives a copy the original's
+    publisher by relation alone: a copy carrying a different evidenced
+    issuer keeps its own publisher on record, and one work must not read as
+    two however the relation is spelled.
+    """
+    reference = work_role_case.expectations.reference
+    mirror = reference["same_work_urls"][1]
+    assert "mirror" in reference["derivative_relations"]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="original_report",
+        publisher_id="repository.example.org",
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_a_copy_recorded_as_an_original_publication_is_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """The rubric's second failure half: a copy presented as an original.
+
+    ``transport_vs_publication`` names two failures — "The serving host is
+    recorded as the publisher, or a copy is recorded as an original
+    publication" — and the metric compared publishers only, so a declared
+    same-work row that kept the survey's identity and publisher but labelled
+    itself ``original_report`` scored full marks. A publisher is not the only
+    way a page claims to be a work of its own: the role is that claim, and a
+    copy asserting one is the second original this metric exists to refuse.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="original_report",
+        publisher_id=None,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 0.0
+
+
+def test_a_copy_claiming_nothing_and_naming_no_publisher_is_not_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """An unlabelled copy is not itself the defect; the claim is.
+
+    A row that records no publisher asserted no new identity, and one whose
+    role is ``derivative`` asserts no originality either — unknown identity
+    can establish neither sameness nor independence, which is why refusing
+    that shape is ``independent_work_recognized``'s job. What this metric
+    refuses is the claim, whether it is made with a publisher or with a role,
+    so a row making neither still passes.
+    """
+    mirror = work_role_case.expectations.reference["same_work_urls"][1]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="mirror",
+        source_role="derivative",
+        publisher_id=None,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
+def test_an_unknown_relation_carrying_the_original_publisher_is_not_a_new_work(
+    work_role_case, work_role_output
+) -> None:
+    """An unknown relation is not itself the defect; the publisher decides.
+
+    The same downgraded row recording the institute as its publisher is the
+    same work however it was served: the relation went unknown, the identity
+    did not. Failing it would punish a run that correctly inherited the
+    publisher across a page that happens not to evidence its issuer.
+    """
+    reference = work_role_case.expectations.reference
+    original, mirror, _wire = reference["same_work_urls"]
+    original_publisher = _evaluated_row(work_role_output, original)["publisher_id"]
+    output = work_role_output.with_source_identity(
+        mirror,
+        transport_relation="unknown",
+        publisher_id=original_publisher,
+    )
+
+    assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
+
+
+# --- Task 12: canonical citation provenance ---------------------------------
+#
+# The synthesizer half of Task 7's risk: the report's references are composed
+# by joining the evidence registry, so no URL reaches the reader that the run
+# never held, and one work reprinted twice is one reference. The end-to-end
+# proof of the same defect lives in ``test_real_agents``, where
+# ``statement_source_urls`` is monkeypatched inside the full graph replay;
+# these assert the property at the artifact level — the composed report itself
+# never carries a URL the state cannot derive a citation from, and never
+# prints two references for one work.
+
+
+def _derived_reference_urls(case) -> list[str]:
+    """The reference list production's collapse rule derives from the state.
+
+    The assessed rows and the verified findings, which is the whole citation
+    vocabulary a composing pass has (§6.1): one entry per recorded work,
+    under the copy the assessments identify as the original.
+    """
+    derived = [
+        normalize_source_url(source.url) for source in case.state.evaluated_sources
+    ] + [
+        normalize_source_url(finding.source_url)
+        for finding in case.state.verified_findings
+    ]
+    return collapse_mirror_urls(
+        list(dict.fromkeys(derived)), case.state.evaluated_sources
+    )
+
+
+def test_a_canonically_cited_report_scores_its_metrics_one(
+    canonical_report_case, canonical_report_output
+) -> None:
+    for metric_id in (
+        "citations_locally_derived",
+        "one_reference_per_work",
+        "statements_labelled",
+        "reader_markdown_present",
+        "evidence_markdown_present",
+    ):
+        assert (
+            metric_score(
+                canonical_report_output, canonical_report_case, metric_id
+            )
+            == 1.0
+        ), metric_id
+    assert (
+        deterministic_quality(
+            canonical_report_output,
+            canonical_report_case,
+            metric_functions=METRIC_FUNCTIONS,
+        )
+        == 1.0
+    )
+
+
+def test_an_invented_reference_url_is_not_locally_derived(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """A URL no assessed source and no verified finding carries.
+
+    The known-source gate refuses it too, but for a different reason: that gate
+    compares the report against the case's *declaration*, while this metric
+    compares it against the records the run actually holds — which is the
+    invariant Task 7's join enforces, since a reference is rendered from an
+    evidence id and never from a URL the model supplied.
+    """
+    case = canonical_report_case
+    invented = "https://journal.example/cover-crop-nitrate-reduction"
+    output = canonical_report_output.with_references(
+        [*_derived_reference_urls(case), invented]
+    )
+
+    assert metric_score(output, case, "citations_locally_derived") == 0.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0
+    assert (
+        gate(
+            evaluate_general_gates(output, case, secrets=()),
+            "citations_known",
+        ).passed
+        is False
+    )
+
+
+def test_a_work_printed_twice_is_one_reference_not_two(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """The two new metrics disagree here by design.
+
+    Both copies are URLs the run really retrieved, so both are locally derived
+    and the provenance metric passes: nothing was invented. What is wrong is
+    identity — one work printed as two references — and only the metric that
+    applies production's collapse rule sees it. A metric that only ever agreed
+    with ``citations_locally_derived`` would be a duplicate of it.
+    """
+    case = canonical_report_case
+    reprint = case.expectations.reference["mirror_url"]
+    listed = [source.url for source in case.state.evaluated_sources]
+    output = canonical_report_output.with_references(listed)
+
+    assert reprint in listed
+    assert len(listed) == len(_derived_reference_urls(case)) + 1
+    assert metric_score(output, case, "citations_locally_derived") == 1.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0
+
+
+def test_printing_the_reprint_instead_of_the_original_is_not_canonical(
+    canonical_report_case, canonical_report_output
+) -> None:
+    """The other direction, and the reason neither metric is a URL count.
+
+    The reprint is locally derived — the run retrieved it — so provenance
+    passes, and the reference list still is not the one the composition
+    derives: the copy the work's own assessment identifies as the original is
+    what a reader is owed, and printing the republished copy instead loses the
+    reference to the work itself.
+    """
+    case = canonical_report_case
+    reprint = case.expectations.reference["mirror_url"]
+    canonical = normalize_source_url(
+        case.expectations.reference["known_citation_urls"][0]
+    )
+    listed = [
+        reprint if url == canonical else url
+        for url in _derived_reference_urls(case)
+    ]
+    output = canonical_report_output.with_references(listed)
+
+    assert reprint in listed and canonical not in listed
+    assert metric_score(output, case, "citations_locally_derived") == 1.0
+    assert metric_score(output, case, "one_reference_per_work") == 0.0

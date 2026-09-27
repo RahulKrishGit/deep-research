@@ -39,7 +39,7 @@ GRAPH_ERROR_REASONS = {
         "the research run stopped."
     ),
     "graph_invalid_route": (
-        "The graph attempted a refinement pass with no budget left, so the "
+        "The graph attempted an extra pass with no budget left, so the "
         "research run stopped."
     ),
     "graph_request_attempt_limit_exceeded": (
@@ -53,11 +53,28 @@ GRAPH_ERROR_REASONS = {
     "graph_publication_failed": (
         "The report publisher could not complete one of the terminal writes."
     ),
+    "graph_report_review_unavailable": (
+        "The terminal semantic review produced no judgement of the report, so "
+        "the report is published without a scored quality assessment."
+    ),
 }
+
+# The three files published as one set: the reader report, its evidence ledger
+# and the quality record. The set is advertised whole or not at all, so a
+# failure in any one of them withholds every path.
+PUBLICATION_DOCUMENT_ARTIFACTS = ("reader", "evidence", "quality")
+
+# The one terminal write outside that set: a cited finding handed to memory,
+# attempted only for an accepted report and only after the documents. Its
+# failure loses a memory record — never a file the run advertised — so it must
+# not be read as an incomplete publication.
+PUBLICATION_MEMORY_ARTIFACT = "memory"
 
 # The terminal writes that fail independently of one another. Enumerated so a
 # reader — or a CLI — can tell which artifact is missing its file.
-PUBLICATION_ARTIFACTS = ("reader", "evidence", "memory")
+PUBLICATION_ARTIFACTS = PUBLICATION_DOCUMENT_ARTIFACTS + (
+    PUBLICATION_MEMORY_ARTIFACT,
+)
 
 
 class GraphError(Exception):
@@ -149,18 +166,41 @@ def invalid_route_error(
     *,
     node: str,
     iteration: int,
-    max_iterations: int,
+    max_extra_passes: int,
 ) -> ResearchError:
-    """Record that a refinement was attempted with no budget left.
+    """Record that an extra pass was attempted with no budget left.
 
-    The router already forbids this. The guard exists because "iteration
-    bounds prevent infinite loops" is the one property this graph must not
-    lose to a future edit, and a second lock on that door costs three lines.
+    The router already forbids this. The guard exists because "the extra-pass
+    ceiling prevents an unbounded loop" is the one property this graph must
+    not lose to a future edit, and a second lock on that door costs three
+    lines.
     """
     return graph_error(
         error_type="graph_invalid_route",
         node=node,
-        details={"iteration": iteration, "max_iterations": max_iterations},
+        details={"iteration": iteration, "max_extra_passes": max_extra_passes},
+    )
+
+
+def redraft_limit_error(
+    *,
+    node: str,
+    redrafts: int,
+    max_redrafts: int,
+) -> ResearchError:
+    """Record that a writer re-run was attempted with its own bound spent.
+
+    The same enumerated type as the extra-pass overrun — a route reached
+    without the budget its ceiling allows — and the same second lock on the
+    same door: the router refuses to send the hop once the re-run is spent, and
+    a run that arrives anyway records the halt rather than paying for a draft
+    its bound forbids. The details name *this* bound, so the record cannot be
+    misread as an iteration overrun.
+    """
+    return graph_error(
+        error_type="graph_invalid_route",
+        node=node,
+        details={"redrafts": redrafts, "max_redrafts": max_redrafts},
     )
 
 
@@ -191,6 +231,32 @@ def request_attempt_limit_error(
             "ceiling": snapshot.ceiling,
             "effective_limit": snapshot.effective_limit,
         },
+    )
+
+
+def report_review_unavailable_error(
+    *,
+    node: str,
+    review_status: str,
+    reason: str,
+) -> ResearchError:
+    """Record that the terminal semantic review produced no judgement.
+
+    ``recoverable`` on purpose, and deliberately *not* a halting type: the
+    report and its evidence are complete and are still published, so the run
+    did not fail — what failed is the quality assessment. The run's quality
+    status is ``partial`` and strict mode exits 4, which is the honest outcome
+    for a report nothing has judged. Classifying it as a graph failure would
+    report the report as lost when it is intact, and classifying it as a
+    successful review is the defect this record exists to prevent.
+
+    ``review_status`` is one of the review's own enumerated statuses and
+    ``reason`` is project-generated text; neither is provider output.
+    """
+    return graph_error(
+        error_type="graph_report_review_unavailable",
+        node=node,
+        details={"review_status": review_status, "reason": reason},
     )
 
 

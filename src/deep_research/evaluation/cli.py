@@ -100,7 +100,7 @@ _EPILOG = (
     "  # List agents, tiers, cases, repetitions, and dataset names.\n"
     f"  {PROGRAM_NAME} list\n"
     "\n"
-    "  # Run all three controlled cases for one agent, three times each.\n"
+    "  # Run every controlled case for one agent, three times each.\n"
     f"  {PROGRAM_NAME} agent researcher\n"
     "\n"
     "  # Run one controlled case, still with three repetitions.\n"
@@ -113,7 +113,11 @@ _EPILOG = (
     "baseline config.\n"
     f"  {PROGRAM_NAME} agent researcher --reasoning-effort medium\n"
     "\n"
-    "  # Run controlled experiments for all six agents.\n"
+    "  # Force this run to resolve from production's declaration, "
+    "regardless of config.yaml.\n"
+    f"  {PROGRAM_NAME} agent researcher --production-parity\n"
+    "\n"
+    "  # Run controlled experiments for all five agents.\n"
     f"  {PROGRAM_NAME} suite"
 )
 
@@ -135,6 +139,10 @@ class CliOptions:
     reasoning_effort: str | None
     judge_reasoning_effort: str | None
     verbose: bool
+    production_parity: bool | None
+    """``None`` means inherit config.yaml's own setting; a bool is a
+    per-invocation override recorded as such in the run's own output
+    (``production_parity_source``)."""
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -171,6 +179,34 @@ def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
         "--verbose",
         action="store_true",
         help="print per-repetition gate and evaluator summaries",
+    )
+    # ``store_const`` rather than ``argparse.BooleanOptionalAction``: the
+    # "neither flag passed" state must stay distinguishable from "passed
+    # False" so it can mean "inherit config.yaml" instead of silently
+    # forcing parity off for every invocation that omits the flag.
+    parity_group = subparser.add_mutually_exclusive_group()
+    parity_group.add_argument(
+        "--production-parity",
+        dest="production_parity",
+        action="store_const",
+        const=True,
+        default=None,
+        help=(
+            "force each target's model/effort to resolve from "
+            "production's own declaration for this run, regardless of "
+            "config.yaml's evaluation.production_parity"
+        ),
+    )
+    parity_group.add_argument(
+        "--no-production-parity",
+        dest="production_parity",
+        action="store_const",
+        const=False,
+        default=None,
+        help=(
+            "force the evaluation-only profile for this run, even when "
+            "config.yaml's evaluation.production_parity is on"
+        ),
     )
 
 
@@ -223,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_shared_options(agent_parser)
 
     suite_parser = subparsers.add_parser(
-        "suite", help="run controlled experiments for all six agents"
+        "suite", help="run controlled experiments for all five agents"
     )
     _add_shared_options(suite_parser)
 
@@ -262,6 +298,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         reasoning_effort=reasoning_effort,
         judge_reasoning_effort=namespace.judge_reasoning_effort,
         verbose=bool(namespace.verbose),
+        production_parity=namespace.production_parity,
     )
 
 
@@ -388,6 +425,7 @@ def _default_agent_runner(
     output_directory: str | None,
     experiment_prefix: str | None,
     verbose: bool,
+    production_parity: bool | None = None,
 ) -> ExperimentResult:
     del verbose  # rendering-only; it does not change what is executed
     from deep_research.evaluation.cases import case_by_id, cases_for
@@ -404,6 +442,7 @@ def _default_agent_runner(
         experiment_prefix=experiment_prefix,
         now=datetime.now(timezone.utc),
         git=resolve_git_metadata(),
+        production_parity=production_parity,
     )
     cases = (
         [case_by_id(agent_name, tier, case_id)]
@@ -421,6 +460,7 @@ def _default_suite_runner(
     output_directory: str | None,
     experiment_prefix: str | None,
     verbose: bool,
+    production_parity: bool | None = None,
 ) -> Any:
     """The real ``suite`` command execution path.
 
@@ -444,6 +484,7 @@ def _default_suite_runner(
             config_path=config,
             now=datetime.now(timezone.utc),
             git=resolve_git_metadata(),
+            production_parity=production_parity,
         )
     )
 
@@ -491,6 +532,7 @@ def _dispatch(
             output_directory=options.output_directory,
             experiment_prefix=options.experiment_prefix,
             verbose=options.verbose,
+            production_parity=options.production_parity,
         )
         emit(render_experiment(result, verbose=options.verbose))
         return EXPERIMENT_EXIT_CODES[result.status]
@@ -503,6 +545,7 @@ def _dispatch(
         output_directory=options.output_directory,
         experiment_prefix=options.experiment_prefix,
         verbose=options.verbose,
+        production_parity=options.production_parity,
     )
     emit(render_suite(result, verbose=options.verbose))
     return EXPERIMENT_EXIT_CODES[result.status]

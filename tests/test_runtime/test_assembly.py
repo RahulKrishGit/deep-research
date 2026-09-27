@@ -8,9 +8,11 @@ import pytest
 
 import deep_research.runtime.assembly as assembly
 from deep_research.agents.errors import AgentConfigurationError
+from deep_research.agents.evidence import build_read_record
 from deep_research.graph.orchestrator import ResearchAgents
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.observability import RunTelemetryCollector
 from deep_research.providers import validate_agent_model_configs
 from deep_research.request_budget import RequestBudget
 from deep_research.runtime.assembly import (
@@ -58,12 +60,11 @@ def test_build_tools_covers_every_tool_the_agents_declare(tracker) -> None:
 def test_build_tools_covers_the_union_of_every_agent_allowlist(tracker) -> None:
     """No agent may declare a tool this assembly does not build."""
     from deep_research.agents import (
-        CriticAgent,
-        FactCheckerAgent,
+        EvidenceVerifierAgent,
         PlannerAgent,
+        ReportWriterAgent,
         ResearcherAgent,
         SourceEvaluatorAgent,
-        SynthesizerAgent,
     )
 
     declared = {
@@ -72,9 +73,8 @@ def test_build_tools_covers_the_union_of_every_agent_allowlist(tracker) -> None:
             PlannerAgent,
             ResearcherAgent,
             SourceEvaluatorAgent,
-            FactCheckerAgent,
-            SynthesizerAgent,
-            CriticAgent,
+            EvidenceVerifierAgent,
+            ReportWriterAgent,
         )
         for name in agent.allowed_tools
     }
@@ -251,17 +251,15 @@ def test_build_agents_fills_every_slot_with_the_right_agent(tracker) -> None:
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     )
     assert [
         agents.planner.name,
         agents.researcher.name,
         agents.source_evaluator.name,
-        agents.fact_checker.name,
-        agents.synthesizer.name,
-        agents.critic.name,
+        agents.evidence_verifier.name,
+        agents.report_writer.name,
     ] == list(AGENT_NAMES)
 
 
@@ -288,13 +286,12 @@ def test_every_agent_gets_its_own_scratchpad_on_the_shared_session(
         agents.planner.scratchpad,
         agents.researcher.scratchpad,
         agents.source_evaluator.scratchpad,
-        agents.fact_checker.scratchpad,
-        agents.synthesizer.scratchpad,
-        agents.critic.scratchpad,
+        agents.evidence_verifier.scratchpad,
+        agents.report_writer.scratchpad,
     ]
     assert {pad.session_id for pad in pads} == {"session-1"}
     assert [pad.agent_name for pad in pads] == list(AGENT_NAMES)
-    assert len({id(pad) for pad in pads}) == 6
+    assert len({id(pad) for pad in pads}) == 5
 
 
 def test_build_agents_reports_a_missing_tool_as_a_configuration_failure(
@@ -384,6 +381,45 @@ def test_build_agent_matches_production_build_agents_for_every_agent(
         assert single.scratchpad.session_id == "session-1"
         assert single.scratchpad.agent_name == name
         assert single.scratchpad.max_entries == expected.scratchpad.max_entries
+
+
+def test_every_agent_carries_its_own_resolved_model_profile(tracker) -> None:
+    """A per-agent effort override reaches the agent that runs under it.
+
+    The profile is what a per-call configuration fingerprint is built from,
+    so an assembly that dropped it would make every planner request look like
+    a researcher request.
+    """
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            reasoning_effort="high",
+            model_overrides={
+                "planner": {"reasoning_effort": "max"},
+                "researcher": {"reasoning_effort": "high"},
+            },
+        )
+    )
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    agents = build_agents(
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    for name in AGENT_NAMES:
+        agent = getattr(agents, name)
+        assert agent.model_profile == settings.llm.resolve_for(name)
+    assert agents.planner.model_profile.reasoning_effort == "max"
+    assert agents.researcher.model_profile.reasoning_effort == "high"
+    assert agents.planner.prompt_version == "planner-2"
 
 
 def test_build_agent_gives_the_source_evaluator_the_reputation_source(
@@ -495,9 +531,8 @@ def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
     for name in (
         "planner",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     ):
         agent = build_agent(
             name,
@@ -509,6 +544,55 @@ def test_an_agent_without_a_sub_topic_cap_is_not_given_one(tracker) -> None:
             reputation=None,
         )
         assert not hasattr(agent, "_max_sub_topics"), name
+
+
+def test_the_seeded_source_cache_reaches_the_researcher_alone(tracker) -> None:
+    """Source-cache state a caller supplies must reach the agent that uses it.
+
+    A session may start holding bodies an earlier session already read. The
+    registry belongs to the agent that decides whether a URL needs downloading
+    — the Researcher — and to no one else: the other five never fetch a body,
+    so a wiring that handed them a cache to look in would be a parameter they
+    cannot honour. Passing none keeps the shipped behaviour, a run whose cache
+    starts empty.
+    """
+    settings = ConfigSettings()
+    tools = build_tools(
+        settings,
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+    stored = {
+        "https://agency.example/queue-study.pdf": build_read_record(
+            session_id="earlier-session",
+            reader="document_reader",
+            requested_url="https://agency.example/queue-study.pdf",
+            resolved_url="https://agency.example/queue-study.pdf",
+            title="Queue study",
+            retrieved_at="2024-11-01T00:00:00+00:00",
+            text="The queue delay study measured commissioning delay in 2024.",
+            passages={
+                "page-1-chunk-0": (
+                    "The queue delay study measured commissioning delay in 2024."
+                )
+            },
+        )
+    }
+
+    agents = build_agents(
+        settings,
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+        read_cache=stored,
+    )
+
+    assert agents.researcher._shared_cache is stored
+    assert getattr(agents.planner, "_shared_cache", None) is None
+    assert getattr(agents.report_writer, "_shared_cache", None) is None
 
 
 def test_build_agent_rejects_an_unknown_agent_name(tracker) -> None:
@@ -571,23 +655,99 @@ def test_build_agents_uses_the_shared_constructor_mapping(
     assert calls == list(AGENT_NAMES)
 
 
-def test_validate_agent_models_resolves_all_six_before_runtime() -> None:
+@pytest.mark.asyncio
+async def test_a_bad_report_reviewer_override_fails_before_any_collaborator(
+    tracker, monkeypatch
+) -> None:
+    """Task 10: the extra service role is preflighted like an agent.
+
+    The report reviewer is not one of the five agents, but a run that cannot
+    configure it cannot be accepted either, so the same fail-fast rule applies:
+    the misconfiguration is reported before a collaborator exists rather than
+    at the review that decides the run's outcome.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        assembly,
+        "build_embedding_provider",
+        lambda *_args, **_kwargs: calls.append("embeddings"),
+    )
+    settings = ConfigSettings.model_validate(
+        {
+            "llm": {
+                "model_overrides": {
+                    "report_reviewer": {"reasoning_effort": "medium"}
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1", tracker=tracker)
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "report_reviewer" in str(caught.value)
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_runtime_wires_the_report_reviewer_as_its_own_service_role(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """The reviewer is built from its own resolved profile, not an agent's."""
+    built: list[dict[str, object]] = []
+    real_reviewer = assembly.ReportReviewer
+
+    def recording_reviewer(**kwargs: object) -> object:
+        built.append(kwargs)
+        return real_reviewer(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(assembly, "ReportReviewer", recording_reviewer)
+    memory = LongTermMemory(
+        collection=FakeCollection(), embeddings=FakeEmbeddings()
+    )
+    procedural = ProceduralMemory(tmp_path / "strategies.json")
+    settings = ConfigSettings.model_validate(
+        {
+            "output": {"directory": str(tmp_path)},
+            "llm": {"model_overrides": {"report_reviewer": {"reasoning_effort": "max"}}},
+        }
+    )
+
+    runtime = await build_runtime(
+        settings,
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=memory,
+        procedural=procedural,
+        search_client=FakeSearchClient(),
+    )
+
+    assert len(built) == 1
+    profile = built[0]["model_profile"]
+    assert profile.reasoning_effort == "max"  # type: ignore[union-attr]
+    assert built[0]["tracker"] is tracker
+    assert runtime.graph is not None
+
+
+def test_validate_agent_models_resolves_every_agent_before_runtime() -> None:
     config = LLMConfig(
         model_overrides={
-            "critic": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
+            "report_writer": {"model": "deepseek-v4-pro", "reasoning_effort": "max"}
         }
     )
 
     resolved = validate_agent_model_configs(config, AGENT_NAMES)
 
     assert tuple(resolved) == AGENT_NAMES
-    assert resolved["planner"].effective.model == "deepseek-v4-flash"
-    assert resolved["critic"].effective.model == "deepseek-v4-pro"
-    assert resolved["critic"].reasoning_effort == "max"
+    assert resolved["planner"].effective.model == "deepseek-flash"
+    assert resolved["report_writer"].effective.model == "deepseek-v4-pro"
+    assert resolved["report_writer"].reasoning_effort == "max"
 
 
 @pytest.mark.asyncio
-async def test_bad_critic_override_fails_before_any_runtime_collaborator(
+async def test_bad_verifier_override_fails_before_any_runtime_collaborator(
     tracker, monkeypatch
 ) -> None:
     calls: list[str] = []
@@ -597,7 +757,13 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
         lambda *_args, **_kwargs: calls.append("embeddings"),
     )
     settings = ConfigSettings.model_validate(
-        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+        {
+            "llm": {
+                "model_overrides": {
+                    "evidence_verifier": {"reasoning_effort": "medium"}
+                }
+            }
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:
@@ -605,18 +771,18 @@ async def test_bad_critic_override_fails_before_any_runtime_collaborator(
 
     assert caught.value.reason == "provider_unconfigured"
     assert "deepseek" in str(caught.value)
-    assert "critic" in str(caught.value)
+    assert "evidence_verifier" in str(caught.value)
     assert calls == []
 
 
 @pytest.mark.asyncio
-async def test_bad_critic_override_fails_before_the_default_tracker(
+async def test_bad_verifier_override_fails_before_the_default_tracker(
     monkeypatch,
 ) -> None:
     """The non-injected tracker path is preflighted too.
 
     Leaves ``tracker=None`` so ``Tracker.from_config`` would run before
-    validation on the current implementation; an invalid critic-only
+    validation on the current implementation; an invalid verifier-only
     override must fail with the safe provider/agent error before the
     tracker factory is ever called.
     """
@@ -627,7 +793,13 @@ async def test_bad_critic_override_fails_before_the_default_tracker(
         classmethod(lambda cls, config: tracker_calls.append(config)),
     )
     settings = ConfigSettings.model_validate(
-        {"llm": {"model_overrides": {"critic": {"reasoning_effort": "medium"}}}}
+        {
+            "llm": {
+                "model_overrides": {
+                    "evidence_verifier": {"reasoning_effort": "medium"}
+                }
+            }
+        }
     )
 
     with pytest.raises(ResearchConfigurationError) as caught:
@@ -635,7 +807,7 @@ async def test_bad_critic_override_fails_before_the_default_tracker(
 
     assert caught.value.reason == "provider_unconfigured"
     assert "deepseek" in str(caught.value)
-    assert "critic" in str(caught.value)
+    assert "evidence_verifier" in str(caught.value)
     assert tracker_calls == []
 
 
@@ -668,6 +840,93 @@ async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     assert runtime.procedural is procedural
     assert procedural.loaded is True
     assert runtime.graph is not None
+
+
+@pytest.mark.asyncio
+async def test_build_runtime_creates_one_collector_for_the_run(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """One collector per run, handed to the providers and to the graph alike.
+
+    The two seams must receive the *same* object: a collector per collaborator
+    would record two halves of one run, and the peak in flight -- which is
+    about calls that overlap each other -- would be counted by nobody.
+    """
+    built: dict[str, object] = {}
+    provider = RecordingProvider()
+    real_compile = assembly.compile_research_graph
+
+    def recording_chat_provider(config, received_tracker, **kwargs):
+        built["telemetry"] = kwargs.get("telemetry")
+        return provider
+
+    def recording_compile(agents, *, checkpointer=None, **_kwargs):
+        built["graph_telemetry"] = _kwargs.get("run_telemetry")
+        return real_compile(agents, checkpointer=checkpointer)
+
+    monkeypatch.setattr(assembly, "build_chat_provider", recording_chat_provider)
+    monkeypatch.setattr(assembly, "compile_research_graph", recording_compile)
+    monkeypatch.setattr(
+        assembly.LongTermMemory,
+        "from_config",
+        lambda config, *, embeddings, tracker: LongTermMemory(
+            collection=FakeCollection(), embeddings=embeddings
+        ),
+    )
+
+    runtime = await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert isinstance(runtime.run_telemetry, RunTelemetryCollector)
+    assert built["telemetry"] is runtime.run_telemetry
+    assert built["graph_telemetry"] is runtime.run_telemetry
+
+
+@pytest.mark.asyncio
+async def test_an_injected_chat_provider_gets_no_collector(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """A run whose provider this build did not construct was never measured.
+
+    An injected provider is the caller's — the e2e replay hands in a scripted
+    completer — and nothing here wraps it, so a collector beside it would record
+    nothing for the whole run. Publishing those zeroes would print "peak 0
+    provider calls in flight" for a run that made real (scripted) calls, and a
+    row of zeroes reads as a measured idle run; ``None`` is the honest answer
+    and the one the state, the quality record and the CLI all read.
+    """
+    built: dict[str, object] = {}
+    real_compile = assembly.compile_research_graph
+
+    def recording_compile(agents, *, checkpointer=None, **kwargs):
+        built["graph_telemetry"] = kwargs.get("run_telemetry")
+        return real_compile(agents, checkpointer=checkpointer)
+
+    monkeypatch.setattr(assembly, "compile_research_graph", recording_compile)
+
+    runtime = await build_runtime(
+        ConfigSettings.model_validate(
+            {"output": {"directory": str(tmp_path)}}
+        ),
+        session_id="session-1",
+        tracker=tracker,
+        chat_provider=RecordingProvider(),
+        long_term=LongTermMemory(
+            collection=FakeCollection(), embeddings=FakeEmbeddings()
+        ),
+        procedural=ProceduralMemory(tmp_path / "strategies.json"),
+        search_client=FakeSearchClient(),
+    )
+
+    assert runtime.run_telemetry is None
+    assert built["graph_telemetry"] is None
 
 
 class CountingProceduralMemory(ProceduralMemory):
@@ -961,23 +1220,22 @@ async def test_build_runtime_wires_the_raw_memory_not_the_bridge_as_reputation(
     assert not isinstance(received[0], LongTermMemoryBridge)
 
 
-def test_all_six_agents_receive_the_same_shared_tool_registry(
+def test_all_five_agents_receive_the_same_shared_tool_registry(
     tracker, monkeypatch
 ) -> None:
-    """One registry for every agent, not six hand-filtered lists.
+    """One registry for every agent, not five hand-filtered lists.
 
     ``AgentToolset`` only notices a list that dropped a declared tool; a
     hand-filtered list that drifted sideways would silently change what an
-    agent can call. Pinning the constructor wire keeps the six in lockstep.
+    agent can call. Pinning the constructor wire keeps the five in lockstep.
     """
     received: list[object] = []
     for class_name in (
         "PlannerAgent",
         "ResearcherAgent",
         "SourceEvaluatorAgent",
-        "FactCheckerAgent",
-        "SynthesizerAgent",
-        "CriticAgent",
+        "EvidenceVerifierAgent",
+        "ReportWriterAgent",
     ):
         monkeypatch.setattr(
             assembly,
@@ -1002,9 +1260,36 @@ def test_all_six_agents_receive_the_same_shared_tool_registry(
         reputation=None,
     )
 
-    assert len(received) == 6
+    assert len(received) == 5
     assert all(tool_list is tools for tool_list in received)
     assert {tool.name for tool in received[0]} == EXPECTED_TOOL_NAMES
+
+
+def test_the_assembled_verifier_gets_no_tools(tracker) -> None:
+    """The Evidence Verifier judges from the page it was shown, with no tools.
+
+    The shared registry still reaches every constructor, so the guard that an
+    agent declares no tool nobody built stays in one place; the verifier's own
+    allowlist is empty, so its toolset is empty whatever the registry holds.
+    """
+    tools = build_tools(
+        ConfigSettings(),
+        tracker=tracker,
+        memory=build_bridge(),
+        search_client=FakeSearchClient(),
+    )
+
+    agents = build_agents(
+        ConfigSettings(),
+        tracker=tracker,
+        provider=RecordingProvider(),
+        tools=tools,
+        session_id="session-1",
+        reputation=None,
+    )
+
+    assert agents.evidence_verifier.allowed_tools == ()
+    assert agents.evidence_verifier.toolset.names == ()
 
 
 @pytest.mark.asyncio

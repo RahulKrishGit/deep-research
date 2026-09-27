@@ -1,0 +1,3526 @@
+"""The pure read-evidence contract: canonical text, identity, admission.
+
+One home for the four rules whose disagreement caused the defects this
+program repairs:
+
+* **What a read is.** Only a successful ``web_scraper`` or ``document_reader``
+  call produces a :class:`~deep_research.utils.types.ReadRecord`. A search
+  result, a snippet, and a ``query_memory`` recall are discovery, however
+  confident or well-labelled they are — memory metadata is not validation.
+* **What a work is.** :func:`resolve_work_identities` groups reads by
+  normalized aliases (DOI, issuer-namespaced report number, complete-content
+  hash, conservative title + year + issuer + edition) and reports ambiguity
+  as ``unknown`` or ``conflicting`` rather than guessing a key.
+* **What may be re-admitted.** :func:`validate_cached_read` admits a stored
+  original read only against the locally resolved body, expected hash, and
+  version eligibility its *caller* established — never against anything the
+  model or a memory entry said about itself.
+* **What crossed each boundary.** The registry reducers and the boundary
+  manifest builders record what was admitted, what was deferred, and why, so
+  a replay can name the first missing boundary.
+
+Nothing here performs I/O, reads a clock, or calls a provider: every value is
+a deterministic function of its arguments, and every timestamp is supplied by
+the caller that owns the clock. Later tasks extend this module — Task 3 wires
+read admission into the acquisition loop, Task 4 adds transport/derivation
+evidence.
+"""
+
+from __future__ import annotations
+
+import functools
+import hashlib
+import re
+import unicodedata
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime
+from typing import NamedTuple
+from urllib.parse import urlsplit
+
+from pydantic import Field
+
+from deep_research.agents.sources import (
+    normalize_source_url,
+    publisher_identity,
+    source_domain,
+)
+from deep_research.utils.types import (
+    INCOMPLETE_CONTENT_SHA256,
+    MAX_SNIPPET_CHARS,
+    QUALITY_CONTRACT_VERSION,
+    BoundaryAudit,
+    ContractModel,
+    EvidenceDisposition,
+    EvidenceUnit,
+    ReadRecord,
+    ScoredSource,
+    SourceTemporal,
+    WorkIdentity,
+)
+
+# Which boundary one manifest describes. A stage that mints its own operation
+# adds its own constant beside these and passes it to ``build_boundary_audit``.
+READ_ADMISSION_OPERATION = "read_admission"
+PASSAGE_SELECTION_OPERATION = "passage_selection"
+
+# The persisted disposition vocabulary, kept beside the producers that choose
+# from it. ``EvidenceDisposition.stage`` and ``.reason`` are plain strings on
+# the model so a snapshot written by a later release stays loadable.
+DISPOSITION_STAGES = (
+    "read-selection",
+    "extraction",
+    "retention",
+    "composition",
+)
+DISPOSITION_REASONS = (
+    "irrelevant",
+    "out_of_scope",
+    "stale_for_target",
+    "duplicate_content",
+    "malformed",
+    "deferred_capacity",
+    "unsupported_excerpt",
+    # A selected passage that states a figure in its target's measure unit
+    # but yielded no finding even after one bounded re-extraction. Kept apart
+    # from "irrelevant" so the run records evidence that was held and unused.
+    "unmined_quantity",
+    # The same for a passage that states the words of a required target the
+    # pass answered nowhere yet: the run held the evidence for an obligation
+    # and still reported it unbound.
+    "unmined_target",
+)
+
+# How many aliases one identity may carry, so a malformed metadata row cannot
+# grow a persisted record without limit.
+MAX_WORK_ALIASES = 64
+
+# The namespace a *citation* of a report number is recorded in. The number
+# itself belongs to the cited work's issuer, which a citing document does not
+# establish, so a lineage id names the number without claiming an issuer.
+REPORT_NUMBER_LINEAGE = "report-number:"
+
+_DIGEST_LENGTH = 24
+_HEX_DIGITS = frozenset("0123456789abcdef")
+# DOI resolvers, and the scheme-less prefix a metadata field often carries.
+_DOI_PREFIXES = (
+    "https://doi.org/",
+    "http://doi.org/",
+    "https://dx.doi.org/",
+    "http://dx.doi.org/",
+    "doi:",
+)
+
+
+class EvidenceContractError(ValueError):
+    """A record, row, or argument violates the evidence contract."""
+
+
+class EvidenceIdentityConflict(EvidenceContractError):
+    """One identity carries two different bodies; nothing may overwrite."""
+
+
+class MissingBoundaryManifest(LookupError):
+    """A replay asked for a boundary manifest that was never recorded."""
+
+
+# ---------------------------------------------------------------------------
+# canonical text
+# ---------------------------------------------------------------------------
+
+
+def canonical_read_text(text: str) -> str:
+    """Return the canonical form of extracted source text.
+
+    Unicode is normalized to NFC and whitespace is collapsed, so the same
+    passage read through two layouts is one string. Nothing else changes:
+    digits, minus signs, units, and negation survive verbatim, so two passages
+    that assert different things can never normalize together.
+    """
+    if not isinstance(text, str):
+        raise EvidenceContractError("text must be a string")
+    return " ".join(unicodedata.normalize("NFC", text).split())
+
+
+def normalized_content_sha256(text: str) -> str:
+    """Return the SHA-256 of ``text``'s canonical form.
+
+    Raises :class:`EvidenceContractError` for text with no content: an empty
+    or whitespace-only extraction has no identity, and hashing it would mint
+    one that every empty document would share.
+    """
+    canonical = canonical_read_text(text)
+    if not canonical:
+        raise EvidenceContractError("content hash requires non-empty text")
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+_SOFT_HYPHEN = "\u00ad"
+_QUOTE_TABLE = str.maketrans(
+    {
+        "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u2032": "'",
+        "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"', "\u2033": '"',
+    }
+)
+# A word broken across a line: "stor-\nage". Joined by default; kept as one
+# hyphenated word ("grid-\nscale" -> "grid-scale") in the second reading.
+# Letters only: a digit-hyphen-digit break ("10-\n12") is a number range, not
+# a broken word, and joining it would let a snippet state a figure the page
+# never wrote. _NUMERIC_LINE_BREAK keeps that hyphen in both readings.
+_LINE_BREAK_HYPHEN = re.compile(r"(?<=[^\W\d_])-[ \t]*\r?\n[ \t]*(?=[^\W\d_])")
+_NUMERIC_LINE_BREAK = re.compile(r"(?<=\d)-[ \t]*\r?\n[ \t]*(?=\d)")
+
+
+def cosmetic_text(text: str, *, join_hyphenation: bool = True) -> str:
+    """Spec §5.1 step 1: the cosmetic normalisation, and nothing else.
+
+    Whitespace and line breaks, curly and straight quotes, soft hyphens and
+    line-break hyphenation, and case. Digits, units, dashes and words are
+    untouched, so a paraphrase never matches the page it paraphrases.
+    """
+    if not isinstance(text, str):
+        raise EvidenceContractError("text must be a string")
+    value = unicodedata.normalize("NFC", text).replace(_SOFT_HYPHEN, "")
+    value = value.translate(_QUOTE_TABLE)
+    value = _NUMERIC_LINE_BREAK.sub("-", value)
+    value = _LINE_BREAK_HYPHEN.sub("" if join_hyphenation else "-", value)
+    return " ".join(value.split()).casefold()
+
+
+def excerpt_matches(text: str, excerpt: str) -> bool:
+    """True when ``excerpt`` is contained in ``text`` after cosmetic normalisation.
+
+    Membership is exact after ``cosmetic_text`` -- no fuzzy ratio, no ellipsis
+    stitching -- because a near-miss excerpt is how a paraphrase becomes
+    "source text". A line-break hyphen is read both ways, as a broken word and
+    as a hyphenated compound, because the page cannot say which it was.
+    """
+    candidate = cosmetic_text(excerpt)
+    if not candidate:
+        return False
+    return candidate in cosmetic_text(text) or candidate in cosmetic_text(
+        text, join_hyphenation=False
+    )
+
+
+class _NormalisedBody:
+    """Caches ``cosmetic_text(body)`` per hyphenation mode, lazily.
+
+    ``excerpt_matches`` normalises the whole ``text`` argument on every call,
+    so checking many passages against one body costs passages x page length
+    (twice that on a miss, since both hyphenation modes are tried). This
+    normalises the body once per mode -- the second mode only if some
+    passage's excerpt misses the first -- and reuses it for every passage
+    checked against the same body. The per-passage verdict is exactly
+    ``excerpt_matches(body, excerpt)`` would give, since the normalised body
+    text does not depend on the excerpt.
+    """
+
+    __slots__ = ("_text", "_joined", "_kept")
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._joined: str | None = None
+        self._kept: str | None = None
+
+    def matches(self, excerpt: str) -> bool:
+        candidate = cosmetic_text(excerpt)
+        if not candidate:
+            return False
+        if self._joined is None:
+            self._joined = cosmetic_text(self._text)
+        if candidate in self._joined:
+            return True
+        if self._kept is None:
+            self._kept = cosmetic_text(self._text, join_hyphenation=False)
+        return candidate in self._kept
+
+
+# ---------------------------------------------------------------------------
+# identity
+# ---------------------------------------------------------------------------
+
+
+def canonical_publisher_id(metadata: Mapping[str, object]) -> str | None:
+    """Return the publisher standing behind one read's metadata.
+
+    An issuer the artifact itself evidences outranks the host that served it:
+    a mirror on a CDN is the publisher it mirrors, not the CDN. With no
+    evidenced issuer the serving host's registrable identity is the only
+    evidence there is, and with neither the publisher is ``None`` — unknown,
+    never guessed.
+    """
+    issuer = _text_field(metadata, "issuer")
+    if issuer:
+        return _identity_words(issuer)
+    for key in ("serving_host", "url"):
+        candidate = _text_field(metadata, key)
+        if candidate:
+            return publisher_identity(candidate)
+    return None
+
+
+def resolve_work_identities(
+    metadata: Sequence[Mapping[str, object]],
+) -> dict[str, WorkIdentity]:
+    """Resolve one :class:`WorkIdentity` per metadata row, keyed by source_id.
+
+    Each row is read keyed by ``source_id`` and may evidence ``doi``,
+    ``report_number``, ``issuer``, ``title``, ``year``, ``edition``,
+    ``complete_content_sha256``, ``extraction_complete``, and
+    ``identity_links``. Unknown keys are ignored, so a later task may widen
+    the row without breaking this resolver.
+
+    Rows join on a shared alias. Strong aliases join unconditionally; the
+    conservative ``title``/``year``/``issuer``/``edition`` alias joins only
+    rows whose complete-content evidence does not contradict, which is what
+    stops one generic title ("Annual Report") from merging two different
+    documents. A group that evidences two different values in one class — two
+    DOIs, or two report numbers of one issuer — is reported ``conflicting``
+    with ``key=None``: ambiguity is preserved, never averaged into a join. Two
+    complete hashes conflict too, unless the group is held together by exactly
+    one DOI or one issuer-namespaced report number: the PDF and the HTML of one
+    DOI are two renderings of one work, and every hash stays in its aliases.
+    """
+    rows = [_parse_row(row) for row in metadata]
+    groups = _group_rows(rows)
+    resolved: dict[str, WorkIdentity] = {}
+    for group in groups:
+        identity = _resolve_group(group)
+        for row in group:
+            resolved[row.source_id] = identity
+    return resolved
+
+
+class _Row:
+    """One parsed metadata row: its identity inputs, never its raw text."""
+
+    __slots__ = (
+        "aliases",
+        "derives_from",
+        "edition",
+        "hash",
+        "issuer_id",
+        "reports",
+        "source_id",
+        "title",
+        "year",
+    )
+
+    def __init__(self, source_id: str) -> None:
+        self.source_id = source_id
+        self.aliases: list[str] = []
+        self.derives_from: list[str] = []
+        self.reports: list[str] = []
+        self.hash: str | None = None
+        self.issuer_id: str | None = None
+        self.title: str = ""
+        self.edition: str = ""
+        self.year: str = ""
+
+
+def _parse_row(row: object) -> _Row:
+    if not isinstance(row, Mapping):
+        raise EvidenceContractError("metadata rows must be mappings")
+    source_id = _text_field(row, "source_id")
+    if not source_id:
+        raise EvidenceContractError("metadata rows require a non-empty source_id")
+    parsed = _Row(source_id)
+
+    doi = _normalized_doi(_text_field(row, "doi"))
+    if doi:
+        parsed.aliases.append(f"doi:{doi}")
+
+    issuer = _text_field(row, "issuer")
+    if issuer:
+        parsed.issuer_id = _identity_words(issuer)
+
+    number = _identifier_text(_text_field(row, "report_number"))
+    if number and parsed.issuer_id:
+        # A report number is unique only inside the issuer's namespace.
+        alias = f"report:{parsed.issuer_id}:{number}"
+        parsed.reports.append(alias)
+        parsed.aliases.append(alias)
+
+    parsed.hash = _complete_content_hash(row)
+    if parsed.hash:
+        parsed.aliases.append(f"sha256:{parsed.hash}")
+
+    # An evidenced link names a related version or derivation. It is recorded
+    # as a relationship, never used to join: two records are the same work
+    # only when they share an identity alias.
+    for link in _text_sequence(row, "identity_links"):
+        parsed.derives_from.append(_related_id(link))
+
+    # A registered work key a snapshot already resolved, replayed because the
+    # anchors that produced it were not persisted (§2.2 rule 3). It joins
+    # exactly like the alias it is, so a record that named its work keeps
+    # naming it — and a body two records key differently stays ``conflicting``
+    # rather than being silently re-keyed to whichever arrived last.
+    stored = _text_field(row, "stored_work_id")
+    if _strong_work_alias(stored):
+        parsed.aliases.append(stored)
+
+    parsed.title = _identity_words(_text_field(row, "title"))
+    parsed.year = _year_text(row.get("year"))
+    parsed.edition = _identity_words(_text_field(row, "edition"))
+    return parsed
+
+
+def _group_rows(rows: Sequence[_Row]) -> list[list[_Row]]:
+    """Union rows that share an alias into the groups they evidence."""
+    if not rows:
+        return []
+    parent = list(range(len(rows)))
+
+    def root(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        left_root, right_root = root(left), root(right)
+        if left_root != right_root:
+            parent[max(left_root, right_root)] = min(left_root, right_root)
+
+    for members in _strong_aliases(rows):
+        for index in members:
+            union(members[0], index)
+    for members in _weak_aliases(rows):
+        for index in members:
+            union(members[0], index)
+
+    grouped: dict[int, list[_Row]] = {}
+    for index, row in enumerate(rows):
+        grouped.setdefault(root(index), []).append(row)
+    return list(grouped.values())
+
+
+def _strong_aliases(rows: Sequence[_Row]) -> list[list[int]]:
+    by_alias: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        for alias in row.aliases:
+            by_alias.setdefault(alias, []).append(index)
+    return list(by_alias.values())
+
+
+def _weak_aliases(rows: Sequence[_Row]) -> list[list[int]]:
+    """Group rows whose conservative title evidence does not contradict.
+
+    The bucket carries the row's complete-content hash, so two documents that
+    share a title, a year, an issuer, and an edition but not a body never land
+    in the same group — and an unhashed row joins only other unhashed rows
+    rather than borrowing a body it never evidenced.
+    """
+    by_alias: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        alias = _weak_alias(row, row.hash or "")
+        if alias is not None:
+            by_alias.setdefault(alias, []).append(index)
+    return list(by_alias.values())
+
+
+def _weak_alias(row: _Row, hash_bucket: str) -> str | None:
+    if not (row.title and row.year and row.issuer_id):
+        return None
+    alias = f"title:{row.title}|{row.year}|{row.issuer_id}|{row.edition}"
+    return f"{alias}|{hash_bucket}" if hash_bucket else alias
+
+
+def _resolve_group(group: Sequence[_Row]) -> WorkIdentity:
+    strong = [alias for row in group for alias in row.aliases]
+    dois = _distinct(alias for alias in strong if alias.startswith("doi:"))
+    reports = _distinct(alias for alias in strong if alias.startswith("report:"))
+    hashes = _distinct(row.hash for row in group if row.hash)
+    issuers = _distinct(row.issuer_id for row in group if row.issuer_id)
+    aliases = sorted(set(strong))
+    issuer_id = issuers[0] if len(issuers) == 1 else None
+
+    conflicts: list[str] = []
+    if len(dois) > 1:
+        conflicts.append(f"{len(dois)} distinct normalized DOIs")
+    if len(hashes) > 1 and not (len(dois) == 1 or len(reports) == 1):
+        # Distinct bytes are one work only when one registered identifier
+        # says so (Section 2.2 rules 2/4); without one they are ambiguity.
+        conflicts.append(f"{len(hashes)} distinct complete-content hashes")
+    for issuer in issuers:
+        numbers = _distinct(
+            alias
+            for alias in reports
+            if alias.startswith(f"report:{issuer}:")
+        )
+        if len(numbers) > 1:
+            conflicts.append(
+                f"{len(numbers)} distinct report numbers for issuer {issuer!r}"
+            )
+
+    derives_from = sorted({item for row in group for item in row.derives_from})
+    if conflicts:
+        return WorkIdentity(
+            key=None,
+            aliases=aliases[:MAX_WORK_ALIASES],
+            basis="conflicting strong identifiers: " + "; ".join(conflicts),
+            issuer_id=issuer_id,
+            derives_from_work_ids=derives_from[:MAX_WORK_ALIASES],
+            identity_status="conflicting",
+        )
+
+    key, basis = _identity_key(group, dois, reports, hashes)
+    return WorkIdentity(
+        key=key,
+        aliases=aliases[:MAX_WORK_ALIASES],
+        basis=basis,
+        issuer_id=issuer_id,
+        derives_from_work_ids=derives_from[:MAX_WORK_ALIASES],
+        identity_status="known" if key else "unknown",
+    )
+
+
+def _identity_key(
+    group: Sequence[_Row],
+    dois: list[str],
+    reports: list[str],
+    hashes: list[str],
+) -> tuple[str | None, str]:
+    if dois:
+        return dois[0], "shared normalized DOI"
+    if reports:
+        return reports[0], "shared issuer-namespaced report number"
+    if hashes:
+        return f"sha256:{hashes[0]}", "identical complete-content hash"
+    for row in group:
+        alias = _weak_alias(row, "")
+        if alias is not None:
+            return alias, "title, year, issuer, and edition agree"
+    return None, "no usable identity metadata"
+
+
+def _distinct(values: Iterable[str | None]) -> list[str]:
+    """Sorted distinct non-empty values, so a group's evidence is ordered."""
+    return sorted({value for value in values if value})
+
+
+def _text_field(row: Mapping[str, object], key: str) -> str:
+    value = row.get(key)
+    if not isinstance(value, str):
+        return ""
+    return value.strip()
+
+
+def _text_sequence(row: Mapping[str, object], key: str) -> list[str]:
+    value = row.get(key)
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _identity_words(value: str) -> str:
+    """Normalize a name or title used as identity text.
+
+    Case and typography fold; words do not. "Example Lab" and "example lab"
+    are one issuer, while "Example Lab, Inc." stays a different one, because
+    dropping the qualifier would merge two organizations that are not the
+    same publisher.
+    """
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    kept = "".join(char if char.isalnum() else " " for char in folded)
+    return " ".join(kept.split())
+
+
+def _identifier_text(value: str) -> str:
+    """Normalize a report number or opaque identifier, keeping punctuation.
+
+    Case and surrounding whitespace fold; ``-``, ``.`` and ``/`` are part of
+    the identifier and stay, so ``TR-2025-01`` never collapses onto
+    ``TR202501``.
+    """
+    collapsed = unicodedata.normalize("NFC", value).casefold().strip()
+    return collapsed.strip(" .,;:")
+
+
+def _normalized_doi(value: str) -> str:
+    """Return the normalized DOI inside ``value``, or an empty string."""
+    candidate = unicodedata.normalize("NFC", value).strip()
+    lowered = candidate.casefold()
+    for prefix in _DOI_PREFIXES:
+        if lowered.startswith(prefix):
+            candidate = candidate[len(prefix) :]
+            break
+    normalized = _identifier_text(candidate)
+    if not normalized.startswith("10.") or "/" not in normalized:
+        # A URL, a title, or a free-text note in the DOI field is not a DOI.
+        return ""
+    return normalized
+
+
+def _related_id(value: str) -> str:
+    """Normalize one evidenced link to a related work as a stable id.
+
+    An id already in a work or citation namespace — a ``report:<issuer>:…`` key
+    or a ``report-number:…`` citation minted by :func:`_lineage_id` — is kept as
+    it is: re-wrapping it would move it into a namespace no comparison reads.
+    """
+    text = value.strip()
+    if _strong_work_alias(text) or text.startswith(REPORT_NUMBER_LINEAGE):
+        return text
+    doi = _normalized_doi(text)
+    if doi:
+        return f"doi:{doi}"
+    parts = urlsplit(text)
+    if parts.scheme and parts.netloc:
+        return f"link:{normalize_source_url(text)}"
+    return f"link:{_identifier_text(text)}"
+
+
+def _complete_content_hash(row: Mapping[str, object]) -> str | None:
+    """The row's complete-content hash, or ``None`` when it is unusable.
+
+    Only a full 64-digit hexadecimal digest is an identity edge, and only when
+    the extraction it came from is complete. Completeness is read strictly: an
+    absent flag leaves the hash field's own name asserting it, and anything
+    else must be the boolean ``True``. A serialized ``"false"``, ``0``, or
+    ``None`` never counts as complete, because a truthy string is exactly how
+    a corrupt snapshot would smuggle a partial hash into an identity.
+    """
+    if "extraction_complete" in row and row["extraction_complete"] is not True:
+        return None
+    value = row.get("complete_content_sha256")
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().casefold()
+    if len(candidate) != 64 or not set(candidate) <= _HEX_DIGITS:
+        return None
+    return candidate
+
+
+def _year_text(value: object) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        digits = "".join(char for char in value if char.isdigit())
+        return digits if digits and len(digits) == 4 else ""
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# read-backed source identity, transport relation, and fitness signals
+# ---------------------------------------------------------------------------
+
+# The closed vocabularies a scored source's labels come from. ``unknown`` is a
+# member of each: absence of evidence is an answer, never a made-up label.
+SOURCE_ROLES = (
+    "original_report",
+    "independent_research",
+    "derivative",
+    "company_statement",
+    "mixed",
+    "unknown",
+)
+TRANSPORT_RELATIONS = ("original", "mirror", "syndication", "unknown")
+SELF_INTEREST_LEVELS = ("none", "potential", "evidenced", "unknown")
+FRESHNESS_STATUSES = (
+    "current",
+    "superseded",
+    "stale_data",
+    "projection",
+    "effective",
+    "unknown",
+)
+
+# The date that makes each freshness status checkable. A status whose date the
+# read does not carry is recorded ``unknown``: "newly published" cannot be
+# asserted from a document that never says when it was published.
+_FRESHNESS_DATES = {
+    "current": "publication_date",
+    "superseded": "publication_date",
+    "stale_data": "data_period",
+    "projection": "forecast_horizon",
+    "effective": "effective_date",
+}
+
+# Phrases that publish or issue a document. Attribution is a statement *about*
+# the document, so only these phrases — and only immediately before the name —
+# transfer ownership. "As reported by Acme" repeats someone's figure and
+# "written by" is authorship; neither says who published this page, and a
+# headline naming an organization does not either — unless the page is served
+# from that organization's own domain, which is the one case
+# ``_first_party_issuer_evidenced`` reads.
+_ATTRIBUTION_PHRASES = (
+    r"published\s+by",
+    r"published\s+on\s+behalf\s+of",
+    r"publisher\s*:",
+    r"issued\s+by",
+    r"issuing\s+body\s*:",
+    r"prepared\s+by",
+    r"produced\s+by",
+    r"released\s+by",
+    r"copyright",
+)
+
+# Punctuation allowed between two words of one name, and between the
+# attribution phrase and the name it attributes. A name's words must be
+# separated by *something*: "ExampleLab" is a different name from
+# "Example Lab", for the same reason ``_identity_words`` never merges two
+# words into each other.
+_NAME_GAP = r"[\W_]{1,4}"
+_ATTRIBUTION_GAP = r"[\s:,\u2013\u2014-]{0,4}"
+
+# The acronym a masthead prints in brackets beside the issuer's name — "(EIA)"
+# after "U.S. Energy Information Administration". It has to be spelled as an
+# acronym (all capitals) to name a domain: a lowercase bracket is a gloss, not
+# a name the organization's host is served under.
+_ISSUER_ACRONYM = r"\((?P<acronym>[A-Z][A-Z0-9]{1,})\)"
+
+# The suffixes whose registrations a state or an accreditation body controls,
+# which is what makes a domain the organization's own: the .gov registry issues
+# to government bodies only, and the national forms are the same rule one level
+# down ("ons.gov.uk"). A registrable label that matches the issuer's name means
+# nothing on a suffix anyone can buy — "eia.news" spells the agency's acronym
+# exactly as "eia.gov" does — so only these suffixes may carry a first-party
+# claim, and a commercial or news one is refused however the title reads. The
+# list is deliberately short: an unknown suffix is refused, and a registry of
+# issuers' own domains, which this module has no way to read, would be consulted
+# here.
+_INSTITUTIONAL_SUFFIXES = (
+    "edu",
+    "gc.ca",
+    "go.jp",
+    "gob.es",
+    "gov",
+    "gov.au",
+    "gov.br",
+    "gov.cn",
+    "gov.in",
+    "gov.it",
+    "gov.uk",
+    "gov.za",
+    "gouv.fr",
+    "govt.nz",
+    "int",
+    "mil",
+)
+
+# The anchors a model may propose about a document. Each is accepted only when
+# the read itself carries it; everything else is dropped rather than recorded.
+# ``derived_from`` is a list: the DOIs or report numbers the document says its
+# data or figures come from, which become ``identity_links``.
+ANCHOR_FIELDS = ("derived_from", "doi", "issuer", "report_number", "year")
+
+# One date atom: a year, a year and month, or a full day.
+_DATE_ATOM = r"\d{4}(?:-\d{2}(?:-\d{2})?)?"
+# The notations a document uses to *name* a year, which still date a document
+# while every other embedded year does not. The positive lookbehind consumes
+# the two notation letters, so it can only match the letters named here.
+_YEAR_NOTATION = r"(?:FY|CY)"
+# A date is a token a document writes, not a fragment of a longer one:
+# "ABC2026XYZ" is a product code, "10.1234/grid.2025" is a registered
+# identifier, "/2024/report" is a path, and "Release 2026-12.5" is a version.
+# None of them dates anything, and the boundary is what says so — an identifier
+# can never be a verified verbatim quote, so no digit masking is needed. Only
+# the documented year notations may precede a date; nothing may precede it by
+# the punctuation an identifier joins its own parts with.
+_TOKEN_BEFORE = rf"(?:(?<={_YEAR_NOTATION})|(?<![\w\-+./:?=&#]))"
+# What may follow a date: a full stop that ends a sentence, a comma, a
+# semicolon, a closing bracket, a colon — and nothing that continues it. A word
+# character continues a longer word, an identifier's punctuation continues an
+# identifier, and a range separator continues a period: "2022" is not a token
+# of "2022-2024", because that document states a period and a period keeps both
+# its ends.
+_TOKEN_AFTER = (
+    r"(?![A-Za-z0-9_])"
+    r"(?![.\-+/:?=&#][A-Za-z0-9])"
+    r"(?!\s*(?:-|\u2013|\u2014|/|to|through|until|thru)\s*\d)"
+)
+# How a document joins the two ends of a period it states. The second end is a
+# date of its own: an abbreviated year is a spelling local code would have to
+# guess at, and guessing dates is what this contract removes.
+_RANGE_JOIN = r"\s*(?:-|\u2013|\u2014|/|to|through|until|thru)\s*"
+# The same join, compiled: a period a document spells in words is read by
+# matching the separator where the first spelled date ends.
+_PERIOD_JOIN = re.compile(_RANGE_JOIN, re.IGNORECASE)
+# One date, or one period, the document states. A period is two dates it
+# states, so both of its ends are read and neither is ever inferred.
+_DATE_TOKEN_PATTERN = re.compile(
+    rf"{_TOKEN_BEFORE}(?P<atom>{_DATE_ATOM})"
+    rf"(?:{_RANGE_JOIN}(?P<end>{_DATE_ATOM}))?"
+    rf"{_TOKEN_AFTER}",
+    re.IGNORECASE,
+)
+# The two shapes a temporal value may have, and no others: one date, or two
+# dates joined by a separator. Anything else is not a date a document can
+# state, so it is dropped rather than interpreted.
+_VALUE_DATE_PATTERN = re.compile(rf"^(?P<atom>{_DATE_ATOM})$")
+_VALUE_PERIOD_PATTERN = re.compile(
+    rf"^(?P<start>{_DATE_ATOM}){_RANGE_JOIN}(?P<end>{_DATE_ATOM})$",
+    re.IGNORECASE,
+)
+
+# How much of one read's own text a dossier shows the model. Each excerpt is a
+# whole passage of the read, so the bound is one passage's length: a passage
+# longer than this is a document chunk rather than a paragraph, and is clipped
+# to keep a single long chunk from filling the request.
+DEFAULT_DOSSIER_EXCERPTS = 4
+
+# A *figure* as a document writes one: a number with a unit or percent
+# (``18.2 GW``, ``26%``, ``1 Megawatt``) or a decimal (``43.6``, ``5.9``). A
+# bare year does not qualify — a page's navigation is full of dates, and a
+# publication date is not the quantity an obligation asks for.
+_QUANTITY = re.compile(
+    r"\d+(?:[.,]\d+)?\s*"
+    r"(?:%|percent|GW|MW|GWh|MWh|kW|kWh|gigawatt|megawatt|kilowatt)",
+    re.IGNORECASE,
+)
+_DECIMAL = re.compile(r"\d+[.,]\d+")
+
+
+def _numbers(text: str) -> set[str]:
+    return set(_NUMBER_PATTERN.findall(text))
+
+
+def _states_a_figure(text: str, wanted: set[str]) -> bool:
+    """True when the passage carries a quantity, not merely a date.
+
+    ``wanted`` is what the obligation itself states, so a passage repeating the
+    question's own numbers also counts: the question is what the source was
+    read for.
+    """
+    if _DECIMAL.search(text) or _QUANTITY.search(text):
+        return True
+    return bool(wanted and wanted.intersection(_numbers(text)))
+
+
+_NUMBER_PATTERN = re.compile(r"\d+(?:[.,]\d+)?")
+DEFAULT_DOSSIER_EXCERPT_CHARS = 600
+
+
+def read_serving_host(read: ReadRecord) -> str:
+    """Return the host that served this read's bytes.
+
+    A transport fact, kept apart from the publisher: a mirror served from a
+    repository is still the work it mirrors, and this is the field that says
+    where the copy came from rather than who made it.
+    """
+    return source_domain(read.resolved_url)
+
+
+def _document_text(read: ReadRecord) -> str:
+    """The document's own words: its title and the text the reader extracted.
+
+    This is the haystack every attribution is read from. The URL is not part
+    of it: where a document was *served* from never publishes it.
+    """
+    return " ".join([read.title, *sorted(read.passages.values())])
+
+
+def _dated_text(read: ReadRecord) -> str:
+    """The document text plus the URL the bytes were served from.
+
+    A versioned path such as ``/2024/report`` dates a document just as its
+    title page does, so dating (unlike attribution) reads the serving URL too.
+    """
+    return " ".join([_document_text(read), read.resolved_url])
+
+
+def _folded_read_text(read: ReadRecord) -> str:
+    """Every dating signal the read carries, as foldable identity words."""
+    return _identity_words(_dated_text(read))
+
+
+def read_dated_tokens(read: ReadRecord) -> list[str]:
+    """Return the distinct years this read carries, in sorted order.
+
+    Deterministic and body-derived, so it is both the temporal component of an
+    assessment revision and the check that stops a model reporting a
+    publication year the document never states. A year has to be something the
+    read states: the digits inside a product code ("ABC2026XYZ") date nothing
+    and neither does the numeric part of a DOI or a URL path, while the
+    allowlisted year notations ("FY2026", "CY2026") are how a document writes
+    its own year.
+    """
+    return sorted(_read_date_tokens(read))
+
+
+# How many days each month has in a year that is not a leap year. Shape alone
+# cannot tell a date from a number that looks like one: the day a document
+# writes has to exist in the month and the year it names.
+_MONTH_LENGTHS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_leap_year(year: int) -> bool:
+    """True for a year February has a 29th day in."""
+    return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+
+
+def _days_in_month(year: int, month: int) -> int:
+    if month == 2 and _is_leap_year(year):
+        return 29
+    return _MONTH_LENGTHS[month - 1]
+
+
+def _is_date_atom(atom: str) -> bool:
+    """True when ``atom`` is a real date, not a number shaped like one.
+
+    "2026-13" has the shape of a year and a month and is neither: there is no
+    thirteenth month, so the digits are a number that merely looks like a date
+    and nothing may be read from them. The day is decided the same way, against
+    the length of its own month in its own year: "2026-02-31" and "2025-02-29"
+    name days those months never had, while a real leap day does.
+    """
+    parts = atom.split("-")
+    if any(not part.isdigit() for part in parts):
+        return False
+    if len(parts) > 1 and not 1 <= int(parts[1]) <= 12:
+        return False
+    if len(parts) < 3:
+        return True
+    return 1 <= int(parts[2]) <= _days_in_month(int(parts[0]), int(parts[1]))
+
+
+# Punctuation that joins the parts of ONE token rather than separating two of
+# them: the bracket of a code or a filename, and the marks a URL path or query
+# string uses. A date sitting against one of these is a fragment of an
+# identifier — "ABC(2026)", "report(2025).pdf", "…/report;2025", "?id,2024" —
+# so it dates nothing, which no digit masking can fix and only the boundary
+# can.
+_GLUE_MARKS = frozenset("()[]{};,")
+
+
+def _continues_token(text: str, index: int) -> bool:
+    """True when ``text[index]`` carries on a token instead of ending one."""
+    char = text[index]
+    if char.isalnum() or char == "_":
+        return True
+    # A full stop is the one ambiguous mark: a sentence-final one separates,
+    # while the one in "10.5" or "report.pdf" continues a token.
+    return char == "." and index + 1 < len(text) and text[index + 1].isalnum()
+
+
+def _mark_is_inside_a_token(text: str, mark: int, step: int) -> bool:
+    """True when the mark at ``mark`` is part of a longer token.
+
+    A mark separates only when nothing that continues a token sits on its far
+    side. "Grid Storage Outlook (2025)" and "in 2025, the queue grew" separate;
+    "ABC(2026)", "report(2025).pdf", "…/report;2025" and "?id,2024" do not,
+    because the mark is glued to a word rather than standing on its own.
+    """
+    far = mark + step
+    if far < 0 or far >= len(text):
+        return False
+    return _continues_token(text, far)
+
+
+def _is_delimited_date_token(text: str, start: int, end: int) -> bool:
+    """True when the date spanning ``text[start:end]`` stands as its own token.
+
+    A date is delimited by whitespace, the ends of the text, or ordinary
+    sentence punctuation — never by a mark that makes it part of a longer
+    token. The pattern that found the date already refuses a word character, an
+    identifier's punctuation, and a range separator; this is the remaining
+    case, where the character beside the digits is punctuation that is itself
+    inside a token.
+    """
+    if start > 0:
+        before = text[start - 1]
+        if before in _GLUE_MARKS and _mark_is_inside_a_token(text, start - 1, -1):
+            return False
+    if end < len(text):
+        after = text[end]
+        if after in _GLUE_MARKS and _mark_is_inside_a_token(text, end, 1):
+            return False
+    return True
+
+
+def _read_date_tokens(read: ReadRecord) -> set[str]:
+    """Every date the read states, with the coarser forms each one evidences.
+
+    "2026-01-15" evidences the year 2026 as well as that day, while a document
+    that only says "2026" evidences no month and no day at all. The boundaries
+    are the same real ones every date in this module is read with, so a year
+    inside a longer alphanumeric word, the digits of an identifier, and a URL
+    path all date nothing. A period the read states is two dates it states, so
+    both of its ends evidence their own coarser forms too.
+    """
+    tokens: set[str] = set()
+    dated = _dated_text(read)
+    for match in _DATE_TOKEN_PATTERN.finditer(dated):
+        if not _is_delimited_date_token(dated, match.start(), match.end()):
+            continue
+        for atom in (match.group("atom"), match.group("end")):
+            if atom is not None and _is_date_atom(atom):
+                tokens |= _token_forms(atom)
+    return tokens
+
+
+def _token_forms(atom: str) -> set[str]:
+    """One date atom, and every coarser date it evidences."""
+    parts = atom.split("-")
+    return {
+        "-".join(parts[:length]) for length in range(1, len(parts) + 1)
+    }
+
+
+def _issuer_name_pattern(issuer: str) -> str:
+    """The issuer's name as a pattern, its words separated by a real gap."""
+    return _NAME_GAP.join(
+        re.escape(word) for word in _identity_words(issuer).split()
+    )
+
+
+def _title_spellings(title: str, issuer: str) -> set[str]:
+    """The domain spellings ``title`` itself gives for ``issuer``.
+
+    A masthead that names its own publisher writes the name the way a domain
+    writes it: the whole name run together ("National Grid" on
+    nationalgrid.com), or the acronym it prints in brackets beside the name
+    ("U.S. Energy Information Administration (EIA)" on eia.gov). Both are
+    spellings the title states, so both may name the host serving it. The name
+    is matched in any case — a title is not a domain — while the acronym is
+    matched as one: a bracket that is not all capitals is a gloss, not a name.
+    """
+    words = _identity_words(issuer).split()
+    if not words:
+        return set()
+    name = re.compile(_issuer_name_pattern(issuer), re.IGNORECASE)
+    acronym = re.compile(rf"\s*{_ISSUER_ACRONYM}")
+    spellings = {"".join(words)}
+    for match in name.finditer(title):
+        printed = acronym.match(title, match.end())
+        if printed is not None:
+            spellings.add(printed.group("acronym").casefold())
+    return spellings
+
+
+def _institutional_domain_label(read: ReadRecord) -> str:
+    """The label of the read's host, when that host is institutionally served.
+
+    The suffix is the half of a domain a registrant cannot choose, so it is the
+    half that says who is allowed to serve it: "eia.gov" is the agency's because
+    the .gov registry issues to government bodies only, while "eia.news" is its
+    registrant's and nobody else's. Both carry the same label and the same
+    masthead, so a rule that reads the label alone accepts a lookalike; this one
+    refuses every commercial and news suffix and returns the label only for the
+    suffixes in :data:`_INSTITUTIONAL_SUFFIXES`.
+    """
+    label, _, suffix = publisher_identity(read.resolved_url).partition(".")
+    if not label or suffix not in _INSTITUTIONAL_SUFFIXES:
+        return ""
+    return label
+
+
+def _first_party_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """True when the read's own host is the issuer's own domain, and says so.
+
+    A first-party page is the one document whose masthead is publication
+    evidence: the title names the issuer, and the host the bytes came from is
+    institutionally served under the spelling the title gives for it — the name
+    run together, or the acronym printed beside it. Every other page stays
+    rejected, which is what keeps a relay a relay: Energy Global's headline and
+    body both name the agency, and the domain that served them is Energy
+    Global's.
+    """
+    name = _issuer_name_pattern(issuer)
+    if not name:
+        return False
+    titled = re.compile(rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])", re.IGNORECASE)
+    if not titled.search(read.title):
+        return False
+    label = _institutional_domain_label(read)
+    return bool(label) and label in _title_spellings(read.title, issuer)
+
+
+def _commercial_first_party_issuer_evidenced(
+    read: ReadRecord, issuer: str
+) -> bool:
+    """A commercial release names its publisher both in title and its imprint.
+
+    Neither a headline merely mentioning another issuer nor a borrowed
+    copyright line alone establishes whose document was served. This path is
+    limited to commercial ``.com`` hosts; it never turns an arbitrary
+    registrable lookalike such as ``eia.news`` into an institutional source.
+    """
+    if not publisher_identity(read.resolved_url).endswith(".com"):
+        return False
+    name = _issuer_name_pattern(issuer)
+    if not name or not re.search(
+        rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])",
+        read.title,
+        re.IGNORECASE,
+    ):
+        return False
+    text = _document_text(read)
+    for phrase in (*_ATTRIBUTION_PHRASES, r"©"):
+        if re.search(
+            rf"(?<![A-Za-z0-9])(?:{phrase}){_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+_COPYRIGHT_PHRASES = (r"copyright", r"©")
+
+
+def _commercial_copyright_issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """A commercial page whose own copyright line names ``issuer`` as its publisher.
+
+    Narrower than :func:`_commercial_first_party_issuer_evidenced` on purpose:
+    that function also accepts a body attribution such as "Data released by
+    the EIA", which states whose data a page relays, not whose page it is.
+    Only a copyright line — the one statement a page makes about its own
+    authorship, not about a source it cites — establishes that a ``.com``
+    masthead is the issuer's own release rather than a syndicated citation of
+    someone else's.
+    """
+    if not publisher_identity(read.resolved_url).endswith(".com"):
+        return False
+    name = _issuer_name_pattern(issuer)
+    if not name or not re.search(
+        rf"(?<![A-Za-z0-9]){name}(?![A-Za-z0-9])",
+        read.title,
+        re.IGNORECASE,
+    ):
+        return False
+    text = _document_text(read)
+    for phrase in _COPYRIGHT_PHRASES:
+        if re.search(
+            rf"(?<![A-Za-z0-9])(?:{phrase}){_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            text,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
+
+
+def first_party_host_evidences_issuer(read: ReadRecord, issuer: str) -> bool:
+    """True when the read's own *host* — not a body attribution — is ``issuer``'s.
+
+    A stricter test than the anchor-acceptance rule :func:`_issuer_evidenced`
+    runs: that function also accepts a relay whose body attributes its data
+    to another body ("Data released by the EIA", "Data published by the U.S.
+    Energy Information Administration"), which says whose data the page
+    relays, never whose page it is. A caller that means to treat a page's own
+    date or masthead AS the issuer's own release — rather than merely
+    crediting the issuer as an accepted identity anchor — needs this
+    narrower test instead: an institutional domain whose label spells the
+    issuer the way its own title does, or a commercial ``.com`` masthead
+    that both names the issuer in its title and carries its own copyright
+    line naming the issuer.
+    """
+    return _first_party_issuer_evidenced(
+        read, issuer
+    ) or _commercial_copyright_issuer_evidenced(read, issuer)
+
+
+def neighbouring_passage_text(read: ReadRecord, locator: str) -> str:
+    """The excerpt's own passage, and the one immediately before or after it.
+
+    Passages are stored in the order the document was read in, so this is
+    the excerpt's own context: the documented case is an attribution
+    sentence sitting at the end of the passage just before the one an
+    excerpt was drawn from. Nothing further away is close enough to be read
+    as attributing THIS excerpt rather than some other part of the page —
+    the failure this restricts, a quote admitted from anywhere at all in the
+    document, is what let a contrastive or unrelated mention of a body
+    credit a figure that body never claimed.
+    """
+    keys = list(read.passages.keys())
+    if locator not in keys:
+        return ""
+    index = keys.index(locator)
+    neighbours = keys[max(0, index - 1) : index + 2]
+    return " ".join(read.passages[key] for key in neighbours)
+
+
+# How far a snippet-admission window may grow past a snippet's own length
+# before giving up on one candidate start: enough slack for the far edge of
+# one more passage, never the whole page. A genuine snippet can never need
+# more room than its own length, so the bound is tied to it rather than to a
+# fixed passage count -- the same reason a document of many short passages
+# and one of a few long ones are both covered.
+_SNIPPET_WINDOW_SLACK = MAX_SNIPPET_CHARS
+
+
+def _grown_snippet_window(
+    read: ReadRecord,
+    keys: Sequence[str],
+    seed_start_index: int,
+    seed_end_index: int,
+    normalized_snippet: str,
+) -> str | None:
+    """The shortest run of passages containing ``normalized_snippet``
+    (already :func:`cosmetic_text`-normalised, the way
+    :func:`excerpt_matches` normalises its own ``excerpt`` argument), seeded
+    with ``keys[seed_start_index]`` through ``keys[seed_end_index]`` before
+    the first containment check and grown forward one passage at a time past
+    that, or ``None`` when no such run exists within a snippet's own length.
+
+    The seed is never skipped: a repeat of the snippet's own words in an
+    earlier seeded passage must not end the search before every seeded
+    passage has ever been assembled together, or the window silently drops
+    the locator's own passage for a stranger's repeat of the same words.
+    """
+    limit = len(normalized_snippet) + _SNIPPET_WINDOW_SLACK
+    text = " ".join(
+        read.passages[key] for key in keys[seed_start_index : seed_end_index + 1]
+    )
+    remaining = keys[seed_end_index + 1 :]
+    index = 0
+    while True:
+        normalized = cosmetic_text(text)
+        if normalized_snippet in normalized or normalized_snippet in cosmetic_text(
+            text, join_hyphenation=False
+        ):
+            return text
+        if len(normalized) > limit:
+            return None
+        if index >= len(remaining):
+            return None
+        text = f"{text} {read.passages[remaining[index]]}"
+        index += 1
+
+
+def snippet_span_text(read: ReadRecord, locator: str, snippet: str) -> str:
+    """Every passage ``snippet`` actually runs through, anchored at ``locator``.
+
+    A read passage is capped well below a kept snippet's own length limit, so
+    a snippet several passages long has to be windowed by where it actually
+    ends, never by a fixed number of neighbours: this is what a consumer that
+    must see a whole kept snippet's context -- the Context Check, the report
+    registry's passage line, the relay attribution search -- needs in place
+    of :func:`neighbouring_passage_text`'s fixed one-neighbour-either-side
+    window. The window is seeded with the passage before ``locator`` through
+    ``locator`` itself, exactly as :func:`neighbouring_passage_text` starts,
+    because an attribution sentence or a rule's own opening clause can sit in
+    the passage just before the one an excerpt was drawn from -- and the
+    locator's own passage is never dropped for an earlier repeat of the same
+    words; from the seed it grows forward, in document order, until the
+    whole of ``snippet`` is inside it. When ``snippet`` is not the read's own
+    words anywhere in that reach, :func:`neighbouring_passage_text`'s own
+    fixed window is returned instead -- the same degraded case it already
+    leaves an unmatched locator in.
+    """
+    keys = list(read.passages.keys())
+    if locator not in keys:
+        return ""
+    normalized_snippet = cosmetic_text(snippet)
+    if normalized_snippet:
+        index = keys.index(locator)
+        matched = _grown_snippet_window(
+            read, keys, max(0, index - 1), index, normalized_snippet
+        )
+        if matched is not None:
+            return matched
+    return neighbouring_passage_text(read, locator)
+
+
+# How many raw characters of look-back ``_incremental_normalised_boundaries``
+# reads on each side of a new passage before deciding what changed: enough
+# to carry a line-break hyphen, a numeric-range hyphen, or the combining
+# marks NFC composes, across the cut. A run of raw whitespace longer than
+# this is the one seam it cannot see whole; the verification step below
+# catches that case and falls back to the exact computation instead of
+# trusting a wrong boundary.
+_SEAM_TAIL_CHARS = 16
+
+
+def _cosmetic_length(text: str, *, join_hyphenation: bool) -> int:
+    return len(cosmetic_text(text, join_hyphenation=join_hyphenation))
+
+
+def _exact_normalised_boundaries(
+    raw_passages: Sequence[str], *, join_hyphenation: bool
+) -> list[int]:
+    """Each passage's cumulative normalised-prefix boundary, renormalising
+    the whole growing prefix every step.
+
+    Exact, and O(page length squared): the fallback
+    :func:`_incremental_normalised_boundaries` is checked against when its
+    own bounded look-back cannot be trusted.
+    """
+    boundaries: list[int] = []
+    prefix = ""
+    for part in raw_passages:
+        boundaries.append(_cosmetic_length(prefix, join_hyphenation=join_hyphenation))
+        prefix += part
+    return boundaries
+
+
+def _incremental_normalised_boundaries(
+    raw_passages: Sequence[str], *, join_hyphenation: bool
+) -> tuple[list[int], int]:
+    """Each passage's cumulative normalised-prefix boundary, computed from
+    the previous boundary and a bounded look-back tail instead of
+    renormalising the whole growing prefix every step.
+
+    ``cosmetic_text`` only changes text locally -- a whitespace run, a
+    line-break hyphen or numeric-range join, an NFC composition, a case
+    fold -- so the last ``_SEAM_TAIL_CHARS`` raw characters carry every
+    seam a newly appended passage could complete, and the delta the new
+    passage contributes is read from ``tail + part`` alone rather than the
+    whole prefix so far. This is what keeps admission linear in page length
+    instead of quadratic. Returns the per-passage boundaries and the final
+    cumulative total, which the caller checks against the exact total
+    before trusting them.
+    """
+    boundaries: list[int] = []
+    prefix = ""
+    boundary = 0
+    for part in raw_passages:
+        boundaries.append(boundary)
+        tail = prefix[-_SEAM_TAIL_CHARS:]
+        boundary += _cosmetic_length(
+            tail + part, join_hyphenation=join_hyphenation
+        ) - _cosmetic_length(tail, join_hyphenation=join_hyphenation)
+        prefix += part
+    return boundaries, boundary
+
+
+@functools.lru_cache(maxsize=128)
+def _locate_snippet_body(
+    read_id: str, join_hyphenation: bool, raw_passages: tuple[str, ...]
+) -> tuple[str, tuple[int, ...]]:
+    """The read's whole raw body normalised once, with each passage's
+    cumulative boundary into it.
+
+    Cached per ``(read_id, join_hyphenation)`` -- keyed on the passages
+    themselves too, so a cache entry can never answer for content it was
+    not built from -- because :func:`locate_snippet` runs once per finding
+    and one page admits many. The boundaries come from the incremental,
+    linear-time computation, verified against a single exact pass over the
+    whole body and silently replaced by the exact, quadratic computation
+    only on the rare seam the incremental one cannot see whole.
+    """
+    boundaries, incremental_total = _incremental_normalised_boundaries(
+        raw_passages, join_hyphenation=join_hyphenation
+    )
+    full_text = cosmetic_text("".join(raw_passages), join_hyphenation=join_hyphenation)
+    if incremental_total != len(full_text):
+        boundaries = _exact_normalised_boundaries(
+            raw_passages, join_hyphenation=join_hyphenation
+        )
+    return full_text, tuple(boundaries)
+
+
+def locate_snippet(
+    read: ReadRecord, snippet: str, *, claimed_locator: str = ""
+) -> str | None:
+    """The passage id ``snippet`` verbatim begins in, read against the whole page.
+
+    Admission is a whole-page fact, never a locator-relative one: ``snippet``
+    (after the same cosmetic normalisation :func:`excerpt_matches` applies)
+    must occur as one contiguous, verbatim span of the read's own words --
+    every passage, in reader order -- never merely somewhere across passages
+    read separately. A snippet stitched from two spans the page does not
+    actually run together is refused exactly like a paraphrase: neither is a
+    span the page states. The model's own ``claimed_locator`` is only a
+    hint: when the span occurs more than once, the occurrence closest to it,
+    in passage order, wins; with no claim, or none on the page, the first
+    occurrence does.
+
+    The passages are joined with nothing between them and normalised once,
+    as one body, never normalised alone and joined afterward: a passage cut
+    that falls inside a line-break hyphen or a numeric range -- the read's
+    own passages rebuild the body exactly, so a raw join reproduces it --
+    only reads as one joined word or one range when both of its own halves
+    are read together. Normalising each side alone first, before either has
+    ever seen the other, leaves the hyphen or the range marker exactly where
+    the cut fell and never finds the word or the number the page states.
+    ``_locate_snippet_body`` does that normalisation, and its boundary
+    computation, once per read and caches it: this call itself never
+    renormalises the whole page.
+
+    Returns the id of the passage the match's first character falls in, or
+    ``None`` when no contiguous, verbatim span of ``snippet`` exists
+    anywhere on the page.
+    """
+    keys = list(read.passages.keys())
+    if not keys:
+        return None
+    normalized_snippet = cosmetic_text(snippet)
+    if not normalized_snippet:
+        return None
+    claimed_index = keys.index(claimed_locator) if claimed_locator in keys else None
+    raw_passages = tuple(read.passages[key] for key in keys)
+    for join_hyphenation in (True, False):
+        full_text, boundaries = _locate_snippet_body(
+            read.read_id, join_hyphenation, raw_passages
+        )
+        starts: list[int] = []
+        search_from = 0
+        while True:
+            found = full_text.find(normalized_snippet, search_from)
+            if found == -1:
+                break
+            starts.append(found)
+            search_from = found + 1
+        if not starts:
+            continue
+        indices = sorted({_passage_index(boundaries, start) for start in starts})
+        if claimed_index is None:
+            return keys[indices[0]]
+        return keys[min(indices, key=lambda index: abs(index - claimed_index))]
+    return None
+
+
+def _passage_index(boundaries: Sequence[int], offset: int) -> int:
+    """Which passage ``offset`` (into the boundaries' own normalised prefix) falls in."""
+    index = 0
+    for candidate, boundary in enumerate(boundaries):
+        if boundary <= offset:
+            index = candidate
+        else:
+            break
+    return index
+
+
+# The words that turn a mention of a body into a claim about who published a
+# figure. A name on its own is not one of them — "Unlike the EIA" and a bare
+# "EIA" both name the body without saying the figure is its own — and neither
+# is a body named for something else on the same page. "or similar" in the
+# specification this enforces covers the possessive, which is not a fixed
+# word: :func:`attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
+# the same way. A "Data source: ..." caption line credits its originator the
+# same way a sentence does.
+# D8: a page that introduces a block quotation names its author or work the
+# same way it names a relay's issuer -- "To quote X", "In the words of X".
+# Only the introducer phrase is a cue, never the bare verb: a page saying
+# "X wrote a book" or "X put it to a vote" is not crediting X with the
+# page's own following statement, so "quote"/"quoting"/"quoted"/"writes"/
+# "wrote"/"puts it" are never bare cues here -- "As X put it" and "X
+# writes:" are matched as whole shapes in :func:`attribution_cue_adjacent`
+# instead, anchored on the name itself.
+ATTRIBUTION_CUE_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(?:according\s+to|reported\s+by|released\s+by|"
+    r"data\s+from|report(?:s|ed|ing)?\s+from|estimates?\s+from|sources?\s*:|per|said|"
+    r"to\s+quote|in\s+the\s+words\s+of)"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# The active form of the same claim: a reporting verb the page puts straight
+# after the name it credits ("Gartner estimates ...", "IDC reported ...", "a
+# Pew Research Center survey found ..."), with at most a possessive and one
+# source noun between them. The verb has to be the named body's own, so the
+# carrier's own sentence never credits a body it merely mentions: "Unlike the
+# EIA, our survey found 12 GW" names the EIA and then reports the carrier's
+# survey, and "our" is neither a verb nor a source noun.
+_REPORTING_NOUN = (
+    r"(?:survey|poll|study|research|report|analysis|data|figures?|numbers?|"
+    r"index|outlook|forecast|estimates?)"
+)
+_REPORTING_VERB = (
+    r"(?:reports?|reported|finds?|found|estimates?|estimated|forecasts?|forecasted|"
+    r"projects?|projected|shows?|showed|warns?|warned|reveals?|revealed|"
+    r"expects?|expected|announces?|announced|releases?|released|"
+    r"publishes?|published|states?|stated)"
+)
+_REPORTING_CUE_PATTERN = re.compile(
+    rf"\s*(?:{_REPORTING_NOUN}\s+)?(?:{_REPORTING_VERB})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# A source noun straight after the name credits it as well ("EIA data", "the
+# EIA's latest report", "IDC figures show"), with at most two modifier words
+# between them. The named body's own material is what the figure came from —
+# but a modifier of the *carrier's* is not the body's, which is what keeps
+# "Unlike the EIA our survey found 12 GW" from crediting the EIA: "our" is the
+# carrier's word, and the name is not "the EIA's" anything.
+_CARRIER_MODIFIER = r"(?!our\b|their\b|its\b|my\b|his\b|her\b|your\b)"
+_SOURCE_NOUN_CUE_PATTERN = re.compile(
+    rf"\s+(?:['\u2019]s\s+)?{_CARRIER_MODIFIER}(?:\w+\s+){{0,2}}(?:{_REPORTING_NOUN})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# A title that opens with the body's name and a colon ("EIA: utility-scale
+# battery storage capacity to reach 30 GW") credits that body for what the
+# title states, the same claim "according to EIA" makes about a sentence.
+_TITLE_CUE_MARK = re.compile(r"^\s*:\s")
+# D8: a parenthetical citation right after the matched name, followed by a
+# colon, credits that name with what follows exactly as "X writes:" does --
+# "Example Author (Notes 2.19): the council could not act ...".
+_CITATION_COLON_MARK = re.compile(r"^\s*\([^()]{0,60}\)\s*:")
+# D8/P1: "writes"/"wrote" credits the name only directly after it and only
+# when followed by a colon ("Example Author writes: ...") -- never merely
+# somewhere nearby, which would credit a name a page's own sentence about
+# someone else's writing happens to mention ("Example Author wrote a book
+# ... our own count found 40 sites").
+_WRITES_COLON_MARK = re.compile(r"^\s*(?:writes|wrote)\s*:")
+# D8/P1: "As X put it" is matched only as the whole introducer shape -- "as"
+# directly before the name, "put(s) it" directly after -- never a bare
+# "put it" found nearby for an unrelated reason ("Example Council put it to
+# a vote").
+_AS_PREFIX_PATTERN = re.compile(r"\bas\s*$", re.IGNORECASE)
+_PUTS_IT_TAIL_PATTERN = re.compile(r"^\s*puts?\s+it\b", re.IGNORECASE)
+# A possessive immediately after the matched name: "Wood Mackenzie's" names
+# an owner of what follows exactly as "according to Wood Mackenzie" does.
+_POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
+# How many characters may separate a cue from the name it attributes: the
+# connective words an attribution is written with ("the", a comma, a colon),
+# not a whole unrelated clause standing between them. The reach never
+# crosses a sentence end either (D11a, run 8): "according to some sources.
+# That number ..." must not credit "That" with the next sentence's own
+# statement just because it falls within the character reach -- but a mark
+# only ends a sentence when it is followed by whitespace, an optional
+# opening quote or paren, and a capital letter, AND the token right before
+# it is not itself an abbreviation (RevV4 P1 follow-up): "U.S.", "Dr.",
+# "St.", "Inc." are not sentence ends, so "according to the U.S. EIA",
+# "according to Dr. Vale" and "Acme Inc. said ..." keep crediting. A
+# closing quote or paren right after the mark does not hide a sentence end
+# either (ReRevV4 follow-ups): "According to team." Beta grew fast." must
+# not credit Beta, whether the mark is followed directly by the next
+# sentence's capital or by a run of closing quotes/parens first (a quote
+# nested in a quote closes with two).
+_ATTRIBUTION_CUE_REACH = 15
+_SENTENCE_END_MARK = re.compile(r"[.!?]")
+_SENTENCE_CONTINUATION = re.compile(r"\s+[\"'\u2018\u201c(]?[A-Z]")
+_CLOSING_QUOTES_OR_PARENS = re.compile(r"[\"'\u2019\u201d)\]]+")
+_PRECEDING_TOKEN = re.compile(r"([A-Za-z]+)$")
+_SINGLE_CAPITAL_INITIAL = re.compile(r"^[A-Z]$")
+_SENTENCE_ABBREVIATIONS = frozenset({
+    "dr", "mr", "mrs", "ms", "prof", "st", "inc", "corp", "co", "ltd",
+    "jr", "sr", "no", "vol", "fig",
+})
+
+
+def _is_abbreviation_mark(phrase: str, mark_index: int) -> bool:
+    """Whether the ``.``/``!``/``?`` at ``mark_index`` closes an
+    abbreviation rather than a sentence: the word right before it is a
+    single capital letter ("U.S.", "J.") or a short title or company
+    abbreviation (Dr, Mr, Mrs, Ms, Prof, St, Inc, Corp, Co, Ltd, Jr, Sr,
+    No, Vol, Fig), case-insensitively.
+    """
+    match = _PRECEDING_TOKEN.search(phrase, 0, mark_index)
+    if match is None:
+        return False
+    token = match.group(1)
+    return bool(_SINGLE_CAPITAL_INITIAL.fullmatch(token)) or token.casefold() in _SENTENCE_ABBREVIATIONS
+
+
+def _gap_crosses_a_sentence_end(phrase: str, start: int, end: int) -> bool:
+    """Whether a genuine sentence end -- not an abbreviation's own mark --
+    falls inside ``phrase[start:end]``. A run of closing quotes or parens
+    right after the mark is skipped before looking for the continuation, so
+    a quoted sentence's own closing marks do not hide the sentence end.
+    """
+    for mark in _SENTENCE_END_MARK.finditer(phrase, start, end):
+        if _is_abbreviation_mark(phrase, mark.start()):
+            continue
+        closing = _CLOSING_QUOTES_OR_PARENS.match(phrase, mark.end())
+        continuation_start = closing.end() if closing else mark.end()
+        if _SENTENCE_CONTINUATION.match(phrase, continuation_start):
+            return True
+    return False
+
+
+def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
+    """True when a recognized attribution cue sits beside the matched name.
+
+    A body the page merely mentions is not an attribution — "Unlike the EIA,
+    ... our survey found 12 GW" names the EIA without crediting it with
+    anything — so admission requires one of the words this project reads as
+    handing a figure to somebody, immediately before or after the name, or one
+    of the shapes that state the same claim about it: the body's own source
+    noun ("EIA data", "the EIA's latest report"), a title opening on its name
+    ("EIA: capacity to reach 30 GW").
+    """
+    tail = phrase[name_match.end() :]
+    if (
+        _POSSESSIVE_MARK.match(tail)
+        or _REPORTING_CUE_PATTERN.match(tail)
+        or _SOURCE_NOUN_CUE_PATTERN.match(tail)
+        or _CITATION_COLON_MARK.match(tail)
+        or _WRITES_COLON_MARK.match(tail)
+        or (
+            _AS_PREFIX_PATTERN.search(phrase[: name_match.start()])
+            and _PUTS_IT_TAIL_PATTERN.match(tail)
+        )
+        or (not phrase[: name_match.start()].strip() and _TITLE_CUE_MARK.match(tail))
+    ):
+        return True
+    for cue in ATTRIBUTION_CUE_PATTERN.finditer(phrase):
+        if 0 <= name_match.start() - cue.end() <= _ATTRIBUTION_CUE_REACH and not (
+            _gap_crosses_a_sentence_end(phrase, cue.end(), name_match.start())
+        ):
+            return True
+        if 0 <= cue.start() - name_match.end() <= _ATTRIBUTION_CUE_REACH and not (
+            _gap_crosses_a_sentence_end(phrase, name_match.end(), cue.start())
+        ):
+            return True
+    return False
+
+
+def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
+    """PD-18: the read is ``organisation``'s own page.
+
+    The first-party rule, or a government/education host whose registrable
+    label spells the name (initials, or the words run together, a leading
+    "U.S." dropped) while the page itself names it: eia.gov and "U.S. Energy
+    Information Administration". A lookalike on a suffix anyone can buy
+    (eia.news) never qualifies, because _institutional_domain_label refuses it.
+    """
+    if first_party_host_evidences_issuer(read, organisation):
+        return True
+    label = _institutional_domain_label(read)
+    words = _identity_words(organisation).split()
+    core = [word for word in words if word not in {"u", "s", "us"}]
+    if not label or not core:
+        return False
+    if label not in {"".join(words), "".join(core), "".join(word[0] for word in core)}:
+        return False
+    name = re.compile(rf"(?<![A-Za-z0-9]){_issuer_name_pattern(organisation)}(?![A-Za-z0-9])", re.IGNORECASE)
+    return bool(name.search(f"{read.title} {_document_text(read)}"))
+
+
+# The same bound the Context Check windows a passage to (spec §5.2): large
+# enough for a real paragraph's worth of context, never the whole page.
+_RELAY_PASSAGE_CHARS = 6000
+
+
+def _windowed_passage(text: str, snippet: str, *, chars: int) -> str:
+    """``text`` bounded to ``chars`` characters, centred on ``snippet``.
+
+    Never the whole of a long ``text`` unbounded: that let a mention far from
+    where a snippet's own figure actually sits stand in for its context.
+    ``snippet`` not found simply windows from the start, the same degraded
+    case an unresolved locator already leaves.
+    """
+    if len(text) <= chars:
+        return text
+    anchor = text.casefold().find((snippet or "")[:40].casefold())
+    start = max(0, anchor - chars // 2)
+    return text[start : start + chars]
+
+
+# How much of a read's own opening — the cover or title block, and the
+# masthead statement right after it — is read for who produced the whole
+# document, rather than a section it merely mentions. Bounded so a short
+# opening excerpt is never stretched into an assertion its own words never
+# carry.
+_OPENING_PASSAGE_COUNT = 3
+_OPENING_CREDITS_CHARS = 2000
+
+# The verbs an active masthead sentence uses to say that the body it just
+# named produced the whole document -- "The U.S. Energy Information
+# Administration (EIA), the statistical and analytical agency within the
+# U.S. Department of Energy (DOE), prepared this report" -- as opposed to
+# the passive forms _ATTRIBUTION_PHRASES already reads ("prepared by X").
+_AUTHORSHIP_VERB_PATTERN = re.compile(
+    r"(?:prepared|produced|published)\s+(?:this|the)\s+(?:report|outlook|document)",
+    re.IGNORECASE,
+)
+# How far the verb may sit past the matched name: a real masthead sentence
+# names the body, then a whole appositive clause identifying it ("the
+# statistical and analytical agency within the U.S. Department of Energy
+# (DOE)"), then the verb -- not merely a cue's usual few words.
+_AUTHORSHIP_VERB_REACH = 120
+
+
+def _opening_credits(read: ReadRecord) -> str:
+    """The read's opening: its first few passages, bounded and whitespace-folded."""
+    keys = list(read.passages.keys())[:_OPENING_PASSAGE_COUNT]
+    text = " ".join(read.passages[key] for key in keys)
+    return " ".join(text.split())[:_OPENING_CREDITS_CHARS]
+
+
+def _opening_credits_organisation(read: ReadRecord, organisation: str) -> bool:
+    """True when the read's opening credits ``organisation`` as its author.
+
+    A cover or title block that merely mentions a body is not authorship --
+    a name has to sit beside one of the phrases this project reads as
+    *assigning* the document to somebody: the existing passive attribution
+    phrases ("prepared by X", "published by X", ...), a copyright mark
+    ("© X", "copyright X"), or the active form a masthead statement writes
+    it in ("X ... prepared this report").
+    """
+    opening = _opening_credits(read)
+    name = organisation.strip()
+    if not opening or not name:
+        return False
+    pattern = _issuer_name_pattern(name)
+    for phrase in (*_ATTRIBUTION_PHRASES, r"©"):
+        if re.search(
+            rf"(?<![A-Za-z0-9]){phrase}{_ATTRIBUTION_GAP}(?:the\s+)?(?:\d{{4}}\s*)?"
+            rf"{pattern}(?![A-Za-z0-9])",
+            opening, re.IGNORECASE,
+        ):
+            return True
+    for match in re.finditer(pattern, opening, re.IGNORECASE):
+        tail = opening[match.end() : match.end() + _AUTHORSHIP_VERB_REACH]
+        if _AUTHORSHIP_VERB_PATTERN.search(tail):
+            return True
+    return False
+
+
+def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, organisation: str) -> bool:
+    """True when the read credits ``organisation`` for a figure at ``locator``.
+
+    Either of two things the researcher's own attribution quote is admitted
+    under also credits a relay: the name is in the snippet's own passage (or
+    a bounded window around it, when the locator does not resolve one) beside
+    an attribution cue ("according to", "reported by", a possessive, ...); or
+    the read's own opening names ``organisation`` as the document's author or
+    publisher (PD-8), which applies to every figure in the document however
+    far from that opening it sits -- a mirrored PDF that credits its
+    originator only on its cover and in scattered captions never within reach
+    of a given figure is still that originator's relay of the whole document.
+    """
+    # F9: Figure Match admits a snippet found anywhere on the page, so its locator
+    # may be stale. The fallback is a bounded window centred on the snippet
+    # itself, never the whole page: an unbounded page-wide search let a distant,
+    # unrelated "According to BNEF" credit that body for a figure it never
+    # actually attributed.
+    passage = snippet_span_text(read, locator, snippet) or _windowed_passage(
+        _document_text(read), snippet, chars=_RELAY_PASSAGE_CHARS
+    )
+    name = organisation.strip()
+    if not name:
+        return False
+    if passage:
+        pattern = re.compile(_issuer_name_pattern(name), re.IGNORECASE)
+        if any(attribution_cue_adjacent(passage, match) for match in pattern.finditer(passage)):
+            return True
+    return _opening_credits_organisation(read, name)
+
+
+def _issuer_evidenced(read: ReadRecord, issuer: str) -> bool:
+    """True when the read attributes the document to ``issuer``.
+
+    Attribution has to be stated — "Published by Example Lab", "Publisher:
+    Example Lab", "Copyright 2026 Example Lab" — and said about *this*
+    document. A body mention is not attribution, which is what keeps an
+    article about a company from being recorded as that company's own
+    publication and inheriting its authority. The one other way a page can
+    evidence its own publisher is a first-party host: the organization's own
+    domain, serving a title that names it (see
+    :func:`_first_party_issuer_evidenced`).
+    """
+    words = _identity_words(issuer).split()
+    if not words:
+        return False
+    if publisher_identity(read.resolved_url).endswith(".com"):
+        return _commercial_first_party_issuer_evidenced(read, issuer)
+    name = _issuer_name_pattern(issuer)
+    haystack = _document_text(read)
+    for phrase in _ATTRIBUTION_PHRASES:
+        pattern = re.compile(
+            rf"(?<![A-Za-z0-9]){phrase}{_ATTRIBUTION_GAP}"
+            rf"(?:the\s+)?(?:\d{{4}}\s*)?{name}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+        if pattern.search(haystack):
+            return True
+    return _first_party_issuer_evidenced(read, issuer)
+
+
+def _literal_evidenced(read: ReadRecord, value: str) -> bool:
+    """True when the read carries ``value`` as identity words.
+
+    Folding both sides makes a line-broken or differently punctuated copy of
+    an identifier still the same identifier, while keeping the check a real
+    containment test rather than a similarity score.
+    """
+    words = _identity_words(value)
+    return bool(words) and words in _folded_read_text(read)
+
+
+def validate_metadata_anchors(
+    read: ReadRecord,
+    anchors: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the proposed metadata anchors this read actually evidences.
+
+    A model may only report what the document shows: an issuer the read
+    attributes the document to, a DOI the read carries, a year the read
+    states, a report number the read prints, and a source of its data it
+    names. Everything else is dropped, so an unsupported issuer, DOI, year, or
+    lineage can never reach an identity.
+    """
+    accepted: dict[str, object] = {}
+    issuer = _text_field(anchors, "issuer")
+    if issuer and _issuer_evidenced(read, issuer):
+        accepted["issuer"] = issuer
+    doi = _normalized_doi(_text_field(anchors, "doi"))
+    if doi and _literal_evidenced(read, doi):
+        accepted["doi"] = doi
+    year = _year_text(anchors.get("year"))
+    if year and year in read_dated_tokens(read):
+        accepted["year"] = year
+    number = _identifier_text(_text_field(anchors, "report_number"))
+    if number and _literal_evidenced(read, number):
+        accepted["report_number"] = number
+    derived = _evidenced_lineage(read, _text_sequence(anchors, "derived_from"))
+    if derived:
+        accepted["derived_from"] = derived
+    return accepted
+
+
+def _evidenced_lineage(read: ReadRecord, proposed: Sequence[str]) -> list[str]:
+    """The proposed data sources this read itself names, normalized, in order.
+
+    Each entry passes the same literal test as the ``doi`` and
+    ``report_number`` anchors, and what is kept is the id of the *cited* work:
+    a DOI in its normalized form, and a report number as a bare citation —
+    ``report-number:`` — because the issuer whose namespace the number belongs
+    to is the cited document's, and a citing document does not establish it.
+    """
+    kept: list[str] = []
+    for entry in proposed:
+        printed = _printed_lineage(entry)
+        if not printed or not _literal_evidenced(read, printed):
+            continue
+        value = _lineage_id(entry)
+        if value and value not in kept:
+            kept.append(value)
+    return kept[:MAX_WORK_ALIASES]
+
+
+def _printed_lineage(entry: str) -> str:
+    """What the document itself prints for one proposed lineage entry.
+
+    A persisted anchor is re-validated on every load, and the id it is stored
+    as is not the text the document carries, so the namespace is stripped
+    before the literal test.
+    """
+    text = entry.strip()
+    if text.startswith(REPORT_NUMBER_LINEAGE):
+        text = text[len(REPORT_NUMBER_LINEAGE) :]
+    return _normalized_doi(text) or _identifier_text(text)
+
+
+def _lineage_id(entry: str) -> str:
+    """One cited work as the id a lineage comparison uses.
+
+    Idempotent: an id this function already minted is returned unchanged, so
+    re-validating a persisted anchor reproduces it rather than dropping it.
+    """
+    doi = _normalized_doi(entry)
+    if doi:
+        return f"doi:{doi}"
+    text = entry.strip()
+    if text.startswith(REPORT_NUMBER_LINEAGE):
+        text = text[len(REPORT_NUMBER_LINEAGE) :]
+    number = _identifier_text(text)
+    return f"{REPORT_NUMBER_LINEAGE}{number}" if number else ""
+
+
+def rejected_anchor_names(
+    read: ReadRecord,
+    anchors: Mapping[str, object],
+) -> list[str]:
+    """The proposed anchor names this read did not evidence, sorted.
+
+    Recorded so a reviewer can tell "the model proposed nothing" from "the
+    model proposed a publisher and the document did not support it". A
+    ``derived_from`` list is rejected when any entry of it is.
+    """
+    accepted = validate_metadata_anchors(read, anchors)
+    rejected = [
+        name
+        for name in ANCHOR_FIELDS
+        if _anchor_proposed(anchors, name)
+        and not _anchor_accepted(anchors, accepted, name)
+    ]
+    return sorted(rejected)
+
+
+def _anchor_proposed(anchors: Mapping[str, object], name: str) -> bool:
+    value = anchors.get(name)
+    if name == "year":
+        return bool(_year_text(value))
+    if name == "derived_from":
+        return bool(_text_sequence(anchors, name))
+    return bool(_text_field(anchors, name))
+
+
+def _anchor_accepted(
+    anchors: Mapping[str, object],
+    accepted: Mapping[str, object],
+    name: str,
+) -> bool:
+    if name != "derived_from":
+        return name in accepted
+    kept = accepted.get(name) or []
+    proposed = {
+        _lineage_id(entry) for entry in _text_sequence(anchors, name)
+    }
+    return proposed <= set(kept)  # type: ignore[arg-type]
+
+
+def read_metadata_row(
+    read: ReadRecord,
+    *,
+    anchors: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the identity row one read contributes, anchored to the read.
+
+    A complete read contributes its title, its serving host, its complete
+    content hash, and whichever proposed anchors the read evidences — an
+    evidenced ``derived_from`` as the row's ``identity_links``. A partial read
+    contributes nothing but its own id: it is admissible evidence for the
+    pages it read, but it is never an identity or equality edge, because the
+    pages it never saw could say anything.
+    """
+    if not read.extraction_complete:
+        return {"source_id": read.read_id}
+    row: dict[str, object] = {
+        "source_id": read.read_id,
+        "title": read.title,
+        "serving_host": read_serving_host(read),
+        "complete_content_sha256": read.content_sha256,
+        "extraction_complete": True,
+    }
+    accepted = validate_metadata_anchors(read, anchors or {})
+    derived = accepted.pop("derived_from", None)
+    if derived:
+        row["identity_links"] = derived
+    row.update(accepted)
+    return row
+
+
+class ReadIdentityRequest(NamedTuple):
+    """One read's identity inputs for a joint resolution.
+
+    ``anchors`` are the metadata anchors the read was shown to evidence;
+    ``stored_work_id`` is a registered work key a snapshot already recorded for
+    this read's source, replayed so the record still names the work it was
+    assessed as (Section 2.2 rule 3).
+    """
+
+    read: ReadRecord
+    anchors: Mapping[str, object]
+    stored_work_id: str | None = None
+
+
+def resolve_read_identities(
+    requests: Sequence[ReadIdentityRequest],
+) -> list[tuple[WorkIdentity, str | None]]:
+    """``(work identity, publisher id)`` for each request, resolved jointly.
+
+    Every request contributes the row its anchors validate on — plus the strong
+    work key a snapshot stored for it, when its anchors were not persisted — and
+    all rows are resolved in ONE :func:`resolve_work_identities` call, so a
+    DOI-bearing original and its byte-identical, DOI-less mirror resolve to one
+    work, which no per-read resolution can see. A single request is the
+    degenerate batch, never a second rule. The publisher is the row's evidenced
+    issuer, else its serving host, else ``None`` for a partial read.
+    """
+    rows: list[dict[str, object]] = []
+    for index, request in enumerate(requests):
+        row = read_metadata_row(request.read, anchors=request.anchors)
+        if (
+            request.read.extraction_complete
+            and request.stored_work_id
+            and _strong_work_alias(request.stored_work_id)
+        ):
+            # Only a complete body may carry an identity edge, stored or read.
+            row["stored_work_id"] = request.stored_work_id
+        # One read can stand behind two requests (a finding cited the requested
+        # URL, another the resolved one), so the row id is the position.
+        row["source_id"] = str(index)
+        rows.append(row)
+    identities = resolve_work_identities(rows)
+    return [
+        (identities[str(index)], canonical_publisher_id(row))
+        for index, row in enumerate(rows)
+    ]
+
+
+def resolve_source_identities(
+    sources: Sequence[ScoredSource],
+    reads: Iterable[ReadRecord],
+) -> list[ScoredSource]:
+    """Stamp every source with the work identity its read has *across* reads.
+
+    Each source is matched to its read by URL and resolved, with every other
+    matched source, through :func:`resolve_read_identities` on its persisted
+    ``identity_anchors``. ``work_identity``, ``work_id``, and ``publisher_id``
+    are replaced; order and every other field are preserved, and a source with
+    no read is returned unchanged.
+
+    A source that carries an identity but no anchors was assessed by a release
+    that did not persist them, and the one it carries is kept (rule 3): the
+    anchors cannot be recovered from the read, so re-resolving would replace an
+    evidenced issuer with a serving host and a registered work key with a set
+    of bytes — an identity change in the direction of more independence.
+    """
+    by_url = _source_reads(reads)
+    matched: list[tuple[int, ReadRecord]] = []
+    for index, source in enumerate(sources):
+        read = by_url.get(normalize_source_url(source.url))
+        if read is not None:
+            matched.append((index, read))
+    identities = resolve_read_identities(
+        [
+            ReadIdentityRequest(
+                read=read,
+                anchors=sources[index].identity_anchors,
+                stored_work_id=_stored_strong_work_id(sources[index]),
+            )
+            for index, read in matched
+        ]
+    )
+    resolved = list(sources)
+    for (index, _), (identity, publisher_id) in zip(
+        matched, identities, strict=True
+    ):
+        source = sources[index]
+        if _keeps_stored_identity(source, publisher_id):
+            continue
+        resolved[index] = source.model_copy(
+            update={
+                "work_identity": identity,
+                "work_id": identity.key,
+                "publisher_id": publisher_id,
+            }
+        )
+    return resolved
+
+
+def _stored_strong_work_id(source: ScoredSource) -> str | None:
+    """The registered work key a source stored, when no anchors explain it.
+
+    Only a key that names a work — a normalized DOI, or a report number inside
+    its issuer's namespace — is replayable: it is the alias the record was
+    resolved by, so the group it joins is the group it named. A bare hash needs
+    no replay, because the read's own row already carries one.
+    """
+    if source.identity_anchors or not source.work_id:
+        return None
+    return source.work_id if _strong_work_alias(source.work_id) else None
+
+
+def _keeps_stored_identity(source: ScoredSource, publisher_id: str | None) -> bool:
+    """True when re-resolution would say *less* than the stored identity does.
+
+    Decided against the resolved row rather than on the presence of a stored
+    value: a record whose stored identity is exactly what the read reproduces
+    is re-stamped like any other, which is what keeps cross-read grouping (a
+    capped copy joining its original's work) working for fresh records.
+    """
+    if source.identity_anchors:
+        return False
+    if _stored_strong_work_id(source) is not None:
+        return True
+    return bool(source.publisher_id and source.publisher_id != publisher_id)
+
+
+def _source_reads(reads: Iterable[ReadRecord]) -> dict[str, ReadRecord]:
+    """The one read each canonical URL names, as the dossier chose it.
+
+    A served URL outranks a requested one. Among reads of one URL the
+    complete read wins, then the latest observation — the read the Source
+    Evaluator's dossier was built from — and the read id breaks a tie so the
+    choice never depends on iteration order.
+    """
+    served: dict[str, ReadRecord] = {}
+    requested: dict[str, ReadRecord] = {}
+    for read in reads:
+        for index, url in (
+            (served, read.resolved_url),
+            (requested, read.requested_url),
+        ):
+            key = normalize_source_url(url)
+            current = index.get(key)
+            if current is None or _read_rank(read) > _read_rank(current):
+                index[key] = read
+    return {**requested, **served}
+
+
+def _read_rank(read: ReadRecord) -> tuple[bool, str, str]:
+    return (read.extraction_complete, read.retrieved_at, read.read_id)
+
+
+def _content_fingerprint(read: ReadRecord) -> str:
+    """The read's content identity: its digest, or its partial-read body."""
+    if read.extraction_complete:
+        return read.content_sha256
+    return _fingerprint(
+        *(
+            f"{locator}\x1e{canonical_read_text(text)}"
+            for locator, text in sorted(read.passages.items())
+        )
+    )
+
+
+def compute_assessment_revision(
+    *,
+    content_sha256: str,
+    extraction_complete: bool,
+    metadata_fingerprint: str,
+    temporal_fingerprint: str,
+) -> str:
+    """Combine the three components of one source assessment's revision.
+
+    The revision is the reuse key: content, read-derived metadata, and the
+    dating signals must all be unchanged for a stored assessment to still
+    describe the source in front of it. A URL alone is not enough, which is
+    why no component may be dropped.
+    """
+    return "assess-" + _fingerprint(
+        content_sha256,
+        "complete" if extraction_complete else "partial",
+        metadata_fingerprint,
+        temporal_fingerprint,
+    )[: _DIGEST_LENGTH]
+
+
+def read_assessment_revision(
+    read: ReadRecord,
+    *,
+    anchors: Mapping[str, object] | None = None,
+) -> str:
+    """Return the assessment revision one read's content, metadata, and dates form."""
+    accepted = validate_metadata_anchors(read, anchors or {})
+    metadata_fingerprint = _fingerprint(
+        normalize_source_url(read.resolved_url),
+        read_serving_host(read),
+        _identity_words(read.title),
+        *(f"{name}={accepted[name]}" for name in sorted(accepted)),
+    )
+    temporal_fingerprint = _fingerprint(*read_dated_tokens(read))
+    return compute_assessment_revision(
+        content_sha256=_content_fingerprint(read),
+        extraction_complete=read.extraction_complete,
+        metadata_fingerprint=metadata_fingerprint,
+        temporal_fingerprint=temporal_fingerprint,
+    )
+
+
+def resolve_read_works(reads: Sequence[ReadRecord]) -> dict[str, str]:
+    """Resolve one work key per read, joining only on evidenced aliases.
+
+    Rows join exactly as :func:`resolve_work_identities` joins them — a shared
+    DOI, issuer-namespaced report number, or complete-content hash, or the
+    conservative title/year/issuer alias. A read whose identity cannot be
+    established keeps its own key instead of being merged with another
+    unknown, so the result never claims two documents are one work on the
+    strength of a URL.
+    """
+    parsed = [_parse_row(read_metadata_row(read)) for read in reads]
+    keys: dict[str, str] = {}
+    for group in _group_rows(parsed):
+        identity = _resolve_group(group)
+        key = identity.key or "unresolved-" + _fingerprint(
+            *(row.source_id for row in group)
+        )[: _DIGEST_LENGTH]
+        for row in group:
+            keys[row.source_id] = key
+    return keys
+
+
+def resolve_read_work_keys(
+    reads: Sequence[ReadRecord],
+) -> dict[str, str]:
+    """Map each read's canonical URLs to the work key it belongs to.
+
+    Both URLs are indexed so a caller holding either one — a finding names the
+    URL it cited — finds the read's work. This is a lookup alias only: the
+    work key itself comes from the read's own identity evidence, never from
+    the URL that was requested.
+    """
+    keys = resolve_read_works(reads)
+    by_url: dict[str, str] = {}
+    for read in reads:
+        key = keys.get(read.read_id)
+        if key is None:
+            continue
+        for url in (read.resolved_url, read.requested_url):
+            by_url.setdefault(normalize_source_url(url), key)
+    return by_url
+
+
+def resolve_source_work_keys(sources: Sequence[ScoredSource]) -> dict[str, str]:
+    """Map each source's canonical URL to the work identity it was resolved to.
+
+    This is the persisted identity — the ``work_id`` the Source Evaluator's
+    one-per-snapshot resolution stamped, which is ``work_identity.key`` — and
+    it is what a record may publish *as* that identity. ``work_identity`` is
+    read as the fallback for a row written before ``work_id`` carried it, and
+    a source whose identity was never established registers nothing here at
+    all: an unknown work is not a new one, so a caller that needs a key for
+    every URL resolves the rest through :func:`resolve_retained_work_keys`
+    rather than minting one here.
+    """
+    keys: dict[str, str] = {}
+    for source in sources:
+        identity = source.work_identity
+        key = source.work_id or (identity.key if identity is not None else None)
+        if key:
+            keys[normalize_source_url(source.url)] = key
+    return keys
+
+
+def resolve_retained_work_keys(
+    source_urls: Sequence[str],
+    reads: Sequence[ReadRecord],
+    *,
+    sources: Sequence[ScoredSource] = (),
+) -> dict[str, str]:
+    """One work key per retained source URL — the keying the count counts over.
+
+    Published as its own function because the quality record needs this
+    mapping twice — as its ``work_keys`` map and as the set its
+    ``unique_works`` count has cardinality of — and two resolutions of "which
+    work is this" is how one record came to name a work in its map while its
+    count held another it never named. With one keying, ``unique_works`` is
+    exactly this map's distinct values.
+
+    ``sources`` are the assessed rows the caller holds. Where one covers a
+    URL, its persisted work key is the work: it was resolved with the anchors
+    the Source Evaluator validated, so it names joins a second resolution from
+    the reads alone cannot see. A URL no assessment covers keeps the key its
+    own read supports, and a URL with neither is its own unresolved entry
+    rather than a neighbour it was never shown to match.
+    """
+    persisted = resolve_source_work_keys(sources)
+    by_url = resolve_read_work_keys(reads)
+    keys: dict[str, str] = {}
+    for url in source_urls:
+        canonical = normalize_source_url(url)
+        key = persisted.get(canonical)
+        if key is None:
+            key = by_url.get(canonical, f"unresolved:{canonical}")
+        keys[canonical] = key
+    return keys
+
+
+def retained_work_count(
+    source_urls: Sequence[str],
+    reads: Sequence[ReadRecord],
+    *,
+    sources: Sequence[ScoredSource] = (),
+) -> int:
+    """Count the distinct works behind already-retained sources.
+
+    A works count, not a URL count under a second name: two URLs serving the
+    same complete document are one work, and a finding whose read is not in
+    the registry counts as its own unresolved entry rather than being folded
+    into a neighbour it was never shown to match.
+
+    The count is the cardinality of :func:`resolve_retained_work_keys`, which
+    is the same mapping a quality record publishes as its ``work_keys`` map —
+    so the two cannot disagree, and every URL the count holds has a key the
+    map names. ``sources`` are the assessed rows the caller is publishing:
+    where one covers a URL, its persisted work key is the work, because it was
+    resolved with the anchors the Source Evaluator validated and names joins a
+    second resolution from the reads alone cannot see.
+    """
+    return len(
+        set(resolve_retained_work_keys(source_urls, reads, sources=sources).values())
+    )
+
+
+# Work aliases that name a work rather than a set of bytes. ``report:`` is
+# already namespaced by its issuer, so both separate two different works from
+# one publisher, and both are inherited by a copy that carries them.
+_STRONG_WORK_ALIASES = ("doi:", "report:")
+
+
+def _strong_work_alias(work_id: str) -> bool:
+    return work_id.startswith(_STRONG_WORK_ALIASES)
+
+
+
+def _vocabulary(value: object, allowed: Sequence[str], *, default: str) -> str:
+    candidate = " ".join(str(value or "").split()).casefold()
+    return candidate if candidate in allowed else default
+
+
+def validated_source_role(claimed: object, *, issuer_evidenced: bool) -> str:
+    """The role this read can support, or ``unknown``.
+
+    Naming what a document is — its own report, someone else's statistic, a
+    company's statement — requires knowing who published it, so a role with no
+    evidenced issuer is recorded as unknown rather than believed.
+    """
+    role = _vocabulary(claimed, SOURCE_ROLES, default="unknown")
+    if role != "unknown" and not issuer_evidenced:
+        return "unknown"
+    return role
+
+
+def validated_transport_relation(
+    claimed: object,
+    *,
+    issuer_evidenced: bool,
+) -> str:
+    """The transport relation this read can support, or ``unknown``.
+
+    A mirror or a syndicated copy is a statement that the document came from
+    somewhere else, so it can only be recorded when the read names the
+    publisher it came from. Without that there is nothing to inherit and the
+    relation stays unknown.
+    """
+    relation = _vocabulary(claimed, TRANSPORT_RELATIONS, default="unknown")
+    if relation in ("mirror", "syndication") and not issuer_evidenced:
+        return "unknown"
+    return relation
+
+
+def validated_self_interest(claimed: object, *, role: str) -> str:
+    """The self-interest level this source carries.
+
+    A company's own statement about its own product is self-interested by
+    construction, so that role can never be recorded as disinterested — the
+    label is part of what the source is, not a quality a high score can
+    offset.
+    """
+    level = _vocabulary(claimed, SELF_INTEREST_LEVELS, default="unknown")
+    if role == "company_statement" and level != "evidenced":
+        return "evidenced"
+    return level
+
+
+class TemporalClaim(ContractModel):
+    """One temporal value a model proposes, with the quote it read it from.
+
+    Both halves are needed for the claim to mean anything: ``value`` is the
+    model's own normalisation of a date and ``quote`` is the document's words.
+    Either one empty is a field the document does not state, which is recorded
+    as no value at all rather than as a date the model believed.
+    """
+
+    value: str = ""
+    quote: str = ""
+
+
+def validated_temporal(
+    read: ReadRecord | None,
+    *,
+    publication_date: object = None,
+    data_period: object = None,
+    forecast_horizon: object = None,
+    effective_date: object = None,
+    status: object = "",
+) -> SourceTemporal:
+    """Keep the dates a quoted read evidences apart, and what freshness rests on.
+
+    Each field is admitted the way an evidence excerpt is: the model proposes a
+    value *and* the document's own phrase for it, and the read admits the claim
+    only when that phrase is in the document verbatim and states exactly the
+    value it was attached to. A field whose quote does not verify is not
+    admitted at all — no value, and no freshness judgement resting on it —
+    because a date the model inferred is not a date the document wrote. With no
+    read there is nothing to verify against, so nothing is recorded.
+    """
+    dates = {
+        "publication_date": _quoted_date(read, publication_date, publication=True),
+        "data_period": _quoted_date(read, data_period),
+        "forecast_horizon": _quoted_date(read, forecast_horizon),
+        "effective_date": _quoted_date(read, effective_date),
+    }
+    claimed = _vocabulary(status, FRESHNESS_STATUSES, default="unknown")
+    required = _FRESHNESS_DATES.get(claimed)
+    if required is None or dates.get(required) is None:
+        claimed = "unknown"
+    return SourceTemporal(**dates, status=claimed)  # type: ignore[arg-type]
+
+
+def _quoted_date(read: ReadRecord | None, claimed: object, *,
+                 publication: bool = False) -> str | None:
+    """The temporal value a verbatim quote in the read states, or ``None``.
+
+    Containment is exact — the quote has to be the document's own words, not a
+    paraphrase of them — and consistency is local to that quote: the value is
+    admitted only when the quote states it. Nothing here scans the document for
+    a date the model was expected to find, which is where a fabricated year
+    came from.
+
+    ``publication`` adds the one rule the *publication* date needs on top of
+    that: the page has to state the date as its own publication date (Minor
+    13). The other fields keep the cue-less rule, which is what they are for —
+    a data year is the data period's business, not the page's own date.
+    """
+    claim = _temporal_claim(claimed)
+    if read is None or claim is None:
+        return None
+    value = canonical_read_text(claim.value)
+    quote = canonical_read_text(claim.quote)
+    if not value or not quote:
+        return None
+    if not excerpt_matches(_document_text(read), quote):
+        return None
+    stated = _stated_value(quote, value)
+    if stated is None:
+        return None
+    if publication and not _states_it_as_the_publication_date(read, quote, stated):
+        return None
+    return stated
+
+
+# A page states its own publication with one of these words directly
+# labelling the date: "Published: 2026-02-20", "Published by Example
+# Institute on 2026-02-20", "Posted 2026-02-20". "released"/"issued" are
+# deliberately absent, and "updated"/"modified"/"last modified" are kept out
+# of this set too: a probe of an earlier cut of this rule found "Sony
+# released the WH-1000XM6 on May 15, 2025" admitted as the page's own
+# publication date -- "released" so commonly labels a PRODUCT or a report,
+# never the page itself, that no general (non-domain) rule can tell the two
+# apart -- and found "Updated May 15, 2025" printed as though it were a
+# first publication, although it names an edit (WholeBranchReview P1-2).
+# This contract carries no separate "last updated" field to route an edit
+# date to, so a claim only such a word governs is refused here rather than
+# let an edit date stand in for a publication date.
+_PUBLICATION_CUES = re.compile(
+    r"(?<![A-Za-z0-9])(?:publish(?:es|ed)?|posted)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+# How much page either side of the date may carry the cue: a caption or a
+# byline sentence reaches it ("Published 2026-02-20", "Published by Example
+# Institute on 2026-02-20"), an unrelated paragraph does not.
+_PUBLICATION_CUE_CHARS = 200
+
+# A cue preceded by "the"/"a"/"an" naming some other thing -- "the EIA
+# report, published June 10, 2025", "a study, published last week" --
+# governs THAT thing's publication, not the page's: the clause is about the
+# report or the study, and "published" is a participle inside it. A cue
+# with no such lead-in governs the page's own date: a bare label ("In-brief
+# analysis, published August 7, 2026"), a sentence start ("Published:
+# 2026-02-20"), or the page's own self-reference ("This article was
+# published on ...") are none of them a clause about a different document
+# (WholeBranchReview R-4). Bounded to a short reach so an unrelated "the"
+# many words earlier in a long window can never be read as this lead-in.
+_OTHER_DOCUMENT_LEAD = re.compile(
+    r"\b(?:the|a|an)\s+[A-Za-z][A-Za-z\s]{0,40}?,\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _cue_is_governing(text: str) -> bool:
+    """True when ``text`` carries a publication cue that governs its own
+    date, rather than one embedded in a clause about a different document."""
+    return any(
+        not _OTHER_DOCUMENT_LEAD.search(text[: match.start()])
+        for match in _PUBLICATION_CUES.finditer(text)
+    )
+
+
+def _dates_agree(first: str, second: str) -> bool:
+    """True when two page dates are consistent: equal, or one is a coarser
+    reading of the other ("2025" agrees with a page dated "2025-05-15")."""
+    return (
+        first == second
+        or first.startswith(f"{second}-")
+        or second.startswith(f"{first}-")
+    )
+
+
+def _states_it_as_the_publication_date(
+    read: ReadRecord, quote: str, stated: str | None = None
+) -> bool:
+    """True when the page states the quoted date as its own publication date.
+
+    A publication cue -- "Published", "Posted" -- may sit in the quote
+    itself or beside the date on the page, which is where a model that
+    quotes only the date leaves it. Either way the cue must govern the date
+    it labels: one embedded in a clause about a different document ("the
+    EIA report, published June 10, 2025") does not count, even from well
+    inside the search window (``_cue_is_governing``, WholeBranchReview R-4).
+    A cue-less quote is admitted only when it names exactly the date the
+    page's own metadata already captured (D14, ``ReadRecord.page_published``)
+    -- coarser than the captured date is also admitted (a cue-less "2026"
+    beside a captured "2026-09-17" is still that page's year), but never
+    merely because a day-precision date sits early in the page's text
+    (RevDatesR3 P0).
+
+    Whenever the page's own metadata carries a publication date, a proposal
+    that disagrees with it is refused even when a real cue governs it: the
+    page's own captured date is the more reliable fact, and a wrong date is
+    worse than none (WholeBranchReview P1-2).
+    """
+    page_published = read.page_published
+    cue_governs = _cue_is_governing(quote) or _cue_is_governing(
+        _windowed_passage(_document_text(read), quote, chars=_PUBLICATION_CUE_CHARS)
+    )
+    if not cue_governs:
+        if page_published is None or stated is None:
+            return False
+        return stated == page_published or page_published.startswith(f"{stated}-")
+    if (
+        page_published is not None
+        and stated is not None
+        and not _dates_agree(stated, page_published)
+    ):
+        return False
+    return True
+
+
+def _temporal_claim(claimed: object) -> TemporalClaim | None:
+    """``claimed`` as a quoted claim, or ``None`` when it is not one.
+
+    A bare date with no quote behind it is what this contract replaced: it is a
+    claim nothing can verify, so it is dropped rather than trusted.
+    """
+    if claimed is None or isinstance(claimed, TemporalClaim):
+        return claimed
+    if isinstance(claimed, Mapping):
+        return TemporalClaim.model_validate(dict(claimed))
+    return None
+
+
+def _stated_value(quote: str, value: str) -> str | None:
+    """The value a verified quote states, normalised, or ``None``.
+
+    The model reads the date; this only checks that the document says what the
+    model says it says. One verification serves the whole contract: the quote
+    must state the value's own date — or, for a period, both of its ends in
+    order — as its own token rather than as a fragment of an identifier that
+    happens to contain the same digits.
+    """
+    single = _VALUE_DATE_PATTERN.match(value)
+    if single is not None:
+        atom = single.group("atom")
+        if not _is_date_atom(atom):
+            return None
+        return atom if _quote_states(quote, (atom,)) else None
+    period = _VALUE_PERIOD_PATTERN.match(value)
+    if period is None:
+        return None
+    start, end = period.group("start"), period.group("end")
+    if not (_is_date_atom(start) and _is_date_atom(end)) or end < start:
+        # A period never runs backwards, and a thirteenth month is not an end
+        # a calendar has, so neither is a period the document stated.
+        return None
+    if not _quote_states(quote, (start, end)):
+        return None
+    return f"{start}-{end}"
+
+
+def _quote_states(quote: str, atoms: tuple[str, ...]) -> bool:
+    """True when ``quote`` states exactly this date, or exactly this period.
+
+    One date is admitted from a date token the quote writes at the same
+    precision or a finer one: the year 2026 is what "2026-01-15" states about a
+    date nobody wrote a month or a day for. A period is admitted only from a
+    period the quote writes with those two ends, so two years a document never
+    joined are not a period, and a stated period is never recorded as one of
+    its ends.
+    """
+    for stated in _stated_dates(quote):
+        if len(atoms) == 1:
+            (atom,) = atoms
+            if len(stated) == 1 and (
+                stated[0] == atom or stated[0].startswith(f"{atom}-")
+            ):
+                return True
+        elif stated == atoms:
+            return True
+    return False
+
+
+def _stated_dates(quote: str) -> list[tuple[str, ...]]:
+    """Every date and period the quote states, each as its own token.
+
+    A number shaped like a date and not one — "2026-13" — is not a date the
+    quote states, and neither is a fragment of an identifier: the digits of
+    "doi:10.1234/grid.2025" are the identifier's own numbers, and the boundary
+    is what says so. A date the quote spells in words is read the same way and
+    at the precision it writes — see :func:`_spelled_dates` — so a document
+    that dates itself "August 7, 2026" evidences that day rather than only its
+    year. The two readers' findings are returned in the order they appear in
+    the quote, because one quote can state both spellings and a caller reading
+    the list should see them where the document puts them.
+    """
+    stated: list[tuple[int, tuple[str, ...]]] = []
+    for match in _DATE_TOKEN_PATTERN.finditer(quote):
+        if not _is_delimited_date_token(quote, match.start(), match.end()):
+            continue
+        atoms = tuple(
+            atom
+            for atom in (match.group("atom"), match.group("end"))
+            if atom is not None
+        )
+        if all(_is_date_atom(atom) for atom in atoms):
+            stated.append((match.start(), atoms))
+    stated.extend(_spelled_dates(quote))
+    stated.sort(key=lambda item: item[0])
+    return [atoms for _position, atoms in stated]
+
+
+# The month names a document writes, folded to the month each one names. The
+# full names and the three-letter abbreviations are read; an abbreviation
+# without its final letters is not, for the same reason an abbreviated year is
+# not: a spelling code would have to guess at is not a date the document wrote.
+_MONTH_NUMBERS = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "sept": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
+
+# One date a document writes in words: the month's name, then a day and a year
+# or a year alone, in the order a dateline writes them. The day is optional and
+# the comma with it is; a name that continues into a longer word is not a
+# month ("Marching"), and neither is one followed by neither a day nor a year.
+_SPELLED_DATE = re.compile(
+    r"(?<![A-Za-z])(?P<month>"
+    + "|".join(sorted(_MONTH_NUMBERS, key=len, reverse=True))
+    + r")\.?(?![A-Za-z])\s+"
+    r"(?:(?P<day>\d{1,2})(?:st|nd|rd|th)?[\s,]+)?"
+    r"(?P<year>\d{4})(?![\d-])",
+    re.IGNORECASE,
+)
+
+# A month name with no day or year of its own, immediately joined -- the way
+# two spelled dates ever join -- to the date that follows it: "January to
+# March 2025" and "Jan-Mar 2025" name a period whose start borrows the end's
+# year, and "between June and August 2024" joins with the one connective
+# ("and") a digit period never uses, because English prose, not a digit
+# range, is what writes it. Anchored to the very end of the text it is
+# searched against (``\Z``), so it only ever matches the month sitting
+# immediately before the date a caller is asking about.
+_BARE_MONTH_PERIOD_LEAD = re.compile(
+    r"(?<![A-Za-z])(?P<month>"
+    + "|".join(sorted(_MONTH_NUMBERS, key=len, reverse=True))
+    + r")\.?(?![A-Za-z])"
+    r"\s*(?:-|\u2013|\u2014|/|to|through|until|thru|and)\s*\Z",
+    re.IGNORECASE,
+)
+
+
+def _spelled_dates(text: str) -> list[tuple[int, tuple[str, ...]]]:
+    """Every date ``text`` spells in words, as its digit form and where it is.
+
+    One date atom is what a spelled date yields, in the shape the rest of this
+    module compares values in: "August 7, 2026" is ``2026-08-07`` and "January
+    2025" is ``2025-01``. Two of them joined the way a document joins a period
+    are a period, exactly as two digit dates are, and a day that does not
+    exist in its month ("February 31, 2026") is not a date the document stated,
+    for the reason a "2026-02-31" is not one either. The month's name is the
+    document's own word for it, so a value it never wrote cannot be read from
+    it — the same containment rule the digit reader applies.
+
+    A period's second end is never also read as a standalone date of its own:
+    once "March 2025" has been read as the end of "January 2024 through March
+    2025", the scan is driven forward past it with a cursor, so it is not
+    rediscovered a second time as if the document had stated it alone. A bare
+    month with no year of its own ("January to March 2025", "Jan-Mar 2025",
+    "between June and August 2024") is a period whose start is not dated at
+    the end's precision either, so nothing finer than the year both ends
+    share is recorded for it — not the coincidence that the end's own month
+    looks like a fact stated by itself.
+    """
+    stated: list[tuple[int, tuple[str, ...]]] = []
+    cursor = 0
+    for match in _SPELLED_DATE.finditer(text):
+        if match.start() < cursor:
+            continue
+        atom = _spelled_atom(match)
+        if atom is None:
+            continue
+        lead = _BARE_MONTH_PERIOD_LEAD.search(text[: match.start()])
+        if lead is not None and lead.group("month") != "may":
+            stated.append((lead.start(), (atom[:4],)))
+            cursor = match.end()
+            continue
+        end = match.end()
+        joined = _PERIOD_JOIN.match(text, end)
+        other: str | None = None
+        other_end = end
+        if joined is not None:
+            following = _SPELLED_DATE.match(text, joined.end())
+            if following is None:
+                following = _DATE_TOKEN_PATTERN.match(text, joined.end())
+                candidate = (
+                    following.group("atom") if following is not None else None
+                )
+                other = (
+                    candidate if candidate and _is_date_atom(candidate) else None
+                )
+                other_end = following.end() if following is not None else end
+            else:
+                other = _spelled_atom(following)
+                other_end = following.end()
+        if other is not None and other >= atom:
+            stated.append((match.start(), (atom, other)))
+            cursor = other_end
+            continue
+        stated.append((match.start(), (atom,)))
+        cursor = end
+    return stated
+
+
+def _spelled_atom(match: re.Match[str]) -> str | None:
+    """The digit form of one spelled date, or ``None`` if it names no date."""
+    spelling = match.group("month")
+    if spelling == "may":
+        # The modal verb, not the month: "may 2025" is ordinary prose no
+        # document dates itself with. Only a capitalised spelling -- "May",
+        # "MAY" -- names the fifth month.
+        return None
+    month = _MONTH_NUMBERS[spelling.casefold()]
+    year = int(match.group("year"))
+    day = match.group("day")
+    if day is None:
+        return f"{year:04d}-{month:02d}"
+    atom = f"{year:04d}-{month:02d}-{int(day):02d}"
+    return atom if _is_date_atom(atom) else None
+
+
+class ReadDossier(ContractModel):
+    """One read-backed dossier: everything the model may judge, all read-derived.
+
+    The read itself is carried so a caller can validate the model's proposed
+    anchors against the same bytes it was shown, and the revision is computed
+    before the call so a stored assessment can be reused without one.
+    """
+
+    read: ReadRecord
+    url: str = Field(min_length=1)
+    serving_host: str = Field(min_length=1)
+    excerpts: list[str] = Field(default_factory=list)
+    assessment_revision: str = Field(min_length=1)
+    cited_sub_topics: list[str] = Field(default_factory=list)
+
+
+def build_read_dossiers(
+    reads: Sequence[ReadRecord],
+    *,
+    cited_sub_topics: Mapping[str, Sequence[str]] | None = None,
+    queries: Mapping[str, Sequence[str]] | None = None,
+    obligation_queries: Mapping[str, Sequence[str]] | None = None,
+    excerpt_chars: int = DEFAULT_DOSSIER_EXCERPT_CHARS,
+    max_excerpts: int = DEFAULT_DOSSIER_EXCERPTS,
+) -> list[ReadDossier]:
+    """Build one read-backed dossier per canonical URL, in first-seen order.
+
+    One URL has one current read: the complete read wins over a partial one,
+    and the latest observation wins over an earlier one, so a re-read that
+    recovered a lost page is assessed instead of the failure it replaced.
+
+    ``queries`` maps a URL to what this source is being judged *for* — a
+    claim's own words, or the sub-topic a source was read for. Where one is
+    given, the passages that answer it are shown first; where none is, the
+    read's passages are shown in document order.
+    """
+    if excerpt_chars < 1 or max_excerpts < 1:
+        raise EvidenceContractError(
+            "a dossier requires at least one excerpt of at least one character"
+        )
+    cited = {
+        normalize_source_url(url): list(topics)
+        for url, topics in (cited_sub_topics or {}).items()
+    }
+    wanted = {
+        normalize_source_url(url): _query_list(queries_for_url)
+        for url, queries_for_url in (queries or {}).items()
+    }
+    reserved = {
+        normalize_source_url(url): _query_list(queries_for_url)
+        for url, queries_for_url in (obligation_queries or {}).items()
+    }
+    chosen: dict[str, ReadRecord] = {}
+    for read in reads:
+        url = normalize_source_url(read.resolved_url)
+        current = chosen.get(url)
+        if current is None or _prefer_read(read, current):
+            chosen[url] = read
+    return [
+        ReadDossier(
+            read=read,
+            url=url,
+            serving_host=read_serving_host(read),
+            excerpts=_dossier_excerpts(
+                read,
+                excerpt_chars=excerpt_chars,
+                max_excerpts=max_excerpts,
+                queries=wanted.get(url, ()),
+                obligation_queries=reserved.get(url, ()),
+            ),
+            assessment_revision=read_assessment_revision(read),
+            cited_sub_topics=cited.get(url, []),
+        )
+        for url, read in chosen.items()
+    ]
+
+
+def _prefer_read(candidate: ReadRecord, current: ReadRecord) -> bool:
+    if candidate.extraction_complete != current.extraction_complete:
+        return candidate.extraction_complete
+    return candidate.retrieved_at >= current.retrieved_at
+
+
+def _document_order(locator: str) -> tuple[int, ...]:
+    """The position a locator names, so ``chunk-10`` follows ``chunk-2``.
+
+    Reading the locators as strings put every ``chunk-1*`` ahead of
+    ``chunk-2``, which is the order a page's navigation is *not* in.
+    """
+    return tuple(int(part) for part in re.findall(r"\d+", locator)) or (0,)
+
+
+def _query_list(value: object) -> list[str]:
+    """One URL's queries, from a string, a sequence, or nothing at all.
+
+    A caller that states no query for a URL — ``None``, an empty sequence —
+    gets the read's passages in document order, exactly as a dossier did
+    before queries existed.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        candidates: tuple[object, ...] = (value,)
+    else:
+        try:
+            candidates = tuple(value)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+    return [
+        query
+        for query in candidates
+        if isinstance(query, str) and query.strip()
+    ]
+
+
+def _dossier_excerpts(
+    read: ReadRecord,
+    *,
+    excerpt_chars: int,
+    max_excerpts: int,
+    queries: Sequence[str] = (),
+    obligation_queries: Sequence[str] = (),
+) -> list[str]:
+    """The read's own passages, in the order that answers the questions asked.
+
+    Deliberately the document's words rather than a finding's paraphrase: the
+    judgement being asked for is about the document, and a paraphrase is the
+    model's own earlier summary of it. Each excerpt is a *whole* passage — a
+    prefix of one ends before the sentence the source is being judged for, and
+    the model has no way to tell a page that states nothing from a page whose
+    statement sat past the cut.
+
+    One query per obligation, interleaved rather than concatenated: a source
+    cited for two sub-topics is judged for both, and a merged query's lexical
+    winner can drop the passage that states the second one's figure. Whatever
+    the queries leave is filled in document order, so a marked-up source still
+    shows its own opening.
+    """
+    ordered: list[str] = []
+    # Imported here, not at module scope: ``deep_research.tools`` builds its
+    # package from modules that import this one, and this module is the read
+    # contract they are built on.
+    from deep_research.tools.passage_selection import select_relevant_passages
+
+    # Each obligation reserves an excerpt first, from its own *complete*
+    # ranking: the passage that answers an obligation can sit below navigation
+    # prose lexically, and a group's findings must not take every slot before
+    # the obligation is consulted at all. The passage that states a figure is
+    # taken ahead of the obligation's first choice, because a figure is what an
+    # obligation for a value is looking for.
+    for query in obligation_queries:
+        if len(ordered) >= max_excerpts:
+            break
+        wanted = _numbers(query)
+        ranking = select_relevant_passages(
+            read.passages, query, len(read.passages)
+        )
+        # The walk skips what another obligation already reserved, so a second
+        # obligation contributes its own passage rather than nothing; it takes
+        # the first passage in its ranking that states a figure, and its first
+        # remaining choice only when the read carries no figure at all.
+        fresh = [locator for locator in ranking if locator not in ordered]
+        figures = [
+            locator
+            for locator in fresh
+            if _states_a_figure(read.passages[locator], wanted)
+        ]
+        # The obligation's own numbers first, then the passage stating the most
+        # quantities — a page's incidental measurement is one figure, the
+        # passage that answers a figure obligation usually states several (a
+        # value and its comparison) — then the obligation's first choice.
+        figures.sort(
+            key=lambda locator: (
+                -len(wanted.intersection(_numbers(read.passages[locator]))),
+                -len(_QUANTITY.findall(read.passages[locator])),
+            )
+        )
+        pick = figures[0] if figures else (fresh[0] if fresh else None)
+        if pick is not None:
+            ordered.append(pick)
+    if queries:
+        ranked = [
+            select_relevant_passages(read.passages, query, max_excerpts)
+            for query in queries
+        ]
+        for rank in range(max_excerpts):
+            for picks in ranked:
+                if len(ordered) >= max_excerpts:
+                    break
+                if rank < len(picks) and picks[rank] not in ordered:
+                    ordered.append(picks[rank])
+    ordered.extend(
+        locator
+        for locator in sorted(read.passages, key=_document_order)
+        if locator not in ordered
+    )
+    excerpts: list[str] = []
+    for locator in ordered:
+        text = " ".join(read.passages[locator].split())
+        if not text:
+            continue
+        excerpts.append(text[:excerpt_chars])
+        if len(excerpts) == max_excerpts:
+            break
+    return excerpts
+
+
+# ---------------------------------------------------------------------------
+# strict read producers
+# ---------------------------------------------------------------------------
+
+
+def build_read_id(
+    *,
+    session_id: str,
+    reader: str,
+    resolved_url: str,
+    content_sha256: str,
+    passages: Mapping[str, str] | None = None,
+) -> str:
+    """Return the stable identity of one read body inside one session.
+
+    Derived only from immutable read fields, so the same body read twice in a
+    session is one read — and a re-read that returns different content is a
+    different one. Identity resolution, scoring, and target association are
+    deliberately absent from the key: they are assessments, and an assessment
+    must never renumber evidence.
+
+    A partial extraction has no content hash to identify it by, so the
+    locator-keyed text it did read is folded in instead; without that, every
+    partial read of one URL in a session would share an ID, and a retry that
+    recovers a lost page would look like a conflicting rewrite of the same
+    read rather than a second one.
+    """
+    digest = content_sha256.strip().casefold()
+    salt = ""
+    if digest == INCOMPLETE_CONTENT_SHA256:
+        if not passages:
+            raise EvidenceContractError(
+                "a partial read requires the passages it did read"
+            )
+        salt = _fingerprint(
+            *(
+                f"{locator}\x1e{canonical_read_text(text)}"
+                for locator, text in sorted(passages.items())
+            )
+        )
+    return "read-" + _fingerprint(
+        session_id,
+        reader,
+        normalize_source_url(resolved_url),
+        digest,
+        salt,
+    )[:_DIGEST_LENGTH]
+
+
+def build_read_record(
+    *,
+    session_id: str,
+    reader: str,
+    requested_url: str,
+    resolved_url: str,
+    title: str,
+    retrieved_at: str,
+    text: str,
+    passages: Mapping[str, str],
+    extraction_complete: bool = True,
+    declared_content_sha256: str | None = None,
+    target_ids: Sequence[str] = (),
+    page_published: str | None = None,
+    page_updated: str | None = None,
+) -> ReadRecord:
+    """Build the one admissible read record for a successful read.
+
+    Every field a replay needs must be present and consistent: a body with no
+    content, a passage that is not verbatim text of that body, and a declared
+    hash that disagrees with the body it was taken from all fail here rather
+    than becoming evidence. ``text`` is the extracted document; ``passages``
+    maps the locator the reader reported to the text at that locator.
+
+    ``extraction_complete=False`` records a read that lost part of its
+    document — a PDF page that would not parse, a scanned page with no text —
+    as a read of the locators it did extract, with
+    ``INCOMPLETE_CONTENT_SHA256`` in place of a content hash. Discarding such
+    a document outright would throw away evidence that Section 2.1 admits (an
+    exact excerpt with a locator from a successful same-run read), while
+    letting it keep a digest would identify a work nobody fully read.
+
+    ``page_published``/``page_updated`` (D14) are the page's own dates, from
+    its own metadata only and already normalised by the reader that scraped
+    it; a value that is not a real calendar date at the year, year-month, or
+    year-month-day precision this contract dates everything at is dropped
+    here rather than stored, the same refusal ``_is_date_atom`` gives an
+    impossible date read from a document's body.
+    """
+    if reader not in ("web_scraper", "document_reader"):
+        raise EvidenceContractError(
+            "a read record requires the reader that produced it"
+        )
+    requested = " ".join(requested_url.split())
+    resolved = normalize_source_url(resolved_url)
+    if not requested or not resolved:
+        raise EvidenceContractError(
+            "a read record requires both the requested and the resolved URL"
+        )
+    if not session_id.strip():
+        raise EvidenceContractError("a read record requires its session id")
+
+    canonical = canonical_read_text(text)
+    if not canonical:
+        raise EvidenceContractError("a read record requires non-empty content")
+    if not passages:
+        raise EvidenceContractError("a read record requires at least one passage")
+
+    checked: dict[str, str] = {}
+    body = _NormalisedBody(canonical)
+    for locator, passage_text in passages.items():
+        if not isinstance(locator, str) or not locator.strip():
+            raise EvidenceContractError("a passage requires a non-empty locator")
+        if not isinstance(passage_text, str) or not body.matches(passage_text):
+            raise EvidenceContractError(
+                f"passage {locator!r} is not verbatim text of the read body"
+            )
+        checked[locator] = passage_text
+
+    if extraction_complete:
+        content_sha256 = normalized_content_sha256(canonical)
+        if declared_content_sha256 is not None and (
+            declared_content_sha256.strip().casefold() != content_sha256
+        ):
+            raise EvidenceContractError(
+                "the declared content hash does not match the read body"
+            )
+    else:
+        declared = (declared_content_sha256 or "").strip().casefold()
+        if declared and declared != INCOMPLETE_CONTENT_SHA256:
+            raise EvidenceContractError(
+                "an incomplete extraction must not declare a content hash"
+            )
+        content_sha256 = INCOMPLETE_CONTENT_SHA256
+
+    def _normalized_page_date(value: str | None) -> str | None:
+        candidate = (value or "").strip()
+        return candidate if candidate and _is_date_atom(candidate) else None
+
+    return ReadRecord(
+        read_id=build_read_id(
+            session_id=session_id,
+            reader=reader,
+            resolved_url=resolved,
+            content_sha256=content_sha256,
+            passages=checked,
+        ),
+        requested_url=requested,
+        resolved_url=resolved,
+        title=" ".join(title.split()) or resolved,
+        page_published=_normalized_page_date(page_published),
+        page_updated=_normalized_page_date(page_updated),
+        reader=reader,
+        retrieved_at=retrieved_at,
+        content_sha256=content_sha256,
+        extraction_complete=extraction_complete,
+        passages=checked,
+        target_ids=list(target_ids),
+        origin_session_id=session_id,
+    )
+
+
+def passages_from_chunks(
+    chunks: Sequence[Mapping[str, object]],
+) -> dict[str, str]:
+    """Map a ``document_reader`` chunk list onto locator -> extracted text.
+
+    The locator names where the text sits in the document — page and chunk
+    index where the reader reported a page, chunk index otherwise — so a
+    passage can be cited and re-read without carrying the whole body. A
+    malformed chunk is a bug in the payload this project produced, not
+    model output, and raises instead of silently dropping extracted text.
+    """
+    passages: dict[str, str] = {}
+    for chunk in chunks:
+        if not isinstance(chunk, Mapping):
+            raise EvidenceContractError("every chunk must be a mapping")
+        text = chunk.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise EvidenceContractError("every chunk requires non-empty text")
+        index = chunk.get("chunk_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            raise EvidenceContractError("every chunk requires an integer index")
+        page = chunk.get("page")
+        if page is None:
+            locator = f"chunk-{index}"
+        elif isinstance(page, bool) or not isinstance(page, int):
+            raise EvidenceContractError("a page number must be an integer")
+        else:
+            locator = f"page-{page}-chunk-{index}"
+        if locator in passages:
+            raise EvidenceContractError(f"duplicate locator {locator!r}")
+        passages[locator] = text
+    if not passages:
+        raise EvidenceContractError("a chunk list must not be empty")
+    return passages
+
+
+def build_evidence_id(*, read_id: str, locator: str, excerpt: str) -> str:
+    """Return the stable identity of one exact passage of one read."""
+    canonical = canonical_read_text(excerpt)
+    if not canonical:
+        raise EvidenceContractError("an evidence unit requires an excerpt")
+    return "ev-" + _fingerprint(
+        read_id, canonical_read_text(locator), canonical
+    )[:_DIGEST_LENGTH]
+
+
+def build_evidence_unit(
+    *,
+    read: ReadRecord,
+    locator: str,
+    excerpt: str,
+    origin: str,
+    target_ids: Sequence[str] = (),
+) -> EvidenceUnit:
+    """Build the one evidence unit for a passage of an admitted read.
+
+    The excerpt must be verbatim text of the locator it cites, checked against
+    the registry's own stored passages: an excerpt the read does not contain
+    is not evidence, however plausible it reads.
+    """
+    if origin != "researcher":
+        # The Fact Checker is deleted (step 4), so the researcher is the only
+        # agent that selects a passage: a unit recording another selector names
+        # an agent this branch cannot run.
+        raise EvidenceContractError(
+            "an evidence unit requires the agent that selected it"
+        )
+    passage = read.passages.get(locator)
+    if passage is None:
+        raise EvidenceContractError(
+            f"read {read.read_id!r} has no locator {locator!r}"
+        )
+    if not excerpt_matches(passage, excerpt):
+        raise EvidenceContractError(
+            f"excerpt is not text of locator {locator!r}"
+        )
+    return EvidenceUnit(
+        evidence_id=build_evidence_id(
+            read_id=read.read_id, locator=locator, excerpt=excerpt
+        ),
+        read_id=read.read_id,
+        source_url=read.resolved_url,
+        source_title=read.title,
+        locator=locator,
+        excerpt=excerpt,
+        target_ids=list(target_ids),
+        origin=origin,
+    )
+
+
+# ---------------------------------------------------------------------------
+# cache admission
+# ---------------------------------------------------------------------------
+
+
+def validate_cached_read(
+    record: ReadRecord,
+    canonical_text: str,
+    *,
+    expected_content_sha256: str,
+    version_eligible: bool,
+    validated_at: str,
+) -> ReadRecord | None:
+    """Admit a stored original read as this session's evidence, or refuse it.
+
+    ``record`` is the original network read its caller resolved out of the
+    local read registry, ``canonical_text`` is the stored body, and
+    ``expected_content_sha256`` and ``version_eligible`` are what the caller
+    established locally about that artifact. None of these may come from model
+    output or from a memory entry's self-declared metadata: a memory record is
+    not validation, and a claimed read ID resolves to nothing unless a real
+    read is stored under it.
+
+    The returned record is stamped locally as a cache import and keeps the
+    original read's identity, publisher-relevant fields, and observation
+    period, so no second body download and no synthetic ``retrieved_at`` are
+    needed. ``None`` means refused: the caller records an
+    :class:`~deep_research.utils.types.EvidenceDisposition` for it. Task 3
+    owns when this is called; this function owns what it may accept.
+
+    Only a *complete* original is ever admitted here. A partial read is
+    admissible evidence in its own right, but it has no content identity, so
+    there is nothing for a later version to be checked against and the marker
+    it carries is refused rather than treated as an expected hash.
+    """
+    _require_aware_timestamp(validated_at, name="validated_at")
+    expected = expected_content_sha256.strip().casefold()
+    if expected == INCOMPLETE_CONTENT_SHA256:
+        return None
+    if len(expected) != 64 or not set(expected) <= _HEX_DIGITS:
+        raise EvidenceContractError(
+            "expected_content_sha256 must be a resolved stored hash"
+        )
+
+    stored_hash = str(getattr(record, "content_sha256", "") or "").strip().casefold()
+    if not str(getattr(record, "read_id", "") or "").strip():
+        # A forged or missing read ID resolves to nothing in the registry.
+        return None
+    if getattr(record, "acquisition_kind", None) != "network":
+        # A cache import is not an original artifact: re-admitting one would
+        # let a stamped copy stand in for a read nobody performed.
+        return None
+    if not version_eligible:
+        return None
+    if getattr(record, "extraction_complete", None) is not True:
+        # Strictly typed: a serialized ``"false"`` is not completeness, and a
+        # truthy string must never pass a truthiness test here.
+        return None
+
+    resolved_text = canonical_read_text(canonical_text)
+    if not resolved_text:
+        return None
+    recomputed = normalized_content_sha256(resolved_text)
+    if not (stored_hash == expected == recomputed):
+        return None
+
+    passages = getattr(record, "passages", None)
+    if not passages:
+        return None
+    body = _NormalisedBody(resolved_text)
+    for locator, passage_text in passages.items():
+        if not isinstance(locator, str) or not locator.strip():
+            return None
+        if not body.matches(passage_text):
+            # A stored passage that is not in the stored body is a summary or
+            # a rewrite, not original source text.
+            return None
+
+    return record.model_copy(
+        update={
+            "acquisition_kind": "cache",
+            "version_validated_at": validated_at,
+        }
+    )
+
+
+def _require_aware_timestamp(value: object, *, name: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise EvidenceContractError(f"{name} must be an ISO 8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise EvidenceContractError(
+            f"{name} must be a valid ISO 8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise EvidenceContractError(f"{name} must be timezone-aware")
+
+
+# ---------------------------------------------------------------------------
+# registries
+# ---------------------------------------------------------------------------
+
+
+def merge_read_records(
+    previous: Mapping[str, ReadRecord],
+    current: Mapping[str, ReadRecord],
+) -> dict[str, ReadRecord]:
+    """Fold new reads into the registry, refusing one ID with two bodies.
+
+    A read ID names an immutable body. Two records under one ID that agree on
+    that body are the same read — the earlier observation, the first
+    observation's title, and both target associations are kept — while a
+    disagreement about the body is a conflict that raises, because
+    overwriting either one would silently re-point stored evidence.
+    """
+    merged: dict[str, ReadRecord] = dict(previous)
+    for read_id, record in current.items():
+        existing = merged.get(read_id)
+        if existing is None:
+            merged[read_id] = record
+            continue
+        if _read_body(existing) != _read_body(record):
+            raise EvidenceIdentityConflict(
+                f"read {read_id!r} already names a different body"
+            )
+        merged[read_id] = _combine_reads(existing, record)
+    return merged
+
+
+def _read_body(record: ReadRecord) -> tuple[object, ...]:
+    """The immutable facts of a read; assessments and stamps are not here.
+
+    ``title`` is deliberately outside the body: the same bytes fetched twice
+    can be labelled differently (a re-read whose extractor fell back to the
+    URL), and that is not a second body. The rule for which label survives is
+    explicit in :func:`_combine_reads` rather than accidental.
+    """
+    return (
+        record.reader,
+        record.requested_url,
+        record.resolved_url,
+        record.content_sha256,
+        record.extraction_complete,
+        tuple(sorted(record.passages.items())),
+    )
+
+
+def _combine_reads(existing: ReadRecord, incoming: ReadRecord) -> ReadRecord:
+    """One record for one read ID: first observation wins where they differ.
+
+    The earlier ``retrieved_at`` and the earlier ``title`` are the record's
+    history — a later re-read cannot restate when the evidence was observed or
+    relabel a passage that already cites it. A same-session network read does
+    replace a cache import of the same body, because it is the stronger
+    observation, and target associations always union so nothing a later
+    selector contributed is dropped.
+    """
+    preferred = existing
+    if existing.acquisition_kind == "cache" and incoming.acquisition_kind == "network":
+        preferred = incoming
+    targets = list(existing.target_ids)
+    for target_id in incoming.target_ids:
+        if target_id not in targets:
+            targets.append(target_id)
+    observed = min(
+        existing.retrieved_at,
+        incoming.retrieved_at,
+        key=lambda value: datetime.fromisoformat(value.replace("Z", "+00:00")),
+    )
+    return preferred.model_copy(
+        update={
+            "retrieved_at": observed,
+            "title": existing.title,
+            "target_ids": targets,
+        }
+    )
+
+
+def merge_evidence_units(
+    previous: Mapping[str, EvidenceUnit],
+    current: Mapping[str, EvidenceUnit],
+) -> dict[str, EvidenceUnit]:
+    """Fold new evidence units in, unioning targets and refusing rewrites.
+
+    One passage read by both agents is reuse, not conflict: the unit keeps the
+    agent that selected it first and the union of every target that later
+    selected it, so the second selection adds associations instead of being
+    silently dropped. A different recorded source label for that one passage
+    is a disagreement about what the passage is, and raises.
+    """
+    merged: dict[str, EvidenceUnit] = dict(previous)
+    for evidence_id, unit in current.items():
+        existing = merged.get(evidence_id)
+        if existing is None:
+            merged[evidence_id] = unit
+            continue
+        if (
+            existing.read_id != unit.read_id
+            or existing.locator != unit.locator
+            or existing.excerpt != unit.excerpt
+            or existing.source_url != unit.source_url
+            or existing.source_title != unit.source_title
+        ):
+            raise EvidenceIdentityConflict(
+                f"evidence {evidence_id!r} already names a different passage"
+            )
+        targets = list(existing.target_ids)
+        for target_id in unit.target_ids:
+            if target_id not in targets:
+                targets.append(target_id)
+        merged[evidence_id] = existing.model_copy(
+            update={"target_ids": targets}
+        )
+    return merged
+
+
+def merge_evidence_dispositions(
+    previous: Sequence[EvidenceDisposition],
+    current: Sequence[EvidenceDisposition],
+) -> list[EvidenceDisposition]:
+    """Append dispositions, refusing contradictions for one item at one stage.
+
+    One item has one reason per stage. A repeat with the same reason unions its
+    targets, and a later pass may fill in the retained equivalent it resolved —
+    but two different retained equivalents, or two different reasons, describe
+    two different omissions wearing one identity, so they raise.
+    """
+    merged: list[EvidenceDisposition] = []
+    index_by_key: dict[tuple[str, str], int] = {}
+    for item in (*previous, *current):
+        key = (item.stage, item.item_id)
+        position = index_by_key.get(key)
+        if position is None:
+            index_by_key[key] = len(merged)
+            merged.append(item)
+            continue
+        known = merged[position]
+        if known.reason != item.reason:
+            raise EvidenceIdentityConflict(
+                f"item {item.item_id!r} already has reason {known.reason!r} "
+                f"at stage {item.stage!r}"
+            )
+        retained = known.retained_equivalent_id
+        if retained is None:
+            retained = item.retained_equivalent_id
+        elif (
+            item.retained_equivalent_id is not None
+            and item.retained_equivalent_id != retained
+        ):
+            raise EvidenceIdentityConflict(
+                f"item {item.item_id!r} already points at retained evidence "
+                f"{retained!r} at stage {item.stage!r}"
+            )
+        targets = list(known.target_ids)
+        for target_id in item.target_ids:
+            if target_id not in targets:
+                targets.append(target_id)
+        merged[position] = known.model_copy(
+            update={
+                "target_ids": targets,
+                "retained_equivalent_id": retained,
+            }
+        )
+    return merged
+
+
+def merge_boundary_audits(
+    previous: Mapping[str, BoundaryAudit],
+    current: Mapping[str, BoundaryAudit],
+) -> dict[str, BoundaryAudit]:
+    """Fold manifests in, refusing one audit ID with two different contents."""
+    merged: dict[str, BoundaryAudit] = dict(previous)
+    for audit_id, audit in current.items():
+        existing = merged.get(audit_id)
+        if existing is None:
+            merged[audit_id] = audit
+            continue
+        if existing != audit:
+            raise EvidenceIdentityConflict(
+                f"audit {audit_id!r} already records another boundary"
+            )
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# boundary manifests
+# ---------------------------------------------------------------------------
+
+
+def boundary_audit_id(
+    *,
+    job_id: str,
+    agent_name: str,
+    operation: str,
+    sequence: int,
+) -> str:
+    """Return the stable ID of one boundary manifest.
+
+    Deterministic from what the manifest is about, so a later replay can
+    recompute the ID it expects to find and fail on a missing one instead of
+    reading an absent manifest as zero loss.
+    """
+    if not job_id.strip() or not agent_name.strip() or not operation.strip():
+        raise EvidenceContractError(
+            "a boundary audit id requires a job, an agent, and an operation"
+        )
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0:
+        raise EvidenceContractError("sequence must be a non-negative integer")
+    return "audit-" + _fingerprint(
+        job_id, agent_name, operation, str(sequence)
+    )[:_DIGEST_LENGTH]
+
+
+def build_boundary_audit(
+    *,
+    operation: str,
+    job_id: str,
+    agent_name: str,
+    sequence: int,
+    input_ids: Sequence[str],
+    packet_fingerprint: str,
+    configuration_fingerprint: str,
+    target_ids: Sequence[str] = (),
+    selected_ids: Sequence[str] = (),
+    returned_ids: Sequence[str] = (),
+    accepted_ids: Sequence[str] = (),
+    deferred_ids: Sequence[str] = (),
+    disposition_ids: Sequence[str] = (),
+    status: str = "completed",
+) -> BoundaryAudit:
+    """Build one Section 2.6 boundary manifest for one handoff.
+
+    A manifest records what went in, what came out, what was accepted, what
+    was deferred, and the reasons for everything that did not cross — so an
+    audit can name the first boundary where evidence was lost. Every ID list
+    is explicit and may be empty; the scalars that identify the boundary and
+    the packet it judged may not be.
+    """
+    return BoundaryAudit(
+        audit_id=boundary_audit_id(
+            job_id=job_id,
+            agent_name=agent_name,
+            operation=operation,
+            sequence=sequence,
+        ),
+        job_id=job_id,
+        agent_name=agent_name,
+        operation=operation,
+        target_ids=list(target_ids),
+        input_ids=list(input_ids),
+        selected_ids=list(selected_ids),
+        returned_ids=list(returned_ids),
+        accepted_ids=list(accepted_ids),
+        deferred_ids=list(deferred_ids),
+        disposition_ids=list(disposition_ids),
+        packet_fingerprint=packet_fingerprint,
+        schema_version=QUALITY_CONTRACT_VERSION,
+        configuration_fingerprint=configuration_fingerprint,
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def require_boundary_manifest(
+    audits: Mapping[str, BoundaryAudit],
+    audit_id: str,
+) -> BoundaryAudit:
+    """Return the manifest a replay needs, or fail loudly.
+
+    A new-contract replay asserts against this: a missing manifest raises
+    instead of contributing empty ID lists, which would read as "nothing was
+    lost here" — the exact failure mode a boundary audit exists to prevent.
+    """
+    audit = audits.get(audit_id)
+    if audit is None:
+        raise MissingBoundaryManifest(
+            f"no boundary manifest recorded for audit id {audit_id!r}"
+        )
+    return audit
+
+
+def _fingerprint(*parts: str) -> str:
+    """SHA-256 over ``parts``, separated so no two fields can forge a join."""
+    joined = "\x1f".join(parts)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()

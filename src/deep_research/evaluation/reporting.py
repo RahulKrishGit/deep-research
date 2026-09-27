@@ -141,11 +141,48 @@ def _verbose_lines(cases: list[CaseResult]) -> list[str]:
     return lines
 
 
+def _parity_line(result: ExperimentResult) -> str | None:
+    """The disclosure line verbose output prints for the resolved parity.
+
+    Reads straight from ``result.metadata`` (as written by
+    ``experiment_metadata``) rather than a typed field: reporting only
+    ever consumes the already-redacted, already-typed data handed to it,
+    and an older artifact missing one of these keys means "nothing to
+    disclose" rather than a rendering crash -- so a ``None`` here silently
+    omits the line instead of raising.
+
+    Two whole-branch reviews flagged that disclosure living only in the
+    JSON artifact's metadata block is not disclosure: it has to be in the
+    command's own terminal output too, and it has to say when a run was
+    forced onto (or off) production parity by a CLI flag rather than
+    simply inheriting config.yaml.
+    """
+    metadata = result.metadata
+    parity = metadata.get("production_parity")
+    source = metadata.get("production_parity_source")
+    profile_source = metadata.get("target_profile_source")
+    release_evidence = metadata.get("release_evidence")
+    if (
+        not isinstance(parity, bool)
+        or not isinstance(source, str)
+        or not isinstance(profile_source, str)
+        or not isinstance(release_evidence, bool)
+    ):
+        return None
+    state = "on" if parity else "off"
+    evidence = "yes" if release_evidence else "no"
+    return (
+        f"production parity: {state} ({source}) — target profile "
+        f"from {profile_source}; release evidence: {evidence}"
+    )
+
+
 def render_experiment(result: ExperimentResult, *, verbose: bool) -> list[str]:
     """The terminal summary for one experiment.
 
-    ``verbose`` adds one line per repetition (ids, counts, and scores
-    only -- never a prompt, a payload, or a raw exception) plus the
+    ``verbose`` adds the resolved production-parity disclosure line (see
+    ``_parity_line``), then one line per repetition (ids, counts, and
+    scores only -- never a prompt, a payload, or a raw exception) plus the
     ``judge_not_run`` reason where present.
     """
     repetitions = _all_repetitions(result)
@@ -170,6 +207,10 @@ def render_experiment(result: ExperimentResult, *, verbose: bool) -> list[str]:
         lines.extend(_failures_lines(result.cases))
 
     if verbose:
+        parity_line = _parity_line(result)
+        if parity_line is not None:
+            lines.append("")
+            lines.append(parity_line)
         lines.extend(_verbose_lines(result.cases))
 
     return lines

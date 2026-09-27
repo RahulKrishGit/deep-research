@@ -2,25 +2,40 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 from types import SimpleNamespace
 
 import pytest
 import yaml
 
+import deep_research.main as main_module
 from deep_research.graph.orchestrator import compile_research_graph
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
     SUPPORTED_OUTPUT_FORMATS,
+    _monitor_loop_lag,
     resolve_output_format,
     run_research,
     run_research_sync,
 )
+from deep_research.observability import RunTelemetryCollector
 from deep_research.request_budget import RequestBudget, RequestBudgetUpdate
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import ResearchEvent
-from tests.graph_fakes import FakeAgent, fake_critique, fake_research_agents
+from tests.graph_fakes import (
+    REVIEW_DIMENSIONS,
+    FakeAgent,
+    FakeReviewer,
+    fake_report_review,
+    fake_research_agents,
+    fake_sub_topic,
+    fake_target,
+    fake_writer_update,
+)
 
 QUESTION = "How mature is quantum error correction?"
 
@@ -32,7 +47,7 @@ def config_file(tmp_path, monkeypatch) -> str:
     monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
     monkeypatch.setenv("LANGSMITH_TRACING", "false")
     payload = {
-        "graph": {"max_iterations": 2, "checkpointing_enabled": False},
+        "graph": {"max_extra_passes": 2, "checkpointing_enabled": False},
         "output": {"directory": str(tmp_path / "output"), "default_format": "markdown"},
         "memory": {
             "long_term": {"persist_directory": str(tmp_path / "memory")},
@@ -100,7 +115,8 @@ async def test_a_successful_run_returns_an_outcome(config_file, tracker) -> None
     assert isinstance(outcome, ResearchOutcome)
     assert outcome.question == QUESTION
     assert outcome.status == "completed"
-    assert outcome.report == "# Research report: pass 1"
+    assert outcome.report is not None
+    assert outcome.report.startswith(f"# {QUESTION}")
     assert outcome.session_id
 
 
@@ -130,24 +146,40 @@ async def test_generated_session_ids_are_unique(config_file, tracker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_max_iterations_overrides_the_configured_budget(
+async def test_max_extra_passes_overrides_the_configured_budget(
     config_file, tracker
 ) -> None:
+    """An explicit ceiling wins over ``graph.max_extra_passes`` (PD-15)."""
+    topic = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
     agents = fake_research_agents(
-        critic=FakeAgent(
-            "critic", [{"critique": fake_critique(should_continue=True)}]
-        )
+        planner=FakeAgent("planner", [{"sub_topics": [topic]}]),
+        report_writer=FakeAgent(
+            "report_writer", [], update_factory=fake_writer_update
+        ),
+        report_reviewer=FakeReviewer(
+            [
+                fake_report_review(
+                    dimensions={name: 0.5 for name in REVIEW_DIMENSIONS}
+                )
+            ]
+        ),
     )
 
     outcome = await run_research(
         QUESTION,
         config_path=config_file,
-        max_iterations=1,
+        max_extra_passes=1,
         runtime_builder=fake_builder(tracker, agents=agents),
     )
 
     assert outcome.status == "max_iterations"
-    assert outcome.state.max_iterations == 1
+    assert outcome.state.max_extra_passes == 1
+    assert outcome.state.iteration == 1
 
 
 @pytest.mark.asyncio
@@ -158,7 +190,7 @@ async def test_the_configured_budget_is_used_when_none_is_passed(
         QUESTION, config_path=config_file, runtime_builder=fake_builder(tracker)
     )
 
-    assert outcome.state.max_iterations == 2
+    assert outcome.state.max_extra_passes == 2
 
 
 @pytest.mark.asyncio
@@ -462,13 +494,19 @@ async def test_resume_forwards_the_event_handler_and_streams_the_terminal_sessio
     assert received[-1].event_type == "graph.session.completed"
 
 
-def budget_runtime(settings, *, session_id, tracker, budget, agents=None):
-    """A runtime stand-in exposing the shared run budget.
+def budget_runtime(
+    settings, *, session_id, tracker, budget, agents=None, telemetry=None
+):
+    """A runtime stand-in exposing the shared run budget and its collector.
 
     ``ResearchRuntime`` gains ``request_budget`` in the task that owns
     ``assembly.py``; the budget surface ``run_research`` touches is only
     ``request_budget``, so a stand-in keeps this task's tests independent of
-    that one.
+    that one. ``telemetry`` is the other surface ``run_research`` reads — the
+    run's §7.3 collector, which it installs on the budget's single observer
+    slot — and it defaults to ``None`` for the same reason the budget is
+    explicit here: a run with no collector must behave exactly as it did
+    before there was one.
     """
     return SimpleNamespace(
         session_id=session_id,
@@ -480,6 +518,7 @@ def budget_runtime(settings, *, session_id, tracker, budget, agents=None):
         long_term=None,
         procedural=None,
         request_budget=budget,
+        run_telemetry=telemetry,
     )
 
 
@@ -494,6 +533,141 @@ def reserving_builder(tracker, budget, *, on_start=None):
         )
 
     return build
+
+
+@pytest.mark.asyncio
+async def test_run_research_notifies_the_collector_and_the_handler_of_every_update(
+    config_file, tracker
+) -> None:
+    """``RequestBudget`` holds one observer, and two parties need it.
+
+    The CLI installs its stream here while the assembly installed the run's
+    collector there, so ``run_research`` has to fan out: both see every update.
+    A collector that was replaced would report a peak of zero for a run that
+    had a call in flight, which is the figure §7.3 exists to report.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    peaks: list[int] = []
+    handler_kinds: list[str] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+            peaks.append(collector.snapshot().peak_calls_in_flight)
+
+    def record(update: RequestBudgetUpdate) -> None:
+        handler_kinds.append(update.kind)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+        request_budget_handler=record,
+    )
+
+    assert peaks == [1]
+    assert handler_kinds == ["attempt_reserved"]
+
+
+@pytest.mark.asyncio
+async def test_run_research_installs_the_collector_alone_and_detaches_it(
+    config_file, tracker
+) -> None:
+    """With no handler the collector is the observer; when the call returns it is
+    gone, exactly as the handler was.
+
+    A runtime outlives one run — a resume reuses it — so an observer left
+    installed would attribute a later run's attempts to this one's collector.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    peaks: list[int] = []
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+            peaks.append(collector.snapshot().peak_calls_in_flight)
+
+    await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    budget.reserve("deepseek")
+
+    assert peaks == [1]
+    assert collector.snapshot().peak_calls_in_flight == 1
+
+
+@pytest.mark.asyncio
+async def test_a_halted_run_still_carries_the_run_telemetry(
+    config_file, tracker
+) -> None:
+    """A halted run is still a run that was measured.
+
+    The terminal finalizer stamps the collector for a run that reaches
+    publication, and a halted run reaches none — the node is skipped and
+    publishes nothing. That is exactly the run whose telemetry matters most:
+    one killed by repeated 429s or a spent attempt budget is the run the
+    "rate limits hit N times" advice is for. So the entry point takes the same
+    reading for the pass that had no publication step, and takes it only when
+    the finalizer did not.
+    """
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    planner = FakeAgent("planner", [{"iteration": 2}])
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            agents=fake_research_agents(planner=planner),
+            telemetry=collector,
+        )
+
+    def event_handler(event: ResearchEvent) -> None:
+        if event.event_type == "graph.session.started":
+            collector.note_call_starting("researcher")
+            budget.reserve("deepseek")
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=builder,
+        event_handler=event_handler,
+    )
+
+    assert outcome.failed is True
+    assert outcome.state.run_telemetry is not None
+    assert outcome.state.run_telemetry.peak_calls_in_flight == 1
+    assert outcome.state.run_telemetry.peak_agent == "researcher"
+    assert outcome.quality_path is None
 
 
 @pytest.mark.asyncio
@@ -652,3 +826,92 @@ async def test_a_runtime_without_a_budget_fails_loudly(config_file, tracker) -> 
             config_path=config_file,
             runtime_builder=builder,
         )
+
+
+# ---------------------------------------------------------------------------
+# The event-loop lag monitor (stall-fix-brief.md P1-B).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_loop_lag_monitor_records_a_synthetic_block_and_stops_cleanly() -> (
+    None
+):
+    """A synchronous block inside the loop delays the monitor's own tick; the
+    delay is recorded, and cancelling the monitor stops it cleanly with no
+    exception escaping."""
+    collector = RunTelemetryCollector()
+    monitor = asyncio.create_task(_monitor_loop_lag(collector, tick=0.05))
+    await asyncio.sleep(0.1)  # let the monitor get into its own sleep
+    time.sleep(0.5)  # block the loop synchronously: the monitor's tick lags
+    await asyncio.sleep(0.1)  # let the monitor observe and record the delay
+
+    monitor.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await monitor
+    assert monitor.cancelled()
+
+    telemetry = collector.snapshot()
+    assert telemetry.loop_lag_max_seconds > 0.0
+    assert len(telemetry.loop_lag_blocks) >= 1
+
+
+@pytest.mark.asyncio
+async def test_run_research_starts_and_stops_the_loop_lag_monitor(
+    config_file, tracker, monkeypatch
+) -> None:
+    """The monitor runs beside the graph and is cancelled cleanly when the run
+    ends: it must never keep the run alive past its own work, and it must
+    never survive the call that started it."""
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def fake_monitor(passed_collector) -> None:
+        assert passed_collector is collector
+        started.set()
+        try:
+            await asyncio.sleep(1000)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(main_module, "_monitor_loop_lag", fake_monitor)
+
+    async def builder(settings, *, session_id, **_ignored):
+        return budget_runtime(
+            settings,
+            session_id=session_id,
+            tracker=tracker,
+            budget=budget,
+            telemetry=collector,
+        )
+
+    await run_research(
+        QUESTION, config_path=config_file, runtime_builder=builder
+    )
+
+    assert started.is_set()
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_run_research_skips_the_loop_lag_monitor_with_no_collector(
+    config_file, tracker, monkeypatch
+) -> None:
+    """A runtime with no collector (an injected chat provider, or a harness)
+    starts no monitor: there would be nothing for it to record into."""
+    calls: list[object] = []
+
+    async def fake_monitor(collector) -> None:
+        calls.append(collector)
+        await asyncio.sleep(1000)
+
+    monkeypatch.setattr(main_module, "_monitor_loop_lag", fake_monitor)
+
+    await run_research(
+        QUESTION, config_path=config_file, runtime_builder=fake_builder(tracker)
+    )
+
+    assert calls == []

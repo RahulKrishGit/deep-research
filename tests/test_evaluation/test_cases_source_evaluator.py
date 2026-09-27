@@ -5,7 +5,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from deep_research.agents.sources import source_domain
+from deep_research.agents.evidence import TRANSPORT_RELATIONS
+from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
@@ -16,6 +17,7 @@ CONTROLLED = (
     "strong-and-weak-sources",
     "corroboration-recency-reputation",
     "reputation-provider-failure",
+    "work-role-independence",
 )
 
 _METRICS = {
@@ -36,6 +38,12 @@ _METRICS = {
         ("fallback_scores_bounded", 0.25),
         ("failure_recorded", 0.25),
         ("no_fabricated_reputation", 0.15),
+    ),
+    "work-role-independence": (
+        ("mirror_not_a_new_work", 0.30),
+        ("independent_work_recognized", 0.25),
+        ("one_evaluation_per_source", 0.25),
+        ("bounded_scores", 0.20),
     ),
     "source-evaluator-live-ranking": (
         ("one_evaluation_per_source", 0.30),
@@ -80,6 +88,16 @@ _FAILURE_URLS = (
     _CU_SENSOR_URL,
 )
 
+# A national survey and the three pages that carry it: the institute's own
+# report, a repository record naming the same institute and report number,
+# and a wire reprint. The university's study is a separate publisher's own
+# work, so the four URLs hold two works and three publishers.
+_SURVEY_URL = "https://soilbaseline.example.gov/reports/sc-2026-04"
+_MIRROR_URL = "https://repository.example.org/records/sc-2026-04"
+_WIRE_URL = "https://wire.example.com/soil-carbon-baseline-reprint"
+_UNIVERSITY_URL = "https://soilstudies.example.edu/carbon-baseline-2025"
+_WORK_ROLE_URLS = (_SURVEY_URL, _MIRROR_URL, _WIRE_URL, _UNIVERSITY_URL)
+
 _EPA_DATA_URL = "https://www.epa.gov/outdoor-air-quality-data"
 _WHO_DATA_URL = "https://www.who.int/health-topics/air-pollution"
 _BLOG_DATA_URL = (
@@ -106,6 +124,13 @@ _REFERENCES = {
         "failing_domains": ["epa.gov", "aqmd.gov"],
         "succeeding_domains": ["nist.gov", "colorado.edu"],
     },
+    "work-role-independence": {
+        "original_url": _SURVEY_URL,
+        "same_work_urls": [_SURVEY_URL, _MIRROR_URL, _WIRE_URL],
+        "independent_work_urls": [_UNIVERSITY_URL],
+        "derivative_relations": ["mirror", "syndication"],
+        "maximum_independent_works": 2,
+    },
     "source-evaluator-live-ranking": {
         "authoritative_urls": [_EPA_DATA_URL, _WHO_DATA_URL],
         "weak_urls": [_BLOG_DATA_URL, _FORUM_DATA_URL],
@@ -124,6 +149,12 @@ _RUBRIC_DIMENSIONS = {
         "rationale_quality",
         "ranking_discipline",
         "degradation_honesty",
+    },
+    "work-role-independence": {
+        "rationale_quality",
+        "ranking_discipline",
+        "work_identity",
+        "transport_vs_publication",
     },
     "source-evaluator-live-ranking": {"rationale_quality", "ranking_discipline"},
 }
@@ -146,7 +177,7 @@ def _case(case_id: str):
     )
 
 
-def test_the_three_controlled_cases_are_registered() -> None:
+def test_the_controlled_cases_are_registered() -> None:
     assert tuple(
         case.case_id for case in cases_for("source_evaluator", "controlled")
     ) == CONTROLLED
@@ -280,6 +311,53 @@ def test_the_reputation_failure_case_cites_exactly_its_four_urls() -> None:
     assert tuple(
         finding.source_url for finding in case.state.raw_findings
     ) == _FAILURE_URLS
+
+
+def test_the_work_role_case_cites_exactly_its_four_urls() -> None:
+    case = _case("work-role-independence")
+
+    assert tuple(
+        finding.source_url for finding in case.state.raw_findings
+    ) == _WORK_ROLE_URLS
+
+
+def test_the_work_role_case_seeds_a_read_for_every_finding() -> None:
+    """The Source Evaluator is tool-free and derives a source's publisher,
+    work, and transport relation only from the read behind it, so a case that
+    seeds no read records no identity at all — and the identity metrics would
+    measure nothing."""
+    case = _case("work-role-independence")
+    reads = list(case.state.read_records.values())
+
+    assert {
+        normalize_source_url(read.resolved_url) for read in reads
+    } == set(_WORK_ROLE_URLS)
+    assert all(read.extraction_complete for read in reads)
+
+
+def test_the_work_role_case_partitions_one_work_from_the_other() -> None:
+    """The reference's two work sets partition the four URLs, the derivative
+    relations are real vocabulary members, and the independent work is not
+    one of the survey's URLs."""
+    case = _case("work-role-independence")
+    reference = case.expectations.reference
+
+    same_work = reference["same_work_urls"]
+    independent = reference["independent_work_urls"]
+
+    assert same_work[0] == reference["original_url"]
+    assert set(same_work) & set(independent) == set()
+    assert set(same_work) | set(independent) == set(_WORK_ROLE_URLS)
+    assert set(reference["derivative_relations"]) <= set(TRANSPORT_RELATIONS)
+    assert "original" not in reference["derivative_relations"]
+
+
+def test_the_work_role_case_scripts_reputations_for_its_hosts() -> None:
+    script = SCENARIOS["source-evaluator-work-roles"]
+
+    assert set(script.reputations) == {
+        source_domain(url) for url in _WORK_ROLE_URLS
+    }
 
 
 def test_the_live_case_cites_exactly_its_four_urls() -> None:

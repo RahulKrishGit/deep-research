@@ -8,8 +8,12 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from deep_research.main import load_settings
 from deep_research.observability import Tracker
 from deep_research.utils.config import (
+    PRODUCTION_AGENT_NAMES,
+    SERVICE_ROLE_NAMES,
+    AgentRuntimeConfig,
     ConfigSettings,
     EffectiveModelConfig,
     EvaluationConfig,
@@ -71,8 +75,8 @@ def config_path(tmp_path: Path) -> Path:
                 "agents": {
                     "max_iterations": 5,
                     "tool_budget": 10,
-                    "prompt_context_entries": 8,
-                    "observation_summary_chars": 200,
+                    "prompt_context_entries": 20,
+                    "observation_summary_chars": 2000,
                 },
                 "output": {"directory": "output/", "default_format": "markdown"},
             }
@@ -230,7 +234,7 @@ def test_llm_defaults_select_deepseek_reasoning() -> None:
     assert llm.retry_initial_delay == 1.0
     assert llm.retry_max_delay == 16.0
     assert llm.resolve_for(None) == EffectiveModelConfig(
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         thinking_mode="enabled",
         reasoning_effort="high",
     )
@@ -253,11 +257,63 @@ def test_agent_model_overrides_support_string_and_structured_forms() -> None:
         reasoning_effort="high",
     )
     assert llm.resolve_for("critic") == EffectiveModelConfig(
-        model="deepseek-v4-flash",
+        model="deepseek-flash",
         thinking_mode="enabled",
         reasoning_effort="max",
     )
     assert llm.resolve_for("researcher") == llm.resolve_for(None)
+
+
+def test_report_reviewer_timeout_and_retries_leave_other_roles_on_transport_defaults() -> None:
+    llm = LLMConfig(
+        timeout=60.0,
+        retry_count=5,
+        model_overrides={"report_reviewer": {"timeout": 360.0, "retry_count": 1}},
+    )
+
+    assert llm.resolve_for("report_reviewer").timeout == 360.0
+    assert llm.resolve_for("report_reviewer").retry_count == 1
+    assert llm.resolve_for("critic").timeout is None
+    assert llm.resolve_for("critic").retry_count is None
+
+
+def test_stream_defaults_to_true_and_idle_timeout_to_150_seconds() -> None:
+    llm = LLMConfig()
+
+    assert llm.stream is True
+    assert llm.idle_timeout == 150.0
+
+
+def test_stream_and_idle_timeout_resolve_per_role_like_timeout() -> None:
+    llm = LLMConfig(
+        model_overrides={
+            "report_reviewer": {"stream": False, "idle_timeout": 60.0},
+        },
+    )
+
+    assert llm.resolve_for("report_reviewer").stream is False
+    assert llm.resolve_for("report_reviewer").idle_timeout == 60.0
+    assert llm.resolve_for("critic").stream is None
+    assert llm.resolve_for("critic").idle_timeout is None
+
+
+@pytest.mark.parametrize("invalid_override", [{"idle_timeout": 0}, {"idle_timeout": -5}])
+def test_agent_model_override_rejects_a_non_positive_idle_timeout(
+    invalid_override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        LLMConfig(model_overrides={"report_reviewer": invalid_override})
+
+
+@pytest.mark.parametrize(
+    "invalid_override",
+    [{"timeout": 0}, {"timeout": -5}, {"retry_count": -1}],
+)
+def test_role_transport_bounds_reject_nonpositive_timeout_or_negative_retries(
+    invalid_override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        LLMConfig(model_overrides={"report_reviewer": invalid_override})
 
 
 def test_effective_model_config_is_immutable() -> None:
@@ -431,6 +487,18 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
         ("AGENTS_TOOL_BUDGET", ("agents", "tool_budget"), "3", 3),
         ("AGENTS_MAX_SUB_TOPICS", ("agents", "max_sub_topics"), "5", 5),
         (
+            "AGENTS_READ_ADMISSION_CHARS",
+            ("agents", "read_admission_chars"),
+            "6",
+            6,
+        ),
+        (
+            "AGENTS_EVIDENCE_PACKET_CHARS",
+            ("agents", "evidence_packet_chars"),
+            "18000",
+            18000,
+        ),
+        (
             "AGENTS_PROMPT_CONTEXT_ENTRIES",
             ("agents", "prompt_context_entries"),
             "4",
@@ -449,10 +517,40 @@ def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> No
             8192,
         ),
         (
-            "AGENTS_CRITIC_REVIEW_MAX_TOKENS",
-            ("agents", "critic_review_max_tokens"),
-            "16384",
-            16384,
+            "AGENTS_SUB_TOPIC_CONCURRENCY",
+            ("agents", "sub_topic_concurrency"),
+            "2",
+            2,
+        ),
+        (
+            "AGENTS_SOURCE_SCORING_CONCURRENCY",
+            ("agents", "source_scoring_concurrency"),
+            "1",
+            1,
+        ),
+        (
+            "AGENTS_VERIFIER_BATCH_SIZE",
+            ("agents", "verifier_batch_size"),
+            "10",
+            10,
+        ),
+        (
+            "AGENTS_VERIFIER_CONCURRENCY",
+            ("agents", "verifier_concurrency"),
+            "4",
+            4,
+        ),
+        (
+            "AGENTS_EXTRACTION_CONCURRENCY",
+            ("agents", "extraction_concurrency"),
+            "8",
+            8,
+        ),
+        (
+            "AGENTS_WRITER_SECTION_CONCURRENCY",
+            ("agents", "writer_section_concurrency"),
+            "3",
+            3,
         ),
         (
             "AGENTS_JUDGE_MAX_TOKENS",
@@ -701,11 +799,38 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
 
     assert settings.agents.max_iterations == 5
     assert settings.agents.tool_budget == 10
-    assert settings.agents.max_sub_topics == 7
-    assert settings.agents.prompt_context_entries == 8
-    assert settings.agents.observation_summary_chars == 200
-    assert settings.agents.planner_final_max_tokens == 32768
-    assert settings.agents.critic_review_max_tokens == 32768
+    assert settings.agents.max_sub_topics == 10
+    assert settings.agents.prompt_context_entries == 20
+    assert settings.agents.observation_summary_chars == 2000
+    assert settings.agents.planner_final_max_tokens == 65536
+
+
+def test_writer_reader_length_and_authority_floor_default(config_path: Path) -> None:
+    """D11/D6-D7: the writer's reader-length fallback and authority floor."""
+    settings = load_config(str(config_path))
+
+    assert settings.agents.report_target_words == 2000
+    assert settings.agents.writer_authority_floor == 0.4
+
+
+def test_agents_report_target_words_environment_override(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path,
+) -> None:
+    monkeypatch.setenv("AGENTS_REPORT_TARGET_WORDS", "1500")
+
+    settings = load_config(str(config_path))
+
+    assert settings.agents.report_target_words == 1500
+
+
+def test_agents_writer_authority_floor_environment_override(
+    monkeypatch: pytest.MonkeyPatch, config_path: Path,
+) -> None:
+    monkeypatch.setenv("AGENTS_WRITER_AUTHORITY_FLOOR", "0.6")
+
+    settings = load_config(str(config_path))
+
+    assert settings.agents.writer_authority_floor == 0.6
 
 
 def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
@@ -714,22 +839,30 @@ def test_source_evaluator_defaults_bound_batch_and_total_source_limits(
     settings = load_config(str(config_path))
 
     assert settings.agents.source_evaluator.batch_size == 12
-    assert settings.agents.source_evaluator.max_total_sources == 36
+    assert settings.agents.source_evaluator.max_total_sources == 100
 
 
 def test_the_shipped_config_file_carries_the_sub_topic_cap() -> None:
-    """The shipped YAML attempts the whole plan, not a truncated one.
+    """One production pass attempts the whole plan the Planner may produce.
 
-    ``agents.max_sub_topics`` is the production half of the Planner's own
-    seven-sub-topic ceiling; a smaller value here silently drops planned
-    sub-topics from every production run.
+    ``agents.max_sub_topics`` bounds how many of a plan's sub-topics one
+    Researcher pass attempts. It equals the Planner's own ``MAX_SUB_TOPICS``
+    ceiling, so a six- or seven-part question is researched whole: a lower cap
+    dropped the plan's last sub-topics, and the parts they covered reached the
+    reader as Not found.
     """
     from deep_research.agents.planner import MAX_SUB_TOPICS
 
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["agents"]["max_sub_topics"] == 7
     assert raw["agents"]["max_sub_topics"] == MAX_SUB_TOPICS
+
+
+def test_the_shipped_config_file_carries_the_writer_reader_length_and_authority_floor() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["report_target_words"] == 2000
+    assert raw["agents"]["writer_authority_floor"] == 0.4
 
 
 def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
@@ -749,7 +882,6 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
     budgets = {
         "llm.max_tokens": settings.llm.max_tokens,
         "planner_final_max_tokens": settings.agents.planner_final_max_tokens,
-        "critic_review_max_tokens": settings.agents.critic_review_max_tokens,
         "judge_max_tokens": settings.agents.judge_max_tokens,
         "react_decision_max_tokens": settings.agents.react_decision_max_tokens,
     }
@@ -758,35 +890,29 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
         assert value >= 32768, f"{name} is still pinned at {value}"
 
 
-def test_the_shipped_config_file_carries_the_critic_review_budget() -> None:
+def test_every_shipped_output_budget_but_the_re_extraction_is_the_global_cap() -> None:
+    """The shipped file lifts every output budget but the one looping call's.
+
+    User decision 2026-09-25: no agent fails on an output-length limit, so
+    every operation budget is sent at the same value as ``llm.max_tokens``
+    (the provider's documented maximum). The researcher's owed-passage
+    re-extraction is the exception, because it ran away to whatever cap it
+    had: its budget stays below the global one.
+    """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    global_cap = raw["llm"]["max_tokens"]
 
-    assert raw["agents"]["critic_review_max_tokens"] == 32768
+    names = (
+        "planner_final_max_tokens",
+        "report_review_max_tokens",
+        "judge_max_tokens",
+        "react_decision_max_tokens",
+    )
 
-
-def test_the_shipped_config_file_carries_the_uniform_token_budget() -> None:
-    """The shipped YAML raises the global cap and every operation with it."""
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-
-    assert raw["llm"]["max_tokens"] == 32768
-    assert raw["agents"]["planner_final_max_tokens"] == 32768
-    assert raw["agents"]["judge_max_tokens"] == 32768
-    assert raw["agents"]["react_decision_max_tokens"] == 32768
-
-
-def test_the_planner_final_budget_defaults_to_the_global_cap(
-    config_path: Path,
-) -> None:
-    """The operation-specific planner-final budget defaults to the global cap."""
-    settings = load_config(str(config_path))
-
-    assert settings.agents.planner_final_max_tokens == 32768
-
-
-def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
-
-    assert raw["agents"]["planner_final_max_tokens"] == 32768
+    assert {name: raw["agents"][name] for name in names} == dict.fromkeys(
+        names, global_cap
+    )
+    assert raw["agents"]["re_extraction_max_tokens"] < global_cap
 
 
 @pytest.mark.parametrize(
@@ -798,8 +924,9 @@ def test_the_shipped_config_file_carries_the_planner_final_budget() -> None:
         ("prompt_context_entries", -1),
         ("observation_summary_chars", 0),
         ("planner_final_max_tokens", 0),
-        ("critic_review_max_tokens", 0),
         ("judge_max_tokens", 0),
+        ("report_target_words", 0),
+        ("writer_authority_floor", -0.1),
     ],
 )
 def test_agent_runtime_config_rejects_unbounded_values(
@@ -815,10 +942,178 @@ def test_agent_runtime_config_rejects_unbounded_values(
         AgentRuntimeConfig(**{field_name: invalid_value})
 
 
+def test_agent_budgets_resolve_without_changing_global_default():
+    config = AgentRuntimeConfig(
+        tool_budget=10, tool_budget_overrides={"planner": 1, "report_writer": 0}
+    )
+    assert config.tool_budget_for("planner") == 1
+    assert config.tool_budget_for("researcher") == 10
+    assert config.tool_budget_for("report_writer") == 0
+
+
+def test_an_agent_budget_override_is_keyed_by_the_canonical_agent_name() -> None:
+    """A name that is not one of the six agents changes nobody's budget.
+
+    The override table exists so one agent's loop can be bounded harder than
+    the rest. A misspelled key that silently did nothing would leave the
+    planner on the global ten-call budget while the configuration read as if
+    it had been bounded, so unknown keys are rejected outright.
+    """
+    with pytest.raises(ValidationError) as caught:
+        AgentRuntimeConfig(tool_budget_overrides={"planer": 1})
+
+    assert "planer" in str(caught.value)
+
+    config = AgentRuntimeConfig(
+        tool_budget=10, tool_budget_overrides={"planner": 1}
+    )
+    assert config.tool_budget_for("researcher") == 10
+
+
+@pytest.mark.parametrize("budget", [-1, -10])
+def test_an_agent_budget_override_rejects_a_negative_budget(budget: int) -> None:
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(tool_budget_overrides={"planner": budget})
+
+
+def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
+    """The shipped overrides are the plan's exact values, and no sixth key.
+
+    Every entry but the researcher's is a declaration rather than a bound it
+    might spend: the researcher is the only agent that searches, and the
+    evidence verifier and the writer run tool-free calls by contract.
+    """
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["tool_budget"] == 10
+    assert raw["agents"]["tool_budget_overrides"] == {
+        "planner": 1,
+        "researcher": 40,
+        "source_evaluator": 0,
+        "evidence_verifier": 0,
+        "report_writer": 0,
+    }
+
+
+def test_the_shipped_config_sets_the_researcher_budget_and_turn_caps() -> None:
+    """Spec §7.2: the researcher's tool budget is 40 over fifteen model turns,
+    and one pass attempts every sub-topic a plan may carry (ten)."""
+    settings = load_config("config.yaml")
+
+    assert (
+        settings.agents.max_iterations == 15
+        and settings.agents.max_sub_topics == 10
+        and settings.agents.tool_budget_overrides["researcher"] == 40
+    )
+
+
+def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
+    """``llm.model_overrides`` is what lets production express a per-agent
+    effort at all; without it the CLI could only offer one value for all six
+    agents while evaluation ran a per-agent profile."""
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    efforts = {
+        role: override["reasoning_effort"]
+        for role, override in raw["llm"]["model_overrides"].items()
+    }
+    assert efforts == {
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "evidence_verifier": "high",
+        "report_writer": "high",
+        # Task 10's terminal semantic reviewer, resolved as its own service
+        # role: a separate call role with its own effort, not an agent.
+        "report_reviewer": "max",
+    }
+    # A timed-out review gets one transport retry, not the global repeats.
+    assert raw["llm"]["model_overrides"]["report_reviewer"]["retry_count"] == 1
+    # No role times out before the transport default every other role
+    # inherits: the timeouts moved with the lifted output caps.
+    assert all(
+        override.get("timeout", raw["llm"]["timeout"]) >= raw["llm"]["timeout"]
+        for override in raw["llm"]["model_overrides"].values()
+    )
+    # The snippet amends the ``llm`` mapping; the other fields stay.
+    assert raw["llm"]["provider"] == "deepseek"
+    assert raw["llm"]["reasoning_effort"] == "high"
+
+
+def test_the_shipped_service_role_is_configured_but_is_not_an_agent() -> None:
+    """The report reviewer resolves like an agent and is counted like none.
+
+    Preflight has to validate the role, or a mistyped model fails a paid run at
+    its first review request; and the agent registry must not grow, or every
+    consumer that means "the agents that research" would pick up a reviewer
+    that never researches and has no tool budget to spend.
+    """
+    from deep_research.providers import validate_agent_model_configs
+    from deep_research.utils.config import (
+        PRODUCTION_AGENT_NAMES,
+        SERVICE_ROLE_NAMES,
+    )
+
+    settings = load_config("config.yaml")
+
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    assert "report_reviewer" not in PRODUCTION_AGENT_NAMES
+    resolved = validate_agent_model_configs(
+        settings.llm, (*PRODUCTION_AGENT_NAMES, *SERVICE_ROLE_NAMES)
+    )
+    assert resolved["report_reviewer"].reasoning_effort == "max"
+    assert settings.llm.resolve_for("report_reviewer").reasoning_effort == "max"
+    # The role is not a place for a tool budget: the table still refuses it.
+    with pytest.raises(ValidationError):
+        AgentRuntimeConfig(tool_budget_overrides={"report_reviewer": 3})
+
+
+def test_the_shipped_per_agent_efforts_are_supported_by_the_provider() -> None:
+    """The measured effort candidate is validated locally before any run.
+
+    The per-agent profile is only useful if the provider accepts it; the
+    capability table is checked here rather than discovered at the first
+    request of a paid run.
+    """
+    from deep_research.providers import validate_agent_model_configs
+    from deep_research.utils.config import PRODUCTION_AGENT_NAMES
+
+    settings = load_config("config.yaml")
+    resolved = validate_agent_model_configs(
+        settings.llm, PRODUCTION_AGENT_NAMES
+    )
+
+    assert {
+        name: value.reasoning_effort for name, value in resolved.items()
+    } == {
+        "planner": "max",
+        "researcher": "high",
+        "source_evaluator": "high",
+        "evidence_verifier": "high",
+        "report_writer": "high",
+    }
+
+
+def test_an_unsupported_agent_effort_fails_before_any_run() -> None:
+    """Fail closed: no silent fallback to a supported effort."""
+    from deep_research.providers import (
+        ProviderConfigurationError,
+        validate_agent_model_configs,
+    )
+    from deep_research.utils.config import PRODUCTION_AGENT_NAMES
+
+    settings = LLMConfig(
+        model_overrides={"planner": {"reasoning_effort": "low"}}
+    )
+
+    with pytest.raises(ProviderConfigurationError, match="planner"):
+        validate_agent_model_configs(settings, PRODUCTION_AGENT_NAMES)
+
+
 def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:
     settings = ConfigSettings()
 
-    assert settings.graph.max_iterations == 3
+    assert settings.graph.max_extra_passes == 1
     assert settings.graph.checkpointing_enabled is False
 
 
@@ -826,33 +1121,34 @@ def test_graph_settings_load_from_yaml(tmp_path: Path) -> None:
     path = tmp_path / "config.yaml"
     path.write_text(
         yaml.safe_dump(
-            {"graph": {"max_iterations": 5, "checkpointing_enabled": True}}
+            {"graph": {"max_extra_passes": 5, "checkpointing_enabled": True}}
         ),
         encoding="utf-8",
     )
 
     settings = load_config(str(path))
 
-    assert settings.graph.max_iterations == 5
+    assert settings.graph.max_extra_passes == 5
     assert settings.graph.checkpointing_enabled is True
 
 
 def test_graph_settings_take_environment_overrides(
     config_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "7")
+    monkeypatch.setenv("GRAPH_MAX_EXTRA_PASSES", "7")
     monkeypatch.setenv("GRAPH_CHECKPOINTING_ENABLED", "true")
 
     settings = load_config(str(config_path))
 
-    assert settings.graph.max_iterations == 7
+    assert settings.graph.max_extra_passes == 7
     assert settings.graph.checkpointing_enabled is True
 
 
-def test_a_zero_iteration_budget_is_rejected(tmp_path: Path) -> None:
+def test_a_negative_extra_pass_budget_is_rejected(tmp_path: Path) -> None:
+    """Zero is a legal ceiling (buy no extra pass); a negative one is not."""
     path = tmp_path / "config.yaml"
     path.write_text(
-        yaml.safe_dump({"graph": {"max_iterations": 0}}), encoding="utf-8"
+        yaml.safe_dump({"graph": {"max_extra_passes": -1}}), encoding="utf-8"
     )
 
     with pytest.raises(ValueError):
@@ -863,17 +1159,17 @@ def test_request_overrides_deep_merge_after_environment(
     config_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("GRAPH_MAX_ITERATIONS", "4")
+    monkeypatch.setenv("GRAPH_MAX_EXTRA_PASSES", "4")
 
     settings = load_config(
         str(config_path),
         overrides={
-            "graph": {"max_iterations": 2},
+            "graph": {"max_extra_passes": 2},
             "llm": {"model_overrides": {"critic": "gpt-4.1-mini"}},
         },
     )
 
-    assert settings.graph.max_iterations == 2
+    assert settings.graph.max_extra_passes == 2
     assert settings.llm.model == "gpt-4o"
     assert settings.llm.model_overrides == {
         "planner": "gpt-4o-mini",
@@ -908,17 +1204,16 @@ def test_evaluation_defaults_match_the_approved_baseline() -> None:
     assert evaluation.controlled_repetition_floor == 0.65
     assert evaluation.live_repetitions == 1
     assert evaluation.live_threshold == 0.75
-    assert evaluation.target_model == "deepseek-v4-flash"
+    assert evaluation.target_model == "deepseek-flash"
     assert evaluation.target_reasoning_effort == "max"
     assert evaluation.target_reasoning_effort_overrides == {
         "planner": "max",
         "researcher": "high",
         "source_evaluator": "high",
-        "fact_checker": "max",
-        "synthesizer": "max",
-        "critic": "max",
+        "evidence_verifier": "high",
+        "report_writer": "high",
     }
-    assert evaluation.judge_model == "deepseek-v4-flash"
+    assert evaluation.judge_model == "deepseek-flash"
     assert evaluation.judge_reasoning_effort == "max"
     assert evaluation.embedding_provider is None
     assert evaluation.embedding_model is None
@@ -952,7 +1247,7 @@ def test_evaluation_rejects_concurrency_above_one() -> None:
 def test_the_shipped_config_file_carries_the_evaluation_block() -> None:
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
-    assert raw["evaluation"]["target_model"] == "deepseek-v4-flash"
+    assert raw["evaluation"]["target_model"] == "deepseek-flash"
     assert raw["evaluation"]["judge_reasoning_effort"] == "max"
     assert raw["evaluation"]["max_concurrency"] == 1
 
@@ -1085,3 +1380,37 @@ def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() ->
     assert canary.request_budget.stop_fraction == 0.9
     assert canary.request_budget.openai_attempt_ceiling is None
     assert settings.request_budget == RequestBudgetConfig()
+
+
+def test_the_evidence_verifier_pipeline_config() -> None:
+    settings = load_settings("config.yaml")
+    assert settings.graph.max_extra_passes == 1
+    assert settings.agents.tool_budget_overrides["researcher"] == 40
+    assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
+    assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
+    reviewer = settings.llm.resolve_for("report_reviewer")
+    assert reviewer.timeout >= settings.llm.timeout
+    assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
+    assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
+    assert SERVICE_ROLE_NAMES == ("report_reviewer",)
+    # Spec 7.3 (D9/PD-27): the four per-stage concurrency caps, one
+    # assertion each, plus extraction_concurrency (S6), a fifth
+    # concurrency knob that bounds the researcher's own per-page
+    # extraction calls rather than a stage of its own.
+    assert settings.agents.sub_topic_concurrency == 10
+    assert settings.agents.source_scoring_concurrency == 6
+    assert settings.agents.verifier_batch_size == 5
+    assert settings.agents.verifier_concurrency == 16
+    assert settings.agents.extraction_concurrency == 16
+    # Spec §6.10/§17 Q6: the parallel writer's own concurrency bound; a
+    # controller ruling for this build raised the shipped default from 7 to
+    # 10 ("no strong limits").
+    assert settings.agents.writer_section_concurrency == 10
+    # P1-4 (WholeBranchReview): the S1 limits lift raised the code defaults
+    # to 20 and 2000, but the shipped YAML kept overriding them at 8 and
+    # 200 -- silently reverting the lift for every production run while
+    # the e2e harness ran at the lifted value. Asserted against the real
+    # shipped file, not a synthetic YAML, so this fails the moment the two
+    # drift apart again.
+    assert settings.agents.prompt_context_entries == 20
+    assert settings.agents.observation_summary_chars == 2000

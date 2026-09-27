@@ -138,8 +138,8 @@ def test_kebab_agent_names_are_accepted_and_canonicalized() -> None:
     assert parse_arguments(["agent", "source-evaluator"]).agent_name == (
         "source_evaluator"
     )
-    assert parse_arguments(["agent", "fact-checker"]).agent_name == (
-        "fact_checker"
+    assert parse_arguments(["agent", "evidence-verifier"]).agent_name == (
+        "evidence_verifier"
     )
 
 
@@ -148,7 +148,7 @@ def test_an_unknown_agent_exits_two_and_lists_the_valid_names() -> None:
 
     assert code == EXIT_USAGE
     assert "librarian" in output
-    for name in ("planner", "source-evaluator", "critic"):
+    for name in ("planner", "source-evaluator", "report-writer"):
         assert name in output
 
 
@@ -238,10 +238,80 @@ def test_there_is_no_repetition_count_flag() -> None:
     assert code == EXIT_USAGE
 
 
+# --- production parity ------------------------------------------------------
+
+
+def test_with_neither_flag_production_parity_is_none() -> None:
+    """``None`` means inherit ``config.yaml``'s own setting."""
+    options = parse_arguments(["agent", "researcher"])
+
+    assert options.production_parity is None
+
+
+def test_the_production_parity_flag_sets_it_true() -> None:
+    options = parse_arguments(["agent", "researcher", "--production-parity"])
+
+    assert options.production_parity is True
+
+
+def test_the_no_production_parity_flag_sets_it_false() -> None:
+    options = parse_arguments(
+        ["agent", "researcher", "--no-production-parity"]
+    )
+
+    assert options.production_parity is False
+
+
+def test_production_parity_flags_are_mutually_exclusive() -> None:
+    code, output = run(
+        [
+            "agent",
+            "researcher",
+            "--production-parity",
+            "--no-production-parity",
+        ]
+    )
+
+    assert code == EXIT_USAGE
+
+
+def test_the_suite_command_also_accepts_the_parity_flags() -> None:
+    """Shared options apply to both subcommands (Task 13 uses both)."""
+    options = parse_arguments(["suite", "--production-parity"])
+
+    assert options.production_parity is True
+
+
+def test_the_production_parity_override_reaches_the_runner(
+    recording_runner,
+) -> None:
+    run(["agent", "researcher", "--production-parity"], runner=recording_runner)
+    run(["agent", "researcher", "--no-production-parity"], runner=recording_runner)
+    run(["agent", "researcher"], runner=recording_runner)
+
+    assert recording_runner.calls[0]["production_parity"] is True
+    assert recording_runner.calls[1]["production_parity"] is False
+    assert recording_runner.calls[2]["production_parity"] is None
+
+
+def test_verbose_output_discloses_the_resolved_production_parity(
+    passing_runner,
+) -> None:
+    code, output = run(
+        ["agent", "researcher", "--verbose"], runner=passing_runner
+    )
+
+    assert code == EXIT_OK
+    assert (
+        "production parity: on (configuration) — target profile from "
+        "production; release evidence: yes"
+    ) in output
+
+
 # --- list ------------------------------------------------------------------
 
 
-def test_list_shows_all_six_agents_and_all_cases() -> None:
+def test_list_shows_every_agent_and_all_cases() -> None:
     code, output = run(["list"])
 
     assert code == EXIT_OK
@@ -249,14 +319,13 @@ def test_list_shows_all_six_agents_and_all_cases() -> None:
         "planner",
         "researcher",
         "source-evaluator",
-        "fact-checker",
-        "synthesizer",
-        "critic",
+        "evidence-verifier",
+        "report-writer",
     ):
         assert name in output
-    assert output.count("deep-research-") == 12
+    assert output.count("deep-research-") == 10
     assert "focused-decomposition" in output
-    assert "critic-live-review" in output
+    assert "evidence-verifier-live-benchmark" in output
 
 
 # --- agent -----------------------------------------------------------------

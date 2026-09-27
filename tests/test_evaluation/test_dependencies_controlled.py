@@ -9,6 +9,7 @@ import pytest
 
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import cases_for
+from deep_research.evaluation.config import target_llm_config
 from deep_research.evaluation.dependencies import (
     SCENARIOS,
     DependencyRecorder,
@@ -35,17 +36,15 @@ _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
     "researcher": "multi-source-coverage",
     "source_evaluator": "strong-and-weak-sources",
-    "fact_checker": "mixed-verdicts",
-    "synthesizer": "complete-cited-report",
-    "critic": "approve-strong-report",
+    "evidence_verifier": "relay-labelled-as-relay",
+    "report_writer": "complete-cited-report",
 }
 _SAMPLE_SCENARIOS = {
     "planner": "planner-clean-memory",
     "researcher": "researcher-multi-source",
     "source_evaluator": "source-evaluator-mixed",
-    "fact_checker": "fact-checker-mixed",
-    "synthesizer": "synthesizer-complete",
-    "critic": "critic-strong-report",
+    "evidence_verifier": "evidence-verifier-relay",
+    "report_writer": "report-writer-complete",
 }
 
 
@@ -119,8 +118,8 @@ def researcher_case():
 
 
 @pytest.fixture
-def synthesizer_case():
-    return _controlled_case("synthesizer")
+def report_writer_case():
+    return _controlled_case("report_writer")
 
 
 def test_every_case_scenario_has_a_script(all_cases) -> None:
@@ -144,10 +143,10 @@ def test_controlled_memory_is_an_isolated_collection(
 
 
 def test_controlled_documents_land_in_an_evaluation_only_directory(
-    tracker, settings, tmp_path, runtime_config_for, synthesizer_case
+    tracker, settings, tmp_path, runtime_config_for, report_writer_case
 ) -> None:
     bundle = build(
-        runtime_config_for, tracker, settings, tmp_path, synthesizer_case
+        runtime_config_for, tracker, settings, tmp_path, report_writer_case
     )
 
     assert tmp_path in bundle.document_directory.parents
@@ -576,6 +575,30 @@ def test_isolated_settings_never_point_at_production_paths(
     assert str(tmp_path) in isolated.output.directory
     assert isolated.agents == settings.agents  # bounds stay production's
     assert isolated.graph == settings.graph
+
+
+def test_isolated_settings_carry_the_parity_resolved_target_llm(
+    settings, tmp_path, runtime_config_for
+) -> None:
+    """The isolated settings carry the profile the target actually runs.
+
+    Everything inside an evaluation bundle that reads ``settings.llm`` — a
+    tool, a preflight check, a provider built from the bundle — sees the
+    resolved target profile rather than a production mapping that may name a
+    different effort for this agent.
+    """
+    runtime = runtime_config_for("planner")
+    isolated = isolated_settings(
+        settings,
+        runtime,
+        case_id="focused-decomposition",
+        repetition=1,
+        root=tmp_path,
+    )
+
+    assert isolated.llm == target_llm_config(runtime, settings.llm)
+    assert isolated.llm.reasoning_effort == runtime.target_reasoning_effort
+    assert isolated.llm.model == runtime.target_model
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)

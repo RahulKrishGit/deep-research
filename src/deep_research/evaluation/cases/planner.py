@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from deep_research.agents.planner import MAX_SUB_TOPICS
 from deep_research.evaluation.cases import (
     build_case,
     evaluation_state,
@@ -19,7 +20,7 @@ _FOCUSED_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -35,7 +36,7 @@ _AMBIGUITY_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -57,7 +58,7 @@ _FAILURE_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -79,7 +80,7 @@ _LIVE_RUBRIC = rubric(
     (
         "decomposition_quality",
         "Subtopics partition the question without overlapping.",
-        "Three to seven distinct subtopics that together cover the question.",
+        "Three to ten distinct subtopics that together cover the question.",
         "Overlapping, missing, or off-question subtopics.",
     ),
     (
@@ -90,13 +91,98 @@ _LIVE_RUBRIC = rubric(
     ),
 )
 
+_SCOPED_RUBRIC = rubric(
+    "planner-scoped-targets",
+    (
+        "target_scoping",
+        "Each obligation is answerable by a bounded read rather than a "
+        "restatement of the whole question.",
+        "Every target asks for one fact, measure, or comparison a single "
+        "source can settle.",
+        "Obligations restate the question or ask for 'relevant information'.",
+    ),
+    (
+        "policy_fidelity",
+        "A comparative obligation is phrased as a comparison and keeps the "
+        "independent-pair burden that phrasing earns.",
+        "The comparative target names both options and the dimension they are "
+        "compared on.",
+        "A single-side lookup stands in for the comparison, so the "
+        "independent-evidence burden disappears.",
+    ),
+)
+
+# `planner-scoped-targets` has no scripted search results and no memory
+# entries: a plan's scoping is decided from the question and the answer
+# contract, so the scenario exists only to make those dependencies available
+# and to keep the case's dependency behavior deterministic.
+_SCOPED = build_case(
+    case_id="scoped-evidence-targets",
+    agent_name="planner",
+    tier="controlled",
+    title="Scope a comparative question into creditable obligations",
+    purpose=(
+        "Decompose a comparative question that also carries an official-"
+        "instrument component: every sub-topic must carry at least one "
+        "counted evidence target, every target must name the measure it asks "
+        "for, and the comparative obligation must "
+        "keep the independent-pair policy its own wording earns instead of "
+        "being downgraded to a single-side lookup."
+    ),
+    state=evaluation_state(
+        case_id="scoped-evidence-targets",
+        question=(
+            "How do documented interconnection queue wait times for "
+            "utility-scale solar and utility-scale wind compare in the "
+            "United States, and what does the current federal "
+            "interconnection rule require of each?"
+        ),
+    ),
+    dependency_scenario="planner-scoped-targets",
+    expectations=CaseExpectations(
+        required_output_fields=["sub_topics"],
+        reference={
+            "minimum_sub_topics": 3,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
+            "minimum_targets_per_sub_topic": 1,
+            # The contract's own ceiling, declared here as well so a reader
+            # of the case sees the bound the metric polices.
+            "maximum_targets_per_sub_topic": 6,
+        },
+        known_source_urls=[],
+        max_iterations=5,
+        max_tool_calls=10,
+        deterministic_metrics=metrics(
+            (
+                "subtopic_count",
+                0.20,
+                "Between 3 and 10 subtopics were produced.",
+            ),
+            (
+                "targets_declared",
+                0.30,
+                "Every subtopic carries 1-6 counted evidence targets; a "
+                "reserved omission marker is not an obligation.",
+            ),
+            (
+                "targets_have_measure",
+                0.50,
+                "Every target names the measure it asks for, so the answer "
+                "can be checked against it.",
+            ),
+        ),
+    ),
+    judge_rubric=_SCOPED_RUBRIC,
+    metadata={"scenario": "challenging"},
+)
+
 _FOCUSED = build_case(
     case_id="focused-decomposition",
     agent_name="planner",
     tier="controlled",
     title="Decompose a focused research question",
     purpose=(
-        "Decompose a focused research question into 3-7 distinct, "
+        "Decompose a focused research question into 3-10 distinct, "
         "prioritized subtopics. Check coverage, non-overlap, ordering, and "
         "useful search framing."
     ),
@@ -112,7 +198,7 @@ _FOCUSED = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 3,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
             "expected_themes": [
                 "dendrite formation",
                 "interfacial resistance",
@@ -127,7 +213,7 @@ _FOCUSED = build_case(
             (
                 "subtopic_count",
                 0.25,
-                "Between 3 and 7 subtopics were produced.",
+                "Between 3 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
@@ -175,7 +261,7 @@ _AMBIGUOUS = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 4,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
             "forbidden_assumptions": [
                 "specific country",
                 "specific vendor",
@@ -190,7 +276,7 @@ _AMBIGUOUS = build_case(
             (
                 "subtopic_count",
                 0.20,
-                "Between 4 and 7 subtopics were produced.",
+                "Between 4 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
@@ -245,7 +331,7 @@ _FAILURE = build_case(
             (
                 "plan_still_valid",
                 0.40,
-                "3-7 distinct subtopics were produced despite the failure.",
+                "3-10 distinct subtopics were produced despite the failure.",
             ),
             (
                 "failure_recorded",
@@ -287,7 +373,7 @@ _LIVE = build_case(
         required_output_fields=["sub_topics"],
         reference={
             "minimum_sub_topics": 3,
-            "maximum_sub_topics": 7,
+            "maximum_sub_topics": MAX_SUB_TOPICS,
         },
         known_source_urls=[],
         max_iterations=5,
@@ -299,7 +385,7 @@ _LIVE = build_case(
             (
                 "subtopic_count",
                 0.25,
-                "Between 3 and 7 subtopics were produced.",
+                "Between 3 and 10 subtopics were produced.",
             ),
             (
                 "distinct_titles",
@@ -329,9 +415,13 @@ _LIVE = build_case(
     metadata={"scenario": "live"},
 )
 
+# Append new cases; never prepend. ``conftest.controlled_case_for``
+# takes ``cases_for(agent, "controlled")[0]``, so the first case here
+# is the one every conftest-driven gate test exercises.
 CONTROLLED_CASES: tuple[EvaluationCase, ...] = (
     _FOCUSED,
     _AMBIGUOUS,
     _FAILURE,
+    _SCOPED,
 )
 LIVE_CASES: tuple[EvaluationCase, ...] = (_LIVE,)

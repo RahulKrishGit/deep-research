@@ -38,7 +38,13 @@ class PlanningError(AgentError):
         self.operation = operation
 
 
-PlanningOperation = Literal["react_decision", "plan_draft", "react_loop"]
+PlanningOperation = Literal[
+    "react_decision",
+    "plan_draft",
+    "plan_review",
+    "extend_plan",
+    "react_loop",
+]
 
 
 def planning_provider_error(
@@ -70,6 +76,26 @@ def planning_provider_error(
             "the model provider operation failed.",
             problems=(
                 "the planner provider failed while requesting the final plan draft",
+                *problems,
+            ),
+            operation=operation,
+        )
+    if operation == "plan_review":
+        return PlanningError(
+            "The planner could not review the plan it produced because the "
+            "model provider operation failed.",
+            problems=(
+                "the planner provider failed while reviewing the plan",
+                *problems,
+            ),
+            operation=operation,
+        )
+    if operation == "extend_plan":
+        return PlanningError(
+            "The planner could not add the reviewed omission because the "
+            "model provider operation failed.",
+            problems=(
+                "the planner provider failed while extending the plan",
                 *problems,
             ),
             operation=operation,

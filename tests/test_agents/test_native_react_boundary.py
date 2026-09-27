@@ -1,10 +1,12 @@
 """The one native tool boundary every model-directed agent crosses.
 
-A regression guard, not a unit test of one agent. Each of the four agents that
-ask a model to select a tool is run end to end through its own ``run`` — so an
-agent that reintroduced a local ``decide`` closure calling
+A regression guard, not a unit test of one agent. Each agent that asks a model
+to select a tool is run end to end through its own ``run`` — so an agent that
+reintroduced a local ``decide`` closure calling
 ``complete_structured(..., ReActDecision, ...)`` fails here, because
-``ScriptedCompleter.complete_structured`` raises for that schema.
+``ScriptedCompleter.complete_structured`` raises for that schema. The planner
+and the researcher are the two that remain: the Evidence Verifier plan removed
+the critic and the fact checker, ReAct loops included.
 """
 
 from __future__ import annotations
@@ -13,15 +15,10 @@ from collections.abc import Callable
 
 import pytest
 
-from deep_research.agents.critic import CriticAgent, CritiqueDraft
-from deep_research.agents.fact_checker import (
-    ClaimDraft,
-    ClaimsDraft,
-    ClaimVerdictDraft,
-    FactCheckerAgent,
-)
 from deep_research.agents.planner import (
+    EvidenceTargetDraft,
     PlannerAgent,
+    PlanReviewDraft,
     ResearchPlanDraft,
     SubTopicDraft,
 )
@@ -34,11 +31,9 @@ from deep_research.observability import Tracker
 from deep_research.providers.deepseek_provider import DeepSeekChatProvider
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
-from deep_research.utils.types import Finding, ResearchState, SubTopic
+from deep_research.utils.types import ResearchState, SubTopic
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
-    critic_tools,
-    fact_checker_tools,
     planner_tools,
     research_tools,
 )
@@ -49,9 +44,6 @@ from tests.test_deepseek_provider import (
     deepseek_config,
 )
 
-EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
-FINDING_URL = "https://example.test/qec"
-
 _PLAN = ResearchPlanDraft(
     sub_topics=[
         SubTopicDraft(
@@ -60,35 +52,48 @@ _PLAN = ResearchPlanDraft(
             search_queries=[f"quantum computing angle {index}"],
             success_criteria=[f"evidence about angle number {index}"],
             priority=index,
+            evidence_targets=[
+                EvidenceTargetDraft(
+                    # One demand, because the planner's own plan check names a
+                    # target that asks two things at once as compound — "and
+                    # where?" beside "what does it report" is exactly that, and
+                    # this case exists to measure the native tool boundary, not
+                    # to carry a plan the planner would repair.
+                    question=f"What does angle number {index} report?",
+                    required=True,
+                    measure=f"angle number {index}",
+                )
+            ],
         )
         for index in (1, 2, 3)
     ]
 )
 
 
-def _finding() -> Finding:
-    return Finding(
-        content="Logical error rates fell below break-even.",
-        source_url=FINDING_URL,
-        source_title="QEC results",
-        extracted_at=EXTRACTED_AT,
-        confidence=0.8,
-        related_sub_topic="angle number 1",
-    )
-
-
 def _state(**updates: object) -> ResearchState:
     payload: dict[str, object] = {
         "session_id": "session-1",
         "original_question": "how much capacity can quantum computing reach",
-        "max_iterations": 2,
     }
     payload.update(updates)
     return ResearchState.model_validate(payload)
 
 
 def _planner_case() -> tuple[ResearchState, list, list]:
-    return _state(), [finish("Enough context.", "Scoping is complete.")], [_PLAN]
+    return (
+        _state(),
+        [finish("Enough context.", "Scoping is complete.")],
+        [
+            _PLAN,
+            PlanReviewDraft(
+                sound=True,
+                missing_dimensions=[],
+                atomicity_defects=[],
+                unsupported_premises=[],
+                repair_instruction="",
+            ),
+        ],
+    )
 
 
 def _researcher_case() -> tuple[ResearchState, list, list]:
@@ -111,56 +116,11 @@ def _researcher_case() -> tuple[ResearchState, list, list]:
     )
 
 
-def _fact_checker_case() -> tuple[ResearchState, list, list]:
-    state = _state(raw_findings=[_finding()])
-    return (
-        state,
-        [finish("Nothing independent.", "Nothing independent was retrieved.")],
-        [
-            ClaimsDraft(
-                claims=[
-                    ClaimDraft(
-                        text="Logical error rates fell below break-even.",
-                        source_urls=[FINDING_URL],
-                    )
-                ]
-            ),
-            ClaimVerdictDraft(
-                verdict="insufficient_evidence",
-                confidence=0.0,
-                passages=[],
-            ),
-        ],
-    )
-
-
-def _critic_case() -> tuple[ResearchState, list, list]:
-    state = _state(
-        report="# Research report: the measured capacity is reported.",
-        iteration=1,
-    )
-    return (
-        state,
-        [finish("The report is enough.", "No spot check needed.")],
-        [
-            CritiqueDraft(
-                score=8,
-                gaps=[],
-                unsupported_claims=[],
-                recommended_queries=[],
-                rationale="The report answers the question from cited sources.",
-            )
-        ],
-    )
-
-
 TOOL_SELECTING_AGENTS: tuple[
     tuple[type, Callable[[Tracker], list[BaseTool]], Callable[[], tuple]], ...
 ] = (
     (PlannerAgent, planner_tools, _planner_case),
     (ResearcherAgent, research_tools, _researcher_case),
-    (FactCheckerAgent, fact_checker_tools, _fact_checker_case),
-    (CriticAgent, critic_tools, _critic_case),
 )
 
 AGENT_IDS = [agent_class.name for agent_class, _, _ in TOOL_SELECTING_AGENTS]

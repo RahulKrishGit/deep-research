@@ -18,6 +18,11 @@ from deep_research.observability.metrics import (
     TokenUsageMetric,
     ToolMetric,
 )
+from deep_research.observability.run_telemetry import (
+    RunTelemetryCollector,
+    render_telemetry_advice,
+    render_telemetry_line,
+)
 from deep_research.observability.tracker import SpanHandle, TokenUsage, Tracker
 
 __all__ = [
@@ -27,6 +32,7 @@ __all__ = [
     "MemoryLayer",
     "MemoryMetric",
     "MetricRecord",
+    "RunTelemetryCollector",
     "SessionMetric",
     "SpanHandle",
     "TokenUsage",
@@ -38,4 +44,6 @@ __all__ = [
     "build_trace_metadata",
     "current_trace_context",
     "load_langsmith_runtime_config",
+    "render_telemetry_advice",
+    "render_telemetry_line",
 ]

@@ -191,18 +191,22 @@ def validation_diagnostic(
 ) -> StructuredValidationDiagnostic:
     """Extract bounded paths and a stable category, never input values."""
     paths: list[str] = []
+    error_types: list[str] = []
     items = _validation_error_items(error)
     for item in items:
         location = item.get("loc", ())
         if not isinstance(location, Sequence) or isinstance(location, (str, bytes)):
             location = ()
         paths.append(schema_field_path(schema, location))
+        error_type = item.get("type")
+        error_types.append(error_type if isinstance(error_type, str) else "other")
         if len(paths) == MAX_VALIDATION_FIELD_PATHS:
             break
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
         category=validation_category(error),
+        error_types=tuple(error_types),
     )
 
 

@@ -2,34 +2,54 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
-from deep_research.agents.synthesizer import SynthesizerAgent
-from deep_research.graph.errors import GRAPH_ERROR_REASONS
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import render_finding_log, render_written_report
+from deep_research.agents.report_reviewer import (
+    ScopedReportReviewInput,
+    build_report_review_input,
+    composition_semantic_fingerprint,
+    remap_review_for_redraft,
+)
+from deep_research.agents.quality import compute_report_quality
+from deep_research.agents.report_writer import ReportWriterAgent
+from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
+from deep_research.graph.events import extra_pass_started_event, redraft_requested_event
 from deep_research.graph.nodes import (
     GraphNode,
     agent_node,
-    critic_node,
+    extra_pass_node,
     finalize_report_node,
-    refine_node,
-    route_after_critic,
-    synthesizer_node,
+    report_reviewer_node,
+    report_writer_node,
+    route_after_review,
+    writer_redraft_node,
 )
 from deep_research.graph.state import (
+    EXTRA_PASS_NODE,
+    REDRAFT_NODE,
     ROUTE_END,
+    ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
-    ROUTE_REFINE,
     ResearchGraphState,
     dump_state,
+    graph_quality_status,
+    graph_status,
     is_halted,
     load_state,
 )
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
+from deep_research.observability import (
+    LangSmithRuntimeConfig,
+    RunTelemetryCollector,
+    Tracker,
+)
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import (
     ProviderCategory,
@@ -40,29 +60,86 @@ from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
-    ReportQualitySnapshot,
+    REVIEW_DIMENSIONS,
+    REVIEW_RUBRIC_VERSION,
+    ReportComposition,
+    ReportPart,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
+    ReportReview,
     ResearchError,
     ResearchState,
+    ReviewDefect,
 )
+from deep_research.agents.report_writer import REPORT_WRITER_NAME
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
+    SNIPPET,
+    SOURCE_URL,
     FakeAgent,
     FakePublisher,
-    fake_claim,
-    fake_critique,
-    fake_finding,
+    FakeReviewer,
     fake_quality,
-    fake_reader_composition,
+    fake_report_review,
     fake_research_state,
     fake_scored_source,
     fake_sub_topic,
+    fake_target,
+    fake_writer_composition,
+    fake_writer_update,
     halting_error,
+    verified_pass,
 )
-from tests.research_fakes import FakeMemory, synthesizer_tools
+from tests.research_fakes import FakeMemory, report_writer_tools
 
 
 def _event_types(state: ResearchState) -> list[str]:
     return [event.event_type for event in state.events]
+
+
+def _pass_state(**overrides: object) -> ResearchState:
+    """A pass's evidence with nothing composed from it yet.
+
+    The state the writer node is handed *before* it runs: the plan, the
+    finding, and the page it was read from, with no composition and no
+    quality snapshot. A fixture that arrived with either already stamped
+    would hide the pass this node exists to run.
+    """
+    one = verified_pass()
+    payload: dict[str, object] = {
+        "sub_topics": [fake_sub_topic(targets=[fake_target()])],
+        "raw_findings": [one.finding],
+        "verified_findings": [one.finding],
+        "read_records": {one.read.read_id: one.read},
+        "evaluated_sources": [fake_scored_source()],
+    }
+    payload.update(overrides)
+    return fake_research_state(**payload)
+
+
+def _writer_state(**overrides: object) -> ResearchState:
+    """A pass whose report has a typed composition behind it.
+
+    The Report Writer's own output shape, so the writer and reviewer nodes are
+    exercised against the artifacts their producers actually emit.
+    """
+    base = _pass_state()
+    composition = fake_writer_composition(base)
+    payload: dict[str, object] = {
+        "composition": composition,
+        "report": render_written_report(composition),
+        "report_evidence": render_finding_log(composition),
+    }
+    payload.update(overrides)
+    state = base.model_copy(update=payload)
+    if "quality" not in overrides:
+        # What the writer node would have stamped for this exact state, so a
+        # fixture's snapshot cannot disagree with the composition beside it.
+        state = state.model_copy(
+            update={"quality": compute_report_quality(state, composition)}
+        )
+    return state
 
 
 @pytest.mark.asyncio
@@ -85,7 +162,8 @@ async def test_a_node_merges_its_agents_update_and_brackets_it_with_events(
 
 @pytest.mark.asyncio
 async def test_an_agent_is_handed_state_that_already_records_its_start() -> None:
-    agent = FakeAgent("researcher", [{"raw_findings": [fake_finding()]}])
+    one = verified_pass()
+    agent = FakeAgent("researcher", [{"raw_findings": [one.finding]}])
 
     await agent_node(agent)(dump_state(fake_research_state()))
 
@@ -128,17 +206,20 @@ async def test_a_recoverable_agent_error_stays_in_state_and_does_not_halt(
 @pytest.mark.asyncio
 async def test_a_non_recoverable_agent_error_still_does_not_halt_the_graph(
 ) -> None:
-    # Agents record provider outages as non-recoverable. A research pass is
-    # expected to survive one; only enumerated graph errors halt.
+    # Agents record a failed Context Check batch as non-recoverable. A
+    # verification pass is expected to survive one; only enumerated graph
+    # errors halt.
     outage = ResearchError(
-        error_type="critic_review_provider_error",
-        source="agent.critic",
-        message="The model provider failed while the report was reviewed.",
+        error_type="evidence_verifier_context_check_failed",
+        source="agent.evidence_verifier",
+        message="The Context Check failed for one batch.",
         recoverable=False,
     )
-    agent = FakeAgent("critic", [{"errors": [outage]}])
+    agent = FakeAgent("evidence_verifier", [{"errors": [outage]}])
 
-    state = load_state(await agent_node(agent)(dump_state(fake_research_state())))
+    state = load_state(
+        await agent_node(agent)(dump_state(fake_research_state()))
+    )
 
     assert not is_halted(state)
 
@@ -283,7 +364,7 @@ async def test_a_request_attempt_limit_refusal_with_a_zero_limit_records_the_zer
     )
 
     state = await _run_node(
-        agent_node(FakeAgent("fact_checker", [refusal])),
+        agent_node(FakeAgent("evidence_verifier", [refusal])),
         dump_state(fake_research_state()),
     )
 
@@ -303,7 +384,7 @@ async def test_a_request_attempt_limit_refusal_is_never_retried_or_converted() -
     refusal = _request_attempt_refusal(
         provider="deepseek", attempts=7, ceiling=7, effective_limit=7
     )
-    agent = FakeAgent("synthesizer", [refusal])
+    agent = FakeAgent("report_writer", [refusal])
 
     state = await _run_node(agent_node(agent), dump_state(fake_research_state()))
 
@@ -320,7 +401,7 @@ async def test_a_request_attempt_limit_refusal_is_never_retried_or_converted() -
         "graph_planning_failed",
         "agent_tool_failed",
     }.isdisjoint({error.error_type for error in state.errors})
-    assert [error.source for error in state.errors] == ["graph.synthesizer"]
+    assert [error.source for error in state.errors] == ["graph.report_writer"]
     # The pass is left unfinished rather than completed.
     assert _event_types(state) == ["graph.node.started"]
 
@@ -347,7 +428,7 @@ async def test_an_update_the_state_model_rejects_halts_the_run() -> None:
 
 @pytest.mark.asyncio
 async def test_a_halted_run_skips_every_later_node() -> None:
-    agent = FakeAgent("synthesizer", [{"report": "# never written"}])
+    agent = FakeAgent("report_writer", [{"report": "# never written"}])
 
     result = await agent_node(agent)(
         dump_state(fake_research_state(errors=[halting_error()]))
@@ -359,284 +440,1050 @@ async def test_a_halted_run_skips_every_later_node() -> None:
     assert _event_types(state) == ["graph.node.skipped"]
 
 
-@pytest.mark.asyncio
-async def test_the_critic_node_records_the_route_it_produced() -> None:
-    agent = FakeAgent("critic", [{"critique": fake_critique(should_continue=True)}])
-
-    result = await critic_node(agent)(
-        dump_state(fake_research_state(iteration=0, max_iterations=3))
-    )
-    state = load_state(result)
-
-    assert _event_types(state) == [
-        "graph.node.started",
-        "graph.node.completed",
-        "graph.route.decided",
-    ]
-    assert state.events[-1].metadata == {
-        "destination": ROUTE_REFINE,
-        "reason": "refinement_requested",
-        "iteration": 0,
-        "max_iterations": 3,
-        "should_continue": True,
-    }
-    assert route_after_critic(result) == ROUTE_REFINE
+# --- the Report Writer node --------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_the_critic_node_records_the_bound_overriding_the_critic() -> None:
-    agent = FakeAgent("critic", [{"critique": fake_critique(should_continue=True)}])
+async def test_the_writer_node_stamps_the_snapshot_the_gates_computed() -> None:
+    """The deterministic gates run here, over the state the pass *produced*.
 
-    result = await critic_node(agent)(
-        dump_state(fake_research_state(iteration=2, max_iterations=2))
-    )
-    state = load_state(result)
-
-    assert state.events[-1].metadata["reason"] == "max_iterations_reached"
-    assert state.events[-1].metadata["should_continue"] is True
-    assert route_after_critic(result) == ROUTE_FINALIZE
-
-
-@pytest.mark.asyncio
-async def test_a_halted_critic_node_still_records_a_route() -> None:
-    agent = FakeAgent("critic", [{"critique": fake_critique(should_continue=True)}])
-
-    result = await critic_node(agent)(
-        dump_state(fake_research_state(errors=[halting_error()]))
-    )
-
-    assert agent.calls == []
-    assert load_state(result).events[-1].metadata["reason"] == "halted"
-    assert route_after_critic(result) == ROUTE_END
-
-
-@pytest.mark.asyncio
-async def test_the_refinement_hop_advances_the_macro_iteration() -> None:
-    result = await refine_node(
-        dump_state(fake_research_state(iteration=0, max_iterations=3))
-    )
-    state = load_state(result)
-
-    assert state.iteration == 1
-    assert _event_types(state) == ["graph.refinement.started"]
-    assert state.events[0].metadata == {"iteration": 1, "max_iterations": 3}
-
-
-@pytest.mark.asyncio
-async def test_the_refinement_hop_refuses_to_spend_a_budget_it_lacks() -> None:
-    state = load_state(
-        await refine_node(
-            dump_state(fake_research_state(iteration=2, max_iterations=2))
-        )
-    )
-
-    assert state.iteration == 2
-    assert [error.error_type for error in state.errors] == [
-        "graph_invalid_route"
-    ]
-    assert is_halted(state)
-
-
-@pytest.mark.asyncio
-async def test_the_refinement_hop_skips_a_halted_run() -> None:
-    state = load_state(
-        await refine_node(dump_state(fake_research_state(errors=[halting_error()])))
-    )
-
-    assert state.iteration == 0
-    assert _event_types(state) == ["graph.node.skipped"]
-
-
-def _composed_state() -> ResearchState:
-    """One pass's incoming state: a canonical snapshot to compose from."""
-    return fake_research_state(
-        sub_topics=[fake_sub_topic()],
-        raw_findings=[fake_finding()],
-        evaluated_sources=[fake_scored_source()],
-        verified_claims=[fake_claim()],
-    )
-
-
-def _composing_update(state: ResearchState) -> dict[str, object]:
-    """The update a real Synthesizer returns: both artifacts and the composition."""
-    return {
-        "report": "# Reader report",
-        "report_evidence": "# Evidence ledger",
-        "composition": fake_reader_composition(state),
-    }
-
-
-@pytest.mark.asyncio
-async def test_the_synthesizer_node_scores_the_artifacts_it_just_composed() -> None:
-    """The quality pass judges the state this pass produced, not the last one.
-
-    ``compute_report_quality`` reads ``state.report`` and
-    ``state.report_evidence`` for its missing-artifact gates, so it can only
-    run once the agent's update has been merged. Judging the composition
-    against the *incoming* state would report every first pass as having no
-    artifacts at all.
+    Judging the composition against the state handed in would report every
+    pass as having no artifacts at all, so the writer node is the one place
+    ``compute_report_quality`` is called.
     """
-    agent = FakeAgent("synthesizer", [], update_factory=_composing_update)
+    agent = FakeAgent("report_writer", [], update_factory=fake_writer_update)
 
-    result = await synthesizer_node(agent)(dump_state(_composed_state()))
+    result = await report_writer_node(agent)(dump_state(_pass_state()))
     state = load_state(result)
 
+    assert state.composition is not None
     assert state.quality is not None
     assert state.quality.hard_failures == []
-    assert state.quality.duplicate_claims == 0
-    assert state.quality.duplicate_source_rows == 0
-    assert _event_types(state) == [
-        "graph.node.started",
-        "graph.node.completed",
-        "graph.quality.assessed",
-    ]
-    assert state.events[-1].metadata["hard_failures"] == []
+    assert state.quality.required_target_ids == ["topic-01-target-01"]
+    assert state.quality.answered_target_ids == ["topic-01-target-01"]
+    assert state.quality.missing_required_target_ids == []
+    assert "graph.quality.assessed" in _event_types(state)
+    assessed = [
+        event for event in state.events if event.event_type == "graph.quality.assessed"
+    ][0]
+    assert assessed.metadata["hard_failures"] == []
+    assert assessed.metadata["required_target_ids"] == ["topic-01-target-01"]
 
 
 @pytest.mark.asyncio
-async def test_the_synthesizer_node_records_every_hard_failure_it_found() -> None:
-    agent = FakeAgent("synthesizer", [], update_factory=_composing_update)
-    duplicated = _composed_state().model_copy(
-        update={
-            "evaluated_sources": [
-                fake_scored_source("https://example.org/a"),
-                fake_scored_source("https://example.org/a"),
-            ]
-        }
+async def test_the_writer_node_records_every_hard_failure_it_found() -> None:
+    def unledgered(state: ResearchState) -> dict[str, object]:
+        update = dict(fake_writer_update(state))
+        update["report_evidence"] = ""
+        update["composition"] = fake_writer_composition(state)
+        return update
+
+    agent = FakeAgent("report_writer", [], update_factory=unledgered)
+
+    state = load_state(
+        await report_writer_node(agent)(dump_state(_pass_state()))
     )
 
-    state = load_state(await synthesizer_node(agent)(dump_state(duplicated)))
-
     assert state.quality is not None
-    assert state.quality.hard_failures == ["duplicate_source_rows"]
-    assert state.events[-1].metadata["hard_failures"] == ["duplicate_source_rows"]
+    assert state.quality.hard_failures == ["missing_evidence_ledger"]
 
 
 @pytest.mark.asyncio
 async def test_a_compositionless_pass_records_no_quality_verdict() -> None:
-    """Nothing typed to judge means no snapshot, never a clean one."""
-    agent = FakeAgent("synthesizer", [{"report": "# Reader report"}])
+    """The absence stays visible: no run is ever accepted without a snapshot."""
+    agent = FakeAgent("report_writer", [{"report": "# prose with nothing behind it"}])
 
     state = load_state(
-        await synthesizer_node(agent)(dump_state(fake_research_state()))
+        await report_writer_node(agent)(dump_state(_pass_state()))
     )
 
+    assert state.composition is None
     assert state.quality is None
-    assert _event_types(state) == [
-        "graph.node.started",
-        "graph.node.completed",
-    ]
+    assert graph_quality_status(state) == QUALITY_STATUS_PARTIAL
 
 
 @pytest.mark.asyncio
-async def test_a_halted_synthesizer_pass_is_not_quality_graded() -> None:
-    """A halted pass composed nothing, so nothing may be graded under it.
+async def test_a_halted_writer_pass_is_not_quality_graded() -> None:
+    """A halted pass composed nothing; an earlier pass's composition is not re-judged."""
+    agent = FakeAgent("report_writer", [{}])
+    earlier = _writer_state(quality=None)
 
-    The incoming state already carries an *earlier* pass's composition, which
-    is exactly what a halt on iteration 1 or later looks like. Re-scoring it
-    here would emit ``graph.quality.assessed`` labelled with the current
-    iteration, asserting a verdict for a pass that never composed anything.
-    """
-    agent = FakeAgent("synthesizer", [{"report": "# never written"}])
-    earlier = fake_research_state(
-        sub_topics=[fake_sub_topic()],
-        raw_findings=[fake_finding()],
-        evaluated_sources=[fake_scored_source()],
-        verified_claims=[fake_claim()],
-        report="# earlier reader report",
-        report_evidence="# earlier evidence ledger",
+    result = await report_writer_node(agent)(
+        dump_state(
+            earlier.model_copy(update={"errors": [halting_error()]})
+        )
     )
-    halted = earlier.model_copy(
+    state = load_state(result)
+
+    assert agent.calls == []
+    assert state.quality is None
+    assert _event_types(state)[-1] == "graph.node.skipped"
+
+
+# --- the Report Reviewer node ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_review_node_records_a_scored_review_beside_the_diagnostics() -> None:
+    reviewer = FakeReviewer()
+    state = _writer_state()
+
+    result = await report_reviewer_node(reviewer)(dump_state(state))
+    loaded = load_state(result)
+
+    assert reviewer.calls == 1
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+    assert loaded.report_review.input_fingerprint
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "scored"
+    assert loaded.quality.semantic_review_score == 0.9
+    # The judgement is recorded beside the structural diagnostics, never inside
+    # them: a review that passed is not a hard failure and vice versa.
+    assert loaded.quality.hard_failures == state.quality.hard_failures  # type: ignore[union-attr]
+    assert not is_halted(loaded)
+    reviewed = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.report.reviewed"
+    ]
+    assert len(reviewed) == 1
+    assert reviewed[0].metadata["review_status"] == "scored"
+    assert reviewed[0].metadata["reused"] is False
+
+
+@pytest.mark.asyncio
+async def test_the_review_node_stamps_the_missing_targets_the_gates_computed() -> None:
+    """PD-5: code computes the missing targets; the reviewer never produces them.
+
+    The stamp is what routing reads, and it is written whatever the review
+    said — a review that named no missing target of its own cannot clear the
+    obligation the deterministic pass measured.
+    """
+    reviewer = FakeReviewer()
+    one = verified_pass()
+    two_topics = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+    state = _writer_state(
+        sub_topics=[two_topics],
+        report_review=fake_report_review(missing_required_target_ids=["stale"]),
+    )
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    assert loaded.quality is not None
+    assert loaded.quality.missing_required_target_ids == ["topic-01-target-02"]
+    assert loaded.report_review is not None
+    assert loaded.report_review.missing_required_target_ids == [
+        "topic-01-target-02"
+    ]
+    assert two_topics.evidence_targets[0].target_id == "topic-01-target-01"
+    assert one.finding.verification is not None
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_review_still_carries_the_missing_targets() -> None:
+    reviewer = FakeReviewer([fake_report_review(status="provider_failed")])
+    state = _writer_state()
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "provider_failed"
+    assert loaded.report_review.missing_required_target_ids == []
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "provider_failed"
+    assert loaded.quality.semantic_review_score is None
+    assert [error.error_type for error in loaded.errors] == [
+        "graph_report_review_unavailable"
+    ]
+    assert loaded.errors[0].recoverable is True
+    assert not is_halted(loaded)
+    assert graph_quality_status(loaded) == QUALITY_STATUS_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_the_review_node_records_one_route_decision_per_decision() -> None:
+    reviewer = FakeReviewer()
+    state = _writer_state()
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    decided = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.route.decided"
+    ]
+    assert len(decided) == 1
+    assert decided[0].metadata["reason"] == "report_accepted"
+    assert decided[0].metadata["destination"] == ROUTE_FINALIZE
+    assert decided[0].metadata["max_extra_passes"] == state.max_extra_passes
+    assert route_after_review(dump_state(loaded)) == ROUTE_FINALIZE
+
+
+@pytest.mark.asyncio
+async def test_a_missing_target_moves_the_edge_and_is_recorded_once() -> None:
+    reviewer = FakeReviewer()
+    two_topics = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+    state = _writer_state(sub_topics=[two_topics])
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    decided = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.route.decided"
+    ]
+    assert [event.metadata["reason"] for event in decided] == [
+        "extra_pass_requested"
+    ]
+    assert route_after_review(dump_state(loaded)) == ROUTE_EXTRA_PASS
+
+
+@pytest.mark.asyncio
+async def test_a_halted_review_node_still_records_a_route() -> None:
+    reviewer = FakeReviewer()
+
+    loaded = load_state(
+        await report_reviewer_node(reviewer)(
+            dump_state(_writer_state(errors=[halting_error()]))
+        )
+    )
+
+    assert reviewer.calls == 0
+    assert _event_types(loaded) == ["graph.node.skipped"]
+    assert route_after_review(dump_state(loaded)) == ROUTE_END
+    assert graph_status(loaded) == "failed"
+
+
+@pytest.mark.asyncio
+async def test_a_report_with_no_composition_is_never_sent_for_review() -> None:
+    """Nothing reviewable: refused locally rather than scored over prose."""
+    reviewer = FakeReviewer()
+    state = fake_research_state(
+        quality=fake_quality(),
+        report="# Reader report",
+        report_evidence="# Evidence ledger",
+    )
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 0
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "incomplete"
+    assert loaded.report_review.input_fingerprint
+    assert loaded.quality is not None
+    assert loaded.quality.semantic_review_status == "incomplete"
+    assert graph_quality_status(loaded) == QUALITY_STATUS_PARTIAL
+
+
+@pytest.mark.asyncio
+async def test_a_review_of_the_identical_fingerprint_costs_no_call() -> None:
+    state = _writer_state()
+    packet = build_report_review_input(state, state.composition)
+    stored = fake_report_review(fingerprint=packet.fingerprint)
+    state = state.model_copy(update={"report_review": stored})
+    reviewer = FakeReviewer()
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 0
+    assert loaded.report_review is not None
+    assert loaded.report_review.input_fingerprint == packet.fingerprint
+    reused = [
+        event
+        for event in loaded.events
+        if event.event_type == "graph.report.reviewed"
+    ]
+    assert reused[0].metadata["reused"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_review_of_other_content_is_made_again() -> None:
+    state = _writer_state()
+    stored = fake_report_review(fingerprint="a-different-packet")
+    state = state.model_copy(update={"report_review": stored})
+    reviewer = FakeReviewer()
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+
+    assert reviewer.calls == 1
+    assert loaded.report_review is not None
+    assert loaded.report_review.input_fingerprint != "a-different-packet"
+
+
+# --- the extra-pass hop ------------------------------------------------------
+
+
+def _owed_target_state(**overrides: object) -> ResearchState:
+    two_topics = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+    base = _writer_state(sub_topics=[two_topics])
+    payload: dict[str, object] = {
+        "report_review": fake_report_review(
+            missing_required_target_ids=["topic-01-target-02"]
+        )
+    }
+    payload.update(overrides)
+    return base.model_copy(update=payload)
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_advances_the_iteration_and_confines_the_pass() -> None:
+    state = _owed_target_state(iteration=0, max_extra_passes=1)
+
+    advanced = load_state(await extra_pass_node(dump_state(state)))
+
+    assert advanced.iteration == 1
+    assert advanced.extra_pass_target_ids == ["topic-01-target-02"]
+    assert _event_types(advanced)[-3:] == [
+        "graph.node.started",
+        "graph.extra_pass.started",
+        "graph.node.completed",
+    ]
+    started = advanced.events[-2]
+    assert started.event_type == "graph.extra_pass.started"
+    assert started.metadata == {
+        "iteration": 1,
+        "max_extra_passes": 1,
+        "targets": ["topic-01-target-02"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_replaces_the_worklist_it_inherits() -> None:
+    """``extra_pass_target_ids`` is this pass's job list, never an accumulation."""
+    state = _owed_target_state(
+        iteration=0,
+        max_extra_passes=1,
+        extra_pass_target_ids=["topic-01-target-01"],
+    )
+
+    advanced = load_state(await extra_pass_node(dump_state(state)))
+
+    assert advanced.extra_pass_target_ids == ["topic-01-target-02"]
+
+
+def _coverage_defect_only_state(**overrides: object) -> ResearchState:
+    """A judged pass whose coverage defect, not the code-stamped gate, owes a
+    target: ``missing_required_target_ids`` is empty, but the reviewer's own
+    ``coverage`` defect names ``topic-01-target-02`` as a required target.
+    """
+    two_topics = fake_sub_topic(
+        targets=[
+            fake_target(),
+            fake_target("topic-01-target-02", question="What did it cost?"),
+        ]
+    )
+    base = _writer_state(sub_topics=[two_topics])
+    payload: dict[str, object] = {
+        "report_review": fake_report_review(
+            missing_required_target_ids=[],
+            defects=[
+                ReviewDefect(
+                    defect_id="review-01",
+                    kind="coverage",
+                    severity="major",
+                    target_ids=["topic-01-target-02"],
+                    problem="The question's second part names no answer.",
+                )
+            ],
+        )
+    }
+    payload.update(overrides)
+    return base.model_copy(update=payload)
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_targets_a_reviewers_own_coverage_defect() -> None:
+    """D10 fix (P0): a coverage defect, not only the code-stamped gate, funds
+    the pass and names the pass's job list.
+
+    Before this fix ``extra_pass_node`` read only
+    ``review.missing_required_target_ids``, which this review leaves empty, so
+    the hop opened with an empty job list and the researcher re-ran every
+    planned sub-topic instead of the one target the review actually named.
+    """
+    state = _coverage_defect_only_state(iteration=0, max_extra_passes=1)
+
+    advanced = load_state(await extra_pass_node(dump_state(state)))
+
+    assert advanced.extra_pass_target_ids == ["topic-01-target-02"]
+
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_refuses_to_spend_a_pass_it_lacks() -> None:
+    """The router never sends the hop past the ceiling; the hop still guards it.
+
+    ``iteration`` moves only through the graph's own advance, and the guard is
+    the second lock on that door: a run that somehow reached the hop with no
+    pass left records an enumerated halt rather than paying for a pass its
+    declared ceiling forbids.
+    """
+    state = _owed_target_state(iteration=1, max_extra_passes=1)
+
+    halted = load_state(await extra_pass_node(dump_state(state)))
+
+    assert [error.error_type for error in halted.errors] == ["graph_invalid_route"]
+    assert halted.errors[0].details == {"iteration": 1, "max_extra_passes": 1}
+    assert is_halted(halted)
+    assert halted.iteration == 1
+    assert halted.extra_pass_target_ids == []
+
+
+@pytest.mark.asyncio
+async def test_the_extra_pass_hop_skips_a_halted_run() -> None:
+    state = _owed_target_state(errors=[halting_error()])
+
+    skipped = load_state(await extra_pass_node(dump_state(state)))
+
+    assert skipped.iteration == 0
+    assert skipped.extra_pass_target_ids == []
+    assert _event_types(skipped) == ["graph.node.skipped"]
+    assert skipped.events[-1].source == f"graph.{EXTRA_PASS_NODE}"
+
+
+def _defect_state(**overrides: object) -> ResearchState:
+    """One judged pass whose review named a material defect."""
+    state = _writer_state()
+    payload: dict[str, object] = {
+        "report_review": fake_report_review(
+            defects=[_material_defect()],
+            missing_required_target_ids=[],
+        )
+    }
+    payload.update(overrides)
+    return state.model_copy(update=payload)
+
+
+def _material_defect() -> object:
+    return ReviewDefect(
+        defect_id="review-01",
+        kind="contradiction",
+        severity="major",
+        statement_ids=["S001"],
+        problem="The report states a rule its own findings qualify.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_spends_its_one_rerun_and_records_it() -> None:
+    """The hop buys the writer re-run a material defect justifies, once.
+
+    A conditional edge can route but cannot write, and the bound has to be
+    recorded somewhere the graph and a reader can both see: the hop is that
+    place, so the second review reads a state that says the re-run was spent
+    and routes to the terminal verdict instead of drafting a third time.
+    """
+    state = _defect_state()
+
+    spent = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert spent.writer_redrafts == 1
+    # The hop writes its own counter and nothing else: no research state, no
+    # report, no composition. (``report`` is compared modulo surrounding
+    # whitespace because the merge re-validates the state and the report
+    # field's own normalizer strips it — a property of every node's write
+    # path, not of this hop.)
+    assert spent.report.strip() == state.report.strip()
+    assert spent.composition == state.composition
+    assert spent.verified_findings == state.verified_findings
+    assert spent.iteration == state.iteration
+    assert spent.extra_pass_target_ids == state.extra_pass_target_ids
+    assert _event_types(spent)[-3:] == [
+        "graph.node.started",
+        "graph.report.redraft_requested",
+        "graph.node.completed",
+    ]
+    requested = spent.events[-2]
+    assert requested.metadata == {
+        "iteration": state.iteration,
+        "redrafts": 1,
+        "material_defects": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_refuses_to_spend_a_rerun_it_lacks() -> None:
+    """The router never sends the hop past its ceiling; the hop still guards it.
+
+    The second lock on the door: a run that somehow reached the hop with its
+    re-run already spent records an enumerated halt — with details naming
+    *this* bound, so the record cannot be misread as an iteration overrun —
+    rather than paying for a draft its declared ceiling forbids.
+    """
+    state = _defect_state(writer_redrafts=1)
+
+    halted = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert [error.error_type for error in halted.errors] == ["graph_invalid_route"]
+    assert halted.errors[0].details == {"redrafts": 1, "max_redrafts": 1}
+    assert is_halted(halted)
+    assert halted.writer_redrafts == 1
+
+
+@pytest.mark.asyncio
+async def test_the_redraft_hop_skips_a_halted_run() -> None:
+    state = _defect_state(errors=[halting_error()])
+
+    skipped = load_state(await writer_redraft_node(dump_state(state)))
+
+    assert skipped.writer_redrafts == 0
+    assert _event_types(skipped) == ["graph.node.skipped"]
+    assert skipped.events[-1].source == f"graph.{REDRAFT_NODE}"
+
+
+# --- T5 addendum: the redraft-to-reviewer handoff ---------------------------
+
+
+_PART_A = "topic-01"
+_PART_B = "topic-02"
+
+
+def _redraft_compositions() -> tuple[ReportComposition, ReportComposition]:
+    """The composition a first full review judged, and the one a redraft
+    produces from it: Part A carried over (same words, a different id, as
+    real renumbering gives it), Part B rewritten.
+    """
+    finding = verified_pass().finding
+    finding_id = finding_fingerprint(finding)
+
+    def statement(statement_id: str, text: str) -> ReportStatement:
+        return ReportStatement(statement_id=statement_id, text=text, finding_ids=[finding_id])
+
+    def point(stmt: ReportStatement) -> ReportPoint:
+        return ReportPoint(text=stmt.text, source_urls=[SOURCE_URL], statement=stmt)
+
+    old = ReportComposition(
+        question="How much battery storage capacity was added in 2024?",
+        session_id="session-redraft", iteration=0, max_extra_passes=1,
+        findings=[finding],
+        summary=[point(statement("S001", "Old bottom line, before the redraft."))],
+        sections=[
+            ReportSection(title="Part A", coverage_id=_PART_A, points=[point(statement("S002", "Part A's point."))]),
+            ReportSection(title="Part B", coverage_id=_PART_B, points=[point(statement("S003", "Part B's point, before the redraft."))]),
+        ],
+    )
+    new = ReportComposition(
+        question=old.question, session_id=old.session_id, iteration=0, max_extra_passes=1,
+        findings=[finding],
+        summary=[point(statement("S010", "New bottom line, after the redraft."))],
+        sections=[
+            ReportSection(title="Part A", coverage_id=_PART_A, points=[point(statement("S011", "Part A's point."))]),
+            ReportSection(title="Part B", coverage_id=_PART_B, points=[point(statement("S012", "Part B's point, after the redraft."))]),
+        ],
+        parts=[
+            ReportPart(coverage_id=_PART_A, sub_topic_title="Part A", finding_ids=[finding_id], status="carried_over"),
+            ReportPart(coverage_id=_PART_B, sub_topic_title="Part B", finding_ids=[finding_id], status="written"),
+        ],
+    )
+    return old, new
+
+
+def _redraft_review(old: ReportComposition) -> ReportReview:
+    return ReportReview(
+        status="scored",
+        dimensions={name: 0.85 for name in REVIEW_DIMENSIONS},
+        defects=[
+            ReviewDefect(
+                defect_id="review-01", kind="missing_support", severity="major",
+                statement_ids=["S003"], target_ids=[],
+                problem="Part B's claim isn't backed by a cited finding.",
+            )
+        ],
+        per_statement_dispositions={"S001": "supported", "S002": "supported", "S003": "unsupported"},
+        reviewed_statement_ids=["S001", "S002", "S003"],
+        input_fingerprint="old-fp",
+        composition_fingerprint=composition_semantic_fingerprint(old),
+        rubric_version=REVIEW_RUBRIC_VERSION,
+        rationale="The first full review.",
+    )
+
+
+def _writer_redraft_state() -> ResearchState:
+    """A writer pass about to redraft: the old composition, its full review,
+    and the redraft hop's own marker event (the P2 gate reads this to tell
+    a redraft from an extra research pass -- ``writer_redraft_node``'s own
+    output, reused here rather than run, so this fixture agrees with the
+    real hop's event shape)."""
+    old, _new = _redraft_compositions()
+    base = _pass_state()
+    return base.model_copy(
         update={
-            "composition": fake_reader_composition(earlier),
-            "errors": [halting_error()],
-            "iteration": 1,
+            "composition": old,
+            "report": render_written_report(old),
+            "report_evidence": render_finding_log(old),
+            "report_review": _redraft_review(old),
+            "writer_redrafts": 1,
+            "events": [
+                *base.events,
+                redraft_requested_event(iteration=0, redrafts=1, material_defects=1),
+            ],
         }
     )
 
-    state = load_state(await synthesizer_node(agent)(dump_state(halted)))
 
-    assert agent.calls == []
-    assert state.composition is not None
-    assert state.quality is None
-    assert _event_types(state) == ["graph.node.skipped"]
+def _redrafted_writer_agent(new: ReportComposition) -> FakeAgent:
+    return FakeAgent(
+        "report_writer",
+        [
+            {
+                "report": render_written_report(new),
+                "report_evidence": render_finding_log(new),
+                "composition": new,
+            }
+        ],
+    )
 
 
-# --- the terminal finalizer ---------------------------------------------------
+@pytest.mark.asyncio
+async def test_report_writer_node_carries_the_previous_review_across_a_verified_redraft() -> None:
+    """The redraft-to-reviewer handoff: a carried-over part's dispositions
+    move onto its new statement id; a changed part's do not, and the merge's
+    ordinary composition-change drop is what would otherwise have dropped the
+    whole review.
+    """
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+
+    loaded = load_state(await report_writer_node(_redrafted_writer_agent(new))(dump_state(state)))
+
+    assert loaded.report_review is not None
+    assert loaded.report_review.per_statement_dispositions == {"S011": "supported"}
+    assert loaded.report_review.composition_fingerprint == composition_semantic_fingerprint(new)
+    assert [defect.defect_id for defect in loaded.report_review.defects] == ["review-01"]
+
+
+
+
+@pytest.mark.asyncio
+async def test_report_writer_node_drops_the_review_when_a_carried_over_part_actually_changed() -> None:
+    """An unchanged part whose text differs forces a full review: the writer
+    node leaves the review dropped rather than restore a mismatched one."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    tampered_section = new.sections[0].model_copy(
+        update={"points": [new.sections[0].points[0].model_copy(update={"text": "Secretly rewritten."})]}
+    )
+    tampered = new.model_copy(update={"sections": [tampered_section, new.sections[1]]})
+
+    loaded = load_state(
+        await report_writer_node(_redrafted_writer_agent(tampered))(dump_state(state))
+    )
+
+    assert loaded.report_review is None
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_asks_a_scoped_review_after_a_verified_redraft() -> None:
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([fake_report_review(reviewed_statement_ids=("S010", "S011", "S012"))])
+
+    await report_reviewer_node(reviewer)(dump_state(redrafted))
+
+    assert len(reviewer.packets) == 1
+    scoped = reviewer.packets[0]
+    assert isinstance(scoped, ScopedReportReviewInput)
+    assert set(scoped.changed_statement_ids) == {"S010", "S012"}
+    assert scoped.unchanged_statement_ids == ["S011"]
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_without_a_verified_redraft() -> None:
+    """A stored review whose dispositions name no statement id this
+    composition carries is not a carried-over redraft review: it is not
+    scoped, so the node asks a full review exactly as it always did."""
+    stale = fake_report_review(
+        fingerprint="unrelated", dispositions={"X999": "supported"},
+        reviewed_statement_ids=("X999",),
+    )
+    state = _writer_state(report_review=stale)
+    reviewer = FakeReviewer([fake_report_review(reviewed_statement_ids=("S001",))])
+
+    await report_reviewer_node(reviewer)(dump_state(state))
+
+    assert len(reviewer.packets) == 1
+    assert not isinstance(reviewer.packets[0], ScopedReportReviewInput)
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_is_not_scored() -> None:
+    """P2: the addendum's own promise -- a scoped call that could not be
+    made falls back to one full, fresh review, rather than ending in
+    ``review_unavailable`` where a full review might have produced a
+    verdict."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([
+        fake_report_review(status="incomplete"),
+        fake_report_review(reviewed_statement_ids=("S010", "S011", "S012")),
+    ])
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 2
+    assert isinstance(reviewer.packets[0], ScopedReportReviewInput)
+    assert not isinstance(reviewer.packets[1], ScopedReportReviewInput)
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_raises() -> None:
+    """P2, the other trigger: a scoped call that raises outright (a provider
+    error) falls back the same way as one that merely returns unscored."""
+    from deep_research.providers import ProviderResponseError
+
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    reviewer = FakeReviewer([
+        ProviderResponseError("boom", failure_origin="sdk"),
+        fake_report_review(reviewed_statement_ids=("S010", "S011", "S012")),
+    ])
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 2
+    assert isinstance(reviewer.packets[0], ScopedReportReviewInput)
+    assert not isinstance(reviewer.packets[1], ScopedReportReviewInput)
+    assert loaded.report_review is not None
+    assert loaded.report_review.status == "scored"
+
+
+@pytest.mark.asyncio
+async def test_the_scoped_calls_own_retry_telemetry_survives_the_fallback() -> None:
+    """ReRevFormatT5 P3: the scoped attempt's own retry record must not
+    vanish just because the fallback full review resets the reviewer's
+    ``review_records`` at the start of its own call."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    scoped_retry = ResearchError(
+        error_type="report_review_output_limit_retry",
+        source="agents.report_reviewer",
+        message="The scoped review request was truncated and re-asked once.",
+        recoverable=True,
+    )
+    reviewer = FakeReviewer(
+        [
+            fake_report_review(status="incomplete"),
+            fake_report_review(reviewed_statement_ids=("S010", "S011", "S012")),
+        ],
+        records=[(scoped_retry,), ()],
+    )
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 2
+    assert scoped_retry in loaded.errors
+
+
+@pytest.mark.asyncio
+async def test_a_successful_scoped_calls_retry_record_is_not_duplicated() -> None:
+    """ReRevFormatT5 (round 3): when the scoped call itself succeeds, no
+    fallback call ever runs to reset ``review_records`` -- so the same
+    tuple must not be listed twice just because ``scoped_records`` and
+    ``reviewer.review_records`` are, in that case, the identical object."""
+    state = _writer_redraft_state()
+    _old, new = _redraft_compositions()
+    redrafted = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+    scoped_retry = ResearchError(
+        error_type="report_review_output_limit_retry",
+        source="agents.report_reviewer",
+        message="The scoped review request was truncated and re-asked once.",
+        recoverable=True,
+    )
+    reviewer = FakeReviewer(
+        [fake_report_review(reviewed_statement_ids=("S010", "S011", "S012"))],
+        records=[(scoped_retry,)],
+    )
+
+    loaded = load_state(await report_reviewer_node(reviewer)(dump_state(redrafted)))
+
+    assert len(reviewer.packets) == 1
+    assert loaded.errors.count(scoped_retry) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_rewrite_gets_a_full_review_not_a_remap() -> None:
+    """P2: the remap must fire only through the writer-redraft hop, never
+    across an extra-pass iteration boundary, even with a scored review and
+    a defect-bearing ``state.report_review`` still in hand."""
+    state = _writer_redraft_state()
+    # Overwrite the redraft hop's own marker with an extra-pass one: this
+    # writer call is arriving through the research loop-back, not the
+    # redraft hop, even though a scored review with material defects is
+    # still on the state (exactly what an extra pass bought for a missing
+    # target, alongside an unrelated material defect, looks like).
+    state = state.model_copy(
+        update={
+            "events": [
+                *state.events[:-1],
+                extra_pass_started_event(
+                    iteration=0, max_extra_passes=1, targets=["topic-01-target-01"]
+                ),
+            ]
+        }
+    )
+    _old, new = _redraft_compositions()
+
+    loaded = load_state(
+        await report_writer_node(_redrafted_writer_agent(new))(dump_state(state))
+    )
+
+    assert loaded.report_review is None
+
+
+# --- the terminal publication ------------------------------------------------
+
+
+_COMPUTED = object()
+"""Sentinel: the fixture's own gate snapshot, as the writer node would stamp it."""
 
 
 def _finalized_state(
     *,
-    quality: ReportQualitySnapshot | None,
-    report: str = "# Reader report",
-    report_evidence: str = "# Evidence ledger",
-    iteration: int = 0,
-    max_iterations: int = 3,
-    should_continue: bool = False,
+    quality: object = _COMPUTED,
+    report_review: object = None,
     errors: list[ResearchError] | None = None,
+    iteration: int = 0,
 ) -> ResearchState:
-    """A run that has finished its Critic pass and is ready to be finalized."""
-    return fake_research_state(
-        sub_topics=[fake_sub_topic()],
-        raw_findings=[fake_finding()],
-        evaluated_sources=[fake_scored_source()],
-        verified_claims=[fake_claim()],
-        report=report,
-        report_evidence=report_evidence,
-        quality=quality,
-        critique=fake_critique(
-            should_continue=should_continue,
-            score=9 if not should_continue else 4,
+    """A run that has finished its review pass and is ready to be finalized.
+
+    ``report_review`` defaults to a scored pass, because nothing is accepted
+    without one: a state with no review is a state nothing judged, and a test
+    that wants that outcome passes ``report_review=`` explicitly.
+    """
+    overrides: dict[str, object] = {
+        "report_review": (
+            fake_report_review() if report_review is None else report_review
         ),
-        iteration=iteration,
-        max_iterations=max_iterations,
-        errors=errors or [],
-    )
+        "errors": errors or [],
+        "iteration": iteration,
+    }
+    if quality is not _COMPUTED:
+        overrides["quality"] = quality
+    return _writer_state(**overrides)
 
 
 @pytest.mark.asyncio
-async def test_the_finalizer_publishes_both_artifacts_exactly_once() -> None:
+async def test_the_finalizer_publishes_every_artifact_exactly_once() -> None:
     publisher = FakePublisher()
 
     result = await finalize_report_node(publisher)(
-        dump_state(_finalized_state(quality=fake_quality()))
+        dump_state(_finalized_state())
     )
     state = load_state(result)
 
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
     assert state.report_path == "report-session-1-0.md"
     assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.quality_path == "report-session-1-0-quality.json"
     assert publisher.written_paths == [
         "report-session-1-0.md",
         "report-session-1-0-evidence.md",
+        "report-session-1-0-quality.json",
     ]
-    assert publisher.document_named("report-session-1-0.md")[1] == (
-        "# Reader report"
+    assert publisher.document_named("-evidence.md")[1].startswith(
+        "# Evidence log:"
     )
-    assert publisher.document_named("-evidence.md")[1] == "# Evidence ledger"
+    quality = json.loads(publisher.document_named("-quality.json")[1])
+    assert quality["session_id"] == "session-1"
+    assert quality["quality_status"] == QUALITY_STATUS_ACCEPTED
     assert not state.errors
     published = state.events[-2]
     assert published.event_type == "graph.report.published"
     assert published.metadata["report_path"] == "report-session-1-0.md"
     assert published.metadata["evidence_path"] == "report-session-1-0-evidence.md"
+    assert published.metadata["quality_path"] == (
+        "report-session-1-0-quality.json"
+    )
     assert published.metadata["quality_status"] == QUALITY_STATUS_ACCEPTED
-    assert published.metadata["document_writes"] == 2
+    assert published.metadata["document_writes"] == 3
 
 
 @pytest.mark.asyncio
-async def test_the_real_synthesizer_publishes_both_artifacts_into_a_real_root(
+async def test_the_published_quality_record_hashes_the_two_documents_it_describes(
+) -> None:
+    """The set is internally checkable from the record it was published with."""
+    publisher = FakePublisher()
+
+    state = load_state(
+        await finalize_report_node(publisher)(
+            dump_state(_finalized_state())
+        )
+    )
+
+    reader_text = publisher.document_named("report-session-1-0.md")[1]
+    ledger_text = publisher.document_named("-evidence.md")[1]
+    record = json.loads(publisher.document_named("-quality.json")[1])
+
+    def digest(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    assert record["artifacts"] == {
+        "reader_markdown": digest(reader_text),
+        "evidence_markdown": digest(ledger_text),
+    }
+    assert record["quality_status"] == QUALITY_STATUS_ACCEPTED
+    assert state.report is not None
+    assert state.report_evidence is not None
+
+
+@pytest.mark.asyncio
+async def test_the_finalizer_stamps_the_verdict_into_the_published_composition(
+) -> None:
+    """The published composition states the terminal verdict, not the placeholder."""
+    state = _finalized_state()
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher)(dump_state(state))
+    )
+
+    assert final.composition is not None
+    assert final.composition.quality_status == QUALITY_STATUS_ACCEPTED
+    record = json.loads(publisher.document_named("-quality.json")[1])
+    assert record["quality_status"] == QUALITY_STATUS_ACCEPTED
+    assert final.report == publisher.document_named("report-session-1-0.md")[1]
+
+
+@pytest.mark.asyncio
+async def test_the_finalizer_stamps_the_run_telemetry_the_record_renders(
+) -> None:
+    """The run's collector is read at publication and stamped into state first.
+
+    The quality record describes a run, and the collector is that run's: the
+    node that renders the record is the one place the reading is taken, so the
+    published JSON and the state cannot disagree about it. A stamp taken after
+    the render would publish one reading and store another.
+    """
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="report_writer",
+        operation="structured_output",
+        seconds=3.0,
+        output_tokens=900,
+        configured_cap=1_000,
+        truncated=True,
+    )
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher, run_telemetry=collector)(
+            dump_state(_finalized_state())
+        )
+    )
+
+    assert final.run_telemetry == collector.snapshot()
+    record = json.loads(publisher.document_named("-quality.json")[1])
+    assert record["telemetry"] == collector.snapshot().model_dump(mode="json")
+
+
+@pytest.mark.asyncio
+async def test_a_finalizer_without_a_collector_stamps_no_telemetry() -> None:
+    """No collector is no measurement: the state and the record both carry
+    ``None`` rather than an empty snapshot, which would read as a run whose
+    providers never called anything."""
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher)(dump_state(_finalized_state()))
+    )
+
+    assert final.run_telemetry is None
+    assert json.loads(publisher.document_named("-quality.json")[1])["telemetry"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_published_ledger_is_the_finding_log_of_the_published_composition(
+) -> None:
+    """The evidence artifact is the finding log, rendered from one frozen composition."""
+    state = _finalized_state()
+    publisher = FakePublisher()
+
+    final = load_state(
+        await finalize_report_node(publisher)(dump_state(state))
+    )
+
+    assert final.composition is not None
+    assert final.report_evidence == render_finding_log(final.composition).strip()
+    ledger = publisher.document_named("-evidence.md")[1]
+    assert "## Findings" in ledger
+    assert SNIPPET in ledger
+
+
+@pytest.mark.asyncio
+async def test_the_published_ledger_carries_the_records_made_after_writing(
+) -> None:
+    """The ledger's run records are the run's, not the writer's snapshot.
+
+    A composition is built by the Report Writer, so its own error list stops
+    there — and every record made after it (the review's "nothing judged this
+    report", for one) would be invisible in the published artifacts. The
+    finalizer publishes from one frozen composition, so the composition it
+    publishes carries the run's final records.
+    """
+    publisher = FakePublisher()
+    state = _finalized_state()
+    later = ResearchError(
+        error_type="graph_report_review_unavailable",
+        source="graph.report_reviewer",
+        message="No judgement of the report exists.",
+        recoverable=True,
+    )
+
+    result = await finalize_report_node(publisher)(
+        dump_state(state.model_copy(update={"errors": [later]}))
+    )
+    final = load_state(result)
+
+    assert final.composition is not None
+    assert [error.error_type for error in final.composition.errors] == [
+        "graph_report_review_unavailable"
+    ]
+    record = json.loads(publisher.document_named("-quality.json")[1])
+    assert record["session_id"] == "session-1"
+
+
+@pytest.mark.asyncio
+async def test_the_real_writer_publishes_three_artifacts_into_a_real_root(
     tmp_path: Path,
 ) -> None:
-    """Task 7's Important 1, closed end to end.
+    """The publication path, driven by the real writer's own tools.
 
-    The finalizer's write path was pinned link by link — node↔publisher
-    signatures, ``publish_document``/``publish_claim`` called directly,
-    ``terminal_publisher(agents) is synthesizer``, ``allowed_tools``,
-    ``build_agents`` fail-fast — but nothing ever ran ``finalize_report_node``
-    with the **real** ``SynthesizerAgent`` as its publisher into a real output
-    root and asserted a file exists. ``WriteDocumentTool`` is the real tool,
-    resolving against ``tmp_path`` exactly as production resolves against the
-    configured output directory.
+    ``WriteDocumentTool`` is the real tool, resolving against ``tmp_path``
+    exactly as production resolves against the configured output directory,
+    so a file really exists after the run rather than a double claiming one
+    does.
     """
     memory = FakeMemory()
     tracker = Tracker(
@@ -644,68 +1491,76 @@ async def test_the_real_synthesizer_publishes_both_artifacts_into_a_real_root(
             tracing_enabled=False, project="nodes-finalizer-test", api_key=None
         )
     )
-    synthesizer = SynthesizerAgent(
+    writer = ReportWriterAgent(
         provider=ScriptedCompleter(),
         tracker=tracker,
         scratchpad=ScratchpadMemory(
-            session_id="session-1", agent_name="synthesizer", max_entries=20
+            session_id="session-1", agent_name=REPORT_WRITER_NAME, max_entries=20
         ),
-        tools=synthesizer_tools(tracker, output_root=tmp_path, memory=memory),
+        tools=report_writer_tools(tracker, output_root=tmp_path, memory=memory),
         config=AgentRuntimeConfig(max_iterations=2, tool_budget=0),
     )
 
     # The real ``write_document`` tool opens a child span, which requires the
     # active session span the orchestrator always runs a graph inside.
     async with tracker.session_span("session-1", "How mature is QEC?"):
-        result = await finalize_report_node(synthesizer)(
-            dump_state(_finalized_state(quality=fake_quality()))
+        result = await finalize_report_node(writer)(
+            dump_state(_finalized_state())
         )
     state = load_state(result)
 
     assert state.errors == []
     assert state.report_path == "report-session-1-0.md"
     assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.quality_path == "report-session-1-0-quality.json"
     reader = tmp_path / "report-session-1-0.md"
     ledger = tmp_path / "report-session-1-0-evidence.md"
-    assert reader.is_file() and ledger.is_file()
+    quality = tmp_path / "report-session-1-0-quality.json"
+    assert reader.is_file() and ledger.is_file() and quality.is_file()
     assert reader.read_text(encoding="utf-8") == state.report
     assert ledger.read_text(encoding="utf-8") == state.report_evidence
+    record = json.loads(quality.read_text(encoding="utf-8"))
+    # The record the filesystem holds describes the files the filesystem holds.
+    assert record["artifacts"]["reader_markdown"] == hashlib.sha256(
+        reader.read_bytes()
+    ).hexdigest()
+    assert record["artifacts"]["evidence_markdown"] == hashlib.sha256(
+        ledger.read_bytes()
+    ).hexdigest()
     published = state.events[-2]
-    assert published.metadata["document_writes"] == 2
+    assert published.metadata["document_writes"] == 3
     assert published.metadata["memory_writes"] == 1
     assert memory.saved
 
 
 @pytest.mark.asyncio
-async def test_an_accepted_report_publishes_only_its_high_confidence_claims() -> None:
+async def test_an_accepted_report_saves_only_its_cited_findings() -> None:
     publisher = FakePublisher()
 
     result = await finalize_report_node(publisher)(
-        dump_state(_finalized_state(quality=fake_quality()))
+        dump_state(_finalized_state())
     )
 
     assert load_state(result).events[-2].metadata["memory_writes"] == 1
     assert publisher.memory_writes == 1
-    assert publisher.saved_claims == ["Break-even was reached in 2025."]
+    assert publisher.saved_findings == [SNIPPET]
 
 
 @pytest.mark.asyncio
-async def test_a_partial_report_publishes_artifacts_but_saves_no_claim() -> None:
-    """Step 6: memory is written only for an accepted report."""
+async def test_a_partial_report_publishes_artifacts_but_saves_no_finding() -> None:
+    """Memory is written only for an accepted report."""
     publisher = FakePublisher()
 
-    result = await finalize_report_node(publisher)(
-        dump_state(
-            _finalized_state(
-                quality=fake_quality(hard_failures=["duplicate_claims"]),
-                iteration=2,
-                max_iterations=2,
-                should_continue=True,
-            )
-        )
+    state = _finalized_state(
+        quality=fake_quality(hard_failures=["unjudged_sentences"]),
+        report_review=fake_report_review(
+            dimensions={name: 0.5 for name in REVIEW_DIMENSIONS}
+        ),
     )
 
-    assert publisher.report_writes == 2
+    result = await finalize_report_node(publisher)(dump_state(state))
+
+    assert publisher.report_writes == 3
     assert publisher.memory_writes == 0
     assert load_state(result).events[-2].metadata["quality_status"] == (
         QUALITY_STATUS_PARTIAL
@@ -713,14 +1568,14 @@ async def test_a_partial_report_publishes_artifacts_but_saves_no_claim() -> None
 
 
 @pytest.mark.asyncio
-async def test_an_ungated_report_is_partial_and_saves_no_claim() -> None:
+async def test_an_ungated_report_is_partial_and_saves_no_finding() -> None:
     publisher = FakePublisher()
 
     result = await finalize_report_node(publisher)(
         dump_state(_finalized_state(quality=None))
     )
 
-    assert publisher.report_writes == 2
+    assert publisher.report_writes == 3
     assert publisher.memory_writes == 0
     assert load_state(result).events[-2].metadata["quality_status"] == (
         QUALITY_STATUS_PARTIAL
@@ -729,97 +1584,138 @@ async def test_an_ungated_report_is_partial_and_saves_no_claim() -> None:
 
 @pytest.mark.asyncio
 async def test_a_failed_write_keeps_the_markdown_authoritative() -> None:
-    """Step 7: state holds the artifacts whether or not a file exists."""
+    """State holds the artifacts whether or not a file exists.
+
+    And an incomplete set advertises nothing: the reader Markdown is in state,
+    the other two files may well be on disk, and no path is published, because
+    a front-end pointed at two thirds of a set cannot tell which third is
+    missing from the paths alone.
+    """
     publisher = FakePublisher(fail_documents=("report-session-1-0.md",))
 
     result = await finalize_report_node(publisher)(
-        dump_state(_finalized_state(quality=fake_quality()))
+        dump_state(_finalized_state())
     )
     state = load_state(result)
 
-    assert state.report == "# Reader report"
-    assert state.report_evidence == "# Evidence ledger"
+    assert state.report
+    assert state.report_evidence
     assert state.report_path is None
-    assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.evidence_path is None
+    assert state.quality_path is None
     assert [error.error_type for error in state.errors] == [
         "graph_publication_failed"
     ]
     assert state.errors[0].details["artifact"] == "reader"
-    assert state.events[-2].metadata["report_path"] is None
+    published = state.events[-2]
+    assert published.metadata["report_path"] is None
+    assert published.metadata["evidence_path"] is None
+    assert published.metadata["quality_path"] is None
+    # The count is the truthful one: two writes succeeded.
+    assert published.metadata["document_writes"] == 2
 
 
 @pytest.mark.asyncio
-async def test_the_two_artifact_writes_fail_independently() -> None:
-    publisher = FakePublisher(fail_documents=("-evidence.md",))
+async def test_a_failed_quality_write_withholds_the_whole_advertised_set() -> None:
+    """A required artifact that did not publish leaves no accepted output.
+
+    The quality record is part of the set, not an optional extra: without it
+    the two Markdown documents cannot be checked against the IDs and hashes
+    that describe them, so the publication is incomplete and says so.
+    """
+    publisher = FakePublisher(fail_documents=("-quality.json",))
 
     state = load_state(
         await finalize_report_node(publisher)(
-            dump_state(_finalized_state(quality=fake_quality()))
+            dump_state(_finalized_state())
         )
     )
 
-    assert state.report_path == "report-session-1-0.md"
+    assert state.report is not None and state.report_evidence is not None
+    assert state.report_path is None
     assert state.evidence_path is None
-    assert [error.details["artifact"] for error in state.errors] == ["evidence"]
+    assert state.quality_path is None
+    assert [error.details["artifact"] for error in state.errors] == ["quality"]
+    assert state.errors[0].details["failure_type"] == "ValidationError"
+    assert state.events[-2].metadata["document_writes"] == 2
+
+
+@pytest.mark.asyncio
+async def test_each_artifact_write_fails_independently() -> None:
+    """Each write records its own error; none of them hides another's."""
+    publisher = FakePublisher(fail_documents=("-evidence.md", "-quality.json"))
+
+    state = load_state(
+        await finalize_report_node(publisher)(
+            dump_state(_finalized_state())
+        )
+    )
+
+    assert state.report_path is None
+    assert state.evidence_path is None
+    assert state.quality_path is None
+    assert [error.details["artifact"] for error in state.errors] == [
+        "evidence",
+        "quality",
+    ]
+    assert state.events[-2].metadata["document_writes"] == 1
 
 
 @pytest.mark.asyncio
 async def test_a_terminal_write_failure_never_advertises_an_earlier_artifact() -> None:
-    """Step 7: the terminal event is the only path a front-end may read."""
+    """The terminal event is the only path a front-end may read."""
     publisher = FakePublisher(fail_documents=("report-session-1-",))
 
     state = load_state(
         await finalize_report_node(publisher)(
-            dump_state(
-                _finalized_state(
-                    quality=fake_quality(),
-                    # A later pass, so an earlier pass's names exist to leak.
-                    iteration=1,
-                )
-            )
+            dump_state(_finalized_state(iteration=1))
         )
     )
 
     published = state.events[-2]
     assert published.metadata["report_path"] is None
     assert published.metadata["evidence_path"] is None
+    assert published.metadata["quality_path"] is None
     assert state.report_path is None
     assert state.evidence_path is None
+    assert state.quality_path is None
     assert "report-session-1-1-evidence.md" not in str(published.metadata)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_memory_write_is_recorded_and_never_hides_the_artifacts(
+) -> None:
+    publisher = FakePublisher(fail_findings=True)
+
+    state = load_state(
+        await finalize_report_node(publisher)(
+            dump_state(_finalized_state())
+        )
+    )
+
+    assert state.report_path == "report-session-1-0.md"
+    assert state.evidence_path == "report-session-1-0-evidence.md"
+    assert state.quality_path == "report-session-1-0-quality.json"
+    assert [error.details["artifact"] for error in state.errors] == ["memory"]
+    assert state.events[-2].metadata["memory_writes"] == 0
 
 
 @pytest.mark.asyncio
 async def test_a_run_with_no_publisher_writes_nothing_and_says_so() -> None:
     result = await finalize_report_node(None)(
-        dump_state(_finalized_state(quality=fake_quality()))
+        dump_state(_finalized_state())
     )
     state = load_state(result)
 
-    assert state.report == "# Reader report"
+    assert state.report
     assert state.report_path is None
     assert state.evidence_path is None
+    assert state.quality_path is None
     assert [error.error_type for error in state.errors] == [
         "graph_publication_unavailable"
     ]
     assert state.errors[0].recoverable is True
     assert state.events[-2].metadata["document_writes"] == 0
-
-
-@pytest.mark.asyncio
-async def test_the_finalizer_stamps_the_verdict_into_a_rendered_report() -> None:
-    """The published report states the gate's verdict, not the placeholder."""
-    state = _finalized_state(quality=fake_quality())
-    composition = fake_reader_composition(state)
-
-    result = await finalize_report_node(FakePublisher())(
-        dump_state(state.model_copy(update={"composition": composition}))
-    )
-    final = load_state(result)
-
-    assert "**Quality status:** accepted" in (final.report or "")
-    assert final.composition is not None
-    assert final.composition.quality_status == QUALITY_STATUS_ACCEPTED
-    assert "not yet quality-gated" not in (final.report or "")
 
 
 @pytest.mark.asyncio
@@ -829,9 +1725,7 @@ async def test_a_halted_run_is_never_finalized() -> None:
     state = load_state(
         await finalize_report_node(publisher)(
             dump_state(
-                _finalized_state(
-                    quality=fake_quality(), errors=[halting_error()]
-                )
+                _finalized_state(errors=[halting_error()])
             )
         )
     )
@@ -839,3 +1733,8 @@ async def test_a_halted_run_is_never_finalized() -> None:
     assert publisher.documents == []
     assert state.report_path is None
     assert _event_types(state) == ["graph.node.skipped"]
+
+
+def test_a_graph_node_factory_refuses_a_blank_name() -> None:
+    with pytest.raises(GraphConfigurationError):
+        agent_node(FakeAgent("planner"), node_name="   ")

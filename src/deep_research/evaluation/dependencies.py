@@ -34,9 +34,9 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import JsonValue
 
-from deep_research.agents.critic import CriticAgent
-from deep_research.agents.fact_checker import FactCheckerAgent
+from deep_research.agents.evidence_verifier import EvidenceVerifierAgent
 from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
@@ -44,8 +44,10 @@ from deep_research.agents.source_evaluator import (
 )
 from deep_research.agents.sources import normalize_source_url, source_domain
 from deep_research.agents.steps import ReActStep, read_evidence_urls
-from deep_research.agents.synthesizer import SynthesizerAgent
-from deep_research.evaluation.config import EvaluationRuntimeConfig
+from deep_research.evaluation.config import (
+    EvaluationRuntimeConfig,
+    target_llm_config,
+)
 from deep_research.evaluation.factory import evaluation_session_id
 from deep_research.evaluation.models import (
     AGENT_NAMES,
@@ -221,9 +223,8 @@ _AGENT_CLASSES: dict[AgentName, type[Any]] = {
     "planner": PlannerAgent,
     "researcher": ResearcherAgent,
     "source_evaluator": SourceEvaluatorAgent,
-    "fact_checker": FactCheckerAgent,
-    "synthesizer": SynthesizerAgent,
-    "critic": CriticAgent,
+    "evidence_verifier": EvidenceVerifierAgent,
+    "report_writer": ReportWriterAgent,
 }
 
 
@@ -839,8 +840,15 @@ def isolated_settings(
             "directory": str(root / "documents" / f"{case_id}-r{repetition}")
         },
     )
+    # Production parity is applied to the isolated copy as well as to the
+    # provider: everything inside the bundle that reads ``settings.llm`` — a
+    # preflight check, a tool, a second provider — then sees the exact profile
+    # the target runs under instead of a production mapping that may name a
+    # different effort for this agent.
+    llm = target_llm_config(runtime, settings.llm)
     return settings.model_copy(
-        deep=True, update={"memory": memory, "output": output}
+        deep=True,
+        update={"memory": memory, "output": output, "llm": llm},
     )
 
 
@@ -1152,10 +1160,32 @@ _FAILURE_URLS = (
     "https://www.sciencedirect.com/perovskite-encapsulation-review",
 )
 
+# The recalled lead is scripted as a search result and inside the remembered
+# entry, and its page raises: the run can recall the fact, it can try to open
+# the page, and it cannot read it. The two readable pages carry the same
+# figure, so the fact is reachable without ever reporting the lead as
+# evidence.
+_RECALL_ONLY_URL = "https://www.eia.gov/us-battery-storage-capacity-2025"
+_READABLE_URLS = (
+    "https://www.nrel.gov/utility-scale-storage-2025-deployment",
+    "https://www.energy.gov/grid-storage-additions-2025",
+)
+_READ_BEARING_URLS = (_RECALL_ONLY_URL, *_READABLE_URLS)
+
 
 def _planner_scenarios() -> dict[str, ScenarioScript]:
     return {
         "planner-clean-memory": ScenarioScript(
+            search_responses={},
+            http_pages={},
+            memory_entries=(),
+            reputations={},
+            scripted_search_urls=(),
+        ),
+        # Empty on purpose: scoping is decided from the question and the
+        # answer contract, so nothing this run can recall or retrieve may
+        # decide whether the plan's obligations are answerable.
+        "planner-scoped-targets": ScenarioScript(
             search_responses={},
             http_pages={},
             memory_entries=(),
@@ -1414,6 +1444,68 @@ def _researcher_scenarios() -> dict[str, ScenarioScript]:
             },
             scripted_search_urls=_FAILURE_URLS,
         ),
+        "researcher-read-bearing": ScenarioScript(
+            search_responses={
+                "US utility-scale battery storage capacity additions 2025": {
+                    "results": [
+                        {
+                            "url": _RECALL_ONLY_URL,
+                            "title": "EIA battery storage capacity report",
+                            "content": "Utility-scale battery storage "
+                            "additions reached 14 GW in 2025.",
+                        },
+                        {
+                            "url": _READABLE_URLS[0],
+                            "title": "NREL utility-scale storage deployment "
+                            "report",
+                            "content": "14 GW of utility-scale battery "
+                            "storage was added in 2025.",
+                        },
+                        {
+                            "url": _READABLE_URLS[1],
+                            "title": "Department of Energy storage "
+                            "additions report",
+                            "content": "Utility-scale storage additions "
+                            "totaled 14 GW in 2025.",
+                        },
+                    ]
+                },
+            },
+            http_pages={
+                # A plain RuntimeError: an httpx failure would be retried by
+                # the real scraper and triple-counted in the call ledger.
+                _RECALL_ONLY_URL: RuntimeError(
+                    "the reported page is no longer served"
+                ),
+                _READABLE_URLS[0]: (
+                    "Deployment data for 2025 record 14 GW of utility-scale "
+                    "battery storage capacity added in the United States. "
+                    "Additions were concentrated in Texas and California."
+                ),
+                _READABLE_URLS[1]: (
+                    "The department's 2025 additions report states that "
+                    "14 GW of utility-scale battery storage came online "
+                    "during the year."
+                ),
+            },
+            memory_entries=(
+                {
+                    "content": (
+                        "Utility-scale battery storage additions in the "
+                        "United States reached 14 GW in 2025."
+                    ),
+                    "entry_type": "finding",
+                    "confidence": 0.95,
+                    "source_url": _RECALL_ONLY_URL,
+                    "source_title": "EIA battery storage capacity report",
+                    # A prior run's labels: neither makes the recall a read.
+                    "verified": "true",
+                    "read_id": "read-legacy-0001",
+                },
+            ),
+            reputations={},
+            scripted_search_urls=_READ_BEARING_URLS,
+        ),
     }
 
 
@@ -1432,296 +1524,57 @@ def _source_evaluator_scenarios() -> dict[str, ScenarioScript]:
                 "aqmd.gov": RuntimeError("reputation lookup failed"),
             },
         ),
-    }
-
-
-def _fact_checker_scenarios() -> dict[str, ScenarioScript]:
-    # The scenario search keys are exactly the claim texts the cases pin as
-    # expected verdicts (or failing-query anchors) in their references; the
-    # case tests assert equality between the two sides.
-    return {
-        "fact-checker-mixed": ScenarioScript(
-            search_responses={
-                (
-                    "Small modular reactor designs must satisfy the same "
-                    "international safety standards as large reactors."
-                ): {
-                    "results": [
-                        {
-                            "url": "https://nrc.gov/smr-licensing-framework",
-                            "title": "NRC: SMR licensing framework",
-                            "content": (
-                                "SMR designs undergo the same safety "
-                                "assessment and licensing requirements as "
-                                "large reactors."
-                            ),
-                        },
-                        {
-                            "url": "https://ans.org/smr-safety-assessment",
-                            "title": "ANS: SMR safety assessment",
-                            "content": (
-                                "The ANS confirms that international safety "
-                                "standards apply equally to SMR designs."
-                            ),
-                        },
-                    ]
-                },
-                "No small modular reactor has operated commercially.": {
-                    "results": [
-                        {
-                            "url": "https://nei.org/pevek-floating-plant",
-                            "title": "NEI: Pevek floating plant",
-                            "content": (
-                                "The Akademik Lomonosov floating plant has "
-                                "operated commercially at Pevek since 2020, "
-                                "powered by two KLT-40S small modular "
-                                "reactor units."
-                            ),
-                        },
-                    ]
-                },
-                (
-                    "Small modular reactors will be cheaper to build than "
-                    "large reactors at scale."
-                ): {
-                    "results": [],
-                },
+        # One survey served three ways plus a separate study: the reputations
+        # are keyed by the serving hosts, because that is the only identity
+        # a mirror or a reprint carries on its own. The survey's authority
+        # belongs to the institute, not to the repository or the wire that
+        # carried it — which is the judgement the case scores.
+        "source-evaluator-work-roles": ScenarioScript(
+            reputations={
+                "soilbaseline.example.gov": 0.90,
+                "repository.example.org": 0.45,
+                "wire.example.com": 0.40,
+                "soilstudies.example.edu": 0.75,
             },
-            http_pages={
-                "https://nrc.gov/smr-licensing-framework": (
-                    "SMR designs undergo the same safety assessment and "
-                    "licensing requirements as large reactors."
-                ),
-                "https://ans.org/smr-safety-assessment": (
-                    "International safety standards apply equally to SMR "
-                    "designs."
-                ),
-                "https://nei.org/pevek-floating-plant": (
-                    "The Akademik Lomonosov floating plant has operated "
-                    "commercially at Pevek since 2020, powered by two "
-                    "small modular reactor units."
-                ),
-            },
-            scripted_search_urls=(
-                "https://nrc.gov/smr-licensing-framework",
-                "https://ans.org/smr-safety-assessment",
-                "https://nei.org/pevek-floating-plant",
-            ),
-        ),
-        "fact-checker-dependent-domains": ScenarioScript(
-            search_responses={
-                "The 2025 grid upgrade reduced outage minutes by 40 percent.": {
-                    "results": [
-                        {
-                            "url": "https://news.example.com/outage-minutes-fall",
-                            "title": "News: outage minutes fall after upgrade",
-                            "content": (
-                                "A follow-up confirms outage minutes fell "
-                                "40 percent after the 2025 grid upgrade."
-                            ),
-                        },
-                        {
-                            "url": (
-                                "https://syndication.news.example.com/"
-                                "outage-minutes-fall"
-                            ),
-                            "title": "Syndicated: outage statistics",
-                            "content": (
-                                "The same 40 percent figure appears in the "
-                                "syndicated outage statistics."
-                            ),
-                        },
-                    ]
-                },
-            },
-            http_pages={
-                "https://news.example.com/outage-minutes-fall": (
-                    "A follow-up confirms outage minutes fell 40 percent "
-                    "after the 2025 grid upgrade."
-                ),
-                "https://syndication.news.example.com/outage-minutes-fall": (
-                    "The same 40 percent figure appears in syndicated "
-                    "outage statistics."
-                ),
-            },
-            scripted_search_urls=(
-                "https://news.example.com/outage-minutes-fall",
-                "https://syndication.news.example.com/outage-minutes-fall",
-            ),
-        ),
-        "fact-checker-search-failure": ScenarioScript(
-            search_responses={
-                "Ocean heat content is still rising at the rate reported in 2023.": (
-                    RuntimeError("search backend unavailable")
-                ),
-                (
-                    "The recent acceleration in ocean heat content is "
-                    "driven primarily by greenhouse gas forcing."
-                ): {
-                    "results": [
-                        {
-                            "url": "https://agu.org/ocean-heat-attribution",
-                            "title": "AGU: ocean heat attribution study",
-                            "content": (
-                                "An AGU study attributes the post-2020 "
-                                "ocean heat acceleration primarily to "
-                                "greenhouse gas forcing."
-                            ),
-                        },
-                        {
-                            "url": "https://gcos.wmo.int/ocean-heat-bulletin",
-                            "title": "GCOS: ocean heat bulletin",
-                            "content": (
-                                "The GCOS bulletin reports greenhouse gas "
-                                "forcing as the dominant driver of the "
-                                "recent ocean heat increase."
-                            ),
-                        },
-                    ]
-                },
-            },
-            http_pages={
-                "https://agu.org/ocean-heat-attribution": (
-                    "An AGU study attributes the post-2020 ocean heat "
-                    "acceleration primarily to greenhouse gas forcing."
-                ),
-                "https://gcos.wmo.int/ocean-heat-bulletin": (
-                    "The GCOS bulletin reports greenhouse gas forcing as "
-                    "the dominant driver of the recent ocean heat increase."
-                ),
-            },
-            scripted_search_urls=(
-                "https://agu.org/ocean-heat-attribution",
-                "https://gcos.wmo.int/ocean-heat-bulletin",
-            ),
         ),
     }
 
 
-def _synthesizer_scenarios() -> dict[str, ScenarioScript]:
-    # The Synthesizer composes both Markdown artifacts and never calls a
-    # persistence tool. Keep every controlled scenario empty: publication is
-    # a later terminal concern and Task 6 must not encode write/memory
-    # failures as evaluation dependencies.
+def _evidence_verifier_scenarios() -> dict[str, ScenarioScript]:
+    """Three scripted Evidence Verifier scenarios with no service scripted.
+
+    The Evidence Verifier declares no tools at all: it judges the seeded
+    findings against the seeded reads, and the Context Check is a structured
+    model call rather than a service. What a controlled scenario scripts is
+    therefore *nothing*, which is the honest fixture for an agent whose
+    ``allowed_tools`` is empty and whose ``LIVE_DEPENDENCIES`` entry is
+    empty too. The scenarios stay registered because a case must name one
+    (``test_every_case_scenario_has_a_script``), and an empty script keeps
+    that invariant true without pretending the wiring is live.
+
+    The Context Check's own replies are scripted by the tests that drive
+    these cases: a case's expected verdict is an input to the run, not a
+    dependency of it.
+    """
     return {
-        "synthesizer-complete": ScenarioScript(),
-        "synthesizer-conflicted": ScenarioScript(),
-        "synthesizer-composition": ScenarioScript(),
+        "evidence-verifier-scope-correction": ScenarioScript(),
+        "evidence-verifier-relay": ScenarioScript(),
+        "evidence-verifier-invented-evidence": ScenarioScript(),
     }
 
 
-def _critic_scenarios() -> dict[str, ScenarioScript]:
-    """Three scripted Critic scenarios: one spot-check loop that can
-    corroborate the strong report, one that surfaces the gaps in the
-    gappy report, and one at the final allowed iteration whose memory
-    backend is down while its search still succeeds."""
+def _report_writer_scenarios() -> dict[str, ScenarioScript]:
+    # The Report Writer composes both Markdown artifacts and publishes
+    # nothing: publication is the terminal pass's job, and the writer's own
+    # ``write_document``/``save_to_memory`` calls belong to that finalizer,
+    # not to a controlled composition. Keep every controlled scenario empty
+    # so a persistence call is a scenario miss rather than a scripted
+    # success, and no case encodes write or memory failure as a dependency.
     return {
-        "critic-strong-report": ScenarioScript(
-            search_responses={
-                "urban tree canopy measured surface temperature reductions": {
-                    "results": [
-                        {
-                            "url": (
-                                "https://sciencedirect.com/tree-canopy-"
-                                "surface-temperature-review"
-                            ),
-                            "title": "ScienceDirect: tree canopy surface "
-                            "temperature review",
-                            "content": (
-                                "Peer-reviewed field measurements find "
-                                "urban tree canopy lowers summer surface "
-                                "temperatures by 1 to 5 degrees Celsius, "
-                                "with the largest reductions at midday "
-                                "and over impervious surfaces."
-                            ),
-                        },
-                    ],
-                },
-            },
-            memory_entries=(
-                {
-                    "content": (
-                        "Prior sessions established that mature urban "
-                        "tree canopy measurably lowers daytime surface "
-                        "temperatures in warm climates."
-                    ),
-                    "entry_type": "finding",
-                },
-            ),
-            scripted_search_urls=(
-                "https://sciencedirect.com/tree-canopy-surface-"
-                "temperature-review",
-            ),
-        ),
-        "critic-gappy-report": ScenarioScript(
-            search_responses={
-                "municipal composting mandates participation rates": {
-                    "results": [
-                        {
-                            "url": (
-                                "https://citiesclimate.example.org/"
-                                "composting-participation"
-                            ),
-                            "title": "Cities Climate: composting "
-                            "participation study",
-                            "content": (
-                                "A survey of municipal composting "
-                                "mandates finds participation rates "
-                                "between 20 and 60 percent of eligible "
-                                "households, with curbside pickup and "
-                                "clear enforcement driving uptake."
-                            ),
-                        },
-                    ],
-                },
-            },
-            memory_entries=(
-                {
-                    "content": (
-                        "Prior sessions noted that participation rates "
-                        "drive the climate effect of organics mandates, "
-                        "and that landfill methane estimates depend on "
-                        "measurement methodology."
-                    ),
-                    "entry_type": "finding",
-                },
-            ),
-            scripted_search_urls=(
-                "https://citiesclimate.example.org/composting-"
-                "participation",
-            ),
-        ),
-        "critic-budget-exhausted": ScenarioScript(
-            search_responses={
-                "congestion pricing particulate pollution evidence": {
-                    "results": [
-                        {
-                            "url": (
-                                "https://wri.org/congestion-pricing-"
-                                "air-quality-evidence"
-                            ),
-                            "title": "WRI: congestion pricing and air "
-                            "quality evidence",
-                            "content": (
-                                "World Resources Institute analysis "
-                                "finds congestion pricing reduced "
-                                "particulate pollution in Stockholm and "
-                                "London, with measurable air-quality "
-                                "co-benefits in priced zones."
-                            ),
-                        },
-                    ],
-                },
-            },
-            failures={
-                "query_memory": RuntimeError(
-                    "long-term memory is unavailable"
-                ),
-            },
-            scripted_search_urls=(
-                "https://wri.org/congestion-pricing-air-quality-evidence",
-            ),
-        ),
+        "report-writer-complete": ScenarioScript(),
+        "report-writer-conflicted": ScenarioScript(),
+        "report-writer-composition": ScenarioScript(),
+        "report-writer-canonical-evidence": ScenarioScript(),
     }
 
 
@@ -1729,7 +1582,6 @@ SCENARIOS: dict[str, ScenarioScript] = {
     **_planner_scenarios(),
     **_researcher_scenarios(),
     **_source_evaluator_scenarios(),
-    **_fact_checker_scenarios(),
-    **_synthesizer_scenarios(),
-    **_critic_scenarios(),
+    **_evidence_verifier_scenarios(),
+    **_report_writer_scenarios(),
 }

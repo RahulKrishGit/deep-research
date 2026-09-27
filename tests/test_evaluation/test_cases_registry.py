@@ -4,9 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from deep_research.agents.fact_checker import claimed_domains_for
-from deep_research.agents.identity import claim_fingerprint
-from deep_research.agents.sources import publisher_identity
 from deep_research.evaluation.cases import (
     CASE_REGISTRY_VERSION,
     FIXED_TIMESTAMP,
@@ -16,7 +13,6 @@ from deep_research.evaluation.cases import (
     case_by_id,
     case_by_identity,
     cases_for,
-    claim,
     evaluation_state,
     finding,
     metrics,
@@ -33,46 +29,13 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import MemorySnapshot
 
-CONTROLLED_IDS = {
-    "planner": (
-        "focused-decomposition",
-        "ambiguous-scope",
-        "planning-tool-failure",
-    ),
-    "researcher": (
-        "multi-source-coverage",
-        "conflicting-evidence",
-        "partial-search-failure",
-    ),
-    "source_evaluator": (
-        "strong-and-weak-sources",
-        "corroboration-recency-reputation",
-        "reputation-provider-failure",
-    ),
-    "fact_checker": (
-        "mixed-verdicts",
-        "independent-domain-evidence",
-        "verification-search-failure",
-    ),
-    "synthesizer": (
-        "complete-cited-report",
-        "conflict-and-limitations",
-        "composition-no-publication",
-    ),
-    "critic": (
-        "approve-strong-report",
-        "request-more-research",
-        "missing-evidence-or-budget-exhausted",
-    ),
-}
-LIVE_IDS = {
-    "planner": "planner-live-scope",
-    "researcher": "researcher-live-evidence",
-    "source_evaluator": "source-evaluator-live-ranking",
-    "fact_checker": "fact-checker-live-verification",
-    "synthesizer": "synthesizer-live-report",
-    "critic": "critic-live-review",
-}
+# The registered ids are not restated here. Their declaration lives in the
+# registry module itself (``EXPECTED_CONTROLLED_CASE_IDS`` /
+# ``EXPECTED_LIVE_CASE_IDS``) and these tests compare the registry against
+# it: an inventory written down twice is two sources of truth, and the
+# second one is always the stale one. A literal list here would also have
+# to be edited by every round that adds a case, which is how a test that
+# was supposed to guard the registry becomes a rubber stamp.
 
 
 # The four count tests below are expected red until all six case files
@@ -86,24 +49,35 @@ def test_the_registry_is_valid() -> None:
     validate_registry()
 
 
-def test_every_agent_has_exactly_three_controlled_cases() -> None:
+def test_every_agent_carries_its_declared_controlled_cases() -> None:
+    from deep_research.evaluation.cases import EXPECTED_CONTROLLED_CASE_IDS
+
     for agent_name in AGENT_NAMES:
-        controlled = cases_for(agent_name, "controlled")
-        assert len(controlled) == 3, agent_name
-        assert tuple(case.case_id for case in controlled) == (
-            CONTROLLED_IDS[agent_name]
+        found = tuple(
+            case.case_id for case in cases_for(agent_name, "controlled")
         )
+        assert found == EXPECTED_CONTROLLED_CASE_IDS[agent_name], agent_name
 
 
-def test_every_agent_has_exactly_one_live_case() -> None:
+def test_every_agent_carries_its_declared_live_cases() -> None:
+    from deep_research.evaluation.cases import EXPECTED_LIVE_CASE_IDS
+
     for agent_name in AGENT_NAMES:
-        live = cases_for(agent_name, "live")
-        assert len(live) == 1, agent_name
-        assert live[0].case_id == LIVE_IDS[agent_name]
+        found = tuple(case.case_id for case in cases_for(agent_name, "live"))
+        assert found == EXPECTED_LIVE_CASE_IDS[agent_name], agent_name
 
 
-def test_the_registry_holds_twenty_four_cases() -> None:
-    assert len(all_cases()) == 24
+def test_the_registry_holds_the_declared_inventory() -> None:
+    from deep_research.evaluation.cases import (
+        EXPECTED_CONTROLLED_CASE_IDS,
+        EXPECTED_LIVE_CASE_IDS,
+    )
+
+    declared = sum(
+        len(ids) for ids in EXPECTED_CONTROLLED_CASE_IDS.values()
+    ) + sum(len(ids) for ids in EXPECTED_LIVE_CASE_IDS.values())
+
+    assert len(all_cases()) == declared
 
 
 def test_every_case_carries_its_own_agent_and_tier() -> None:
@@ -141,12 +115,14 @@ def test_lookup_by_id_and_by_identity() -> None:
 
 
 def test_an_unknown_case_id_lists_the_valid_ones() -> None:
+    from deep_research.evaluation.cases import EXPECTED_CONTROLLED_CASE_IDS
+
     with pytest.raises(UnknownCaseError) as caught:
         case_by_id("planner", "controlled", "not-a-case")
 
     message = str(caught.value)
     assert "not-a-case" in message
-    for case_id in CONTROLLED_IDS["planner"]:
+    for case_id in EXPECTED_CONTROLLED_CASE_IDS["planner"]:
         assert case_id in message
 
 
@@ -171,135 +147,27 @@ def test_two_versions_of_one_case_id_fail_validation() -> None:
     assert "conflicting version" in str(caught.value)
 
 
-def test_a_wrong_case_count_fails_validation() -> None:
+def test_a_missing_controlled_case_fails_validation() -> None:
     cases = [case for case in all_cases() if case.case_id != "ambiguous-scope"]
 
     with pytest.raises(CaseRegistryError) as caught:
         validate_registry(cases)
 
-    assert "planner" in str(caught.value)
-    assert "3 controlled" in str(caught.value)
+    message = str(caught.value)
+    assert "planner" in message
+    # The mismatch is reported by id. A count check would have caught this
+    # one too, but it could not have caught the case that matters more: an
+    # id renamed or filed under the wrong agent still satisfies any length.
+    assert "ambiguous-scope" in message
 
 
 def test_the_registry_version_is_recorded() -> None:
-    assert CASE_REGISTRY_VERSION >= 1
+    """Pinned exactly: a bump must be a deliberate, visible act.
 
-
-# --- Claim snapshot invariants across the whole registry -------------------
-#
-# Task 5 review, Important 3 / R7: a controlled case seeds ``verified_claims``
-# that downstream evaluations treat as a legitimate production snapshot. Every
-# claim in the registry must therefore be one the production Fact Checker
-# could itself have emitted: canonical identity, a verdict compatible with its
-# passage stances, and passages on publishers independent of the claim's own.
-
-
-def _registry_claims():
-    for case in all_cases():
-        for item in case.state.verified_claims:
-            yield case, item
-
-
-def test_every_registry_claim_id_is_its_canonical_fingerprint() -> None:
-    """``merge_claim_snapshot`` recomputes the fingerprint from text, so an
-    arbitrary fixture id would pass unnoticed and guard nothing."""
-    wrong = [
-        (case.case_id, item.claim_id)
-        for case, item in _registry_claims()
-        if item.claim_id != claim_fingerprint(item.text)
-    ]
-
-    assert wrong == []
-
-
-def test_every_registry_claim_verdict_matches_its_passage_stances() -> None:
-    """Exactly the verdicts ``fact_checker.resolve_verdict`` can produce."""
-    for case, item in _registry_claims():
-        stances = {passage.stance for passage in item.verification_evidence}
-        where = f"{case.case_id}: {item.text[:40]!r}"
-        if item.verdict == "insufficient_evidence":
-            assert not item.verification_evidence, where
-        elif item.verdict == "verified":
-            assert "supports" in stances and "contradicts" not in stances, where
-        elif item.verdict == "unverified":
-            assert "supports" in stances and "contradicts" not in stances, where
-        else:
-            assert item.verdict == "contradicted", where
-            assert "contradicts" in stances, where
-
-
-def test_every_registry_verification_passage_is_independent() -> None:
-    """A passage on the claim's own publisher is not verification."""
-    for case, item in _registry_claims():
-        claimed = {
-            domain.casefold() for domain in claimed_domains_for(item.source_urls)
-        }
-        passage_publishers = {
-            publisher_identity(passage.source_url).casefold()
-            for passage in item.verification_evidence
-        }
-        assert not passage_publishers & claimed, (
-            f"{case.case_id}: {item.text[:40]!r} verifies itself on "
-            f"{sorted(passage_publishers & claimed)}"
-        )
-
-
-def test_the_claim_builder_requires_independent_verification_passages() -> None:
-    """The builder fails loudly rather than seeding a self-verified claim."""
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="verified",
-            confidence=0.9,
-        )
-
-    assert "verification_urls" in str(caught.value)
-
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://news.example.com/a"],
-            verdict="unverified",
-            confidence=0.5,
-            verification_urls=["https://docs.example.com/b"],
-        )
-
-    assert "own publishers" in str(caught.value)
-
-
-def test_any_claim_that_builds_passages_requires_verification_urls() -> None:
-    """The emptiness guard is a property of building passages, not a verdict.
-
-    The passage loops cycle ``verification_urls`` with ``index % len(...)``,
-    so a claim of any verdict that carries an excerpt and no verification URL
-    raises ``ZeroDivisionError`` at *import* time rather than
-    ``CaseRegistryError``. That failure is a collection error, so the
-    verdict/passage invariants in this file — which are exactly what would
-    have caught the malformed fixture — never run. A typo'd verdict is the
-    realistic trigger; a clear error is what has to come out.
+    A ``>= 1`` lower bound would keep passing through every future bump,
+    which is the opposite of what versioning case semantics is for.
     """
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="insufficient_evidence",
-            confidence=0.0,
-            evidence=["An independent review found no support."],
-        )
-
-    assert "verification_urls" in str(caught.value)
-
-    with pytest.raises(CaseRegistryError) as caught:
-        claim(
-            "A claim.",
-            urls=["https://example.com/a"],
-            verdict="not_a_verdict",
-            confidence=0.0,
-            contradictions=["An independent review disputes this."],
-        )
-
-    assert "verification_urls" in str(caught.value)
+    assert CASE_REGISTRY_VERSION == 2
 
 
 # The shared fixture builders are the API every case file (Tasks 10-15)
@@ -331,21 +199,12 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
         overall=0.85,
         rationale="strong domain fit",
     )
-    item_claim = claim(
-        "The claim.",
-        urls=["https://example.com/a"],
-        verdict="verified",
-        confidence=0.9,
-        evidence=["source text"],
-        verification_urls=["https://independent.org/review"],
-    )
     state = evaluation_state(
         case_id="focused-decomposition",
         question="A question?",
         sub_topics=[topic],
         findings=[item],
         sources=[source],
-        claims=[item_claim],
         memory_context=MemorySnapshot(
             similar_findings=[item],
             known_source_reputations={"https://example.com/a": 0.9},
@@ -382,6 +241,7 @@ def test_the_fixture_builders_construct_a_complete_case() -> None:
     assert case.identity == ("focused-decomposition", 1)
     assert case.state.session_id == "evaluation-focused-decomposition"
     assert case.state.raw_findings[0].extracted_at == FIXED_TIMESTAMP
+    assert case.state.verified_findings == []
     assert case.state.memory_context.known_source_reputations == {
         "https://example.com/a": 0.9
     }
@@ -433,11 +293,13 @@ def test_validation_rejects_duplicates_and_conflicting_versions() -> None:
     assert "conflicting version" in str(caught.value)
 
 
-def test_validation_rejects_a_wrong_case_count() -> None:
+def test_validation_rejects_an_inventory_that_does_not_match() -> None:
     two_of_three = [_validation_case("one"), _validation_case("two")]
 
     with pytest.raises(CaseRegistryError) as caught:
         validate_registry(two_of_three)
 
-    assert "planner" in str(caught.value)
-    assert "3 controlled" in str(caught.value)
+    message = str(caught.value)
+    assert "planner" in message
+    # The message names what the registry declares, not a number to match.
+    assert "focused-decomposition" in message

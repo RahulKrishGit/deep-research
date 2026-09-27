@@ -4,35 +4,26 @@ from __future__ import annotations
 
 import pytest
 
-from deep_research.agents.identity import claim_fingerprint
 from deep_research.agents.prompts import (
-    CLAIM_EXTRACTION_INSTRUCTION,
-    CLAIM_EXTRACTION_SYSTEM_PROMPT,
-    CLAIM_VERIFICATION_INSTRUCTION,
-    CLAIM_VERIFICATION_SYSTEM_PROMPT,
-    CRITIC_REVIEW_SYSTEM_PROMPT,
-    CRITIC_SYSTEM_PROMPT,
-    CRITIQUE_INSTRUCTION,
-    FACT_CHECKER_SYSTEM_PROMPT,
     NATIVE_REACT_RESPONSE_CONTRACT,
-    REPORT_INSTRUCTION,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
     SOURCE_SCORING_INSTRUCTION,
     STRUCTURED_EXAMPLE_NOTICE,
     STRUCTURED_REPLY_FORMAT,
-    SYNTHESIZER_SYSTEM_PROMPT,
+    STRUCTURED_REQUEST_END,
     AgentTask,
-    render_claim_digest,
-    render_finding_digest,
     render_react_messages,
+    render_read_dossier,
     render_scratchpad,
     render_source_dossier,
-    render_source_quality,
     render_structured_reply_format,
+    render_structured_request,
 )
+from deep_research.agents.evidence import build_read_dossiers
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import Finding
+from tests.evidence_fakes import make_read
 
 
 def _entry(content: str, kind: str = "thought") -> ScratchpadEntry:
@@ -290,15 +281,30 @@ def _prompt_finding(
     *,
     content: str = "Logical error rates fell below break-even.",
     url: str = "https://example.org/a",
+    source_title: str = "QEC 2025",
     sub_topic: str = "Alpha",
+    attributed_issuer: str | None = None,
+    attribution_quote: str | None = None,
+    measure_scope: str | None = None,
+    vintage: str | None = None,
+    release_date: str | None = None,
+    data_period: str | None = None,
+    statement_date: str | None = None,
 ) -> Finding:
     return Finding(
         content=content,
         source_url=url,
-        source_title="QEC 2025",
+        source_title=source_title,
         extracted_at=PROMPT_EXTRACTED_AT,
         confidence=0.8,
         related_sub_topic=sub_topic,
+        attributed_issuer=attributed_issuer,
+        attribution_quote=attribution_quote,
+        measure_scope=measure_scope,
+        vintage=vintage,
+        release_date=release_date,
+        data_period=data_period,
+        statement_date=statement_date,
     )
 
 
@@ -349,128 +355,30 @@ def test_source_dossier_clamps_long_finding_text() -> None:
     assert "..." in rendered
 
 
-def test_finding_digest_numbers_findings_and_names_their_sources() -> None:
-    rendered = render_finding_digest(
-        [
-            _prompt_finding(sub_topic="Alpha"),
-            _prompt_finding(content="Second claim.", sub_topic="Beta"),
-        ]
+def test_read_dossier_prints_the_self_description_as_its_second_line() -> None:
+    read = make_read(
+        "This role-play was written by the outreach program for a "
+        "negotiation course."
     )
+    [dossier] = build_read_dossiers([read])
 
-    assert "1. [Alpha] Logical error rates fell below break-even." in rendered
-    assert "(https://example.org/a)" in rendered
-    assert "2. [Beta] Second claim." in rendered
+    rendered = render_read_dossier(dossier, index=1, reputation=None)
+    lines = rendered.splitlines()
 
-
-def test_finding_digest_handles_an_empty_list() -> None:
-    assert render_finding_digest([]) == "(no findings)"
-
-
-def test_source_quality_marks_low_confidence_sources() -> None:
-    rendered = render_source_quality(
-        [
-            ScoredSource(
-                url="https://example.org/a",
-                title="A",
-                authority_score=0.9,
-                recency_score=0.8,
-                relevance_score=0.9,
-                overall_score=0.9,
-                rationale="Strong.",
-            ),
-            ScoredSource(
-                url="https://weak.test/b",
-                title="B",
-                authority_score=0.1,
-                recency_score=0.1,
-                relevance_score=0.1,
-                overall_score=0.08,
-                rationale="Weak.",
-                low_confidence=True,
-            ),
-        ]
-    )
-
-    assert "https://example.org/a: score=0.90 status=scored" in rendered
-    assert (
-        "https://weak.test/b: score=0.08 status=scored low_confidence=true"
-        in rendered
+    assert lines[0] == f"Source 1: {dossier.url}"
+    assert lines[1] == (
+        "Self-description: This role-play was written by the outreach "
+        "program for a negotiation course."
     )
 
 
-def test_source_quality_handles_an_empty_list() -> None:
-    assert render_source_quality([]) == "(no sources scored)"
+def test_read_dossier_omits_the_self_description_line_when_absent() -> None:
+    read = make_read("An ordinary page states nothing about its own origin.")
+    [dossier] = build_read_dossiers([read])
 
+    rendered = render_read_dossier(dossier, index=1, reputation=None)
 
-def test_source_quality_renders_unscored_status_without_a_numeric_placeholder() -> None:
-    rendered = render_source_quality(
-        [
-            ScoredSource(
-                url="https://capped.test/source",
-                title="Capped",
-                authority_score=None,
-                recency_score=None,
-                relevance_score=None,
-                overall_score=None,
-                rationale="Past the source cap.",
-                evaluation_status="unscored_cap",
-            )
-        ]
-    )
-
-    assert rendered == "- https://capped.test/source: status=unscored_cap"
-    assert "0.20" not in rendered
-
-
-def test_source_quality_deduplicates_and_caps_by_relevance() -> None:
-    rendered = render_source_quality(
-        [
-            ScoredSource(
-                url="https://example.test/a",
-                title="A old",
-                authority_score=0.8,
-                recency_score=0.8,
-                relevance_score=0.2,
-                overall_score=0.3,
-                rationale="Old assessment.",
-            ),
-            ScoredSource(
-                url="https://EXAMPLE.test/a/",
-                title="A current",
-                authority_score=0.9,
-                recency_score=0.9,
-                relevance_score=0.95,
-                overall_score=0.92,
-                rationale="Current assessment.",
-            ),
-            ScoredSource(
-                url="https://other.test/b",
-                title="B",
-                authority_score=0.3,
-                recency_score=0.4,
-                relevance_score=0.1,
-                overall_score=0.2,
-                rationale="Low relevance.",
-            ),
-            ScoredSource(
-                url="https://capped.test/c",
-                title="C",
-                authority_score=None,
-                recency_score=None,
-                relevance_score=None,
-                overall_score=None,
-                rationale="Past the cap.",
-                evaluation_status="unscored_cap",
-            ),
-        ],
-        max_sources=2,
-    )
-
-    assert rendered.splitlines() == [
-        "- https://example.test/a: score=0.92 status=scored",
-        "- https://other.test/b: score=0.20 status=scored",
-    ]
-    assert rendered.count("https://example.test/a") == 1
+    assert "Self-description:" not in rendered
 
 
 def test_new_prompt_constants_state_their_contracts() -> None:
@@ -482,159 +390,23 @@ def test_new_prompt_constants_state_their_contracts() -> None:
     assert "exact url" in SOURCE_EVALUATOR_SYSTEM_PROMPT
 
 
-def test_constraint_cells_disclose_the_provider_only_trust_boundary() -> None:
-    """Mechanism/geography have no structured provenance in Task 6."""
-    instruction = REPORT_INSTRUCTION.casefold()
+def test_the_source_evaluator_keeps_a_written_date_at_its_own_precision() -> None:
+    """A dateline written in words dates the document by that day.
 
-    assert "provider-only" in instruction
-    assert "not structurally validated" in instruction
-
-
-def test_source_consumers_distinguish_quality_scores_from_statuses() -> None:
-    assert "quality score of every source" not in SYNTHESIZER_SYSTEM_PROMPT
-    assert "quality score when scored" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "quality score when scored" in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "source scores" not in CRITIC_SYSTEM_PROMPT
-    assert "quality score when scored" in CRITIC_SYSTEM_PROMPT
-    assert "explicit evaluation status otherwise" in CRITIC_SYSTEM_PROMPT
-    assert "independent" in FACT_CHECKER_SYSTEM_PROMPT
-    assert "retrieved findings" in CLAIM_EXTRACTION_SYSTEM_PROMPT
-    assert "empty list" in CLAIM_EXTRACTION_INSTRUCTION
-    assert "invent" in CLAIM_VERIFICATION_SYSTEM_PROMPT
-    for verdict in ("verified", "unverified", "contradicted",
-                    "insufficient_evidence"):
-        assert verdict in CLAIM_VERIFICATION_INSTRUCTION
-
-
-def _digest_claim(
-    *,
-    text: str = "Logical error rates fell below break-even.",
-    verdict: str = "verified",
-    confidence: float = 0.8,
-    urls: list[str] | None = None,
-) -> Claim:
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=urls or ["https://example.org/a"],
-        verdict=verdict,
-        confidence=confidence,
-        evidence=[],
-        contradictions=[],
-        verification_evidence=[],
-    )
-
-
-def test_claim_digest_shows_verdict_confidence_and_sources() -> None:
-    rendered = render_claim_digest(
-        [
-            _digest_claim(),
-            _digest_claim(
-                text="Adoption is broad.",
-                verdict="insufficient_evidence",
-                confidence=0.0,
-                urls=["https://other.test/b", "https://third.test/c"],
-            ),
-        ]
-    )
-
-    assert "1. [verified 0.80] Logical error rates fell below break-even." in rendered
-    assert "(https://example.org/a)" in rendered
-    assert "2. [insufficient_evidence 0.00] Adoption is broad." in rendered
-    assert "(https://other.test/b, https://third.test/c)" in rendered
-
-
-def test_claim_digest_clamps_long_claims_and_handles_an_empty_list() -> None:
-    rendered = render_claim_digest([_digest_claim(text="x" * 500)], limit=50)
-
-    assert "x" * 500 not in rendered
-    assert "..." in rendered
-    assert render_claim_digest([]) == "(no claims were checked)"
-
-
-def test_the_synthesizer_prompt_forbids_inventing_evidence() -> None:
-    assert "verified" in SYNTHESIZER_SYSTEM_PROMPT
-    assert "invent" in SYNTHESIZER_SYSTEM_PROMPT
-    # The skeleton is rendered locally; asking the model for it would let
-    # the two disagree.
-    assert "citation" in REPORT_INSTRUCTION
-    assert "exactly" in REPORT_INSTRUCTION
-    assert "executive summary" in REPORT_INSTRUCTION
-    assert "uncertainty" in REPORT_INSTRUCTION
-
-
-def test_the_critic_prompt_states_the_gap_and_score_contracts() -> None:
-    assert "spot-check" in CRITIC_SYSTEM_PROMPT
-    assert "1 to 10" in CRITIQUE_INSTRUCTION
-    # Decision 9: every listed gap is treated as critical, so the prompt
-    # must say only material gaps belong in the list.
-    assert "materially" in CRITIQUE_INSTRUCTION
-    assert "routing" not in CRITIQUE_INSTRUCTION
-    assert "recommended" in CRITIQUE_INSTRUCTION
-
-
-def test_the_review_system_prompt_names_no_tools() -> None:
-    """The review request offers no tools, so its prompt must not name any.
-
-    Measured: the review payload carries no ``tools`` and no ``tool_choice``,
-    yet the prompt announced ``web_search`` and ``query_memory``. The model
-    obeyed and emitted DeepSeek tool-invocation markup into the message text,
-    which local JSON validation rejected — 16 of 30 first attempts.
+    The instruction used to ask for "the year, for 'January 15, 2026'",
+    because the value had to appear in the quote. Every EIA page in the
+    audited run dates itself that way, so two releases of one series were
+    recorded as the same "2026" and could not be ranked — the reduction is
+    what the instruction must not ask for, and the reader now accepts the
+    full date a spelled quote states.
     """
-    lowered = CRITIC_REVIEW_SYSTEM_PROMPT.lower()
-    for forbidden in ("web_search", "query_memory", "tool", "spot-check"):
-        assert forbidden not in lowered, forbidden
+    instruction = SOURCE_SCORING_INSTRUCTION
 
-
-def test_the_review_prompt_describes_the_report_boundaries() -> None:
-    assert "fenced block" in CRITIC_REVIEW_SYSTEM_PROMPT
-    # No angle-bracket marker vocabulary may survive anywhere in the prompt.
-    assert "BEGIN" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "END marker" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    assert "<" not in CRITIC_REVIEW_SYSTEM_PROMPT
-    # The tool-aware prompt still belongs to the ReAct spot-check loop.
-    assert "web_search" in CRITIC_SYSTEM_PROMPT
-    assert "query_memory" in CRITIC_SYSTEM_PROMPT
-
-
-def test_unsupported_claims_are_defined_leniently_with_an_override() -> None:
-    """Attribution counts as support, unless evidence contradicts it.
-
-    Measured: the earlier wording — "statements the report makes that no cited
-    source or verified claim backs" — admitted two readings, and the Critic took
-    the strict one. Live canary judge rationales report 4, 8 and 5 unsupported
-    claims, reasoned from "outside the two verified claims" while the report
-    attributes those statements inline to named sources.
-
-    Strictness is self-defeating here for a structural reason: claim extraction
-    is deliberately partial (it selects only the most load-bearing claims), so
-    absence from the digest would function as evidence of unsupportedness, and
-    `route_decision` consults `unsupported_claims` after the score and gaps
-    checks, so over-reporting forces refinement on runs that would otherwise be
-    accepted.
-
-    The override matters as much as the leniency: a bare citation must not
-    survive a claim verdict or spot-check evidence that contradicts it.
-    """
-    prose = " ".join(CRITIQUE_INSTRUCTION.split())
-
-    # Lenient by default.
-    assert "neither clearly attributed to one of the report's cited sources" in prose
-    assert "nor backed by a verified claim" in prose
-    # Absence from the digest is explicitly not evidence of unsupportedness.
-    assert "the claim digest is deliberately partial" in prose
-    assert "absence from it is not evidence of unsupportedness" in prose
-    assert (
-        "Do not mark a cited statement unsupported solely because it lacks a "
-        "separate verified-claim entry" in prose
-    )
-    # …and the override keeps the lenient reading from laundering citations.
-    assert "A contrary claim verdict or spot-check evidence still makes a " in prose
-    assert "statement unsupported, however it is cited" in prose
-    # The superseded strict wording must be gone.
-    assert "that no cited source or verified claim backs" not in prose
+    assert "return the full date the words name" in instruction
+    assert "the year, for" not in instruction
+    # The value still has to be one the quote states: precision is the
+    # document's, never the model's.
+    assert "the date the words name and no finer one" in instruction
 
 
 # --- the shared structured reply format --------------------------------------
@@ -695,3 +467,48 @@ def test_render_structured_reply_format_accepts_two_examples() -> None:
 def test_render_structured_reply_format_fails_closed(examples) -> None:
     with pytest.raises(ValueError):
         render_structured_reply_format(examples)
+
+
+def test_a_structured_request_puts_its_static_sections_first() -> None:
+    body = render_structured_request(
+        ["# Rules\nOne rule.", "# Reply format\nThe format."],
+        ["# Material\nThe material."],
+    )
+
+    assert body == (
+        "# Rules\nOne rule.\n\n# Reply format\nThe format.\n\n"
+        "# Material\nThe material.\n\n" + STRUCTURED_REQUEST_END
+    )
+
+
+def test_a_structured_request_needs_static_sections_and_material() -> None:
+    with pytest.raises(ValueError):
+        render_structured_request([], ["# Material\nThe material."])
+    with pytest.raises(ValueError):
+        render_structured_request(["# Rules\nOne rule."], [])
+
+
+def test_the_notes_precede_the_acquisition_context() -> None:
+    body = render_react_messages(
+        system_prompt="Research.", task=AgentTask(instruction="Find it.", guidance="Guide."),
+        scratchpad=[], iteration=1, max_iterations=3, decision_context="Reads so far.",
+    )[1].content
+    assert [line for line in body.splitlines() if line.startswith("## ")] == [
+        "## Task", "## Guidance", "## Notes so far", "## Acquisition context",
+        "## Budget", "## How to respond",
+    ]
+
+
+def test_the_last_iteration_asks_for_the_final_answer_without_a_tool() -> None:
+    def budget(iteration: int) -> str:
+        body = render_react_messages(
+            system_prompt="Research.", task=AgentTask(instruction="Find it."),
+            scratchpad=[], iteration=iteration, max_iterations=3,
+        )[1].content
+        return body.split("## Budget\n", 1)[1].split("\n\n", 1)[0]
+
+    assert budget(2) == "Iteration 2 of 3."
+    assert budget(3) == (
+        "Iteration 3 of 3. This is the last iteration: return the final answer "
+        "now without calling a tool."
+    )

@@ -9,18 +9,27 @@ capability-driven reasoning and temperature settings.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from time import perf_counter
 from types import SimpleNamespace, UnionType
 from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
 
+import httpx
 from pydantic import BaseModel, JsonValue, ValidationError
 
 from deep_research.observability import TokenUsage, Tracker
-from deep_research.providers.capabilities import resolve_request_settings
+from deep_research.observability.metrics import LLMOperation
+from deep_research.observability.run_telemetry import RunTelemetryCollector
+from deep_research.providers.capabilities import (
+    resolve_request_settings,
+    with_reasoning_effort,
+)
 from deep_research.providers.contracts import (
+    MAX_STRUCTURED_REPAIR_RECORDS,
     ChatMessage,
     ChatResult,
     FinishReasonCategory,
@@ -34,14 +43,16 @@ from deep_research.providers.contracts import (
     ProviderResponseTelemetry,
     ProviderTimeoutError,
     StructuredOutputError,
+    StructuredRepairRecord,
     StructuredValidationDiagnostic,
     ToolDefinition,
 )
 from deep_research.providers.native_output import native_text_violation
-from deep_research.providers.retry import with_retries
+from deep_research.providers.retry import AttemptObserver, with_retries
 from deep_research.providers.validation import validation_category
 from deep_research.request_budget import RequestBudget
 from deep_research.utils.config import EffectiveModelConfig, LLMConfig
+from deep_research.utils.types import CallAttemptTelemetry
 
 SchemaT = TypeVar("SchemaT", bound=BaseModel)
 _MAX_VALIDATION_FIELD_PATHS = 16
@@ -153,11 +164,28 @@ def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
     return ChatMessage(role="system", content=content)
 
 
-class _StructuredValidationFailure(RuntimeError):
-    """Carry validation diagnostics for the repair prompt only.
+def _with_schema_instruction(
+    messages: list[dict[str, str]], instruction: ChatMessage
+) -> list[dict[str, str]]:
+    """The JSON-schema instruction right after the role prompt (D10, S2).
 
-    The message names the schema but never the provider output. The typed
-    diagnostic contains only bounded locations and a stable category.
+    Static content first: every structured call of one kind then shares the
+    role prompt, the schema and the request's static sections as one prefix
+    that DeepSeek's context cache can reuse. A request with no leading system
+    message opens with the schema instruction.
+    """
+    schema = {"role": "system", "content": instruction.content}
+    if messages and messages[0]["role"] == "system":
+        return [messages[0], schema, *messages[1:]]
+    return [schema, *messages]
+
+
+class _StructuredValidationFailure(RuntimeError):
+    """Carry validation diagnostics for the repair prompt and the trace.
+
+    The message names the schema and renders the typed diagnostic -- field
+    paths, category, and pydantic error types -- so the failed attempt's span
+    says which field broke which constraint. It never carries provider output.
     """
 
     def __init__(
@@ -165,7 +193,10 @@ class _StructuredValidationFailure(RuntimeError):
         schema_name: str,
         diagnostic: StructuredValidationDiagnostic,
     ) -> None:
-        super().__init__(f"DeepSeek output failed {schema_name} validation")
+        super().__init__(
+            f"DeepSeek output failed {schema_name} validation "
+            f"({diagnostic.render()})"
+        )
         self.diagnostic = diagnostic
 
 
@@ -241,6 +272,7 @@ def _validation_diagnostic(
 ) -> StructuredValidationDiagnostic:
     """Extract only bounded schema locations from a validation failure."""
     paths: list[str] = []
+    error_types: list[str] = []
     errors = getattr(error, "errors", None)
     if callable(errors):
         try:
@@ -251,12 +283,15 @@ def _validation_diagnostic(
             location = item.get("loc", ()) if isinstance(item, dict) else ()
             path = _schema_field_path(schema, location)
             paths.append(path)
+            error_type = item.get("type") if isinstance(item, dict) else None
+            error_types.append(error_type if isinstance(error_type, str) else "other")
             if len(paths) == _MAX_VALIDATION_FIELD_PATHS:
                 break
     return StructuredValidationDiagnostic(
         attempt=attempt,
         field_paths=tuple(paths) or ("$",),
         category=validation_category(error),
+        error_types=tuple(error_types),
     )
 
 
@@ -303,6 +338,9 @@ def _usage_from_response(response: Any) -> TokenUsage:
     Absent usage maps to zero tokens. When usage exists, both prompt and
     completion token counts must be non-negative integers and any supplied
     total must agree with their sum; anything else is malformed.
+    ``completion_tokens_details.reasoning_tokens`` is captured when present,
+    so reasoning and content tokens can be told apart (P1-B); it never
+    affects the total, since ``completion_tokens`` already counts it.
     """
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -331,15 +369,25 @@ def _usage_from_response(response: Any) -> TokenUsage:
      "DeepSeek response contained malformed usage",
      failure_origin="local_response",
  )
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning_tokens = _cached_count(getattr(details, "reasoning_tokens", None))
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
 def _responses_usage_from_response(response: Any) -> TokenUsage:
-    """Map a Responses usage object to project-owned token counts."""
+    """Map a Responses usage object to project-owned token counts.
+
+    ``output_tokens_details.reasoning_tokens`` is captured when present,
+    mirroring ``_responses_cached_input_tokens`` (P1-B, RevTelemetry P1): this
+    is the transport ``DeepSeekSchemaChatProvider`` uses for live structured
+    calls -- planner, extraction, writer -- so it is where most reasoning
+    tokens are actually reported.
+    """
     usage = getattr(response, "usage", None)
     if usage is None:
         return TokenUsage()
@@ -376,11 +424,33 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
      "DeepSeek response contained malformed usage",
      failure_origin="local_response",
  )
+    details = getattr(usage, "output_tokens_details", None)
+    reasoning_tokens = _cached_count(getattr(details, "reasoning_tokens", None))
     return TokenUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
+
+
+def _cached_count(value: object) -> int:
+    """A cache-hit count as the API reports it; 0 when absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
+
+
+def _chat_cached_input_tokens(response: Any) -> int:
+    """Chat Completions: DeepSeek's ``usage.prompt_cache_hit_tokens``."""
+    usage = getattr(response, "usage", None)
+    return _cached_count(getattr(usage, "prompt_cache_hit_tokens", None))
+
+
+def _responses_cached_input_tokens(response: Any) -> int:
+    """Responses API: ``usage.input_tokens_details.cached_tokens``."""
+    details = getattr(getattr(response, "usage", None), "input_tokens_details", None)
+    return _cached_count(getattr(details, "cached_tokens", None))
 
 
 def _responses_finish_reason(response: Any) -> FinishReasonCategory:
@@ -423,6 +493,7 @@ def _response_telemetry(
     configured_max_tokens: int,
     request_attempt: int,
     structured_attempt: int | None = None,
+    attempts: Sequence[CallAttemptTelemetry] = (),
 ) -> ProviderResponseTelemetry:
     return ProviderResponseTelemetry(
         finish_reason_category=_normalize_finish_reason(
@@ -432,6 +503,7 @@ def _response_telemetry(
         usage=_usage_from_response(response),
         request_attempt=request_attempt,
         structured_attempt=structured_attempt,
+        attempts=tuple(attempts),
     )
 
 
@@ -611,6 +683,11 @@ def _translate_deepseek_error(error: Exception) -> ProviderError:
     ``with_retries`` has cleared ``__cause__`` and ``__context__``. Returning
     keeps the SDK object confined to the caller's handler, whose locals the
     interpreter clears when the handler exits.
+
+    The two ``httpx`` branches exist only for a streaming attempt (Phase 2):
+    the SDK does not always wrap a mid-stream failure into its own
+    ``APITimeoutError``/``APIConnectionError``, so the raw transport
+    exception reaches here directly and is translated the same retryable way.
     """
     sdk = _openai_errors()
     if isinstance(error, sdk.APITimeoutError):
@@ -633,10 +710,268 @@ def _translate_deepseek_error(error: Exception) -> ProviderError:
             failure_category="http",
             http_status_code=status,
         )
-    # Unreachable while every call site catches exactly the four SDK types
+    if isinstance(error, httpx.TimeoutException):
+        return ProviderTimeoutError("DeepSeek stream went idle")
+    if isinstance(
+        error, (httpx.RemoteProtocolError, httpx.ReadError, httpx.ConnectError)
+    ):
+        return ProviderResponseError(
+            "DeepSeek stream disconnected",
+            failure_origin="sdk",
+            retryable=True,
+            failure_category="transport",
+        )
+    # Unreachable while every call site catches exactly the six types
     # handled above. Fail loudly rather than invent a category for a type
     # whose public semantics nobody has decided.
     raise AssertionError("untranslated DeepSeek SDK error type")
+
+
+def _stream_timeout(idle_timeout: float) -> httpx.Timeout:
+    """The per-chunk inactivity bound for one streaming attempt (Phase 2).
+
+    httpx applies ``read`` to every chunk it waits for, so this is an idle
+    timeout, not a cumulative one: the attempt's own wall-clock cap is the
+    caller's ``asyncio.timeout`` around the whole create-and-consume.
+    """
+    return httpx.Timeout(connect=30.0, read=idle_timeout, write=60.0, pool=60.0)
+
+
+class _ChatStreamAccumulator:
+    """Rebuilds one Chat Completions response from streamed chunks (Phase 2).
+
+    The result exposes exactly the attribute shape the existing parsing
+    reads -- ``choices[0].message.{content,reasoning_content,tool_calls}``,
+    ``choices[0].finish_reason``, ``usage`` and ``model`` -- so
+    ``_choice_text``, ``_native_outcome``, ``_usage_from_response`` and
+    ``_chat_cached_input_tokens`` run unchanged on it. ``usage`` is the real
+    ``CompletionUsage`` object DeepSeek sends, never reconstructed.
+
+    A non-string ``content``/``reasoning_content`` or tool-call ``name``/
+    ``arguments`` delta is kept as-is -- never joined or concatenated -- so
+    the existing ``_choice_text``/``_native_outcome`` type guards reject it
+    exactly as they reject a malformed non-streaming reply: a raw
+    ``TypeError`` must never escape with a chunk reachable from its
+    traceback (RevStreaming P2). A stream that ends before ever telling us
+    it completed -- a dedicated, choice-less final chunk (OpenAI's
+    documented ``stream_options={"include_usage": True}`` behaviour), a
+    chunk that instead attaches usage to the same chunk as the finish
+    reason, or a chunk with a non-empty ``finish_reason`` string on its own
+    (DeepSeek may ignore ``include_usage`` for some model or mode; the model
+    itself declaring the response finished is enough, with no separate
+    usage chunk required) -- raises the same retryable transport error the
+    Responses path raises for a stream with no terminal event, rather than
+    being accepted as a clean, non-retryable response; a malformed-but-
+    *present* ``finish_reason`` (``None``, ``42``, garbage text, ...) on an
+    otherwise complete stream is an existing, separately handled "other"
+    category, not an incomplete stream (RevStreaming P2).
+
+    ``marks`` is written to directly, during ``absorb()``, so a failed
+    attempt (a timeout or disconnect mid-stream) still reports whatever
+    ``first_event_seconds``/``first_token_seconds`` it saw before failing
+    (RevStreaming P2); both are measured from ``started_at``, the attempt's
+    own start taken before the request was even sent, so time spent queued
+    before the response headers arrive is included (RevStreaming P3).
+    """
+
+    def __init__(self, marks: SimpleNamespace, started_at: float) -> None:
+        self._content_parts: list[str] = []
+        self._content_malformed: object = None
+        self._reasoning_parts: list[str] = []
+        self._reasoning_malformed: object = None
+        self._tool_calls: dict[int, SimpleNamespace] = {}
+        self._finish_reason: str | None = None
+        self._saw_terminal_chunk = False
+        self._usage: Any = None
+        self._model: str | None = None
+        self._id: str | None = None
+        self._marks = marks
+        self._started_at = started_at
+
+    def absorb(self, chunk: Any) -> None:
+        """Fold one streamed chunk's delta into the accumulated response."""
+        now = perf_counter()
+        if self._marks.first_event_seconds is None:
+            self._marks.first_event_seconds = now - self._started_at
+        self._model = getattr(chunk, "model", None) or self._model
+        self._id = getattr(chunk, "id", None) or self._id
+        usage = getattr(chunk, "usage", None)
+        if usage is not None:
+            self._usage = usage
+        choices = getattr(chunk, "choices", None)
+        if choices == [] or usage is not None:
+            # DeepSeek's real terminal signal for a request that always asks
+            # for ``stream_options={"include_usage": True}``: OpenAI's
+            # documented wire behaviour is a dedicated, choice-less final
+            # chunk carrying usage, but some wires (or test doubles) attach
+            # usage directly to the same chunk as the finish reason instead.
+            # Either shape means the stream told us it completed.
+            self._saw_terminal_chunk = True
+        if not choices:
+            return
+        choice = choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason is not None:
+            self._finish_reason = finish_reason
+        if isinstance(finish_reason, str) and finish_reason:
+            # A real (even if malformed-but-non-empty) finish reason means
+            # the model itself declared the response finished, independent
+            # of whether DeepSeek also delivers a usage chunk for this
+            # model/mode (RevStreaming P2 hardening).
+            self._saw_terminal_chunk = True
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            return
+        content = getattr(delta, "content", None)
+        if content is not None:
+            if isinstance(content, str):
+                if content and self._content_malformed is None:
+                    if self._marks.first_token_seconds is None:
+                        self._marks.first_token_seconds = now - self._started_at
+                    self._content_parts.append(content)
+            elif self._content_malformed is None:
+                self._content_malformed = content
+        # DeepSeek's extra delta field, exposed by the SDK's ``extra="allow"``
+        # chunk models via plain attribute access (verified against openai
+        # 2.53.0's ``ChoiceDelta``).
+        reasoning_content = getattr(delta, "reasoning_content", None)
+        if reasoning_content is not None:
+            if isinstance(reasoning_content, str):
+                if reasoning_content and self._reasoning_malformed is None:
+                    if self._marks.first_token_seconds is None:
+                        self._marks.first_token_seconds = now - self._started_at
+                    self._reasoning_parts.append(reasoning_content)
+            elif self._reasoning_malformed is None:
+                self._reasoning_malformed = reasoning_content
+        for tool_call_delta in getattr(delta, "tool_calls", None) or ():
+            index = getattr(tool_call_delta, "index", 0)
+            entry = self._tool_calls.get(index)
+            if entry is None:
+                entry = SimpleNamespace(
+                    id=getattr(tool_call_delta, "id", None),
+                    type=getattr(tool_call_delta, "type", None) or "function",
+                    function=SimpleNamespace(
+                        name=None,
+                        arguments="",
+                        _name_malformed=False,
+                        _arguments_malformed=False,
+                    ),
+                )
+                self._tool_calls[index] = entry
+            function_delta = getattr(tool_call_delta, "function", None)
+            if function_delta is not None:
+                name = getattr(function_delta, "name", None)
+                if name is not None:
+                    if isinstance(name, str):
+                        if name and not entry.function._name_malformed:
+                            entry.function.name = name
+                    else:
+                        entry.function.name = name
+                        entry.function._name_malformed = True
+                arguments = getattr(function_delta, "arguments", None)
+                if arguments is not None:
+                    if isinstance(arguments, str):
+                        if arguments and not entry.function._arguments_malformed:
+                            entry.function.arguments += arguments
+                    else:
+                        entry.function.arguments = arguments
+                        entry.function._arguments_malformed = True
+
+    def finalize(self) -> Any:
+        """Return the pseudo-response the existing parsing reads.
+
+        Every chat request asks for ``stream_options={"include_usage": True}``,
+        so DeepSeek always closes a completed stream with real usage --
+        either on a dedicated, choice-less final chunk (OpenAI's documented
+        behaviour) or on the same chunk as the finish reason; either shape
+        is the actual completion signal, not the ``finish_reason`` value
+        itself -- a malformed-but-present ``finish_reason`` (``None``,
+        ``42``, garbage text, ...) on an otherwise complete stream is an
+        existing, separately-handled "other" category, not an incomplete
+        stream. When neither shape ever arrives, the stream ended
+        prematurely (a clean EOF with no ``[DONE]``, indistinguishable from
+        real content otherwise) and must retry the same way the Responses
+        path retries a stream with no terminal event, rather than being
+        accepted as a completed, non-retryable response (RevStreaming P2).
+        """
+        if not self._saw_terminal_chunk:
+            raise ProviderResponseError(
+                "DeepSeek chat stream ended before its terminal chunk arrived",
+                failure_origin="sdk",
+                retryable=True,
+                failure_category="transport",
+            )
+        tool_calls = [self._tool_calls[index] for index in sorted(self._tool_calls)]
+        content_value = (
+            self._content_malformed
+            if self._content_malformed is not None
+            else "".join(self._content_parts)
+        )
+        reasoning_value = (
+            self._reasoning_malformed
+            if self._reasoning_malformed is not None
+            else ("".join(self._reasoning_parts) or None)
+        )
+        message = SimpleNamespace(
+            content=content_value,
+            reasoning_content=reasoning_value,
+            tool_calls=tool_calls or None,
+        )
+        choice = SimpleNamespace(finish_reason=self._finish_reason, message=message)
+        return SimpleNamespace(
+            id=self._id,
+            model=self._model,
+            choices=[choice],
+            usage=self._usage,
+        )
+
+
+#: The Responses API's three terminal event types (there is no ``[DONE]``):
+#: https://api-docs.deepseek.com/guides/responses_api/.
+_RESPONSES_TERMINAL_EVENT_TYPES = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
+#: The delta events that carry actual generated text, for ``first_token_seconds``.
+_RESPONSES_TOKEN_EVENT_TYPES = frozenset(
+    {"response.output_text.delta", "response.reasoning_text.delta"}
+)
+
+
+async def _consume_responses_stream(
+    stream: Any, marks: SimpleNamespace, started_at: float
+) -> Any:
+    """Consume a Responses API SSE stream to its terminal response (Phase 2).
+
+    All three terminal events resolve the same way: ``event.response`` is
+    handed to the existing, unchanged non-streaming parsing, whose own status
+    check (``_responses_finish_reason``) already tells completed, incomplete
+    and failed apart. A stream that ends with no terminal event never told us
+    what happened, so it is a retryable connection error, not a silent
+    success.
+
+    ``started_at`` is the attempt's own start, taken before the request was
+    even sent, so ``first_event_seconds``/``first_token_seconds`` include any
+    time spent queued before the response headers arrive (RevStreaming P3).
+    """
+    async with stream:
+        async for event in stream:
+            now = perf_counter()
+            if marks.first_event_seconds is None:
+                marks.first_event_seconds = now - started_at
+            event_type = getattr(event, "type", None)
+            if (
+                marks.first_token_seconds is None
+                and event_type in _RESPONSES_TOKEN_EVENT_TYPES
+            ):
+                marks.first_token_seconds = now - started_at
+            if event_type in _RESPONSES_TERMINAL_EVENT_TYPES:
+                return event.response
+    raise ProviderResponseError(
+        "DeepSeek Responses stream ended without a terminal event",
+        failure_origin="sdk",
+        retryable=True,
+        failure_category="transport",
+    )
 
 
 def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
@@ -651,8 +986,12 @@ def _set_span_result(span: Any, telemetry: ProviderResponseTelemetry) -> None:
 def _responses_request_options(
     config: LLMConfig,
     agent_name: str | None,
+    *,
+    reasoning_effort: str | None = None,
 ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
-    effective = config.resolve_for(agent_name)
+    effective = with_reasoning_effort(
+        config.resolve_for(agent_name), reasoning_effort
+    )
     resolved = resolve_request_settings("deepseek", effective)
     request: dict[str, object] = {
         "model": effective.model,
@@ -664,6 +1003,8 @@ def _responses_request_options(
             )
         },
     }
+    if effective.timeout is not None:
+        request["timeout"] = effective.timeout
     if resolved.include_temperature:
         request["temperature"] = config.temperature
     metadata: dict[str, JsonValue] = {
@@ -689,14 +1030,16 @@ class DeepSeekChatProvider:
         api_key: str | None = None,
         client: Any | None = None,
         request_budget: RequestBudget | None = None,
+        telemetry: RunTelemetryCollector | None = None,
     ) -> None:
         self._config = config
         self._tracker = tracker
         self._client = _build_client(config, api_key=api_key, client=client)
         self._request_budget = request_budget
+        self._telemetry = telemetry or RunTelemetryCollector()
         self._last_model_returned: str | None = None
 
-    def _reserve_attempt(self) -> None:
+    def _reserve_attempt(self, agent_name: str | None) -> None:
         """Reserve one DeepSeek transport attempt before any network I/O.
 
         Called from *inside* the retried operation, because each retry is a
@@ -707,43 +1050,159 @@ class DeepSeekChatProvider:
         hard run boundary -- escapes instead of being rewritten into an
         ordinary, retryable provider error.
 
-        A ``None`` budget reserves nothing: this is today's uncounted
-        behaviour, and every existing caller keeps it.
+        The caller is announced before the reservation because the budget's
+        update carries no agent, and the telemetry attributes the peak to the
+        call that set it. A ``None`` budget reserves nothing: this is today's
+        uncounted behaviour, and every existing caller keeps it.
         """
+        self._telemetry.note_call_starting(agent_name)
         budget = self._request_budget
         if budget is None:
             return
         budget.reserve("deepseek")
 
-    def _record_tokens(self, usage: TokenUsage) -> None:
+    def _attempt_recorder(
+        self, attempts: list[CallAttemptTelemetry], marks: SimpleNamespace
+    ) -> AttemptObserver:
+        """One ``with_retries`` callback appending to this call's own list.
+
+        A fresh closure per call (P1-B): ``with_retries`` invokes it once per
+        transport attempt, in order, with that attempt's number, start offset,
+        duration and outcome -- exactly the fields ``CallAttemptTelemetry``
+        needs. ``marks`` carries a streaming attempt's own timing (Phase 2):
+        the operation resets it at the start of each attempt and fills it
+        during stream consumption, so by the time ``with_retries`` calls this
+        callback for that attempt, ``marks`` holds exactly its own readings.
+        """
+
+        def _record(
+            number: int, start_offset: float, duration: float, outcome: str
+        ) -> None:
+            attempts.append(
+                CallAttemptTelemetry(
+                    attempt=number,
+                    start_offset=max(start_offset, 0.0),
+                    seconds=max(duration, 0.0),
+                    outcome=outcome,
+                    first_event_seconds=marks.first_event_seconds,
+                    first_token_seconds=marks.first_token_seconds,
+                )
+            )
+
+        return _record
+
+    def _record_attempts_on_failure(
+        self, span: Any, attempts: Sequence[CallAttemptTelemetry]
+    ) -> None:
+        """Set the span's outputs to this call's attempts before it exits.
+
+        Only reached when every transport attempt failed and ``with_retries``
+        re-raised: no response ever arrived, so ``_set_span_result`` never ran
+        and the span would otherwise carry no record of what happened. This
+        is exactly the call the stall investigation most needs recorded --
+        every attempt timing out at the 1,800 s read timeout (RevTelemetry
+        P3). Called from inside the still-open span so the trace fetch sees
+        it; nothing to set when there were no attempts (a budget refusal).
+        """
+        if attempts:
+            span.set_outputs(
+                {
+                    "attempts": [
+                        record.model_dump(mode="json") for record in attempts
+                    ]
+                }
+            )
+
+    def _read_telemetry(
+        self,
+        response: Any,
+        *,
+        configured_max_tokens: int,
+        request_attempt: int,
+        structured_attempt: int | None = None,
+        attempts: Sequence[CallAttemptTelemetry] = (),
+    ) -> ProviderResponseTelemetry:
+        """Read a response's usage and finish reason, releasing on failure.
+
+        ``with_retries`` releases the attempts whose transport failed. A
+        response that arrived but carries no readable usage is the one failure
+        it cannot see: no token report follows, so the in-flight gauge would
+        stay a call high without this.
+        """
+        try:
+            return _response_telemetry(
+                response,
+                configured_max_tokens=configured_max_tokens,
+                request_attempt=request_attempt,
+                structured_attempt=structured_attempt,
+                attempts=attempts,
+            )
+        except ProviderResponseError:
+            self._telemetry.note_attempt_finished()
+            raise
+
+    def _record_tokens(
+        self,
+        usage: TokenUsage,
+        *,
+        cached_input_tokens: int,
+        agent_name: str | None,
+        operation: LLMOperation,
+        seconds: float,
+        configured_cap: int,
+        truncated: bool,
+        attempts: Sequence[CallAttemptTelemetry] = (),
+    ) -> None:
         """Record reported usage, and only for a response that arrived.
 
         Never called for a transport failure, and never for a response whose
         usage failed to parse: a token figure invented after a failed call
         would report spend that did not happen and hide spend that did.
+
+        The same rule is what makes the §7.3 per-call record honest: this call
+        is the run's slowest, its operation's largest reply and its truncation
+        count only when the response really carried the numbers.
+
+        ``attempts`` and ``usage.reasoning_tokens`` are this call's own P1-B
+        contributions: the collector keeps the attempts of whichever call is
+        currently its stage's slowest, and sums reasoning tokens across the run.
         """
         budget = self._request_budget
-        if budget is None:
-            return
-        budget.record_tokens(
-            "deepseek",
-            input_tokens=usage.input_tokens,
+        if budget is not None:
+            budget.record_tokens(
+                "deepseek",
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+        self._telemetry.record_call(
+            agent=agent_name,
+            operation=operation,
+            seconds=seconds,
             output_tokens=usage.output_tokens,
+            configured_cap=configured_cap,
+            truncated=truncated,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=cached_input_tokens,
+            reasoning_tokens=usage.reasoning_tokens,
+            attempts=attempts,
         )
 
     @property
     def last_model_returned(self) -> str | None:
         """The model identifier the last successful response reported.
 
-        ``deepseek-v4-flash`` is requested as a bare alias; the API may
-        answer as a dated snapshot such as ``DeepSeek-V4-Flash-0731``. The
+        ``deepseek-flash`` is requested as a bare name; the API may answer
+        with a more specific identifier, such as a dated snapshot. The
         evaluation harness records the requested alias *and* what was
         actually served, and never substitutes one for the other.
         """
         return self._last_model_returned
 
     def _request_options(
-        self, agent_name: str | None
+        self,
+        agent_name: str | None,
+        *,
+        reasoning_effort: str | None = None,
     ) -> tuple[EffectiveModelConfig, dict[str, object], dict[str, JsonValue]]:
         """Resolve and validate request settings for one effective model.
 
@@ -751,8 +1210,14 @@ class DeepSeekChatProvider:
         unsupported model, thinking mode, or effort raises before the SDK
         is touched. Span metadata carries only model-span facts; message
         content never appears.
+
+        ``reasoning_effort`` is a per-call override for this request only;
+        ``None`` keeps the effort ``agent_name``'s own profile resolves to,
+        which is what every ordinary call sends.
         """
-        effective = self._config.resolve_for(agent_name)
+        effective = with_reasoning_effort(
+            self._config.resolve_for(agent_name), reasoning_effort
+        )
         resolved = resolve_request_settings("deepseek", effective)
         request: dict[str, object] = {
             "model": effective.model,
@@ -763,6 +1228,8 @@ class DeepSeekChatProvider:
             request["reasoning_effort"] = resolved.reasoning_effort
         if resolved.include_temperature:
             request["temperature"] = self._config.temperature
+        if effective.timeout is not None:
+            request["timeout"] = effective.timeout
         metadata: dict[str, JsonValue] = {
             "provider": "deepseek",
             "thinking_mode": effective.thinking_mode,
@@ -774,6 +1241,30 @@ class DeepSeekChatProvider:
             metadata["effective_reasoning_effort"] = resolved.reasoning_effort
         return effective, request, metadata
 
+    def _stream_settings(
+        self, effective: EffectiveModelConfig
+    ) -> tuple[bool, float, float]:
+        """Resolve ``(stream, idle_timeout, total_timeout)`` for one call.
+
+        ``stream`` and ``idle_timeout`` fall back to the global config
+        exactly as ``retry_count`` does above. ``total_timeout`` is the same
+        value the non-streaming path already sends as its flat httpx
+        timeout -- the per-role override, or the client's own default
+        (``self._config.timeout``) -- since Phase 2 repurposes it as the
+        per-attempt wall-clock cap rather than the per-chunk one.
+        """
+        stream = (
+            self._config.stream if effective.stream is None else effective.stream
+        )
+        idle_timeout = (
+            self._config.idle_timeout
+            if effective.idle_timeout is None else effective.idle_timeout
+        )
+        total_timeout = (
+            self._config.timeout if effective.timeout is None else effective.timeout
+        )
+        return stream, idle_timeout, total_timeout
+
     async def complete(
         self,
         messages: Sequence[ChatMessage],
@@ -784,7 +1275,10 @@ class DeepSeekChatProvider:
             raise ValueError("messages must contain at least one item")
         effective, request, metadata = self._request_options(agent_name)
         payload = _translated_messages(messages)
+        stream, idle_timeout, total_timeout = self._stream_settings(effective)
         request_attempt = 0
+        attempts: list[CallAttemptTelemetry] = []
+        marks = SimpleNamespace(first_event_seconds=None, first_token_seconds=None)
         try:
             async with self._tracker.llm_span(
                 effective.model,
@@ -798,17 +1292,59 @@ class DeepSeekChatProvider:
 
                 async def _request() -> Any:
                     nonlocal request_attempt
-                    self._reserve_attempt()
+                    attempt_started_at = perf_counter()
+                    self._reserve_attempt(agent_name)
                     request_attempt += 1
+                    marks.first_event_seconds = None
+                    marks.first_token_seconds = None
+                    if not stream:
+                        try:
+                            return await self._client.chat.completions.create(
+                                **{**request, "messages": payload}
+                            )
+                        except (
+                            _sdk.APITimeoutError,
+                            _sdk.RateLimitError,
+                            _sdk.APIConnectionError,
+                            _sdk.APIStatusError,
+                        ) as error:
+                            raise _translate_deepseek_error(error)
+                        except _sdk.OpenAIError as error:
+                            raise ProviderResponseError(
+                                "DeepSeek chat request failed",
+                                failure_origin="sdk",
+                            ) from error
                     try:
-                        return await self._client.chat.completions.create(
-                            **{**request, "messages": payload}
+                        async with asyncio.timeout(total_timeout):
+                            chat_stream = await self._client.chat.completions.create(
+                                **{
+                                    **request,
+                                    "messages": payload,
+                                    "stream": True,
+                                    "stream_options": {"include_usage": True},
+                                    "timeout": _stream_timeout(idle_timeout),
+                                }
+                            )
+                            accumulator = _ChatStreamAccumulator(
+                                marks, attempt_started_at
+                            )
+                            async with chat_stream:
+                                async for chunk in chat_stream:
+                                    accumulator.absorb(chunk)
+                            return accumulator.finalize()
+                    except TimeoutError:
+                        raise ProviderTimeoutError(
+                            "DeepSeek chat request exceeded its total timeout"
                         )
                     except (
                         _sdk.APITimeoutError,
                         _sdk.RateLimitError,
                         _sdk.APIConnectionError,
                         _sdk.APIStatusError,
+                        httpx.TimeoutException,
+                        httpx.RemoteProtocolError,
+                        httpx.ReadError,
+                        httpx.ConnectError,
                     ) as error:
                         raise _translate_deepseek_error(error)
                     except _sdk.OpenAIError as error:
@@ -817,18 +1353,39 @@ class DeepSeekChatProvider:
                             failure_origin="sdk",
                         ) from error
 
-                response = await with_retries(
-                    _request,
-                    retry_count=self._config.retry_count,
-                    initial_delay=self._config.retry_initial_delay,
-                    max_delay=self._config.retry_max_delay,
-                )
-                telemetry = _response_telemetry(
+                started_at = perf_counter()
+                try:
+                    response = await with_retries(
+                        _request,
+                        retry_count=(
+                            self._config.retry_count
+                            if effective.retry_count is None
+                            else effective.retry_count
+                        ),
+                        initial_delay=self._config.retry_initial_delay,
+                        max_delay=self._config.retry_max_delay,
+                        telemetry=self._telemetry,
+                        on_attempt=self._attempt_recorder(attempts, marks),
+                    )
+                except ProviderError:
+                    self._record_attempts_on_failure(span, attempts)
+                    raise
+                telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=self._config.max_tokens,
                     request_attempt=request_attempt,
+                    attempts=attempts,
                 )
-                self._record_tokens(telemetry.usage)
+                self._record_tokens(
+                    telemetry.usage,
+                    cached_input_tokens=_chat_cached_input_tokens(response),
+                    agent_name=agent_name,
+                    operation="chat",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=self._config.max_tokens,
+                    truncated=telemetry.finish_reason_category == "length",
+                    attempts=attempts,
+                )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     raise ProviderOutputLimitError(telemetry)
@@ -857,9 +1414,13 @@ class DeepSeekChatProvider:
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        agent_name: str | None,
         configured_max_tokens: int,
         attempt: int,
+        effective: EffectiveModelConfig,
+        retry_count: int | None = None,
     ) -> SchemaT:
+        stream, idle_timeout, total_timeout = self._stream_settings(effective)
         async with self._tracker.llm_span(
             model,
             {
@@ -871,24 +1432,70 @@ class DeepSeekChatProvider:
         ) as span:
             _sdk = _openai_errors()
             request_attempt = 0
+            attempts: list[CallAttemptTelemetry] = []
+            marks = SimpleNamespace(first_event_seconds=None, first_token_seconds=None)
 
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                attempt_started_at = perf_counter()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
+                marks.first_event_seconds = None
+                marks.first_token_seconds = None
+                if not stream:
+                    try:
+                        return await self._client.chat.completions.create(
+                            **{
+                                **request,
+                                "messages": messages,
+                                "response_format": {"type": "json_object"},
+                            }
+                        )
+                    except (
+                        _sdk.APITimeoutError,
+                        _sdk.RateLimitError,
+                        _sdk.APIConnectionError,
+                        _sdk.APIStatusError,
+                    ) as error:
+                        raise _translate_deepseek_error(error)
+                    except _sdk.OpenAIError as error:
+                        raise ProviderResponseError(
+                            "DeepSeek structured output request failed",
+                            failure_origin="sdk",
+                        ) from error
                 try:
-                    return await self._client.chat.completions.create(
-                        **{
-                            **request,
-                            "messages": messages,
-                            "response_format": {"type": "json_object"},
-                        }
+                    async with asyncio.timeout(total_timeout):
+                        chat_stream = await self._client.chat.completions.create(
+                            **{
+                                **request,
+                                "messages": messages,
+                                "response_format": {"type": "json_object"},
+                                "stream": True,
+                                "stream_options": {"include_usage": True},
+                                "timeout": _stream_timeout(idle_timeout),
+                            }
+                        )
+                        accumulator = _ChatStreamAccumulator(
+                            marks, attempt_started_at
+                        )
+                        async with chat_stream:
+                            async for chunk in chat_stream:
+                                accumulator.absorb(chunk)
+                        return accumulator.finalize()
+                except TimeoutError:
+                    raise ProviderTimeoutError(
+                        "DeepSeek structured output request exceeded its "
+                        "total timeout"
                     )
                 except (
                     _sdk.APITimeoutError,
                     _sdk.RateLimitError,
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
+                    httpx.TimeoutException,
+                    httpx.RemoteProtocolError,
+                    httpx.ReadError,
+                    httpx.ConnectError,
                 ) as error:
                     raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
@@ -897,19 +1504,39 @@ class DeepSeekChatProvider:
                         failure_origin="sdk",
                     ) from error
 
-            response = await with_retries(
-                _request,
-                retry_count=self._config.retry_count,
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-            )
-            telemetry = _response_telemetry(
+            started_at = perf_counter()
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if retry_count is None else retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts, marks),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
+            telemetry = self._read_telemetry(
                 response,
                 configured_max_tokens=configured_max_tokens,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
+                attempts=attempts,
             )
-            self._record_tokens(telemetry.usage)
+            self._record_tokens(
+                telemetry.usage,
+                cached_input_tokens=_chat_cached_input_tokens(response),
+                agent_name=agent_name,
+                operation="structured_output",
+                seconds=perf_counter() - started_at,
+                configured_cap=configured_max_tokens,
+                truncated=telemetry.finish_reason_category == "length",
+                attempts=attempts,
+            )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 raise ProviderOutputLimitError(telemetry)
@@ -943,32 +1570,37 @@ class DeepSeekChatProvider:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
         resolved_max_tokens = _resolve_max_tokens(
             self._config.max_tokens, max_tokens
         )
-        effective, request, metadata = self._request_options(agent_name)
+        effective, request, metadata = self._request_options(
+            agent_name, reasoning_effort=reasoning_effort
+        )
         request = {**request, "max_tokens": resolved_max_tokens}
         instruction = _json_instruction(schema)
-        current_messages = [
-            *_translated_messages(messages),
-            {"role": "system", "content": instruction.content},
-        ]
+        current_messages = _with_schema_instruction(
+            _translated_messages(messages), instruction
+        )
 
         diagnostics: list[StructuredValidationDiagnostic] = []
         final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
-                return await self._structured_attempt(
+                parsed = await self._structured_attempt(
                     current_messages,
                     schema,
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    agent_name=agent_name,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
+                    effective=effective,
+                    retry_count=effective.retry_count,
                 )
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
@@ -996,6 +1628,13 @@ class DeepSeekChatProvider:
                     *current_messages,
                     {"role": "system", "content": repair},
                 ]
+            else:
+                if attempt == 2:
+                    # A repair succeeded, so the categories describing the
+                    # rejected first reply are kept: the response's own finish
+                    # reason is ``stop`` and can no longer identify them.
+                    self._record_structured_repair(schema.__name__, diagnostics)
+                return parsed
 
         if final_error is None:
             raise AssertionError("structured output attempt loop did not return")
@@ -1048,7 +1687,10 @@ class DeepSeekChatProvider:
         request = {**request, "max_tokens": resolved_max_tokens}
         payload = _translated_messages(messages)
         allowed = {definition.name for definition in tools}
+        stream, idle_timeout, total_timeout = self._stream_settings(effective)
         request_attempt = 0
+        attempts: list[CallAttemptTelemetry] = []
+        marks = SimpleNamespace(first_event_seconds=None, first_token_seconds=None)
         async with self._tracker.llm_span(
             effective.model,
             {
@@ -1060,30 +1702,77 @@ class DeepSeekChatProvider:
         ) as span:
             _sdk = _openai_errors()
 
+            def _tool_definitions() -> list[dict[str, object]]:
+                return [
+                    {
+                        "type": "function",
+                        "function": definition.model_dump(mode="json"),
+                    }
+                    for definition in tools
+                ]
+
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                attempt_started_at = perf_counter()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
+                marks.first_event_seconds = None
+                marks.first_token_seconds = None
+                if not stream:
+                    try:
+                        return await self._client.chat.completions.create(
+                            **{
+                                **request,
+                                "messages": payload,
+                                "tools": _tool_definitions(),
+                                "tool_choice": "auto",
+                            }
+                        )
+                    except (
+                        _sdk.APITimeoutError,
+                        _sdk.RateLimitError,
+                        _sdk.APIConnectionError,
+                        _sdk.APIStatusError,
+                    ) as error:
+                        raise _translate_deepseek_error(error)
+                    except _sdk.OpenAIError as error:
+                        raise ProviderResponseError(
+                            "DeepSeek native tool request failed",
+                            failure_origin="sdk",
+                        ) from error
                 try:
-                    return await self._client.chat.completions.create(
-                        **{
-                            **request,
-                            "messages": payload,
-                            "tools": [
-                                {
-                                    "type": "function",
-                                    "function": definition.model_dump(mode="json"),
-                                }
-                                for definition in tools
-                            ],
-                            "tool_choice": "auto",
-                        }
+                    async with asyncio.timeout(total_timeout):
+                        chat_stream = await self._client.chat.completions.create(
+                            **{
+                                **request,
+                                "messages": payload,
+                                "tools": _tool_definitions(),
+                                "tool_choice": "auto",
+                                "stream": True,
+                                "stream_options": {"include_usage": True},
+                                "timeout": _stream_timeout(idle_timeout),
+                            }
+                        )
+                        accumulator = _ChatStreamAccumulator(
+                            marks, attempt_started_at
+                        )
+                        async with chat_stream:
+                            async for chunk in chat_stream:
+                                accumulator.absorb(chunk)
+                        return accumulator.finalize()
+                except TimeoutError:
+                    raise ProviderTimeoutError(
+                        "DeepSeek native tool request exceeded its total timeout"
                     )
                 except (
                     _sdk.APITimeoutError,
                     _sdk.RateLimitError,
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
+                    httpx.TimeoutException,
+                    httpx.RemoteProtocolError,
+                    httpx.ReadError,
+                    httpx.ConnectError,
                 ) as error:
                     raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
@@ -1092,22 +1781,34 @@ class DeepSeekChatProvider:
                         failure_origin="sdk",
                     ) from error
 
-            response = await with_retries(
-                _request,
-                retry_count=self._config.retry_count,
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-            )
+            started_at = perf_counter()
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if effective.retry_count is None
+                        else effective.retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts, marks),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
             telemetry: ProviderResponseTelemetry | None = None
             tool_calls: tuple[NativeToolCall, ...] = ()
             final_answer: str | None = None
             rejection: str | None = None
             failure: ProviderError | None = None
             try:
-                telemetry = _response_telemetry(
+                telemetry = self._read_telemetry(
                     response,
                     configured_max_tokens=resolved_max_tokens,
                     request_attempt=request_attempt,
+                    attempts=attempts,
                 )
             except ProviderResponseError as error:
                 # A malformed usage shape is rejected *before* the clearing
@@ -1116,7 +1817,16 @@ class DeepSeekChatProvider:
                 # the frames that still hold the raw response.
                 failure = _fresh_provider_error(error)
             if failure is None:
-                self._record_tokens(telemetry.usage)
+                self._record_tokens(
+                    telemetry.usage,
+                    cached_input_tokens=_chat_cached_input_tokens(response),
+                    agent_name=agent_name,
+                    operation="react_tool_turn",
+                    seconds=perf_counter() - started_at,
+                    configured_cap=resolved_max_tokens,
+                    truncated=telemetry.finish_reason_category == "length",
+                    attempts=attempts,
+                )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
                     failure = ProviderOutputLimitError(telemetry)
@@ -1161,6 +1871,32 @@ class DeepSeekChatProvider:
             raise failure
 
 
+    def _record_structured_repair(
+        self,
+        schema_name: str,
+        diagnostics: Sequence[StructuredValidationDiagnostic],
+    ) -> None:
+        """Keep one bounded record of a malformed reply that was repaired."""
+        records: list[StructuredRepairRecord] | None = getattr(
+            self, "_structured_repairs", None
+        )
+        if records is None:
+            records = []
+            self._structured_repairs = records
+        records.append(
+            StructuredRepairRecord(
+                schema_name=schema_name,
+                diagnostics=tuple(diagnostics),
+            )
+        )
+        del records[: -MAX_STRUCTURED_REPAIR_RECORDS]
+
+    def drain_structured_repairs(self) -> tuple[StructuredRepairRecord, ...]:
+        """Return the repairs recorded since the last drain, and clear them."""
+        records = tuple(getattr(self, "_structured_repairs", ()))
+        self._structured_repairs = []
+        return records
+
 class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
     """DeepSeek structured output through native Responses ``json_schema``.
 
@@ -1177,7 +1913,15 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
     one-repair flow is unchanged, and every failure stays in the existing
     typed taxonomy. Plain completions keep the Chat Completions path; only
     ``complete_structured`` moves.
+
+    A *successful* repair is recorded, bounded, in ``_structured_repairs``: the
+    categories and field paths of the rejected reply are otherwise lost when
+    the repaired parse is returned, and the response's own finish reason is
+    ``stop`` exactly as for a clean first attempt. Nothing but the schema's
+    name and the local validation's own bounded locations is kept — never the
+    rejected text.
     """
+
 
     async def _responses_structured_attempt(
         self,
@@ -1187,9 +1931,13 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         model: str,
         request: dict[str, object],
         metadata: dict[str, JsonValue],
+        agent_name: str | None,
         configured_max_tokens: int,
         attempt: int,
+        effective: EffectiveModelConfig,
+        retry_count: int | None = None,
     ) -> SchemaT:
+        stream, idle_timeout, total_timeout = self._stream_settings(effective)
         async with self._tracker.llm_span(
             model,
             {
@@ -1201,31 +1949,72 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         ) as span:
             _sdk = _openai_errors()
             request_attempt = 0
+            attempts: list[CallAttemptTelemetry] = []
+            marks = SimpleNamespace(first_event_seconds=None, first_token_seconds=None)
+
+            def _responses_payload() -> dict[str, object]:
+                return {
+                    **request,
+                    "input": messages,
+                    "max_output_tokens": configured_max_tokens,
+                    "text": {
+                        "format": {
+                            "type": "json_schema",
+                            "name": schema.__name__,
+                            "schema": schema.model_json_schema(),
+                        }
+                    },
+                }
 
             async def _request() -> Any:
                 nonlocal request_attempt
-                self._reserve_attempt()
+                attempt_started_at = perf_counter()
+                self._reserve_attempt(agent_name)
                 request_attempt += 1
+                marks.first_event_seconds = None
+                marks.first_token_seconds = None
+                if not stream:
+                    try:
+                        return await self._client.responses.create(
+                            **_responses_payload()
+                        )
+                    except (
+                        _sdk.APITimeoutError,
+                        _sdk.RateLimitError,
+                        _sdk.APIConnectionError,
+                        _sdk.APIStatusError,
+                    ) as error:
+                        raise _translate_deepseek_error(error)
+                    except _sdk.OpenAIError as error:
+                        raise ProviderResponseError(
+                            "DeepSeek Responses request failed",
+                            failure_origin="sdk",
+                        ) from error
                 try:
-                    return await self._client.responses.create(
-                        **{
-                            **request,
-                            "input": messages,
-                            "max_output_tokens": configured_max_tokens,
-                            "text": {
-                                "format": {
-                                    "type": "json_schema",
-                                    "name": schema.__name__,
-                                    "schema": schema.model_json_schema(),
-                                }
-                            },
-                        }
+                    async with asyncio.timeout(total_timeout):
+                        responses_stream = await self._client.responses.create(
+                            **{
+                                **_responses_payload(),
+                                "stream": True,
+                                "timeout": _stream_timeout(idle_timeout),
+                            }
+                        )
+                        return await _consume_responses_stream(
+                            responses_stream, marks, attempt_started_at
+                        )
+                except TimeoutError:
+                    raise ProviderTimeoutError(
+                        "DeepSeek Responses request exceeded its total timeout"
                     )
                 except (
                     _sdk.APITimeoutError,
                     _sdk.RateLimitError,
                     _sdk.APIConnectionError,
                     _sdk.APIStatusError,
+                    httpx.TimeoutException,
+                    httpx.RemoteProtocolError,
+                    httpx.ReadError,
+                    httpx.ConnectError,
                 ) as error:
                     raise _translate_deepseek_error(error)
                 except _sdk.OpenAIError as error:
@@ -1234,20 +2023,49 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                         failure_origin="sdk",
                     ) from error
 
-            response = await with_retries(
-                _request,
-                retry_count=self._config.retry_count,
-                initial_delay=self._config.retry_initial_delay,
-                max_delay=self._config.retry_max_delay,
-            )
+            started_at = perf_counter()
+            try:
+                response = await with_retries(
+                    _request,
+                    retry_count=(
+                        self._config.retry_count
+                        if retry_count is None else retry_count
+                    ),
+                    initial_delay=self._config.retry_initial_delay,
+                    max_delay=self._config.retry_max_delay,
+                    telemetry=self._telemetry,
+                    on_attempt=self._attempt_recorder(attempts, marks),
+                )
+            except ProviderError:
+                self._record_attempts_on_failure(span, attempts)
+                raise
+            finish_reason_category = _responses_finish_reason(response)
+            try:
+                usage = _responses_usage_from_response(response)
+            except ProviderResponseError:
+                # A response that arrived with no readable usage never reports
+                # tokens, so nothing else would release this attempt's
+                # reservation.
+                self._telemetry.note_attempt_finished()
+                raise
             telemetry = ProviderResponseTelemetry(
-                finish_reason_category=_responses_finish_reason(response),
+                finish_reason_category=finish_reason_category,
                 configured_max_tokens=configured_max_tokens,
-                usage=_responses_usage_from_response(response),
+                usage=usage,
                 request_attempt=request_attempt,
                 structured_attempt=attempt,
+                attempts=tuple(attempts),
             )
-            self._record_tokens(telemetry.usage)
+            self._record_tokens(
+                usage,
+                cached_input_tokens=_responses_cached_input_tokens(response),
+                agent_name=agent_name,
+                operation="structured_output",
+                seconds=perf_counter() - started_at,
+                configured_cap=configured_max_tokens,
+                truncated=finish_reason_category == "length",
+                attempts=attempts,
+            )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
                 response = None
@@ -1306,6 +2124,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> SchemaT:
         if not messages:
             raise ValueError("messages must contain at least one item")
@@ -1313,26 +2132,28 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
             self._config.max_tokens, max_tokens
         )
         effective, request, metadata = _responses_request_options(
-            self._config, agent_name
+            self._config, agent_name, reasoning_effort=reasoning_effort
         )
         instruction = _json_instruction(schema)
-        current_messages = [
-            *_translated_messages(messages),
-            {"role": "system", "content": instruction.content},
-        ]
+        current_messages = _with_schema_instruction(
+            _translated_messages(messages), instruction
+        )
 
         diagnostics: list[StructuredValidationDiagnostic] = []
         final_error: StructuredOutputError | None = None
         for attempt in (1, 2):
             try:
-                return await self._responses_structured_attempt(
+                parsed = await self._responses_structured_attempt(
                     current_messages,
                     schema,
                     model=effective.model,
                     request=request,
                     metadata=metadata,
+                    agent_name=agent_name,
                     configured_max_tokens=resolved_max_tokens,
                     attempt=attempt,
+                    effective=effective,
+                    retry_count=effective.retry_count,
                 )
             except _StructuredValidationFailure as error:
                 diagnostics.append(error.diagnostic)
@@ -1360,6 +2181,13 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                     *current_messages,
                     {"role": "system", "content": repair},
                 ]
+            else:
+                if attempt == 2:
+                    # A repair succeeded, so the categories describing the
+                    # rejected first reply are kept: the response's own finish
+                    # reason is ``stop`` and can no longer identify them.
+                    self._record_structured_repair(schema.__name__, diagnostics)
+                return parsed
 
         if final_error is None:
             raise AssertionError("structured output attempt loop did not return")

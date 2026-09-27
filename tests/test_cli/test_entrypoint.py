@@ -8,6 +8,7 @@ import threading
 import pytest
 import yaml
 
+from deep_research.agents.events import agent_event
 from deep_research.cli import (
     EXIT_CONFIGURATION_ERROR,
     EXIT_GRAPH_FAILED,
@@ -18,13 +19,14 @@ from deep_research.cli import (
     build_parser,
     main,
     render_progress,
+    strict_quality_exit,
 )
 from deep_research.graph.events import (
     node_completed_event,
     node_started_event,
     session_completed_event,
-    session_started_event,
 )
+from deep_research.graph.state import graph_status
 from deep_research.main import run_research_sync
 from deep_research.observability import TokenUsage
 from deep_research.request_budget import (
@@ -34,8 +36,9 @@ from deep_research.request_budget import (
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import (
-    Critique,
+    REVIEW_DIMENSIONS,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -62,33 +65,49 @@ def outcome(status: str = "completed", **overrides) -> ResearchOutcome:
     return ResearchOutcome(**defaults)
 
 
+def session_started() -> ResearchEvent:
+    """One session-start record, built by its enumerated type.
+
+    The graph's own constructor carries the extra-pass ceiling now, and this
+    file is about the CLI's streaming surface — which is keyed on the event
+    type and the message — so the record is built here rather than through a
+    signature a sibling task is still moving.
+    """
+    return ResearchEvent(
+        event_type="graph.session.started",
+        source="graph",
+        message="Research session started.",
+        metadata={"session_id": "session-1", "checkpointing": False},
+    )
+
+
+def accepted_review() -> ReportReview:
+    """The scored review an accepted pass carries."""
+    return ReportReview(
+        status="scored",
+        dimensions={name: 0.9 for name in REVIEW_DIMENSIONS},
+        reviewed_statement_ids=["S001"],
+        per_statement_dispositions={"S001": "supported"},
+        input_fingerprint="packet-1",
+        composition_fingerprint="composition-1",
+    )
+
+
 def accepted_state() -> ResearchState:
-    """A pass the gates cleared and the Critic accepted."""
+    """One pass the router accepted: passes spent, gates clear, review passes.
+
+    PD-23's accepted shape: the extra-pass ceiling is spent, the deterministic
+    pass found no hard failure, and the terminal review scored the report. The
+    report publishes as ``completed`` and ``accepted``, which is the only case
+    ``--require-quality`` exits 0 for.
+    """
     return ResearchState(
         session_id="session-1",
         original_question=QUESTION,
-        quality=ReportQualitySnapshot(
-            coverage_ratio=1.0,
-            planned_topics=2,
-            covered_topics=2,
-            unique_findings=1,
-            unique_sources=2,
-            cited_sources=2,
-            scored_cited_source_ratio=1.0,
-            verified_claims=1,
-            contradicted_claims=0,
-            duplicate_claims=0,
-            duplicate_source_rows=0,
-            uncited_settled_points=0,
-        ),
-        critique=Critique(
-            score=8,
-            gaps=[],
-            unsupported_claims=[],
-            recommended_queries=[],
-            should_continue=False,
-            rationale="Recorded for entry-point tests.",
-        ),
+        iteration=1,
+        max_extra_passes=1,
+        report_review=accepted_review(),
+        quality=ReportQualitySnapshot(),
     )
 
 
@@ -173,7 +192,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
         "question": QUESTION,
         "resume_session_id": None,
         "config_path": "custom.yaml",
-        "max_iterations": 5,
+        "max_extra_passes": 5,
         "output_format": "markdown",
         "config_overrides": None,
     }
@@ -182,9 +201,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
 def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None:
     """Step 6: the handler runs before the runner returns, and once only."""
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -223,9 +240,7 @@ def test_every_streamed_progress_line_is_flushed_immediately() -> None:
     they inject an unbuffered ``io.StringIO``.
     """
     events = [
-        session_started_event(
-            session_id="session-1", max_iterations=2, checkpointing=False
-        ),
+        session_started(),
         node_started_event("planner", iteration=0),
         session_completed_event(
             status="completed", iteration=0, error_count=0, has_report=True
@@ -422,6 +437,11 @@ def test_a_blank_resume_session_id_is_rejected_end_to_end(
         raise AssertionError("a blank resume must fail before runtime setup")
 
     def runner(**kwargs):
+        # The extra-pass budget is asserted and dropped rather than forwarded:
+        # this test is about the resume guard running before any runtime is
+        # built, and the CLI's own keyword contract is pinned by
+        # ``test_the_cli_passes_every_option_through_to_run_research``.
+        assert kwargs.pop("max_extra_passes") is None
         return run_research_sync(runtime_builder=builder, **kwargs)
 
     stream = io.StringIO()
@@ -440,6 +460,85 @@ def test_resume_passes_the_session_id_and_no_question() -> None:
 
     assert runner.calls[0]["question"] is None
     assert runner.calls[0]["resume_session_id"] == "session-1"
+
+
+def test_the_entrypoint_starts_the_session_with_planning_recall(
+    tmp_path, monkeypatch
+) -> None:
+    """Startup recall runs with ``purpose="planning"``, through the real
+    entry point.
+
+    That recall is the planner's single procedural lookup, and it must not
+    read long-term findings: remembered prose handed to the planner becomes a
+    settled premise in the plan. The call is inspected where ``run_research``
+    actually makes it, not only where ``recall_memory_context`` is defined.
+    """
+    import asyncio
+
+    from deep_research import main as main_module
+    from deep_research.graph.orchestrator import compile_research_graph
+    from deep_research.main import run_research
+    from deep_research.observability import LangSmithRuntimeConfig, Tracker
+    from deep_research.request_budget import RequestBudget
+    from deep_research.runtime.assembly import ResearchRuntime
+    from deep_research.utils.types import MemorySnapshot
+    from tests.graph_fakes import fake_research_agents
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_extra_passes": 1},
+                "output": {"directory": str(tmp_path / "output")},
+                "memory": {
+                    "long_term": {"persist_directory": str(tmp_path / "memory")},
+                    "procedural": {
+                        "strategies_path": str(tmp_path / "strategies.json")
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    recalled: list[dict] = []
+
+    async def recording_recall(**kwargs):
+        recalled.append(kwargs)
+        return MemorySnapshot()
+
+    monkeypatch.setattr(main_module, "recall_memory_context", recording_recall)
+
+    async def builder(settings, *, session_id, **_ignored):
+        return ResearchRuntime(
+            session_id=session_id,
+            settings=settings,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="entrypoint-tests",
+                    api_key=None,
+                )
+            ),
+            request_budget=RequestBudget(),
+            graph=compile_research_graph(fake_research_agents()),
+            long_term=None,
+            procedural=None,
+        )
+
+    asyncio.run(
+        run_research(
+            QUESTION,
+            config_path=str(config),
+            runtime_builder=builder,
+        )
+    )
+
+    assert len(recalled) == 1
+    assert recalled[0]["purpose"] == "planning"
+    assert recalled[0]["question"] == QUESTION
 
 
 def test_a_configuration_failure_prints_its_hint_and_exits_one() -> None:
@@ -515,14 +614,40 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
     assert code == EXIT_QUALITY_UNACCEPTED
 
 
-def test_require_quality_exits_zero_for_an_accepted_report() -> None:
-    runner = RecordingRunner(result=outcome(state=accepted_state()))
+def test_require_quality_exits_zero_for_an_accepted_run() -> None:
+    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0.
+
+    The status is asserted from ``graph_status`` over the same judged state the
+    runner is handed, so the test fails if the router stops calling this run
+    ``completed``; the run's own status travels in the fixture's ``GraphRun``.
+    """
+    state = accepted_state()
+    runner = RecordingRunner(result=outcome(state=state))
     stream = io.StringIO()
 
     code = main([QUESTION, "--require-quality"], runner=runner, stream=stream)
 
+    assert graph_status(state) == "completed"
     assert code == EXIT_OK
     assert "Quality: accepted" in stream.getvalue()
+    assert "Status: completed" in stream.getvalue()
+
+
+def test_require_quality_exits_zero_for_an_accepted_verdict() -> None:
+    """The accepted reading reaches exit 0 through the same policy.
+
+    Which run is accepted is the graph's own decision (``graph_quality_status``
+    over the router's route, pinned by ``tests/test_graph/test_state.py``); the
+    CLI's part is that an accepted verdict is the one thing that clears exit 4
+    under ``--require-quality``, which is what ``strict_quality_exit`` and this
+    call both read.
+    """
+    assert (
+        strict_quality_exit(
+            {"quality_status": "accepted"}, require_quality=True
+        )
+        == EXIT_OK
+    )
 
 
 def test_a_failed_graph_run_outranks_the_quality_flag() -> None:
@@ -535,6 +660,61 @@ def test_a_failed_graph_run_outranks_the_quality_flag() -> None:
     assert code == EXIT_GRAPH_FAILED
 
 
+def test_missing_semantic_review_keeps_strict_exit_four() -> None:
+    """A report the terminal review never judged is not an accepted report.
+
+    ``semantic_review_status`` is ``incomplete`` and the quality status is
+    ``partial``, so strict mode exits 4 however clean the structural counters
+    look. The same snapshot without ``--require-quality`` is the ordinary
+    completed-run exit 0, which is what a run did — never a claim that the
+    report was accepted.
+    """
+    snapshot = {
+        "hard_failures": [],
+        "semantic_review_status": "incomplete",
+        "answered_target_ids": ["topic-01-target-01"],
+        "quality_status": "partial",
+    }
+
+    assert (
+        strict_quality_exit(snapshot, require_quality=True)
+        == EXIT_QUALITY_UNACCEPTED
+    )
+    assert strict_quality_exit(snapshot, require_quality=False) == EXIT_OK
+
+
+def test_strict_quality_exit_reads_the_verdict_and_nothing_else() -> None:
+    """No counter can buy acceptance: only the enumerated verdict clears it.
+
+    A snapshot carrying an empty hard-failure list, a scored review at 1.00,
+    every required target answered and the verifier's findings all verified
+    still exits 4 while its verdict is ``partial`` — the counters are
+    diagnostics, not the decision. A snapshot with no verdict at all is not
+    accepted either: an absent judgement is never an acceptance.
+    """
+    flattering = {
+        "hard_failures": [],
+        "semantic_review_status": "scored",
+        "semantic_review_score": 1.0,
+        "required_target_ids": ["topic-01-target-01"],
+        "answered_target_ids": ["topic-01-target-01"],
+        "verified_findings": 16,
+        "quality_status": "partial",
+    }
+
+    assert (
+        strict_quality_exit(flattering, require_quality=True)
+        == EXIT_QUALITY_UNACCEPTED
+    )
+    assert strict_quality_exit(
+        {"quality_status": "accepted"}, require_quality=True
+    ) == EXIT_OK
+    assert strict_quality_exit({}, require_quality=True) == (
+        EXIT_QUALITY_UNACCEPTED
+    )
+    assert strict_quality_exit({}, require_quality=False) == EXIT_OK
+
+
 def test_an_incomplete_run_still_exits_zero_and_says_why() -> None:
     runner = RecordingRunner(result=outcome(status="incomplete"))
     stream = io.StringIO()
@@ -542,7 +722,7 @@ def test_an_incomplete_run_still_exits_zero_and_says_why() -> None:
     code = main([QUESTION], runner=runner, stream=stream)
 
     assert code == EXIT_OK
-    assert "ended without an accepted critique" in stream.getvalue()
+    assert "without an accepted quality judgement" in stream.getvalue()
 
 
 def test_recoverable_errors_are_grouped_as_warnings_not_failures() -> None:
@@ -606,6 +786,79 @@ def test_an_unexpected_exception_is_not_swallowed() -> None:
 
     with pytest.raises(RuntimeError, match="a defect"):
         main([QUESTION], runner=runner, stream=io.StringIO())
+
+
+def test_debug_events_prints_the_complete_bounded_event_log_once() -> None:
+    """``--debug-events`` shows every recorded event, and only once.
+
+    The three records below are the three surfaces: a progress event both
+    plain output and debug show, a completion only verbose and debug show, and
+    an agent-internal record only debug shows. Each is printed exactly once,
+    with its enumerated type and source beside it.
+    """
+    events = [
+        session_started(),
+        node_completed_event(
+            "planner", iteration=0, event_count=2, error_count=0
+        ),
+        agent_event(
+            agent_name="researcher",
+            event_type="researcher.tool_call",
+            message="The researcher called web_search.",
+            metadata={"iteration": 0},
+        ),
+    ]
+    runner = StreamingRunner(events)
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--debug-events"], runner=runner, stream=stream)
+    printed = stream.getvalue()
+
+    assert code == EXIT_OK
+    for event in events:
+        assert printed.count(event.message) == 1
+    assert "graph.node.completed (graph.planner): Node planner completed." in printed
+    assert (
+        "researcher.tool_call (agent.researcher): The researcher called "
+        "web_search." in printed
+    )
+    # The debug log is a diagnostic stream, not a second copy of the summary.
+    assert printed.index(events[-1].message) < printed.index("Session ID:")
+
+
+def test_debug_events_does_not_flood_budget_update_rows() -> None:
+    """The budget's own update stream stays behind ``--verbose``.
+
+    ``--debug-events`` shows events. A budget update is a different channel —
+    one line per reserved attempt — and letting it ride the debug switch is
+    how a diagnostic log becomes unreadable.
+    """
+    runner = BudgetReportingRunner()
+    stream = io.StringIO()
+
+    code = main([QUESTION, "--debug-events"], runner=runner, stream=stream)
+    printed = stream.getvalue()
+
+    assert code == EXIT_OK
+    assert "request budget:" not in printed
+    assert "Request budget" not in printed
+    assert "tavily" not in printed
+
+
+def test_verbose_still_streams_budget_updates_beside_the_debug_log() -> None:
+    """The two switches compose: verbose keeps the budget rows it always had."""
+    runner = BudgetReportingRunner()
+    stream = io.StringIO()
+
+    main(
+        [QUESTION, "--debug-events", "--verbose"],
+        runner=runner,
+        stream=stream,
+    )
+    printed = stream.getvalue()
+
+    assert "request budget: tavily attempt reserved" in printed
+    assert printed.count("request budget: tavily attempt reserved") == 1
 
 
 def test_the_module_entry_point_exposes_main() -> None:
@@ -823,3 +1076,97 @@ def test_a_request_limit_graph_failure_exits_three_before_require_quality() -> N
     assert "Status: failed" in printed
     assert "Request budget:" in printed
     assert "--require-quality" not in printed
+
+
+def test_a_halted_run_s_summary_still_prints_the_telemetry_line(
+    tmp_path, monkeypatch
+) -> None:
+    """The §7.3 line survives a halt — the outcome an operator most needs it for.
+
+    A run the graph halted is the run whose rate-limit advice matters, and it
+    publishes no quality record for the finalizer to stamp: without the entry
+    point's own reading the summary would go silent exactly when the figures
+    are worth reading. This drives the real ``main`` and the real
+    ``run_research`` over a graph that halts on its first node.
+    """
+    from deep_research.graph.orchestrator import compile_research_graph
+    from deep_research.observability import (
+        LangSmithRuntimeConfig,
+        RunTelemetryCollector,
+        Tracker,
+    )
+    from deep_research.request_budget import RequestBudget
+    from deep_research.runtime.assembly import ResearchRuntime
+    from tests.graph_fakes import FakeAgent, fake_research_agents
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
+    monkeypatch.setenv("TAVILY_API_KEY", "test-tavily-key")
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "graph": {"max_extra_passes": 1},
+                "output": {"directory": str(tmp_path / "output")},
+                "memory": {
+                    "long_term": {"persist_directory": str(tmp_path / "memory")},
+                    "procedural": {
+                        "strategies_path": str(tmp_path / "strategies.json")
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    budget = RequestBudget()
+    collector = RunTelemetryCollector()
+    # The planner's update is one the state model refuses, which is how a graph
+    # halt is expressed without a provider: the node records the enumerated
+    # error and every later node skips, finalizer included.
+    halting_planner = FakeAgent("planner", [{"iteration": 2}])
+
+    async def builder(settings, *, session_id, **_ignored):
+        return ResearchRuntime(
+            session_id=session_id,
+            settings=settings,
+            tracker=Tracker(
+                LangSmithRuntimeConfig(
+                    tracing_enabled=False,
+                    project="entrypoint-halt",
+                    api_key=None,
+                )
+            ),
+            request_budget=budget,
+            graph=compile_research_graph(
+                fake_research_agents(planner=halting_planner),
+                checkpointer=None,
+                run_telemetry=collector,
+            ),
+            long_term=None,
+            procedural=None,
+            run_telemetry=collector,
+        )
+
+    def runner(**kwargs) -> ResearchOutcome:
+        event_handler = kwargs["event_handler"]
+
+        def handler(event: ResearchEvent) -> None:
+            event_handler(event)
+            if event.event_type == "graph.session.started":
+                collector.note_call_starting("researcher")
+                budget.reserve("deepseek")
+
+        kwargs["event_handler"] = handler
+        return run_research_sync(runtime_builder=builder, **kwargs)
+
+    stream = io.StringIO()
+    code = main([QUESTION, "--config", str(config)], runner=runner, stream=stream)
+
+    printed = stream.getvalue()
+    assert code == EXIT_GRAPH_FAILED
+    assert printed.count("Telemetry: ") == 1
+    assert (
+        "Telemetry: peak 1 provider calls in flight (researcher); "
+        "0 rate limits (0 recovered); 0 truncated" in printed
+    )

@@ -6,12 +6,14 @@ from hashlib import sha256
 
 import pytest
 
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import all_cases
 from deep_research.evaluation.evaluators import (
     GENERAL_GATE_IDS,
     METRIC_FUNCTIONS,
     MissingMetricError,
+    _reader_reference_urls,
     deterministic_metric_scores,
     deterministic_quality,
     evaluate_agent_gates,
@@ -20,6 +22,7 @@ from deep_research.evaluation.evaluators import (
     evaluate_target_with_metrics,
 )
 from deep_research.evaluation.models import (
+    AGENT_NAMES,
     DependencyLedger,
     EvaluationCase,
     EvidenceContext,
@@ -162,53 +165,36 @@ def _production_target_output(
             "evaluated_sources",
         ),
         (
-            "fact_checker",
-            {"claims": []},
-            {"verified_claims": []},
-            "verified_claims",
+            # The verifier answers with the snapshot it judged, in the result
+            # (its state update carries ``verified_findings`` under that name).
+            "evidence_verifier",
+            {"findings": []},
+            {},
+            "findings",
         ),
         (
-            "synthesizer",
+            # The writer composes both artifacts into the result and mirrors
+            # them into the state update; the required fields are the result's
+            # own names.
+            "report_writer",
             {
                 "markdown": "",
-                "path": None,
                 "evidence_markdown": "",
-                "evidence_path": "report-session-1-0-evidence.md",
-                "section_count": 0,
+                "composition": {
+                    "question": "A question?",
+                    "session_id": "evaluation-complete-cited-report",
+                    "summary": [],
+                    "sections": [],
+                },
+                "statement_count": 0,
                 "citation_count": 0,
-                "unique_source_count": 0,
-                "unique_claim_count": 0,
+                "refused_count": 0,
             },
             {
                 "report": "",
                 "report_evidence": "",
-                "evidence_path": "report-session-1-0-evidence.md",
-                "unique_source_count": 0,
-                "unique_claim_count": 0,
             },
-            "report",
-        ),
-        (
-            "critic",
-            {
-                "score": 1,
-                "gaps": [],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": False,
-                "rationale": "No report gaps found.",
-            },
-            {
-                "critique": {
-                    "score": 1,
-                    "gaps": [],
-                    "unsupported_claims": [],
-                    "recommended_queries": [],
-                    "should_continue": False,
-                    "rationale": "No report gaps found.",
-                }
-            },
-            "critique",
+            "markdown",
         ),
         (
             "researcher",
@@ -219,9 +205,8 @@ def _production_target_output(
     ],
     ids=[
         "source-evaluator-state-update",
-        "fact-checker-state-update",
-        "synthesizer-state-update",
-        "critic-state-update",
+        "evidence-verifier-result",
+        "report-writer-result",
         "researcher-result-control",
     ],
 )
@@ -232,6 +217,9 @@ def test_required_field_presence_accepts_production_output_boundaries(
     state_update,
     required_field,
 ) -> None:
+    # A row naming an agent that does not exist must fail, not skip: a skip
+    # here would hide exactly the stale row this matrix keeps collecting.
+    assert agent_name in AGENT_NAMES, f"unknown agent row: {agent_name}"
     case = controlled_case_for(agent_name)
     output = _production_target_output(
         case, result=result, state_update=state_update
@@ -286,7 +274,7 @@ def test_merged_loops_each_inside_their_budget_pass_the_gate(
 ) -> None:
     """A whole-case sum is not a per-loop budget.
 
-    The fact-checker runs one bounded loop per claim and merges them, summing
+    The researcher runs one bounded loop per sub-topic and merges them, summing
     ``tool_calls`` and ``iterations``. Every loop respects its own budget, yet
     the sum can exceed the per-loop ceiling the case declares -- which is
     exactly what failed a live canary with ``tool_calls 11 exceed 10`` where
@@ -423,6 +411,28 @@ def test_a_url_embedded_in_prose_with_trailing_punctuation_passes(
     results = evaluate_general_gates(output, researcher_case, secrets=())
 
     assert gate(results, "citations_known").passed is True
+
+
+def test_reader_reference_urls_reads_the_publisher_dash_markdown_link_line() -> None:
+    """The reader's Sources line is ``n. Publisher — [Title](url) (date)``
+    (spec §3.1 rule 7, §8), not the old bare-URL-at-end-of-line shape: the
+    URL is the markdown link's own target, and an optional trailing
+    ``(date)``/``(updated date)`` must not be read as part of it.
+    """
+    report = (
+        "1. Utility Dive — [US utility-scale energy storage to double]"
+        "(https://utilitydive.com/news/storage-65-gw)\n"
+        "2. National Archives — [Distribution of Electoral Votes]"
+        "(https://archives.gov/electoral-college/allocation) (2026-01-02)\n"
+        "3. cornell.edu — [Article II | U.S. Constitution]"
+        "(https://law.cornell.edu/constitution/articleii) (updated 2026-02-14)\n"
+    )
+
+    assert _reader_reference_urls(report) == {
+        1: "https://utilitydive.com/news/storage-65-gw",
+        2: "https://archives.gov/electoral-college/allocation",
+        3: "https://law.cornell.edu/constitution/articleii",
+    }
 
 
 def test_a_live_case_without_known_urls_fails_on_unknown_citations(
@@ -624,44 +634,6 @@ def test_a_malformed_cited_url_fails_the_citation_gate_without_raising(
 
     assert gate(results, "citations_known").passed is False
     assert "99999" in gate(results, "citations_known").detail
-
-
-def test_claim_source_urls_are_folded_into_the_known_url_set(
-    researcher_case, researcher_target_output
-) -> None:
-    """Finding 15: ``evidence.claims[].source_urls`` must count as known.
-
-    ``targets.py`` populates ``evidence.claims`` from
-    ``state.verified_claims``, each of which carries ``source_urls``. Those
-    are just as legitimate to cite as ``evidence.sources`` /
-    ``evidence.findings`` URLs.
-    """
-    claim_only_url = "https://claim-only.example.com/evidence"
-    result = dict(researcher_target_output.result)
-    result["findings"] = [{"source_url": claim_only_url}]
-    output = researcher_target_output.model_copy(
-        update={
-            "result": result,
-            "evidence": researcher_target_output.evidence.model_copy(
-                update={
-                    "claims": [
-                        {
-                            "text": "A plausible claim.",
-                            "source_urls": [claim_only_url],
-                            "verdict": "verified",
-                            "confidence": 0.8,
-                            "evidence": [],
-                            "contradictions": [],
-                        }
-                    ]
-                }
-            ),
-        }
-    )
-
-    results = evaluate_general_gates(output, researcher_case, secrets=())
-
-    assert gate(results, "citations_known").passed is True
 
 
 def test_a_secret_anywhere_in_the_output_fails_the_secret_gate(
@@ -934,51 +906,94 @@ def _golden_result(case: EvaluationCase, urls: list[str]) -> dict:
                 for url in urls
             ]
         }
-    if case.agent_name == "fact_checker":
-        claim_urls = urls[:1]
+    if case.agent_name == "evidence_verifier":
+        # The verifier judges the findings it was handed: the plausible
+        # correct output is that same snapshot with every finding judged.
         return {
-            "verified_claims": [
+            "findings": [
                 {
-                    "text": "A plausible, correctly verified claim.",
-                    "source_urls": claim_urls,
-                    "verdict": "verified" if claim_urls else "insufficient_evidence",
-                    "confidence": 0.8 if claim_urls else 0.3,
-                    "evidence": [],
-                    "contradictions": [],
+                    **finding.model_dump(mode="json"),
+                    "verification": {
+                        "status": "verified",
+                        "figure_results": [],
+                        "dropped_reason": None,
+                        "context_unchecked": False,
+                    },
                 }
+                for finding in case.state.raw_findings
             ]
         }
-    if case.agent_name == "synthesizer":
-        if urls:
-            report = (
-                "## Summary\n\n"
-                f"A plausible, fully cited summary ({urls[0]}).\n\n"
-                "## Limitations\n\nThe evidence base is limited."
+    if case.agent_name == "report_writer":
+        required = [
+            target.target_id
+            for topic in case.state.sub_topics
+            for target in topic.evidence_targets
+            if target.required
+        ]
+        citable = [
+            finding
+            for finding in case.state.verified_findings
+            if finding.verification is not None
+            and finding.verification.status != "dropped"
+        ]
+        answered = {
+            target_id
+            for finding in citable
+            for target_id in finding.target_ids
+        }
+        labelled = {
+            f"F{position:02d}": finding_fingerprint(finding)
+            for position, finding in enumerate(citable, start=1)
+        }
+        listed = list(
+            dict.fromkeys(
+                normalize_source_url(finding.source_url) for finding in citable
             )
-            evidence = f"## Evidence ledger\n\n[1] {urls[0]}"
-        else:
-            report = (
-                "## Summary\n\nA plausible summary with no external "
-                "sources to cite.\n\n## Limitations\n\nThe evidence base "
-                "is limited."
+        )
+        references = "\n".join(
+            f"{position}. {finding.source_title} — "
+            f"[{finding.source_title}]({normalize_source_url(finding.source_url)})"
+            for position, finding in enumerate(citable, start=1)
+        ) or "(no sources were cited)"
+        report = (
+            f"# {case.state.original_question}\n\n"
+            f"Evidence as of 2026-01-01 · {len(listed)} "
+            f"{'source' if len(listed) == 1 else 'sources'}\n\n"
+            "## Bottom line\n\n"
+            "No statement could be printed from the checked findings.\n"
+        )
+        if required and set(required) - answered:
+            report += "\n## What we couldn't confirm\n\n"
+            report += "We found no source we could check that answers:\n"
+            report += "\n".join(
+                f"- {target_id}"
+                for target_id in sorted(set(required) - answered)
             )
-            evidence = "## Evidence ledger\n\nNo external sources were supplied."
+            report += "\n"
+        report += f"\n## Sources\n\n{references}\n"
         return {
             "markdown": report,
-            "path": None,
-            "evidence_markdown": evidence,
-            "evidence_path": "evidence.md",
-        }
-    if case.agent_name == "critic":
-        return {
-            "critique": {
-                "score": 8,
-                "gaps": [],
-                "unsupported_claims": [],
-                "recommended_queries": [],
-                "should_continue": False,
-                "rationale": "A plausible, well-supported critique.",
-            }
+            "evidence_markdown": (
+                f"# Evidence log: {case.state.original_question}\n\n"
+                "## Findings\n"
+            ),
+            "composition": {
+                "question": case.state.original_question,
+                "session_id": case.state.session_id,
+                "summary": [],
+                "sections": [],
+                "finding_labels": labelled,
+                "fact_rows": [],
+                "not_found": [
+                    {"target_id": target_id, "question": target_id}
+                    for target_id in sorted(set(required) - answered)
+                ],
+                "rejected": [],
+                "rejected_points": [],
+            },
+            "statement_count": 0,
+            "citation_count": len(listed),
+            "refused_count": 0,
         }
     raise AssertionError(f"no golden result builder for {case.agent_name!r}")
 
@@ -1037,10 +1052,6 @@ def _build_golden_output(case: EvaluationCase) -> TargetOutput:
             findings=[
                 finding.model_dump(mode="json")
                 for finding in case.state.raw_findings
-            ],
-            claims=[
-                claim.model_dump(mode="json")
-                for claim in case.state.verified_claims
             ],
             scripted_search_urls=[],
         ),

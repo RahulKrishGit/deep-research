@@ -296,3 +296,66 @@ def test_an_unrebuildable_provider_error_falls_back_to_the_base_type() -> None:
 
     assert type(redacted) is ProviderError
     assert str(redacted) == "[REDACTED]"
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records and reasoning tokens (stall-fix-brief.md P1-B).
+# ---------------------------------------------------------------------------
+
+
+def test_provider_response_telemetry_defaults_to_no_attempts() -> None:
+    """A caller that predates per-attempt records still builds cleanly."""
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="stop",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4),
+        request_attempt=1,
+    )
+    assert telemetry.attempts == ()
+
+
+def test_provider_response_telemetry_carries_its_attempts() -> None:
+    from deep_research.utils.types import CallAttemptTelemetry
+
+    attempts = (
+        CallAttemptTelemetry(
+            attempt=1, start_offset=0.0, seconds=1_800.0, outcome="timeout"
+        ),
+        CallAttemptTelemetry(
+            attempt=2, start_offset=1_801.0, seconds=222.6, outcome="ok"
+        ),
+    )
+    telemetry = ProviderResponseTelemetry(
+        finish_reason_category="stop",
+        configured_max_tokens=4096,
+        usage=TokenUsage(input_tokens=8, output_tokens=4),
+        request_attempt=2,
+        attempts=attempts,
+    )
+    assert telemetry.attempts == attempts
+    assert telemetry.model_dump(mode="json")["attempts"] == [
+        {
+            "attempt": 1,
+            "start_offset": 0.0,
+            "seconds": 1_800.0,
+            "outcome": "timeout",
+            "first_event_seconds": None,
+            "first_token_seconds": None,
+        },
+        {
+            "attempt": 2,
+            "start_offset": 1_801.0,
+            "seconds": 222.6,
+            "outcome": "ok",
+            "first_event_seconds": None,
+            "first_token_seconds": None,
+        },
+    ]
+
+
+def test_token_usage_reasoning_tokens_default_to_zero_and_stay_apart_from_the_total() -> None:
+    """Reasoning tokens are additional detail; the total stays input+output."""
+    usage = TokenUsage(input_tokens=10, output_tokens=50, reasoning_tokens=30)
+    assert usage.reasoning_tokens == 30
+    assert usage.total_tokens == 60
+    assert TokenUsage(input_tokens=1, output_tokens=1).reasoning_tokens == 0

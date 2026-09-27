@@ -7,14 +7,16 @@ import asyncio
 import pytest
 
 import deep_research.providers.contracts as contracts_module
-from deep_research.observability import TokenUsage
+from deep_research.observability import RunTelemetryCollector, TokenUsage
 from deep_research.providers.contracts import (
+    ProviderRateLimitError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
 from deep_research.providers.retry import with_retries
 from deep_research.request_budget import (
     RequestAttemptLimitError,
+    RequestBudget,
     RequestBudgetSnapshot,
 )
 
@@ -165,3 +167,259 @@ async def test_with_retries_never_retries_a_spent_request_budget(monkeypatch) ->
     assert calls == 1
     assert caught.value is refusal
     assert slept == []
+
+
+# ---------------------------------------------------------------------------
+# §7.3 telemetry: the retry loop is where a 429 is counted, and where a
+# reserved attempt that failed stops being a call in flight.
+# ---------------------------------------------------------------------------
+
+
+def _rate_limited_operation(recoveries: int):
+    """An operation that answers 429 ``recoveries`` times, then succeeds."""
+    attempts = 0
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts <= recoveries:
+            raise ProviderRateLimitError("DeepSeek rate limit exceeded")
+        return "ok"
+
+    return operation
+
+
+@pytest.mark.asyncio
+async def test_with_retries_accounts_rate_limits_and_recoveries(monkeypatch) -> None:
+    """Three transient rate-limit failures, two retried to success, one that
+    exhausted the ladder: 3 errors, 2 recovered."""
+    _recorded_sleeps(monkeypatch)
+    collector = RunTelemetryCollector()
+
+    for _ in range(2):
+        await with_retries(
+            _rate_limited_operation(1),
+            retry_count=2,
+            initial_delay=1.0,
+            max_delay=4.0,
+            telemetry=collector,
+        )
+    with pytest.raises(ProviderRateLimitError):
+        await with_retries(
+            _rate_limited_operation(1),
+            retry_count=0,
+            initial_delay=1.0,
+            max_delay=4.0,
+            telemetry=collector,
+        )
+
+    telemetry = collector.snapshot()
+    assert telemetry.rate_limit_errors == 3
+    assert telemetry.rate_limit_recovered == 2
+
+
+@pytest.mark.asyncio
+async def test_with_retries_releases_each_failed_attempt(monkeypatch) -> None:
+    """Every attempt the loop gives up on releases its reservation.
+
+    Half of this accounting lives in the retry loop: the budget's observer
+    counts the reservation, and a failed attempt never reports tokens, so
+    nothing else would ever release it. Three attempts that leaked would show
+    up as three extra calls in flight the moment three more reserve.
+    """
+    _recorded_sleeps(monkeypatch)
+    collector = RunTelemetryCollector()
+    budget = RequestBudget()
+    budget.set_observer(collector.observe_budget)
+
+    async def operation() -> str:
+        budget.reserve("deepseek")
+        raise ProviderTimeoutError("DeepSeek request timed out")
+
+    with pytest.raises(ProviderTimeoutError):
+        await with_retries(
+            operation,
+            retry_count=2,
+            initial_delay=1.0,
+            max_delay=4.0,
+            telemetry=collector,
+        )
+
+    for _ in range(3):
+        budget.reserve("deepseek")
+
+    assert collector.snapshot().peak_calls_in_flight == 3
+
+
+@pytest.mark.asyncio
+async def test_a_refused_attempt_is_not_reported_as_a_failed_attempt(
+    monkeypatch,
+) -> None:
+    """The refusal holds no reservation to release, so it must not release one.
+
+    A refused attempt never reached the wire, so it is the one failure with
+    nothing to give back. Releasing for it anyway would take the gauge below
+    the number of calls really in flight, and the peak would then read low by
+    exactly that much.
+    """
+    _recorded_sleeps(monkeypatch)
+    collector = RunTelemetryCollector()
+    budget = RequestBudget()
+    budget.set_observer(collector.observe_budget)
+    budget.reserve("deepseek")  # one call already in flight elsewhere
+
+    refusal = RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider="deepseek",
+            attempts=1,
+            ceiling=1,
+            effective_limit=1,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+
+    async def operation() -> str:
+        raise refusal
+
+    with pytest.raises(RequestAttemptLimitError):
+        await with_retries(
+            operation,
+            retry_count=1,
+            initial_delay=1.0,
+            max_delay=4.0,
+            telemetry=collector,
+        )
+
+    budget.reserve("deepseek")
+    budget.reserve("deepseek")
+
+    assert collector.snapshot().peak_calls_in_flight == 3
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records (stall-fix brief P1-B): ``with_retries`` is the one
+# place that knows an attempt's number, timing and outcome, so it is where
+# they are built rather than duplicated at every provider call site.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_a_timeout_then_an_ok_attempt(monkeypatch) -> None:
+    """Two attempts recorded as timeout then ok, in order, with plausible timing."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+    calls = 0
+
+    async def operation() -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ProviderTimeoutError("DeepSeek request timed out")
+        return "ok"
+
+    result = await with_retries(
+        operation,
+        retry_count=2,
+        initial_delay=1.0,
+        max_delay=4.0,
+        on_attempt=lambda *record: recorded.append(record),
+    )
+
+    assert result == "ok"
+    assert [(number, outcome) for number, _, _, outcome in recorded] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+    for _, start_offset, duration, _ in recorded:
+        assert start_offset >= 0.0
+        assert duration >= 0.0
+    # The second attempt starts no earlier than the first began.
+    assert recorded[1][1] >= recorded[0][1]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_a_connection_error_outcome(monkeypatch) -> None:
+    """An SDK connection failure is tagged ``connection error``, not its class name."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+
+    async def operation() -> str:
+        raise ProviderResponseError(
+            "DeepSeek connection failed",
+            failure_origin="sdk",
+            retryable=True,
+            failure_category="transport",
+        )
+
+    with pytest.raises(ProviderResponseError):
+        await with_retries(
+            operation,
+            retry_count=0,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert [outcome for _, _, _, outcome in recorded] == ["connection error"]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_reports_another_error_class_name(monkeypatch) -> None:
+    """A failure that is neither a timeout nor a connection error keeps its
+    own exception class name, so the telemetry line can still name it."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+
+    async def operation() -> str:
+        raise ProviderResponseError(
+            "DeepSeek request failed with status 500",
+            failure_origin="sdk",
+            retryable=True,
+            failure_category="http",
+            http_status_code=500,
+        )
+
+    with pytest.raises(ProviderResponseError):
+        await with_retries(
+            operation,
+            retry_count=0,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert [outcome for _, _, _, outcome in recorded] == ["ProviderResponseError"]
+
+
+@pytest.mark.asyncio
+async def test_with_retries_never_reports_an_attempt_for_a_refused_budget(
+    monkeypatch,
+) -> None:
+    """A budget refusal never reached the wire, so it is not a transport attempt."""
+    _recorded_sleeps(monkeypatch)
+    recorded: list[tuple[int, float, float, str]] = []
+    refusal = RequestAttemptLimitError(
+        RequestBudgetSnapshot(
+            provider="deepseek",
+            attempts=1,
+            ceiling=1,
+            effective_limit=1,
+            input_tokens=0,
+            output_tokens=0,
+        )
+    )
+
+    async def operation() -> str:
+        raise refusal
+
+    with pytest.raises(RequestAttemptLimitError):
+        await with_retries(
+            operation,
+            retry_count=1,
+            initial_delay=1.0,
+            max_delay=4.0,
+            on_attempt=lambda *record: recorded.append(record),
+        )
+
+    assert recorded == []

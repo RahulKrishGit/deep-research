@@ -1,10 +1,13 @@
 """Tests for the explicit chat-provider factory selection."""
 
+from types import SimpleNamespace
+
 import pytest
 
 import deep_research.providers.factory as factory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
+    ChatMessage,
     OpenAIChatProvider,
     ProviderConfigurationError,
     build_chat_provider,
@@ -41,7 +44,13 @@ def test_factory_builds_exactly_the_selected_adapter(
 
     class RecordingAdapter:
         def __init__(
-            self, config, received_tracker, *, api_key=None, request_budget=None
+            self,
+            config,
+            received_tracker,
+            *,
+            api_key=None,
+            request_budget=None,
+            telemetry=None,
         ):
             built.append(expected)
             assert config.provider == provider_name
@@ -50,6 +59,8 @@ def test_factory_builds_exactly_the_selected_adapter(
             # No budget was supplied by this caller, so the adapter's own
             # uncounted default applies unchanged.
             assert request_budget is None
+            # No collector either: the adapter records into a private no-op.
+            assert telemetry is None
 
     monkeypatch.setattr(factory, expected.__name__, RecordingAdapter)
     config = LLMConfig(
@@ -81,11 +92,18 @@ def test_judge_factory_builds_the_selected_judge_adapter(
     def make_recording_adapter(adapter_name: str):
         class RecordingAdapter:
             def __init__(
-                self, config, received_tracker, *, api_key=None, request_budget=None
+                self,
+                config,
+                received_tracker,
+                *,
+                api_key=None,
+                request_budget=None,
+                telemetry=None,
             ):
                 assert config.provider == provider_name
                 assert received_tracker is tracker
                 assert request_budget is None
+                assert telemetry is None
                 built.append((adapter_name, api_key))
 
         recorders[adapter_name] = RecordingAdapter
@@ -351,3 +369,171 @@ def test_request_budget_defaults_to_none_in_both_openai_factories(tracker) -> No
 
     assert chat._request_budget is None
     assert judge._request_budget is None
+
+
+# ---------------------------------------------------------------------------
+# Telemetry plumbing: the run's collector reaches the adapter the same way the
+# run's attempt budget does, so every provider call of the run reports to the
+# one object the artefacts are rendered from.
+# ---------------------------------------------------------------------------
+
+
+class _FakeAsyncStream:
+    """Minimal async stream double for Chat Completions."""
+    def __init__(self, chunks: list[object]) -> None:
+        self._chunks = list(chunks)
+
+    async def __aenter__(self) -> "_FakeAsyncStream":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _chat_stream_chunks(response: object) -> list[SimpleNamespace]:
+    """Rebuild one Chat Completions response as stream chunks."""
+    choice = response.choices[0]
+    message = choice.message
+    response_id = getattr(response, "id", None)
+    model = getattr(response, "model", None)
+
+    def _chunk(*, delta: SimpleNamespace | None, finish_reason, usage) -> SimpleNamespace:
+        choices = (
+            []
+            if delta is None and finish_reason is None
+            else [SimpleNamespace(delta=delta, finish_reason=finish_reason)]
+        )
+        return SimpleNamespace(id=response_id, model=model, choices=choices, usage=usage)
+
+    return [
+        _chunk(
+            delta=SimpleNamespace(
+                content=getattr(message, "content", None),
+                reasoning_content=getattr(message, "reasoning_content", None),
+                tool_calls=None,
+            ),
+            finish_reason=None,
+            usage=None,
+        ),
+        _chunk(
+            delta=SimpleNamespace(content=None, reasoning_content=None, tool_calls=None),
+            finish_reason=getattr(choice, "finish_reason", None),
+            usage=None,
+        ),
+        _chunk(delta=None, finish_reason=None, usage=getattr(response, "usage", None)),
+    ]
+
+
+class _ScriptedCompletions:
+    """A Chat Completions endpoint that answers with one scripted response."""
+
+    def __init__(self, response: object) -> None:
+        self._response = response
+
+    async def create(self, **kwargs: object) -> object:
+        # If streaming is requested, wrap response in stream
+        if kwargs.get("stream"):
+            return _FakeAsyncStream(_chat_stream_chunks(self._response))
+        return self._response
+
+
+def _scripted_client(response: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=_ScriptedCompletions(response))
+    )
+
+
+def _chat_response(
+    *, text: str = "answer", finish_reason: str = "stop", completion_tokens: int = 2
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id="factory-response",
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(
+                    content=text, reasoning_content=None, tool_calls=None
+                ),
+            )
+        ],
+        usage=SimpleNamespace(
+            prompt_tokens=4,
+            completion_tokens=completion_tokens,
+            total_tokens=4 + completion_tokens,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_telemetry_reaches_the_deepseek_chat_adapter(tracker) -> None:
+    """A collector passed to the factory receives a scripted call's record."""
+    from deep_research.observability import RunTelemetryCollector
+    from deep_research.utils.config import LLMConfig
+
+    collector = RunTelemetryCollector()
+    config = LLMConfig()
+    provider = build_chat_provider(
+        config, tracker, api_key="sk-deepseek-abcdefgh", telemetry=collector
+    )
+
+    assert provider._telemetry is collector
+    assert (
+        factory.build_judge_provider(
+            config, tracker, api_key="sk-deepseek-abcdefgh", telemetry=collector
+        )._telemetry
+        is collector
+    )
+
+    provider._client = _scripted_client(_chat_response(completion_tokens=2))
+    async with tracker.session_span("factory-telemetry", "review"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="prompt")], agent_name="researcher"
+        )
+
+    assert result.usage.output_tokens == 2
+    [stage] = collector.snapshot().stages
+    assert (stage.agent, stage.calls) == ("researcher", 1)
+    [operation] = stage.operations
+    assert operation.agent == "researcher"
+    assert operation.max_output_tokens == 2
+    assert operation.configured_cap == config.max_tokens
+    assert operation.cap_key == "llm.max_tokens"
+    assert operation.truncations == 0
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_call_reaches_the_collector_as_a_truncation(
+    tracker,
+) -> None:
+    """An output-limit response is the truncation count §7.3 asks for.
+
+    The provider raises on the truncated reply *and* has to report it: the
+    call really happened, and a truncation that never reaches the collector
+    would leave the one §7.3 figure an operator acts on permanently at zero.
+    """
+    from deep_research.observability import RunTelemetryCollector
+    from deep_research.providers.deepseek_provider import ProviderOutputLimitError
+    from deep_research.utils.config import LLMConfig
+
+    collector = RunTelemetryCollector()
+    config = LLMConfig()
+    provider = build_chat_provider(
+        config, tracker, api_key="sk-deepseek-abcdefgh", telemetry=collector
+    )
+    provider._client = _scripted_client(_chat_response(finish_reason="length"))
+
+    async with tracker.session_span("factory-telemetry", "review"):
+        with pytest.raises(ProviderOutputLimitError):
+            await provider.complete(
+                [ChatMessage(role="user", content="prompt")],
+                agent_name="report_writer",
+            )
+
+    [stage] = collector.snapshot().stages
+    [operation] = stage.operations
+    assert operation.truncations == 1
+    assert operation.configured_cap == config.max_tokens

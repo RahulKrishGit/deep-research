@@ -47,7 +47,11 @@ def test_the_evaluation_package_never_imports_the_graph() -> None:
 
 
 def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
-    from deep_research.evaluation.cases import all_cases
+    from deep_research.evaluation.cases import (
+        EXPECTED_CONTROLLED_CASE_IDS,
+        EXPECTED_LIVE_CASE_IDS,
+        all_cases,
+    )
 
     assert all(
         case.agent_name
@@ -55,25 +59,35 @@ def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
             "planner",
             "researcher",
             "source_evaluator",
-            "fact_checker",
-            "synthesizer",
-            "critic",
+            "evidence_verifier",
+            "report_writer",
         }
         for case in all_cases()
     )
-    assert len(all_cases()) == 24
+    # The total is derived from the declared inventory rather than pinned to
+    # a literal, so a round that adds a case updates one declaration.
+    assert len(all_cases()) == sum(
+        len(ids) for ids in EXPECTED_CONTROLLED_CASE_IDS.values()
+    ) + sum(len(ids) for ids in EXPECTED_LIVE_CASE_IDS.values())
 
 
 def test_whole_report_evaluation_has_a_separate_package() -> None:
-    from deep_research.e2e_evaluation.cases import controlled_cases
+    """The whole-report replay matrix lives in its own package, not per-agent evaluation."""
+    from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_IDS
     from deep_research.evaluation.cases import all_cases
 
-    cases = controlled_cases()
-    assert len(cases) == 3
-    assert all(case.tier == "controlled" for case in cases)
-    assert {case.case_id for case in cases}.isdisjoint(
+    # Two registries, two packages, and no shared id. The imports above prove
+    # the packages are separate; the disjointness below proves the
+    # *inventories* are, since a case id is an identity in the per-agent
+    # harness's LangSmith dataset keying (case_id, case_version). A
+    # whole-report row covering the same real-world scenario as a per-agent
+    # case states that at its own granularity, under its own ``report-`` id,
+    # so neither inventory can be read as the other's.
+    assert REPLAY_CASE_IDS
+    assert all_cases()
+    assert set(REPLAY_CASE_IDS).isdisjoint(
         {case.case_id for case in all_cases()}
-    )
+    ), sorted(set(REPLAY_CASE_IDS) & {case.case_id for case in all_cases()})
 
 
 def test_the_evaluation_cli_exposes_exactly_three_commands() -> None:

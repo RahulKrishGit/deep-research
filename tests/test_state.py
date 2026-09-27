@@ -3,12 +3,20 @@
 import pytest
 from pydantic import ValidationError
 
-from deep_research.agents.identity import claim_fingerprint
+from deep_research.agents.evidence import (
+    READ_ADMISSION_OPERATION,
+    EvidenceIdentityConflict,
+    build_boundary_audit,
+    build_evidence_unit,
+    build_read_record,
+)
 from deep_research.utils.types import (
-    Claim,
-    Critique,
+    LEGACY_QUALITY_CONTRACT_VERSION,
+    QUALITY_CONTRACT_VERSION,
+    EvidenceDisposition,
     Finding,
     MemorySnapshot,
+    ReadRecord,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -17,6 +25,29 @@ from deep_research.utils.types import (
     advance_research_iteration,
     merge_research_state,
 )
+
+PASSAGE = "Example Lab measured that 1,200 MW of interconnection capacity was withheld"
+TEXT = (
+    "Queue Study. Example Lab measured that 1,200 MW of interconnection "
+    "capacity was withheld in 2025."
+)
+
+
+def _read_record(
+    *,
+    requested_url: str = "https://lab.example/queue",
+    resolved_url: str = "https://lab.example/queue",
+) -> ReadRecord:
+    return build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=requested_url,
+        resolved_url=resolved_url,
+        title="Queue Study",
+        retrieved_at="2026-09-16T10:00:00+00:00",
+        text=TEXT,
+        passages={"p-1": PASSAGE},
+    )
 
 
 def sub_topic(title: str = "Adoption", priority: int = 1) -> SubTopic:
@@ -53,30 +84,6 @@ def source(title: str = "Example source") -> ScoredSource:
     )
 
 
-def claim(text: str = "Adoption increased.") -> Claim:
-    return Claim(
-        claim_id=claim_fingerprint(text),
-        text=text,
-        source_urls=["https://example.com/source"],
-        verdict="verified",
-        confidence=0.9,
-        evidence=["The source reports a year-over-year increase."],
-        contradictions=[],
-        verification_evidence=[],
-    )
-
-
-def critique(score: int = 8) -> Critique:
-    return Critique(
-        score=score,
-        gaps=[],
-        unsupported_claims=[],
-        recommended_queries=[],
-        should_continue=False,
-        rationale="The report is complete.",
-    )
-
-
 def test_default_state_construction_uses_independent_values() -> None:
     first = ResearchState(session_id="session-1", original_question="Question one?")
     second = ResearchState(session_id="session-2", original_question="Question two?")
@@ -85,9 +92,9 @@ def test_default_state_construction_uses_independent_values() -> None:
     first.memory_context.suggested_strategies.append("Compare surveys.")
 
     assert first.iteration == 0
-    assert first.max_iterations == 3
+    assert first.max_extra_passes == 1
+    assert first.extra_pass_target_ids == []
     assert first.report is None
-    assert first.critique is None
     assert second.sub_topics == []
     assert second.memory_context == MemorySnapshot()
     assert second.events == []
@@ -101,11 +108,9 @@ def test_state_round_trips_through_json_compatible_dict() -> None:
         sub_topics=[sub_topic()],
         raw_findings=[finding()],
         evaluated_sources=[source()],
-        verified_claims=[claim()],
         report="# Research report",
-        critique=critique(),
         iteration=1,
-        max_iterations=3,
+        max_extra_passes=3,
         memory_context=MemorySnapshot(
             similar_findings=[finding("Prior adoption also increased.")],
             known_source_reputations={"example.com": 0.85},
@@ -151,12 +156,12 @@ def test_state_rejects_empty_identity_fields(
 
 
 def test_state_rejects_iteration_above_maximum() -> None:
-    with pytest.raises(ValidationError, match="iteration cannot exceed max_iterations"):
+    with pytest.raises(ValidationError, match="iteration cannot exceed max_extra_passes"):
         ResearchState(
             session_id="session-1",
             original_question="A question?",
             iteration=4,
-            max_iterations=3,
+            max_extra_passes=3,
         )
 
 
@@ -195,35 +200,27 @@ def test_merge_appends_lists_without_mutating_original(
     assert getattr(state, field_name) == []
 
 
-@pytest.mark.parametrize(
-    ("field_name", "existing", "replacement"),
-    [
-        ("evaluated_sources", source("Existing"), source("Replacement")),
-        ("verified_claims", claim("Existing"), claim("Replacement")),
-    ],
-)
-def test_merge_replaces_the_canonical_snapshot_channels(
-    field_name: str,
-    existing: object,
-    replacement: object,
-) -> None:
-    """These two channels carry a whole snapshot, so they replace.
+def test_merge_replaces_the_canonical_snapshot_channel() -> None:
+    """``evaluated_sources`` carries a whole snapshot, so it replaces.
 
-    Appending them is what let one source or claim pile up once per research
-    pass. The producer — Source Evaluator or Fact Checker — merges the new
-    pass into the previous snapshot before it writes, so an update is always
-    the complete canonical list and never a delta.
+    Appending it is what let one source pile up once per research pass. Its
+    producer — Source Evaluator — merges the new pass into the previous
+    snapshot before it writes, so an update is always the complete canonical
+    list and never a delta. (``verified_findings`` is the same kind of
+    channel; ``test_types`` pins its replacement directly.)
     """
+    existing = source("Existing")
+    replacement = source("Replacement")
     state = ResearchState(
         session_id="session-1",
         original_question="A question?",
-        **{field_name: [existing]},
+        evaluated_sources=[existing],
     )
 
-    merged = merge_research_state(state, {field_name: [replacement]})
+    merged = merge_research_state(state, {"evaluated_sources": [replacement]})
 
-    assert getattr(merged, field_name) == [replacement]
-    assert getattr(state, field_name) == [existing]
+    assert merged.evaluated_sources == [replacement]
+    assert state.evaluated_sources == [existing]
 
 
 def test_merge_preserves_multi_item_append_order() -> None:
@@ -245,6 +242,131 @@ def test_merge_preserves_multi_item_append_order() -> None:
     ]
 
 
+def test_a_pre_contract_snapshot_loads_without_fabricated_provenance() -> None:
+    """An old snapshot has no reads, and none are invented for its findings."""
+    legacy = {
+        "session_id": "session-1",
+        "original_question": "How is enterprise AI adoption changing?",
+        "raw_findings": [finding().model_dump(mode="json")],
+        "report": "# Research report",
+    }
+
+    state = ResearchState.model_validate(legacy)
+
+    assert state.quality_contract_version == LEGACY_QUALITY_CONTRACT_VERSION
+    assert state.read_records == {}
+    assert state.evidence_units == {}
+    assert state.evidence_dispositions == []
+    assert state.boundary_audits == {}
+    # The finding keeps its URL and title; no read ID is minted for it.
+    assert state.raw_findings[0].source_url == finding().source_url
+
+
+def test_state_round_trips_the_evidence_registries_as_json() -> None:
+    read = _read_record()
+    unit = build_evidence_unit(
+        read=read, locator="p-1", excerpt=PASSAGE, origin="researcher"
+    )
+    disposition = EvidenceDisposition(
+        item_id="https://lab.example/other.pdf",
+        stage="read-selection",
+        reason="deferred_capacity",
+        target_ids=["target-1"],
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={read.read_id: read},
+        evidence_units={unit.evidence_id: unit},
+        evidence_dispositions=[disposition],
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+    )
+
+    payload = state.model_dump(mode="json")
+    restored = ResearchState.model_validate(payload)
+
+    assert restored == state
+    assert restored.read_records[read.read_id].passages == read.passages
+    assert restored.evidence_dispositions == [disposition]
+
+
+def test_merge_folds_new_reads_into_the_registry() -> None:
+    first = _read_record()
+    second = _read_record(
+        resolved_url="https://other.example/report",
+        requested_url="https://other.example/report",
+    )
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={first.read_id: first},
+    )
+
+    merged = merge_research_state(
+        state, {"read_records": {second.read_id: second}}
+    )
+
+    assert set(merged.read_records) == {first.read_id, second.read_id}
+    assert merged.read_records[first.read_id] == first
+    assert set(state.read_records) == {first.read_id}
+
+
+def test_merge_refuses_one_read_id_carrying_two_bodies() -> None:
+    """Last-write-wins would silently re-point every passage at that read."""
+    stored = _read_record()
+    conflicting = stored.model_copy(update={"content_sha256": "b" * 64})
+    state = ResearchState(
+        session_id="session-1",
+        original_question="A question?",
+        read_records={stored.read_id: stored},
+    )
+
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_research_state(
+            state, {"read_records": {stored.read_id: conflicting}}
+        )
+
+
+def test_merge_folds_dispositions_and_manifests_by_id() -> None:
+    disposition = EvidenceDisposition(
+        item_id="read-1",
+        stage="read-selection",
+        reason="stale_for_target",
+    )
+    audit = build_boundary_audit(
+        operation=READ_ADMISSION_OPERATION,
+        job_id="job-7",
+        agent_name="researcher",
+        sequence=0,
+        input_ids=("https://lab.example/queue",),
+        packet_fingerprint="sha256:packet-1",
+        configuration_fingerprint="sha256:config-1",
+    )
+    state = ResearchState(session_id="session-1", original_question="A question?")
+
+    merged = merge_research_state(
+        state,
+        {
+            "evidence_dispositions": [disposition],
+            "boundary_audits": {audit.audit_id: audit},
+        },
+    )
+
+    assert merged.evidence_dispositions == [disposition]
+    assert merged.boundary_audits == {audit.audit_id: audit}
+    assert state.evidence_dispositions == []
+    assert state.boundary_audits == {}
+    with pytest.raises(EvidenceIdentityConflict):
+        merge_research_state(
+            merged,
+            {
+                "evidence_dispositions": [
+                    disposition.model_copy(update={"reason": "irrelevant"})
+                ]
+            },
+        )
+
+
 def test_merge_isolates_supplied_append_items() -> None:
     supplied = sub_topic("Supplied")
     state = ResearchState(session_id="session-1", original_question="A question?")
@@ -256,9 +378,7 @@ def test_merge_isolates_supplied_append_items() -> None:
     assert supplied.search_queries == ["supplied evidence"]
 
 
-def test_merge_replaces_scalars_critique_report_and_memory() -> None:
-    old_critique = critique(score=6).model_copy(update={"should_continue": True})
-    new_critique = critique(score=9)
+def test_merge_replaces_scalars_report_and_memory() -> None:
     new_memory = MemorySnapshot(
         similar_findings=[finding("A recalled finding.")],
         known_source_reputations={"example.com": 0.9},
@@ -268,7 +388,6 @@ def test_merge_replaces_scalars_critique_report_and_memory() -> None:
         session_id="session-1",
         original_question="A question?",
         report="Old report",
-        critique=old_critique,
         memory_context=MemorySnapshot(suggested_strategies=["Old strategy."]),
     )
 
@@ -276,25 +395,23 @@ def test_merge_replaces_scalars_critique_report_and_memory() -> None:
         state,
         {
             "report": "New report",
-            "critique": new_critique,
-            "max_iterations": 5,
+            "max_extra_passes": 5,
             "memory_context": new_memory,
         },
     )
 
     assert merged.report == "New report"
-    assert merged.critique == new_critique
-    assert merged.max_iterations == 5
+    assert merged.max_extra_passes == 5
     assert merged.memory_context == new_memory
     assert state.report == "Old report"
-    assert state.critique == old_critique
+    assert state.memory_context == MemorySnapshot(suggested_strategies=["Old strategy."])
 
 
 def test_merge_validates_invalid_scalar_replacement() -> None:
     state = ResearchState(session_id="session-1", original_question="A question?")
 
     with pytest.raises(ValidationError):
-        merge_research_state(state, {"max_iterations": 0})
+        merge_research_state(state, {"max_extra_passes": -1})
 
 
 def test_merge_deep_copies_unchanged_nested_values() -> None:
@@ -341,7 +458,7 @@ def test_graph_iteration_advance_returns_a_new_state() -> None:
         session_id="session-1",
         original_question="A question?",
         iteration=1,
-        max_iterations=3,
+        max_extra_passes=3,
     )
 
     advanced = advance_research_iteration(state)
@@ -355,8 +472,8 @@ def test_graph_iteration_cannot_advance_past_maximum() -> None:
         session_id="session-1",
         original_question="A question?",
         iteration=3,
-        max_iterations=3,
+        max_extra_passes=3,
     )
 
-    with pytest.raises(ValueError, match="max_iterations"):
+    with pytest.raises(ValueError, match="max_extra_passes"):
         advance_research_iteration(state)

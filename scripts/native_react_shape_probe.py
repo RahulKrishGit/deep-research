@@ -45,10 +45,17 @@ count. Character and token counts are measured from the object actually
 returned, never hard-coded.
 
 This script builds its request through the repository's own helpers
-(``cases_for``, ``EvaluationCase.fresh_state``, ``CriticAgent.build_task``,
+(``cases_for``, ``EvaluationCase.fresh_state``, ``PlannerAgent.build_task``,
 ``render_react_messages``, ``AgentToolset.provider_definitions``) and calls only
 the public ``DeepSeekSchemaChatProvider.complete_react``. It copies no private
 provider serialization code and no prompt text.
+
+The probed subject is the **planner**. It was the critic until Task 8 made the
+critic tool-free: a native ReAct request needs an agent that offers tools, and
+the planner is the agent that still declares exactly the same pair
+(``query_memory``, ``web_search``) under the same ``max`` reasoning profile, so
+what this probe measures — the outgoing envelope, the tool definitions, the
+retry policy, and the parser's behaviour on the reply — is unchanged in kind.
 """
 
 from __future__ import annotations
@@ -66,7 +73,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from deep_research.agents.critic import CriticAgent
+from deep_research.agents.planner import PlannerAgent
 from deep_research.agents.prompts import render_react_messages
 from deep_research.evaluation.cases import cases_for
 from deep_research.evaluation.config import (
@@ -91,17 +98,21 @@ from deep_research.providers import (
 from deep_research.providers.deepseek_provider import _build_client
 from deep_research.providers.native_output import native_text_violation
 
-AGENT_NAME = "critic"
-CASE_ID = "critic-live-review"
+AGENT_NAME = "planner"
+CASE_ID = "planner-live-scope"
 EXPERIMENT_PREFIX = "native-react-shape-probe"
 PROBE_SPAN_ID = "probe-shape"
 
-EXPECTED_MODEL = "deepseek-v4-flash"
+EXPECTED_MODEL = "deepseek-flash"
 EXPECTED_REASONING_EFFORT = "max"
 EXPECTED_THINKING = "enabled"
-EXPECTED_MAX_TOKENS = 32768
+# The reviewed decision-request cap is what the shipped configuration sends:
+# DeepSeek's documented max_tokens maximum (user decision 2026-09-25 lifted
+# every output limit but the owed-passage re-extraction's). The value is
+# DeepSeek's; a probe against another provider needs that provider's maximum.
+EXPECTED_MAX_TOKENS = 393216
 EXPECTED_TOOL_CHOICE = "auto"
-EXPECTED_NATIVE_TOOLS = ("web_search", "query_memory")
+EXPECTED_NATIVE_TOOLS = ("query_memory", "web_search")
 
 AUTHORIZED_REQUESTS = 30
 
@@ -572,6 +583,68 @@ class _ForbiddenMemory:
         self._refuse("get_source_reputation")
 
 
+class _FakeAsyncStream:
+    """Minimal async stream double for Chat Completions JSON mode."""
+    def __init__(self, chunks: list[object]) -> None:
+        self._chunks = list(chunks)
+
+    async def __aenter__(self) -> "_FakeAsyncStream":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _chat_stream_chunks(response: object) -> list[SimpleNamespace]:
+    """Rebuild one Chat Completions response as stream chunks."""
+    choice = response.choices[0]
+    message = choice.message
+    response_id = getattr(response, "id", None)
+    model = getattr(response, "model", None)
+    raw_tool_calls = getattr(message, "tool_calls", None) or ()
+    tool_call_deltas = [
+        SimpleNamespace(
+            index=index,
+            id=getattr(call, "id", None) or f"call_{index}",
+            type=getattr(call, "type", "function"),
+            function=SimpleNamespace(
+                name=call.function.name, arguments=call.function.arguments
+            ),
+        )
+        for index, call in enumerate(raw_tool_calls)
+    ]
+
+    def _chunk(*, delta: SimpleNamespace | None, finish_reason, usage) -> SimpleNamespace:
+        choices = (
+            []
+            if delta is None and finish_reason is None
+            else [SimpleNamespace(delta=delta, finish_reason=finish_reason)]
+        )
+        return SimpleNamespace(id=response_id, model=model, choices=choices, usage=usage)
+
+    return [
+        _chunk(
+            delta=SimpleNamespace(
+                content=getattr(message, "content", None),
+                reasoning_content=getattr(message, "reasoning_content", None),
+                tool_calls=tool_call_deltas or None,
+            ),
+            finish_reason=None,
+            usage=None,
+        ),
+        _chunk(
+            delta=SimpleNamespace(content=None, reasoning_content=None, tool_calls=None),
+            finish_reason=getattr(choice, "finish_reason", None),
+            usage=None,
+        ),
+        _chunk(delta=None, finish_reason=None, usage=getattr(response, "usage", None)),
+    ]
+
+
 def _stub_response() -> Any:
     """One synthetic, well-formed native tool-call response.
 
@@ -623,7 +696,11 @@ class SdkCallRecorder:
     async def create(self, **kwargs: Any) -> Any:
         self.create_calls += 1
         self.requests.append(dict(kwargs))
-        return self._responder()
+        response = self._responder()
+        # If streaming is requested, wrap response in stream
+        if kwargs.get("stream"):
+            return _FakeAsyncStream(_chat_stream_chunks(response))
+        return response
 
 
 class RecordingSDKClient:
@@ -717,7 +794,7 @@ def _runtime(settings: Any) -> Any:
     )
 
 
-def _critic_case() -> Any:
+def _live_case() -> Any:
     return next(
         case for case in cases_for(AGENT_NAME, "live") if case.case_id == CASE_ID
     )
@@ -728,22 +805,22 @@ def _tools(tracker: Tracker, counter: list[str]) -> list[Any]:
     from deep_research.tools.web_search import WebSearchTool
 
     return [
+        QueryMemoryTool(tracker, _ForbiddenMemory(counter)),
         WebSearchTool(
             tracker, api_key="", client=_ForbiddenToolClient(counter)
         ),
-        QueryMemoryTool(tracker, _ForbiddenMemory(counter)),
     ]
 
 
 def build_first_request(settings: Any, tracker: Tracker, counter: list[str]) -> Any:
-    """The real first spot-check messages and tool definitions.
+    """The real first decision messages and tool definitions.
 
     Built through the agent's own public surface so the probe measures the
     request a live turn would send, not a hand-written imitation of it.
     """
-    case = _critic_case()
+    case = _live_case()
     state = case.fresh_state()
-    agent = CriticAgent(
+    agent = PlannerAgent(
         provider=_UnusedStructuredProvider(),
         tracker=tracker,
         scratchpad=ScratchpadMemory(
@@ -928,7 +1005,7 @@ async def measure_one_request(
             "the provider does not hold the probe's zero-retry config"
         )
     allowed = frozenset(definition.name for definition in definitions)
-    async with tracker.session_span(PROBE_SPAN_ID, "critic native react shape"):
+    async with tracker.session_span(PROBE_SPAN_ID, "planner native react shape"):
         try:
             turn = await provider.complete_react(
                 messages,
@@ -1081,7 +1158,7 @@ async def execute(requests: int, output: Path) -> int:
     )
     allowed = frozenset(definition.name for definition in definitions)
     records: list[dict[str, Any]] = []
-    async with tracker.session_span(PROBE_SPAN_ID, "critic native react shape"):
+    async with tracker.session_span(PROBE_SPAN_ID, "planner native react shape"):
         for index in range(1, requests + 1):
             records.append(
                 await _one_request(

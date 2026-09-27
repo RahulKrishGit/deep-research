@@ -1,4 +1,4 @@
-"""Safely write UTF-8 Markdown reports beneath an injected output root."""
+"""Safely write UTF-8 Markdown and JSON artifacts beneath an injected root."""
 
 from __future__ import annotations
 
@@ -17,12 +17,26 @@ from deep_research.tools.base import (
     ToolExecutionError,
 )
 
+# The two artifact formats this project publishes, and the only two. The
+# quality record is JSON because a consumer reads it by key; the reader report
+# and the evidence ledger are Markdown because a reader reads them. Nothing
+# else is writable through this tool, and the suffix decides which one a
+# filename names — a caller cannot declare a format the suffix contradicts.
+ARTIFACT_SUFFIX_FORMATS: dict[str, str] = {
+    ".md": "markdown",
+    ".json": "json",
+}
+DEFAULT_ARTIFACT_SUFFIX = ".md"
+
 
 class WriteDocumentTool(BaseTool):
-    """Write one Markdown document beneath a caller-provided output root."""
+    """Write one Markdown or JSON document beneath a caller-provided root."""
 
     name = "write_document"
-    description = "Write a UTF-8 Markdown research report to the output directory."
+    description = (
+        "Write a UTF-8 Markdown research report, or a JSON quality record, "
+        "to the output directory."
+    )
     input_schema = {"filename": "string", "content": "string"}
     required_arguments = ("filename", "content")
     output_schema = {"path": "string", "bytes_written": "integer"}
@@ -52,7 +66,7 @@ class WriteDocumentTool(BaseTool):
         if not isinstance(content, str):
             raise _validation_error("content must be a string")
 
-        root, target, relative_path = _resolve_markdown_target(
+        root, target, relative_path = _resolve_document_target(
             self._output_root, filename
         )
         if target.exists() and target.is_dir():
@@ -67,11 +81,13 @@ class WriteDocumentTool(BaseTool):
         return ToolExecution(
             data=data,
             output_summary=data,
-            metadata={"format": "markdown"},
+            metadata={
+                "format": ARTIFACT_SUFFIX_FORMATS[relative_path.suffix]
+            },
         )
 
 
-def _resolve_markdown_target(
+def _resolve_document_target(
     output_root: Path, filename: str
 ) -> tuple[Path, Path, PurePosixPath]:
     if not filename or not filename.strip():
@@ -91,14 +107,16 @@ def _resolve_markdown_target(
     ):
         raise _validation_error("filename must be a relative path without traversal")
     if normalized.endswith("."):
-        raise _validation_error("filename must use the .md suffix")
-    if candidate_path.suffix and candidate_path.suffix != ".md":
-        raise _validation_error("filename must use the .md suffix")
+        raise _validation_error(_suffix_message())
+    if candidate_path.suffix and candidate_path.suffix not in ARTIFACT_SUFFIX_FORMATS:
+        raise _validation_error(_suffix_message())
 
     relative_path = (
         candidate_path
         if candidate_path.suffix
-        else PurePosixPath(f"{candidate_path.as_posix()}.md")
+        else PurePosixPath(
+            f"{candidate_path.as_posix()}{DEFAULT_ARTIFACT_SUFFIX}"
+        )
     )
     root = output_root.resolve()
     target = (root / Path(relative_path.as_posix())).resolve()
@@ -107,6 +125,11 @@ def _resolve_markdown_target(
     except ValueError as error:
         raise _validation_error("filename resolves outside the output root") from error
     return root, target, relative_path
+
+
+def _suffix_message() -> str:
+    suffixes = " or ".join(sorted(ARTIFACT_SUFFIX_FORMATS))
+    return f"filename must use the {suffixes} suffix"
 
 
 def _atomic_write(target: Path, payload: bytes) -> None:

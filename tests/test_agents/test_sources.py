@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 import deep_research.agents.sources as sources
+from deep_research.agents.evidence import canonical_publisher_id
 from deep_research.agents.sources import (
     group_findings_by_url,
     normalize_source_url,
@@ -127,6 +128,25 @@ def test_publisher_identity_uses_the_registrable_domain() -> None:
     )
 
 
+def test_publisher_identity_treats_a_bare_host_like_a_url_to_it() -> None:
+    """A serving host read out of metadata resolves as its URL would.
+
+    Otherwise one publisher has two identities depending on which field
+    carried it, and a mirror's registrable publisher cannot be compared with
+    the mirror's own URL identity.
+    """
+    assert publisher_identity("news.example.co.uk") == publisher_identity(
+        "https://news.example.co.uk/story"
+    )
+    assert publisher_identity("news.example.co.uk") == "example.co.uk"
+    # A host outside the public suffix list keeps its full host either way.
+    assert publisher_identity("cdn.example.test") == publisher_identity(
+        "https://cdn.example.test/a"
+    )
+    # An opaque string is still not a host.
+    assert publisher_identity("opaque source") == "opaque source"
+
+
 def test_findings_group_by_normalized_url_in_first_seen_order() -> None:
     groups = group_findings_by_url(
         [
@@ -164,3 +184,24 @@ def test_group_title_falls_back_to_the_url() -> None:
 
 def test_source_helpers_do_not_expose_false_corroboration_api() -> None:
     assert not hasattr(sources, "corroboration_score")
+
+
+def test_mirror_is_not_a_new_publisher() -> None:
+    """A mirror is a transport relation, and it inherits the issuer it serves.
+
+    Task 4's minimum RED case: the host that served the bytes is not the
+    publisher, so an official mirror of one report must resolve to the same
+    canonical publisher as the original — otherwise one work looks like two
+    independent publishers and a mirror silently corroborates its original.
+    """
+    original = {
+        "issuer": "Example Lab",
+        "serving_host": "lab.example",
+        "transport_relation": "original",
+    }
+    mirror = {
+        "issuer": "Example Lab",
+        "serving_host": "repository.example",
+        "transport_relation": "mirror",
+    }
+    assert canonical_publisher_id(original) == canonical_publisher_id(mirror)

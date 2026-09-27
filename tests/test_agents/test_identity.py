@@ -8,13 +8,12 @@ merge is asserted on ordinary domain records.
 from __future__ import annotations
 
 from deep_research.agents.identity import (
-    claim_fingerprint,
     deduplicate_findings,
     finding_fingerprint,
-    merge_claim_snapshot,
     merge_source_snapshot,
 )
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import Finding, ScoredSource
+from tests.evidence_fakes import figure, make_finding, make_read
 
 EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
 
@@ -24,6 +23,7 @@ def source(
     url: str = "https://example.test/a",
     overall_score: float = 0.75,
     low_confidence: bool = False,
+    assessment_revision: str = "",
 ) -> ScoredSource:
     return ScoredSource(
         url=url,
@@ -34,6 +34,7 @@ def source(
         overall_score=overall_score,
         rationale="Relevant and independently corroborated.",
         low_confidence=low_confidence,
+        assessment_revision=assessment_revision,
     )
 
 
@@ -41,6 +42,7 @@ def unscored_source(
     *,
     url: str = "https://example.test/a",
     status: str = "unscored_provider",
+    assessment_revision: str = "",
 ) -> ScoredSource:
     return ScoredSource(
         url=url,
@@ -51,27 +53,7 @@ def unscored_source(
         overall_score=None,
         rationale="The source was not scored in this pass.",
         evaluation_status=status,
-    )
-
-
-def claim(
-    text: str = "Queue capacity fell in 2024.",
-    *,
-    verdict: str = "verified",
-    confidence: float = 0.9,
-    contradictions: list[str] | None = None,
-) -> Claim:
-    return Claim.model_validate(
-        {
-            "claim_id": claim_fingerprint(text),
-            "text": text,
-            "source_urls": ["https://example.test/a"],
-            "verdict": verdict,
-            "confidence": confidence,
-            "evidence": ["The source quotes the annual figure."],
-            "contradictions": contradictions or [],
-            "verification_evidence": [],
-        }
+        assessment_revision=assessment_revision,
     )
 
 
@@ -82,6 +64,14 @@ def finding(
     related_sub_topic: str = "Adoption",
     confidence: float = 0.8,
     source_title: str = "Example source",
+    target_ids: list[str] | None = None,
+    vintage: str | None = None,
+    statement_date: str | None = None,
+    data_period: str | None = None,
+    attributed_issuer: str | None = None,
+    attribution_quote: str | None = None,
+    measure_scope: str | None = None,
+    release_date: str | None = None,
 ) -> Finding:
     return Finding(
         content=content,
@@ -90,59 +80,15 @@ def finding(
         extracted_at=EXTRACTED_AT,
         confidence=confidence,
         related_sub_topic=related_sub_topic,
+        target_ids=list(target_ids or ()),
+        vintage=vintage,
+        statement_date=statement_date,
+        data_period=data_period,
+        attributed_issuer=attributed_issuer,
+        attribution_quote=attribution_quote,
+        measure_scope=measure_scope,
+        release_date=release_date,
     )
-
-
-# --- claim fingerprints ---------------------------------------------------
-
-
-def test_claim_fingerprint_collapses_formatting_but_preserves_facts() -> None:
-    assert claim_fingerprint("Queue capacity fell in 2024.") == claim_fingerprint(
-        "  queue capacity FELL in 2024  "
-    )
-    assert claim_fingerprint("Queue capacity fell in 2024.") != claim_fingerprint(
-        "Queue capacity fell in 2025."
-    )
-
-
-def test_claim_fingerprint_normalizes_unicode_and_punctuation() -> None:
-    assert claim_fingerprint("Rates fell 40% in 2024.") == claim_fingerprint(
-        "RATES fell 40% in 2024"
-    )
-    # NFKC: full-width digits and a non-breaking space are formatting only.
-    assert claim_fingerprint("Capacity fell in 2024.") == claim_fingerprint(
-        "Capacity fell in\u00a0\uff12\uff10\uff12\uff14."
-    )
-
-
-def test_claim_fingerprint_preserves_numbers_units_and_comparisons() -> None:
-    baseline = claim_fingerprint("The queue holds 400 ppm.")
-    for different in (
-        "The queue holds 401 ppm.",
-        "The queue holds 400 ppb.",
-        "The queue holds more than 400 ppm.",
-        "The queue holds less than 400 ppm.",
-        "The queue holds <400 ppm.",
-        "The queue holds >400 ppm.",
-    ):
-        assert claim_fingerprint(different) != baseline
-
-
-def test_claim_fingerprint_preserves_negation_and_geography() -> None:
-    assert claim_fingerprint("The queue did not grow.") != claim_fingerprint(
-        "The queue did grow."
-    )
-    assert claim_fingerprint("Adoption rose in India.") != claim_fingerprint(
-        "Adoption rose in China."
-    )
-
-
-def test_claim_fingerprint_is_a_deterministic_sha256_digest() -> None:
-    digest = claim_fingerprint("Queue capacity fell in 2024.")
-
-    assert digest == claim_fingerprint("Queue capacity fell in 2024.")
-    assert len(digest) == 64
-    assert set(digest) <= set("0123456789abcdef")
 
 
 # --- finding fingerprints -------------------------------------------------
@@ -166,6 +112,48 @@ def test_finding_fingerprint_separates_url_topic_and_content() -> None:
 
     for variant in variants:
         assert finding_fingerprint(variant) != baseline
+
+
+def test_finding_fingerprint_folds_unicode_formatting() -> None:
+    """NFKC folding: full-width digits and a non-breaking space are formatting.
+
+    The two records say the same thing about the same passage, so they are one
+    finding; a fingerprint that keyed on the code points instead would let the
+    same restated evidence pile up once per transcription.
+    """
+    assert finding_fingerprint(finding("Capacity fell in 2024.")) == (
+        finding_fingerprint(finding("Capacity fell in\u00a0\uff12\uff10\uff12\uff14."))
+    )
+
+
+def test_finding_fingerprint_keeps_numbers_units_and_comparisons() -> None:
+    """A comparison is content: ``<400`` is not ``>400``, nor ``400``.
+
+    Every pair below asserts something the baseline does not -- a different
+    number, a different unit, a stricter reading of the same figure, or the
+    opposite side of it -- so a normalization that dropped them would give two
+    contradictory findings one identity and fold one away.
+    """
+    baseline = finding_fingerprint(finding("The queue holds 400 ppm."))
+
+    for different in (
+        "The queue holds 401 ppm.",
+        "The queue holds 400 ppb.",
+        "The queue holds more than 400 ppm.",
+        "The queue holds less than 400 ppm.",
+        "The queue holds <400 ppm.",
+        "The queue holds >400 ppm.",
+    ):
+        assert finding_fingerprint(finding(different)) != baseline
+
+
+def test_finding_fingerprint_keeps_negation_and_geography() -> None:
+    assert finding_fingerprint(finding("The queue did not grow.")) != (
+        finding_fingerprint(finding("The queue did grow."))
+    )
+    assert finding_fingerprint(finding("Adoption rose in India.")) != (
+        finding_fingerprint(finding("Adoption rose in China."))
+    )
 
 
 # --- source snapshots -----------------------------------------------------
@@ -234,71 +222,285 @@ def test_a_new_score_replaces_a_prior_unscored_record() -> None:
     assert merged == [scored]
 
 
-# --- claim snapshots ------------------------------------------------------
+def test_a_transient_status_preserves_a_score_of_the_same_revision() -> None:
+    """An unchanged document keeps its assessment through an outage.
+
+    A provider failure is an operational state, not a quality judgement, so a
+    score computed from exactly the content still in hand survives it.
+    """
+    scored = source(overall_score=0.75, assessment_revision="assess-same")
+    failed = unscored_source(assessment_revision="assess-same")
+
+    merged = merge_source_snapshot([scored], [failed])
+
+    assert merged == [scored]
 
 
-def test_the_latest_claim_for_one_fingerprint_wins() -> None:
-    stale = claim(
-        "Queue capacity fell in 2024.",
-        verdict="insufficient_evidence",
-        confidence=0.2,
-    )
-    fresh = claim(
-        "  queue capacity FELL in 2024  ",
-        verdict="verified",
-        confidence=0.9,
-    )
+def test_a_changed_revision_is_not_preserved_through_a_transient_status() -> None:
+    """A stale score must not outlive the content it was computed from.
 
-    merged = merge_claim_snapshot([stale], [fresh])
+    The document at this URL changed, so the new assessment is about content
+    the old score never saw. Keeping the old score would credit the new
+    content with a judgement made about the old one — the exact failure the
+    revision key exists to prevent.
+    """
+    scored = source(overall_score=0.87, assessment_revision="assess-old")
+    failed = unscored_source(assessment_revision="assess-new")
 
-    assert len(merged) == 1
-    assert merged[0].verdict == "verified"
-    assert merged[0].confidence == 0.9
+    merged = merge_source_snapshot([scored], [failed])
 
-
-def test_a_contradicted_verdict_replaces_a_stale_verified_one() -> None:
-    verified = claim("Break-even was reached in 2025.", confidence=0.95)
-    contradicted = claim(
-        "Break-even was reached in 2025.",
-        verdict="contradicted",
-        confidence=0.4,
-        contradictions=["Two later reviews report a missed target."],
-    )
-
-    merged = merge_claim_snapshot([verified], [contradicted])
-
-    assert [item.verdict for item in merged] == ["contradicted"]
-    assert merged[0].contradictions == [
-        "Two later reviews report a missed target."
-    ]
+    assert merged == [failed]
+    assert merged[0].overall_score is None
+    assert merged[0].evaluation_status == "unscored_provider"
 
 
-def test_merge_claim_snapshot_keeps_first_seen_order_and_earlier_claims() -> None:
-    first = claim("Queue capacity fell in 2024.")
-    second = claim("Break-even was reached in 2025.")
-    revised = claim("Queue capacity fell in 2024.", confidence=0.5)
+def test_legacy_records_without_a_revision_keep_the_prior_behavior() -> None:
+    """No recorded revision cannot prove the content changed.
 
-    merged = merge_claim_snapshot([first, second], [revised])
+    Every record written before this contract carries an empty revision, so
+    the preservation rule must stay in force for them; a transient state
+    drops no score it cannot show to be stale.
+    """
+    scored = source(overall_score=0.75)
+    failed = unscored_source()
 
-    assert [item.text for item in merged] == [
-        "Queue capacity fell in 2024.",
-        "Break-even was reached in 2025.",
-    ]
-    assert merged[0].confidence == 0.5
-    assert merge_claim_snapshot([], []) == []
-
-
-def test_merge_claim_snapshot_does_not_mutate_its_inputs() -> None:
-    previous = [claim("Queue capacity fell in 2024.", confidence=0.9)]
-    current = [claim("Queue capacity fell in 2024.", confidence=0.3)]
-
-    merge_claim_snapshot(previous, current)
-
-    assert [item.confidence for item in previous] == [0.9]
-    assert [item.confidence for item in current] == [0.3]
+    assert merge_source_snapshot([scored], [failed]) == [scored]
+    # One side recording a revision is not evidence of a change either: the
+    # unscored record says nothing about which content it was about.
+    assert merge_source_snapshot(
+        [source(overall_score=0.75, assessment_revision="assess-a")],
+        [unscored_source()],
+    ) == [source(overall_score=0.75, assessment_revision="assess-a")]
 
 
 # --- finding de-duplication ----------------------------------------------
+
+
+def test_one_passage_restated_twice_is_one_finding() -> None:
+    """The same passage stating the same thing is one finding, however restated.
+
+    Two passes re-read one page and mine one passage: the first pass restated
+    it one way, the later pass another. The URL, the sub-topic, the read, the
+    locator, the verbatim snippet and the figure the sentence carries are
+    identical, so this is one piece of evidence — but the prose differs, and a
+    content-keyed identity published it twice. The recorded run's own log shows
+    exactly that shape: two labels, one read, one locator, one snippet, two
+    restatements.
+
+    Identity is what the evidence *is*, and the fold is gated on what the
+    record asserts (``_assertion_key``): the passage and the facts mined from
+    it are the record's identity, and the restatement is the model's prose
+    about them. Two records of one passage that state *different* facts stay
+    two findings, which is what keeps a dropped figure from erasing the
+    obligation it answered.
+    """
+    read = make_read("Reported capacity rose to 12,314 MW in 2024.")
+    snippet = "Reported capacity rose to 12,314 MW in 2024."
+    figure_ = figure("12,314", "MW", "2024", "actual")
+    first = make_finding(
+        read,
+        snippet,
+        figures=[figure_],
+        content="Capacity rose to 12,314 MW in 2024.",
+        target_ids=["topic-01-target-01"],
+    )
+    second = make_finding(
+        read,
+        snippet,
+        figures=[figure_],
+        content="In 2024 the reported capacity was 12,314 MW.",
+        target_ids=["topic-02-target-01"],
+    )
+
+    folded = deduplicate_findings([first, second])
+
+    (kept,) = folded
+    assert kept.content == first.content
+    # Both bindings survive the fold: a later restatement that names another
+    # target must not lose that target's evidence.
+    assert kept.target_ids == ["topic-01-target-01", "topic-02-target-01"]
+
+
+def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
+    """D13: identity folds across sub-topics on (read, locator, figure set),
+    for records each loop's extraction explicitly bound to one of its own
+    targets -- the shape that published one page's chunk as three findings
+    (F01/F19/F27) for one fact.
+
+    Three research loops each read the same page and mine the same passage,
+    each stamping its own sub-topic and its own binding on what it extracted.
+    The URL, the read, the locator, the verbatim snippet and the figure are
+    identical; only the sub-topic, the binding and the prose differ, and none
+    of those is what the evidence *is*.
+    """
+    read = make_read("Reported capacity rose to 12,314 MW in 2024.")
+    snippet = "Reported capacity rose to 12,314 MW in 2024."
+    figure_ = figure("12,314", "MW", "2024", "actual")
+    first = make_finding(
+        read, snippet, figures=[figure_],
+        content="Capacity rose to 12,314 MW in 2024.",
+        target_ids=["topic-01-target-01"],
+    ).model_copy(update={"related_sub_topic": "Grid-scale capacity"})
+    second = make_finding(
+        read, snippet, figures=[figure_],
+        content="In 2024 the reported capacity was 12,314 MW.",
+        target_ids=["topic-02-target-01"],
+    ).model_copy(update={"related_sub_topic": "Battery storage economics"})
+    third = make_finding(
+        read, snippet, figures=[figure_],
+        content="The monitor reported 12,314 MW of capacity for 2024.",
+        target_ids=["topic-03-target-01"],
+    ).model_copy(update={"related_sub_topic": "Market outlook"})
+
+    folded = deduplicate_findings([first, second, third])
+
+    (kept,) = folded
+    assert kept.target_ids == [
+        "topic-01-target-01", "topic-02-target-01", "topic-03-target-01"]
+
+
+def test_an_unbound_records_own_sub_topic_survives_a_shared_passage() -> None:
+    """P1 regression: folding across sub-topics must never cost an *unbound*
+    record its only route to an answer.
+
+    An unbound record's sole path to answering anything is the sub-topic
+    fallback (1A), carried on ``related_sub_topic`` alone. Loop A reads this
+    passage and binds its own target explicitly; loop B reads the same
+    passage, for a different sub-topic, and extracts it unbound. Folding B
+    into A would keep A's sub-topic and delete B's -- the only record that
+    could answer B's target through the fallback -- reporting a verified,
+    extracted fact as Not found.
+    """
+    read = make_read("The obligations apply from 2 August 2025.")
+    snippet = "The obligations apply from 2 August 2025."
+    figure_ = figure("2 August 2025", "date", None, "actual")
+    bound = make_finding(
+        read, snippet, figures=[figure_],
+        content="The regulation's scope covers items placed after 2 August 2025.",
+        target_ids=["topic-01-target-01"],
+    ).model_copy(update={"related_sub_topic": "Scope of the regulation"})
+    unbound = make_finding(
+        read, snippet, figures=[figure_],
+        content="The obligations apply from 2 August 2025.",
+    ).model_copy(update={"related_sub_topic": "Application date"})
+
+    folded = deduplicate_findings([bound, unbound])
+
+    assert len(folded) == 2
+    survivor = next(f for f in folded if not f.target_ids)
+    assert survivor.related_sub_topic == "Application date"
+    kept_bound = next(f for f in folded if f.target_ids)
+    assert kept_bound.related_sub_topic == "Scope of the regulation"
+    assert kept_bound.target_ids == ["topic-01-target-01"]
+
+    # Reversed input order loses it exactly the same way if the key ever
+    # keys off which record happened to come first.
+    assert len(deduplicate_findings([unbound, bound])) == 2
+
+
+def test_two_subjects_of_one_comparison_sentence_stay_two_findings() -> None:
+    """P2 regression: the figure set D13 folds on must include the subject.
+
+    One comparison-table sentence names two products at the same value and
+    unit. Two loops each bind the one they were reading for; without subject
+    in the fold key the pair collapses to one record, one survivor's target
+    id claims the *other* product's obligation, and the other product's price
+    is never verified under its own binding.
+    """
+    text = "Model A costs 390 USD and Model B costs 390 USD."
+    read = make_read(text)
+    model_a = make_finding(
+        read, text, figures=[figure("390", "USD", None, "actual").model_copy(
+            update={"subject": "Model A"})],
+        content="Model A costs 390 USD.",
+        target_ids=["topic-01-target-01"],
+    )
+    model_b = make_finding(
+        read, text, figures=[figure("390", "USD", None, "actual").model_copy(
+            update={"subject": "Model B"})],
+        content="Model B costs 390 USD.",
+        target_ids=["topic-02-target-01"],
+    )
+
+    folded = deduplicate_findings([model_a, model_b])
+
+    assert len(folded) == 2
+    assert {f.figures[0].subject for f in folded} == {"Model A", "Model B"}
+    assert {tuple(f.target_ids) for f in folded} == {
+        ("topic-01-target-01",), ("topic-02-target-01",)}
+
+
+def test_two_statements_of_one_passage_stay_two_findings() -> None:
+    """The fold is on the sentence mined, not on the passage alone.
+
+    One paragraph can state two things — a figure and the date it was released
+    — and an extraction that returns both is carrying two findings. Merging
+    them would lose one of the two, which is the failure mode a passage-only
+    identity would introduce.
+    """
+    read = make_read(
+        "Reported capacity rose to 12,314 MW in 2024. "
+        "The release was published on 4 March 2025."
+    )
+    figure_statement = make_finding(
+        read,
+        "Reported capacity rose to 12,314 MW in 2024.",
+        content="Capacity rose to 12,314 MW in 2024.",
+    )
+    date_statement = make_finding(
+        read,
+        "The release was published on 4 March 2025.",
+        content="The release was published on 4 March 2025.",
+        release_date="2025-03-04",
+    )
+
+    assert figure_statement.locator == date_statement.locator
+
+    assert len(deduplicate_findings([figure_statement, date_statement])) == 2
+
+
+def test_two_facts_of_one_sentence_stay_two_findings() -> None:
+    """A sentence can carry two facts, and a re-read must not cost one of them.
+
+    One passage of one page states an actual and a forecast in the same
+    sentence. Two extractions restate the sentence differently — that is the
+    shape a later pass produces — and each record carries its own figure. The
+    records are the same *evidence* but not the same *fact*: folding them keeps
+    the winner's figures and drops the loser's, and the dropped figure is never
+    verified, so the obligation it answered reads Not found although the run
+    extracted and verified it.
+
+    The fold is therefore gated on what the records assert, not on where they
+    were mined.
+    """
+    sentence = (
+        "Reported capacity rose to 12,314 MW in 2024, and the agency "
+        "forecasts 19,600 MW of additions in 2025."
+    )
+    read = make_read(sentence, url="https://example.test/monitor/report")
+    actual = make_finding(
+        read,
+        sentence,
+        figures=[figure("12,314", "MW", "2024", "actual")],
+        content="Capacity rose to 12,314 MW in 2024.",
+    )
+    forecast = make_finding(
+        read,
+        sentence,
+        figures=[figure("19,600", "MW", "2025", "forecast")],
+        content="The agency forecasts 19,600 MW in 2025.",
+    )
+    assert actual.locator == forecast.locator
+    assert actual.snippet == forecast.snippet
+
+    folded = deduplicate_findings([actual, forecast])
+
+    assert len(folded) == 2
+    assert {
+        (figure_.value, figure_.unit, figure_.period, figure_.kind)
+        for finding in folded
+        for figure_ in finding.figures
+    } == {("12,314", "MW", "2024", "actual"), ("19,600", "MW", "2025", "forecast")}
 
 
 def test_deduplicate_findings_keeps_the_higher_confidence_record() -> None:
@@ -322,6 +524,85 @@ def test_deduplicate_findings_keeps_the_earlier_record_on_a_tie() -> None:
     assert [item.source_title for item in kept] == ["First"]
 
 
+def test_deduplicate_findings_keeps_every_binding_of_a_folded_pair() -> None:
+    """A restatement cannot erase the binding an earlier one recorded.
+
+    ``raw_findings`` is append-only across research rounds, and a later
+    extraction of the same passage may name no planned target at all — the id
+    it copied was not one of the plan's, which is kept rather than dropped.
+    Folding on confidence alone would then delete the round-1 binding, and
+    with it the only record of which obligation that evidence answers.
+    """
+    bound = finding(
+        "Adoption rose.",
+        target_ids=["topic-01-target-01"],
+        vintage="January 2025 inventory",
+        statement_date="2025-03-12",
+        data_period="2024",
+    )
+    unbound = finding("Adoption rose.", confidence=0.9)
+
+    (kept,) = deduplicate_findings([bound, unbound])
+
+    assert kept.confidence == 0.9
+    assert kept.target_ids == ["topic-01-target-01"]
+    assert kept.vintage == "January 2025 inventory"
+    assert kept.statement_date == "2025-03-12"
+    assert kept.data_period == "2024"
+    # The identity is unchanged by the fold.
+    assert finding_fingerprint(kept) == finding_fingerprint(bound)
+
+
+def test_deduplicate_findings_keeps_the_provenance_one_round_recorded() -> None:
+    """A restatement cannot erase whose figure the evidence is.
+
+    The relay rule lives in fields a fold can drop: a first extraction records
+    that the page attributes its figure to EIA, a later one of the same
+    passage records a different confidence and no attribution. Keeping only
+    the later record's silences would put the figure back under the host that
+    carried it, which is the misattribution the fields exist to prevent.
+    """
+    attributed = finding(
+        "Adoption rose.",
+        attributed_issuer="Example Statistical Agency",
+        attribution_quote="according to the Example Statistical Agency",
+        measure_scope="all segments",
+        release_date="2025-03-12",
+    )
+    restated = finding("Adoption rose.", confidence=0.9)
+
+    (kept,) = deduplicate_findings([attributed, restated])
+
+    assert kept.confidence == 0.9
+    assert kept.attributed_issuer == "Example Statistical Agency"
+    assert kept.attribution_quote == "according to the Example Statistical Agency"
+    assert kept.measure_scope == "all segments"
+    assert kept.release_date == "2025-03-12"
+
+
+def test_deduplicate_findings_unions_both_records_bindings() -> None:
+    """Two rounds can bind the same passage to two targets; both are kept."""
+    winner = finding(
+        "Adoption rose.",
+        confidence=0.9,
+        target_ids=["topic-02-target-01"],
+        vintage="March 2025 inventory",
+    )
+    loser = finding(
+        "Adoption rose.",
+        target_ids=["topic-01-target-01", "topic-02-target-01"],
+        vintage="January 2025 inventory",
+        statement_date="2025-03-12",
+    )
+
+    (kept,) = deduplicate_findings([winner, loser])
+
+    assert kept.target_ids == ["topic-02-target-01", "topic-01-target-01"]
+    # The kept record's own dates win; the duplicate only fills what is absent.
+    assert kept.vintage == "March 2025 inventory"
+    assert kept.statement_date == "2025-03-12"
+
+
 def test_deduplicate_findings_separates_other_urls_topics_and_content() -> None:
     kept = deduplicate_findings(
         [
@@ -335,6 +616,25 @@ def test_deduplicate_findings_separates_other_urls_topics_and_content() -> None:
     assert len(kept) == 4
 
 
+def test_deduplicate_findings_keeps_both_sides_of_one_comparison() -> None:
+    """``<400 ppm`` and ``>400 ppm`` are two assertions, not one restatement.
+
+    The fold is exact-match only, so the only way these two survive together is
+    that their fingerprints differ -- which they do only because the comparison
+    symbols are kept. Losing that would silently delete whichever side the pass
+    recorded second, and with it the finding a statement may rest on.
+    """
+    below = finding("The queue holds <400 ppm.")
+    above = finding("The queue holds >400 ppm.")
+
+    kept = deduplicate_findings([below, above])
+
+    assert [item.content for item in kept] == [
+        "The queue holds <400 ppm.",
+        "The queue holds >400 ppm.",
+    ]
+
+
 def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:
     first = finding("Adoption rose.", confidence=0.8)
     second = finding("Costs fell.", confidence=0.8)
@@ -343,3 +643,16 @@ def test_deduplicate_findings_preserves_first_seen_order_of_survivors() -> None:
 
     assert [item.content for item in kept] == ["Adoption rose.", "Costs fell."]
     assert deduplicate_findings([]) == []
+
+
+def test_a_duplicate_keeps_the_winners_evidence_and_fills_a_missing_one() -> None:
+    read = make_read()
+    snippet = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
+    rich = make_finding(read, snippet, figures=[figure("10.4", "GW", "2024", "actual")],
+                        content="EIA: 10.4 GW added in 2024.")
+    bare = rich.model_copy(update={"snippet": None, "read_id": None, "locator": None,
+                                   "figures": [], "confidence": 0.99})
+    [kept] = deduplicate_findings([rich, bare])
+    assert kept.confidence == 0.99          # the winner is still the higher confidence
+    assert kept.snippet == snippet          # its missing evidence is filled from the duplicate
+    assert kept.figures == rich.figures

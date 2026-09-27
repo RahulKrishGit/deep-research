@@ -12,9 +12,12 @@ cannot remember anything is a worse session, not a failed one.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
+from deep_research.utils.text import unique_phrases
 from deep_research.utils.types import Finding, MemorySnapshot
 
 # What a recalled finding is filed under when the entry that produced it
@@ -24,6 +27,13 @@ RECALLED_SUB_TOPIC = "recalled from long-term memory"
 
 DEFAULT_RECALL_TOP_K = 5
 MAX_SUGGESTED_STRATEGIES = 10
+
+# Which stage is asking. ``planning`` exists because the planner is the stage
+# that decides what the run will try to establish, so remembered prose is
+# exactly what must not reach it: a recalled finding is not evidence, and one
+# quoted to the planner becomes a settled premise in the plan. Planning gets
+# procedural guidance only, and the long-term store is not queried at all.
+RecallPurpose = Literal["research", "planning"]
 
 
 def _recalled_finding(entry: MemoryEntry) -> Finding | None:
@@ -52,18 +62,50 @@ def _recalled_finding(entry: MemoryEntry) -> Finding | None:
         return None
 
 
+def _recalled_strategies(procedural: ProceduralMemory | None) -> list[str]:
+    """Every procedural query template the store holds, deduplicated.
+
+    Deduplication is ``utils.text.unique_phrases`` — the same rule the planner
+    applies to a target's dimensions, so "the same phrase" means one thing in
+    this codebase. A strategy recorded twice, or recorded once by two sessions
+    with different spacing, is one piece of guidance; handing the planner the
+    same line five times spends its attention on nothing.
+    """
+    if procedural is None:
+        return []
+    templates: list[str] = []
+    for record in procedural.strategies:
+        templates.extend(record.query_templates)
+    return unique_phrases(templates)[:MAX_SUGGESTED_STRATEGIES]
+
+
 async def recall_memory_context(
     *,
     question: str,
     long_term: LongTermMemory | None,
     procedural: ProceduralMemory | None = None,
     top_k: int = DEFAULT_RECALL_TOP_K,
+    purpose: RecallPurpose = "research",
 ) -> MemorySnapshot:
-    """Recall prior findings, source reputations, and strategies."""
+    """Recall prior findings, source reputations, and strategies.
+
+    ``purpose`` is backward compatible: ``"research"`` is the default and
+    behaves exactly as before, reading stored findings and their reputations.
+    ``"planning"`` returns the available procedural guidance and nothing
+    else — no finding query, no reputation lookup, and therefore no
+    ``similar_findings`` — because the session's own startup recall is the
+    planner's single procedural lookup, and remembered prose is not evidence.
+
+    The production run recalls for planning only: the CLI's startup call is the
+    one live caller, and it passes ``"planning"``. The ``"research"`` branch is
+    kept because it is the contract's default purpose and the entry point for a
+    caller outside this CLI — memory is queried for findings there, not here —
+    so its tests guard a supported call rather than a path a live run takes.
+    """
     findings: list[Finding] = []
     reputations: dict[str, float] = {}
 
-    if long_term is not None:
+    if long_term is not None and purpose == "research":
         results = await long_term.query(
             question, top_k=top_k, entry_type="finding"
         )
@@ -77,19 +119,8 @@ async def recall_memory_context(
             if reputation is not None:
                 reputations[url] = reputation.reputation_score
 
-    strategies: list[str] = []
-    if procedural is not None:
-        for record in procedural.strategies:
-            for template in record.query_templates:
-                if template not in strategies:
-                    strategies.append(template)
-                if len(strategies) >= MAX_SUGGESTED_STRATEGIES:
-                    break
-            if len(strategies) >= MAX_SUGGESTED_STRATEGIES:
-                break
-
     return MemorySnapshot(
         similar_findings=findings,
         known_source_reputations=reputations,
-        suggested_strategies=strategies,
+        suggested_strategies=_recalled_strategies(procedural),
     )

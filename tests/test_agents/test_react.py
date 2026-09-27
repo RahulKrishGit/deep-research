@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
 
 from deep_research.agents import react as react_module
+from deep_research.agents.acquisition import ToolPolicyDecision
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
@@ -218,6 +220,125 @@ async def _run_one_tool_failure(tracker: Tracker, tool: BaseTool) -> ReActRun:
             max_iterations=4,
             tool_budget=5,
         )
+
+
+class _RefusingPolicy:
+    """A policy that refuses every call, with the reason it is given."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        self.calls = 0
+
+    def __call__(
+        self, decision: ReActDecision, tool_input: Mapping[str, object]
+    ) -> ToolPolicyDecision:
+        del decision, tool_input
+        self.calls += 1
+        return ToolPolicyDecision(allowed=False, reason=self.reason)
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_records_the_reason_the_policy_gave(
+    tracker: Tracker,
+) -> None:
+    """Why a call was refused is the one fact a refusal can still publish.
+
+    The observation carries the reason to the model, and until now nothing
+    persisted it: the record held the tool and the iteration, so a run's
+    refusals could be counted but not classified — a whole session's blocked
+    searches looked identical to a whole session's rejected guesses. The reason
+    is the policy's own sentence (code-generated, never provider text), and it
+    is the value this record now keeps.
+    """
+    reason = "acquisition policy requires read before search"
+    policy = _RefusingPolicy(reason)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Search for another source.", "echo"),
+                    finish("Nothing else to try.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            tool_policy=policy,
+        )
+
+    assert policy.calls == 1
+    assert [error.error_type for error in run.errors] == [
+        "agent_tool_policy_rejected"
+    ]
+    assert run.errors[0].details == {
+        "tool": "echo",
+        "iteration": 1,
+        "policy_reason": reason,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_without_a_reason_records_no_reason_key(
+    tracker: Tracker,
+) -> None:
+    """No reason is not an empty reason: the key is absent, not blank."""
+    policy = _RefusingPolicy("")
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Try it anyway.", "echo"),
+                    finish("Done.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            tool_policy=policy,
+        )
+
+    assert run.errors[0].details == {"tool": "echo", "iteration": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_policy_refusal_bounds_the_reason_it_records(
+    tracker: Tracker,
+) -> None:
+    """The published reason is clamped by the loop's own summary bound.
+
+    The record is public, so the one value here that is not the loop's own is
+    bounded the way every other observation text is: a policy that answered
+    with a wall of text cannot put that wall into the quality record.
+    """
+    policy = _RefusingPolicy("read first " * 40)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=_toolset(tracker, "echo"),
+            decide=_decider(
+                [
+                    use_tool("Try it anyway.", "echo"),
+                    finish("Done.", "No answer."),
+                ]
+            ),
+            max_iterations=3,
+            tool_budget=5,
+            summary_limit=40,
+            tool_policy=policy,
+        )
+
+    recorded = run.errors[0].details["policy_reason"]
+    assert isinstance(recorded, str)
+    assert len(recorded) <= 40
+    assert recorded.startswith("read first")
 
 
 @pytest.mark.asyncio
@@ -1528,3 +1649,129 @@ async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorde
     assert step.tool_result is not None
     assert step.tool_result.success is False
     assert [error.error_type for error in run.errors] == ["agent_tool_failed"]
+
+
+# ---------------------------------------------------------------------------
+# The run-wide tool lock (D9, §7.2)
+# ---------------------------------------------------------------------------
+
+
+class _SectionTrace:
+    """Peak concurrent entries per section, across every loop."""
+
+    def __init__(self, sections: Sequence[str]) -> None:
+        self._depth = {section: 0 for section in sections}
+        self.peak = {section: 0 for section in sections}
+
+    def enter(self, section: str) -> None:
+        self._depth[section] += 1
+        self.peak[section] = max(self.peak[section], self._depth[section])
+
+    def exit(self, section: str) -> None:
+        self._depth[section] -= 1
+
+
+class _ProbeTool(BaseTool):
+    """Record how many tool executions are inside ``_execute`` at once."""
+
+    name = "probe"
+    description = "Record one tool section."
+    input_schema: dict[str, Any] = {}
+    output_schema: dict[str, Any] = {}
+
+    def __init__(self, tracker: Tracker, trace: _SectionTrace) -> None:
+        super().__init__(tracker)
+        self._trace = trace
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        del context, kwargs
+        self._trace.enter("tool")
+        try:
+            await asyncio.sleep(0)
+            return ToolExecution(data={"ok": True}, output_summary={"ok": True})
+        finally:
+            self._trace.exit("tool")
+
+
+class _ProbePolicy:
+    """The loop's policy hooks, traced the way the tool is."""
+
+    def __init__(self, trace: _SectionTrace) -> None:
+        self._trace = trace
+
+    async def __call__(
+        self,
+        decision: ReActDecision,
+        tool_input: Mapping[str, object] | None = None,
+        *_args: object,
+    ) -> ToolPolicyDecision:
+        del decision, tool_input
+        self._trace.enter("policy")
+        try:
+            await asyncio.sleep(0)
+            return ToolPolicyDecision()
+        finally:
+            self._trace.exit("policy")
+
+    async def after_action(
+        self, step: ReActStep, tool_input: Mapping[str, object]
+    ) -> None:
+        del step, tool_input
+        self._trace.enter("after")
+        await asyncio.sleep(0)
+        self._trace.exit("after")
+
+
+@pytest.mark.asyncio
+async def test_the_tool_lock_serialises_only_the_tool_section(
+    tracker: Tracker,
+) -> None:
+    """Two interleaved loops never enter `tool.execute` at once, while their model
+    turns overlap: the lock wraps decision → execute → after_action only."""
+    trace = _SectionTrace(("decide", "policy", "tool", "after"))
+    tool_lock = asyncio.Lock()
+
+    async def loop(label: str) -> ReActRun:
+        queue = [
+            use_tool(f"Probe for {label}.", "probe"),
+            finish(f"{label} is done.", f"{label} answer."),
+        ]
+
+        async def decide(
+            iteration: int, steps: Sequence[ReActStep]
+        ) -> tuple[ReActDecision, ...]:
+            del iteration, steps
+            trace.enter("decide")
+            try:
+                # A real model turn suspends; without the yield the two loops
+                # could not overlap here even if the loop allowed it.
+                await asyncio.sleep(0)
+                return (queue.pop(0),)
+            finally:
+                trace.exit("decide")
+
+        async with agent_scope(tracker):
+            return await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=AgentToolset([_ProbeTool(tracker, trace)], allowed=["probe"]),
+                decide=decide,
+                max_iterations=4,
+                tool_budget=4,
+                tool_policy=_ProbePolicy(trace),
+                tool_lock=tool_lock,
+            )
+
+    first, second = await asyncio.gather(loop("A"), loop("B"))
+
+    # The model turns really did overlap: the lock is not a run-wide mutex.
+    assert trace.peak["decide"] == 2
+    # ...and the whole tool section — the policy's admission decision, the
+    # execution, and the reducer that records the result — never did.
+    assert trace.peak["policy"] == 1
+    assert trace.peak["tool"] == 1
+    assert trace.peak["after"] == 1
+    assert [run.tool_calls for run in (first, second)] == [1, 1]
+    assert [run.stop_reason for run in (first, second)] == ["finished", "finished"]

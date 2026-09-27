@@ -38,13 +38,23 @@ class TrackerBoundStructuredProvider(FakeStructuredProvider):
         self._tracker = tracker
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None, max_tokens=None
+        self,
+        messages,
+        schema,
+        *,
+        agent_name=None,
+        max_tokens=None,
+        reasoning_effort=None,
     ):
         async with self._tracker.llm_span(
             "judge-test-model", {"operation": "structured_output"}
         ):
             return await super().complete_structured(
-                messages, schema, agent_name=agent_name, max_tokens=max_tokens
+                messages,
+                schema,
+                agent_name=agent_name,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
             )
 
 
@@ -69,11 +79,21 @@ class SessionAwareStructuredProvider(FakeStructuredProvider):
         self._tracker = tracker
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None, max_tokens=None
+        self,
+        messages,
+        schema,
+        *,
+        agent_name=None,
+        max_tokens=None,
+        reasoning_effort=None,
     ):
         assert self._tracker.active is True
         return await super().complete_structured(
-            messages, schema, agent_name=agent_name, max_tokens=max_tokens
+            messages,
+            schema,
+            agent_name=agent_name,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
 
@@ -171,12 +191,22 @@ class _GatedStructuredProvider(FakeStructuredProvider):
         self._entered = entered
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None, max_tokens=None
+        self,
+        messages,
+        schema,
+        *,
+        agent_name=None,
+        max_tokens=None,
+        reasoning_effort=None,
     ):
         self._entered.set()
         await self._gate.wait()
         return await super().complete_structured(
-            messages, schema, agent_name=agent_name, max_tokens=max_tokens
+            messages,
+            schema,
+            agent_name=agent_name,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
         )
 
 
@@ -210,7 +240,7 @@ def test_evaluator_metadata_carries_the_prompt_and_fingerprints(
     assert metadata["prompt_id"] == JUDGE_PROMPT_ID
     assert metadata["rubric_version"] == 1
     assert metadata["prompt_fingerprint"]
-    assert metadata["judge_model"] == "deepseek-v4-flash"
+    assert metadata["judge_model"] == "deepseek-flash"
     assert metadata["judge_configuration_fingerprint"]
     assert metadata["judge_reasoning_effort"] == "max"
 

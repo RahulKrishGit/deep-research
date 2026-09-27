@@ -148,3 +148,112 @@ async def test_recall_survives_a_dead_backend() -> None:
     snapshot = await recall_memory_context(question=QUESTION, long_term=memory)
 
     assert snapshot == MemorySnapshot()
+
+
+@pytest.mark.asyncio
+async def test_the_planning_purpose_never_touches_stored_findings(tmp_path) -> None:
+    """Planning gets procedural guidance and no remembered prose at all.
+
+    A recalled finding is not evidence, and it must not arrive as one: the
+    planner is the stage that decides what the run will try to establish, so
+    remembered prose reaching it becomes a settled premise. The store is not
+    even queried — a duplicate, a high-confidence label, or an obsolete entry
+    cannot influence the plan because none of them is read.
+    """
+    memory = build_memory()
+    for content, confidence in (
+        ("Break-even was reached in 2025.", 0.99),
+        ("Break-even was reached in 2025.", 0.99),
+        ("Interconnection queues clear in two years.", 0.95),
+    ):
+        await memory.save(
+            MemoryEntry(
+                entry_type="finding",
+                content=content,
+                session_id="session-0",
+                agent_id="researcher",
+                confidence=confidence,
+                source_url="https://example.org/a",
+                source_title="QEC 2025",
+            )
+        )
+    await memory.save(
+        SourceReputation(
+            url="https://example.org/a",
+            title="QEC 2025",
+            reputation_score=0.9,
+        ).to_entry(session_id="session-0", agent_id="source_evaluator")
+    )
+    procedural = ProceduralMemory(tmp_path / "strategies.json")
+    await procedural.load()
+    await procedural.record_session_outcome(
+        topic_type="technology",
+        succeeded=True,
+        iterations=2,
+        query_templates=["{topic} benchmark", "{topic} benchmark"],
+    )
+
+    snapshot = await recall_memory_context(
+        question=QUESTION,
+        long_term=memory,
+        procedural=procedural,
+        purpose="planning",
+    )
+
+    assert snapshot.similar_findings == []
+    assert snapshot.known_source_reputations == {}
+    # Duplicated guidance is guidance once.
+    assert snapshot.suggested_strategies == ["{topic} benchmark"]
+
+
+@pytest.mark.asyncio
+async def test_the_planning_purpose_does_not_query_the_vector_store() -> None:
+    """The store is not read at all, not read and discarded."""
+    collection = FakeCollection()
+    queries: list[str] = []
+    original = collection.query
+
+    async def record(*args, **kwargs):
+        queries.append(str(args[0]) if args else str(kwargs.get("query_text")))
+        return await original(*args, **kwargs)
+
+    collection.query = record  # type: ignore[method-assign]
+    memory = LongTermMemory(collection=collection, embeddings=FakeEmbeddings())
+
+    await recall_memory_context(
+        question=QUESTION, long_term=memory, purpose="planning"
+    )
+
+    assert queries == []
+
+
+@pytest.mark.asyncio
+async def test_the_research_purpose_still_reads_findings_and_reputations() -> None:
+    """The default keeps every existing behaviour: this is backward compatible."""
+    memory = build_memory()
+    await memory.save(
+        MemoryEntry(
+            entry_type="finding",
+            content="Break-even was reached in 2025.",
+            session_id="session-0",
+            agent_id="researcher",
+            source_url="https://example.org/a",
+            source_title="QEC 2025",
+        )
+    )
+    await memory.save(
+        SourceReputation(
+            url="https://example.org/a",
+            title="QEC 2025",
+            reputation_score=0.75,
+        ).to_entry(session_id="session-0", agent_id="source_evaluator")
+    )
+
+    default = await recall_memory_context(question=QUESTION, long_term=memory)
+    research = await recall_memory_context(
+        question=QUESTION, long_term=memory, purpose="research"
+    )
+
+    assert default == research
+    assert len(default.similar_findings) == 1
+    assert default.known_source_reputations == {"https://example.org/a": 0.75}

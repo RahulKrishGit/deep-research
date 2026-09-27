@@ -114,7 +114,7 @@ continues locally.
 ## Chat and Embedding Providers
 
 Chat defaults are committed under `llm` in `config.yaml`: provider `deepseek`,
-model `deepseek-v4-flash`, thinking mode `enabled`, and reasoning effort
+model `deepseek-flash`, thinking mode `enabled`, and reasoning effort
 `high`. Embedding defaults are also committed under `llm`: `embedding_provider`
 `local`, backed by chromadb's default ONNX model at 384 dimensions, with no
 API key and no per-call cost. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_THINKING_MODE`,
@@ -132,21 +132,24 @@ A complete DeepSeek configuration with per-agent overrides:
 ```yaml
 llm:
   provider: deepseek
-  model: deepseek-v4-flash
+  model: deepseek-flash
   thinking_mode: enabled
   reasoning_effort: high
   model_overrides:
-    planner: deepseek-v4-flash
-    critic:
-      model: deepseek-v4-flash
+    planner: deepseek-flash
+    report_reviewer:
+      model: deepseek-flash
       thinking_mode: enabled
       reasoning_effort: max
 ```
 
 The `planner` override is the legacy string form — model only, inheriting the
-global thinking mode and reasoning effort. The `critic` override is the
+global thinking mode and reasoning effort. The `report_reviewer` override is the
 structured form with its own model, thinking mode, and reasoning effort. Both
-forms remain valid.
+forms remain valid. Keys are the five production agents (``planner``,
+``researcher``, ``source_evaluator``, ``evidence_verifier``, ``report_writer``)
+and the one service role (``report_reviewer``); an entry for a name outside
+that set is accepted by the free-form mapping and simply never read.
 
 To switch chat to OpenAI explicitly, set provider `openai` with a model,
 thinking mode, and reasoning effort the OpenAI capability registry supports —
@@ -410,13 +413,16 @@ and raises `PlanningError` if the repair also fails. There is no partial plan.
 `ResearcherAgent` runs one bounded ReAct loop **per selected sub-topic**, each
 in its own agent span with its own tool budget, using `web_search`,
 `web_scraper`, `document_reader`, `query_memory`, and `save_to_memory`.
-Sub-topics are ordered by Critic-flagged gaps first, then by priority
-ascending, and capped at `max_sub_topics`. After each loop, a structured
-extraction pass over the loop's actual tool payloads produces `Finding`
-entries — skipped entirely when the loop retrieved nothing, so a source is
-never invented. A tool failure is an observation and the loop continues; a
-provider failure stops the remaining sub-topics with the findings so far kept.
-A high-priority sub-topic that produced no findings records a recoverable
+On an extra pass, sub-topics are ordered by the targets that pass was bought
+for first, then by priority ascending, and capped at `max_sub_topics`. Extraction
+is per page, not per loop (S6): a structured extraction call starts the moment
+a read is admitted, in the background, rather than waiting for the whole loop
+to finish, bounded by `agents.extraction_concurrency` (16) in flight at once —
+a local resource bound, not the provider's own concurrency limit. A read that
+yields nothing produces no `Finding`, so a source is never invented. A tool
+failure is an observation and the loop continues; a provider failure stops
+the remaining sub-topics with the findings so far kept. A high-priority
+sub-topic that produced no findings records a recoverable
 `researcher_sub_topic_without_findings` error in `state.errors`. A
 high-priority sub-topic that was never attempted at all records a recoverable
 `researcher_sub_topic_skipped` error instead — this can happen either because
@@ -461,7 +467,7 @@ strict structured outputs reject, so the provider is asked for
 `ResearchPlanDraft` and `SubTopicFindingsDraft` — constraint-free mirrors —
 and the drafts are validated into the domain types locally.
 
-## Source Evaluator And Fact Checker
+## Source Evaluator And Evidence Verifier
 
 `SourceEvaluatorAgent` groups `state.raw_findings` by canonical source URL,
 computes a corroboration score locally (the fraction of a source's
@@ -480,132 +486,212 @@ scoring continues directly. This agent runs no ReAct loop and declares no
 tools; reputation reaches it through an injected `ReputationSource`, which
 `LongTermMemory` satisfies.
 
-`FactCheckerAgent` extracts the major factual claims from the findings in
-one structured call (dropping any claim whose source URL never appeared in
-`raw_findings`), then runs one bounded ReAct loop **per claim** using
-`web_search`, `web_scraper`, `document_reader`, and `query_memory`. A
-verdict is only requested from the model once the loop has actually
-retrieved content from a domain other than the claim's own publisher.
-Verdicts are normalized locally: no independent domain, a loop that died to
-a provider failure, an unrecognized verdict string, or a failed verdict call
-all become `insufficient_evidence` with confidence 0.0, and any verdict
-arriving alongside reported contradictions becomes `contradicted`. There is
-no path that invents confidence.
+`EvidenceVerifierAgent` turns the researcher's findings into *verified* ones.
+Two stages, and both are needed:
+
+- **Figure Match** (code). For every finding, the snippet must appear on the
+  page it cites: `figure_match` answers exactly two questions, `read_found` and
+  `snippet_on_page`. A finding whose snippet is not on its read is dropped
+  (`snippet_not_on_page`), and a finding with no read at all is dropped
+  (`read_not_found`). It does *not* judge the figure against the snippet — a
+  code pattern reading "is this number in that sentence" was the thing D8
+  deleted — so every figure that survives goes to the Context Check.
+- **Context Check** (one batched, tool-free AI call). Every figure that
+  survived Figure Match goes to the model with the snippet it was copied from,
+  the surrounding passage, and the fields the extractor recorded, and the model
+  judges whether the snippet or passage actually states it — confirming its
+  period, scope, kind (actual or forecast), attribution and the page's own
+  organisation, or rejecting it. Batches hold
+  `agents.verifier_batch_size` findings (5) and at most
+  `agents.verifier_concurrency` batches are in flight (16). Code then applies
+  the checks that cannot be a judgement: the corrected wording must be on the
+  page, a relayed figure keeps its originator, and a page is credited with its
+  own organisation only when code confirms the host is that organisation's own.
+
+A finding's `verification.status` is one of `verified`, `verified_corrected`,
+`quoted` or `dropped`, exactly as the code decides it: with **every** figure
+dropped the finding is `dropped` with reason `all_figures_dropped`; with
+**some** figure dropped, or one whose context was corrected, it is
+`verified_corrected`; with every figure kept as written it is `verified`; a
+finding with no figure at all — nothing for the Context Check to judge — is
+`quoted` (its snippet is on the page, and that is all this status claims).
+A figure the Context Check
+rejected or that could not be confirmed is dropped with an enumerated reason —
+`evidence_not_on_page`, `correction_not_on_page`, `context_rejected`,
+`context_unavailable` — and a figure with no reply at all is kept as
+"unchecked context" only when its own value appears in the snippet; otherwise
+it is dropped as `context_unavailable`. A finding whose batch failed keeps its
+Figure Match result, is marked `context_unchecked`, and is cited only as
+"unchecked context" (PD-26); nothing is ever promoted by a Context Check it
+never got.
+
+Provenance built from the verified fields — organisation, kind, period,
+scope, release — is no longer printed beside each reader sentence (spec
+`2026-09-25-consumer-report-format.md` §3.1 rule 9): the reader states a
+sentence in plain prose, and its full provenance lives in the evidence log's
+per-finding record and in the quality JSON's fact rows. The one exception is
+a sentence whose Statement Check verdict is `unchecked` (a batch failure)
+and that carries a fact row whose unit the figure parser scales (D10): it
+still ends with a deterministic
+`(figure: {who reported it (and when)})` line, so the only sentence printed
+without an independent check keeps a visible provenance line.
 
 ```python
-from deep_research.agents import FactCheckerAgent, SourceEvaluatorAgent
+from deep_research.agents import EvidenceVerifierAgent, SourceEvaluatorAgent
 from deep_research.utils.types import merge_research_state
 
 async with tracker.session_span(session_id, state.original_question):
     evaluation = await evaluator.run(state)
     state = merge_research_state(state, evaluation.state_update)
 
-    fact_check = await checker.run(state)
-    state = merge_research_state(state, fact_check.state_update)
+    verification = await verifier.run(state)
+    state = merge_research_state(state, verification.state_update)
 ```
 
 | Event type | Emitted by | Key metadata |
 | --- | --- | --- |
 | `source_evaluator.evaluation.started` | Source Evaluator | `finding_count`, `source_count` |
 | `source_evaluator.evaluation.completed` | Source Evaluator | `source_count`, `average_score`, `low_confidence_count`, `reputation_hits`, `reputation_failures` |
-| `fact_checker.claims.extracted` | Fact Checker | `claim_count`, `findings_considered`, `sources_considered` |
-| `fact_checker.claim.checked` | Fact Checker | `claim`, `verdict`, `confidence`, `contradictions`, `independent_sources`, `tool_calls`, `reason` |
-| `fact_checker.fact_check.completed` | Fact Checker | `claim_count`, `verified`, `unverified`, `contradicted`, `insufficient_evidence`, `contradiction_count`, `tool_calls` |
+| `evidence_verifier.verification.completed` | Evidence Verifier | `verified`, `verified_corrected`, `dropped`, `context_unchecked` |
 
-## Synthesizer And Critic
+## Report Writer And Report Reviewer
 
-`SynthesizerAgent` turns `verified_claims`, `evaluated_sources`, and
-`raw_findings` into the final Markdown report. The report's skeleton is
-rendered locally by `agents.report` — all seven sections in
-`REPORT_SECTIONS`, in order, whether or not they have content — so a report
-always carries an executive summary, findings, verified claims, an
-uncertainty section, limitations, numbered citations, and a source
-appendix. Citations are numbered locally: evaluated sources first, then any
-claim source not already numbered, and a URL the model attached that never
-reached the evidence is dropped rather than cited. The model supplies only
-prose. The composed Markdown is written through `write_document` and lands
-in `state.report`; a failed write records a recoverable
-`synthesizer_report_not_written` error and keeps the report in state
-anyway. Verified claims at or above `DEFAULT_MEMORY_CONFIDENCE` (0.7) are
-kept for future sessions through `save_to_memory`, capped at
-`DEFAULT_MAX_MEMORY_FINDINGS` (10). This agent runs no ReAct loop: report
-generation is one structured call, and both tool calls are deterministic
-consequences of having produced a report.
+`ReportWriterAgent` turns `state.verified_findings` into the reader report —
+the answer-first skeleton of `2026-09-25-consumer-report-format.md` §3: an
+evidence line, the bottom line, an optional question-shaped table, one
+section per plan part, What we couldn't confirm, and Sources — and its
+evidence ledger. One call drafts each plan part's section (§6.3) from only
+that part's own findings, every part running in parallel, and a last call
+drafts the bottom line (§6.6) from the parts' checked statements once every
+part has finished; a redraft re-asks only the parts a defect names (§6.9).
+Code builds everything structural the model does not draft: the
+question-shaped table (§4), the evidence line, the Sources list, the link to
+the evidence log, and the evidence log's own full fact-row table
+(`fact_rows()`, one row per fact, revisions folded and noted) — so the
+required sections exist whether or not the model produced prose. The model
+cites findings **by label only**; a point citing no known label is refused
+with a recorded reason, and citations are derived from the cited findings,
+so a URL no finding carries cannot be printed (PD-6).
 
-Limitations are explicit and enumerated, never prose invented by a model:
-recorded errors, an exhausted iteration budget, unscored or low-confidence
-sources, no verified claim, a contradicted claim, and a failed report call
-each add their own `LIMITATION_REASONS` line.
+Wording is judged once, by the Statement Check: one batched, tool-free call
+over every candidate sentence with its cited findings' verified figures,
+organisation and labels (the same `agents.verifier_batch_size` and
+`agents.verifier_concurrency` bounds as the Context Check). Each verdict is
+`consistent`, `corrected` (the sentence is kept in its corrected form) or
+`inconsistent` (the sentence is refused, in full, in the ledger). A batch that
+fails keeps its sentences and records the failure, so the sentence is cited
+with an unchecked statement rather than silently dropped. Code applies no
+wording pattern of its own: the numbers, dates, scopes, names and
+forecast-versus-actual wording are the Statement Check's judgement, not a
+regex match.
 
-`CriticAgent` reviews that report. It may spot-check a suspected gap with
-`web_search` or compare against prior sessions with `query_memory` in one
-bounded ReAct loop, then asks for one structured review and computes the
-routing decision itself. `route_decision` checks the iteration bound
-first — `state.iteration >= state.max_iterations` always ends the run,
-whatever the model said — then a missing report, then the score against
-`ACCEPTANCE_SCORE` (7), then gaps, then unsupported claims. Every gap the
-model lists counts as critical, because the prompt asks it to list a gap
-only when closing it would materially change the answer. A provider failure
-ends the run with the lowest score rather than buying another cycle; a
-missing report buys one while budget remains. `Critique.should_continue` is
-a recommendation record — nothing in the agent layer acts on it.
+The writer also computes the run's quality snapshot (`compute_report_quality`)
+over the composition it composed, which is what the terminal gates and the
+extra-pass router read.
+
+Each part's section request carries a point and word budget: "Write at most N
+points for this part, about W words in total". A part that owns a required
+target has weight 3 and every other part weight 1, and each part gets its
+weighted share of the reader length. N is the largest of three numbers: the
+required targets the part's findings answer, that share at about 45 words a
+point, and 3. The reader length is the question's own word limit, else
+`agents.report_target_words` (2000). The budget is an instruction only: code
+drops no checked point, and the evidence log keeps every finding. A bound
+finding is never context-only. The section rules tell the writer to cite the
+stronger of two sources that state the same fact, and to name a weak page's
+kind in the words its source line uses. `agents.writer_authority_floor` (0.4)
+applies only to the bottom line. There, a checked statement whose findings all
+come from sources at or below the floor (or marked low-confidence) is withheld
+once any statement rests on a source above it.
+
+`ReportReviewer` makes the single quality judgement. The packet holds every
+printed statement with its own label and its cited findings' snippets and
+labels, the Verified figures (the fact-row table, unfiltered), the Table
+(the question-shaped table's own backing statement and fact-row ids), What
+the report could not confirm, each finding's `status:` line, and the gate
+results, and the reviewer answers a disposition for every statement it read
+— `supported`, `unsupported` or `not_reviewed` — plus a defect for anything
+it could not establish. A defect is material when its severity is
+`critical` or `major`, and a material defect blocks acceptance. A truncated
+reply is asked once more at high effort; a provider failure gives
+`provider_failed`, missing dispositions give `incomplete`, and either way
+the report publishes as `partial` — an unscored review never fails the run
+(PD-13). The *node*, not the model, stamps `missing_required_target_ids`
+from the quality snapshot (PD-5).
+
+After a redraft (spec §6.9), the reviewer's next call is a *scoped*
+re-review (T5 addendum) rather than a second full one, whenever the
+redrafted composition carries at least one part byte-identical to what the
+previous review judged: it is fed only the changed statements to judge
+fresh, the unchanged ones keep their carried-over dispositions, and it
+resolves or carries forward the previous review's own defects. A scoped
+reply that cannot be used (a provider failure, or one judging an id the
+packet does not carry) falls back to exactly one fresh full review, never a
+stale or partial judgement.
 
 ```python
-from deep_research.agents import CriticAgent, SynthesizerAgent
+from deep_research.agents import ReportReviewer, ReportWriterAgent
 from deep_research.utils.types import merge_research_state
 
 async with tracker.session_span(session_id, state.original_question):
-    synthesis = await synthesizer.run(state)
-    state = merge_research_state(state, synthesis.state_update)
+    written = await writer.run(state)
+    state = merge_research_state(state, written.state_update)
 
-    review = await critic.run(state)
-    state = merge_research_state(state, review.state_update)
+review = await reviewer.review(build_report_review_input(state, state.composition))
+state = merge_research_state(state, {"report_review": review})
 ```
 
 | Event type | Emitted by | Key metadata |
 | --- | --- | --- |
-| `synthesizer.synthesis.started` | Synthesizer | `claim_count`, `source_count`, `finding_count`, `limitation_count` |
-| `synthesizer.synthesis.completed` | Synthesizer | `section_count`, `citation_count`, `source_appendix_count`, `output_path`, `saved_findings`, `report_chars`, `limitations` |
-| `critic.critique.started` | Critic | `iteration`, `max_iterations`, `claim_count`, `has_report` |
-| `critic.critique.completed` | Critic | `score`, `gap_count`, `unsupported_claim_count`, `recommended_query_count`, `should_continue`, `reason`, `tool_calls` |
+| `report_writer.report.written` | Report Writer | `statements`, `citations`, `refused`, `fact_rows`, `not_found` |
+| `report_reviewer.review.completed` | Report Reviewer | `review_status`, `mean_score`, `defect_count`, `missing_required_target_ids` |
+
+The memory write is a separate, terminal step: only an accepted report's cited
+findings are kept for future sessions through `save_to_memory`, and it is
+outside the three-file artifact set.
 
 ## LangGraph Orchestration
 
-`deep_research.graph` wires the six agents into one state graph:
+`deep_research.graph` wires the five agents into one state graph:
 
 ```text
-START -> planner -> researcher -> source_evaluator -> fact_checker
-      -> synthesizer -> critic -> {refine -> researcher | END}
+START -> planner -> researcher -> source_evaluator -> evidence_verifier
+      -> report_writer -> report_reviewer
+      -> { extra_pass -> researcher | finalize -> END | END }
 ```
 
 The LangGraph channel carries the whole `ResearchState` as one JSON-safe
 mapping under the key `state`, and every node merges its agent's
 `ResearchStateUpdate` with `merge_research_state` — the same append/replace
-rules and the same "`iteration` moves only through
-`advance_research_iteration`" guard the agents already run under. There are
-no per-field LangGraph reducers, so there is exactly one implementation of
-the merge rules.
+rules the agents already run under, including "`iteration` moves only through
+`advance_research_iteration`". There are no per-field LangGraph reducers, so
+there is exactly one implementation of the merge rules.
 
-`refine` is the hop that carries the macro-iteration increment. It exists
-because a conditional edge routes but cannot write state.
+`extra_pass` is the hop that carries the iteration increment: it sets
+`extra_pass_target_ids` to the targets the reviewer's record still names and
+advances the iteration, because a conditional edge routes but cannot write
+state. The researcher then researches **only those targets**.
 
-Routing is `graph_route`, a pure function of state: a halted run ends, a run
-with no critique ends, `Critique.should_continue` being false ends the run,
-`state.iteration >= state.max_iterations` ends the run **whatever the critic
-recommended**, and only then does the graph loop back. The bound is checked
-by the graph itself rather than trusted to the critic, so no model judgement
-can make the loop run forever. `graph_status` reads the same decision and
-names the outcome `completed`, `max_iterations`, `incomplete`, or `failed`.
+Routing is `graph_route`, a pure function of state, and it decides in this
+order: a halted run ends; a missing required target with a pass left
+(`iteration < max_extra_passes`) buys one targeted extra pass; an unscored
+review publishes as `partial`; a report with no gate failure and a passing
+review is accepted; and a missing target with no pass left ends as
+`max_iterations`. `graph_status` reads the same decision and names the outcome
+`completed`, `max_iterations`, `incomplete`, or `failed`. `max_iterations`
+therefore means exactly this: **extra passes spent, required targets still
+missing, and the report not accepted** — an accepted report with a target
+listed under Not found finishes `completed` (PD-23).
 
 Failure is a halt mark in state, not an exception out of `ainvoke`.
 `PlanningError`, `AgentConfigurationError`, and `ProviderConfigurationError`
 become enumerated `HALTING_ERROR_TYPES` entries; every later node records
 `graph.node.skipped` and returns without invoking its agent; the router ends
 the run with status `failed` and **everything collected before the failure
-survives**. Recoverable agent and tool errors — including the
-non-recoverable provider outages agents record for themselves — stay in
-`state.errors` and never stop the graph. Any other exception propagates: an
-unhandled failure is a defect, not a research outcome.
+survives**. Recoverable agent and tool errors — including the non-recoverable
+provider outages agents record for themselves — stay in `state.errors` and
+never stop the graph. Any other exception propagates: an unhandled failure is a
+defect, not a research outcome.
 
 ```python
 from deep_research.graph import (
@@ -620,9 +706,8 @@ agents = ResearchAgents(
     planner=planner,
     researcher=researcher,
     source_evaluator=source_evaluator,
-    fact_checker=fact_checker,
-    synthesizer=synthesizer,
-    critic=critic,
+    evidence_verifier=evidence_verifier,
+    report_writer=report_writer,
 )
 graph = compile_research_graph(
     agents, checkpointer=build_checkpointer(enabled=settings.graph.checkpointing_enabled)
@@ -632,8 +717,8 @@ run = await run_research_graph(
     graph=graph,
     tracker=tracker,
     session_id=session_id,
-    question="How mature is quantum error correction?",
-    max_iterations=settings.graph.max_iterations,
+    question="How much battery storage capacity was added in 2024?",
+    max_extra_passes=settings.graph.max_extra_passes,
 )
 print(run.status, run.state.report, run.trace_url)
 
@@ -645,24 +730,27 @@ resumed = await resume_research_graph(
 
 `run_research_graph` opens the existing `Tracker` session span, so every
 agent inside a node produces its own `agent.<name>` span under
-`research.session`; the session span's outputs carry the session id, the
-final status, the full list of route decisions, the macro iteration, the
-per-collection counts, the critic score, and the error count. Graph
-configuration lives in `config.yaml` under `graph:` (`max_iterations`,
-`checkpointing_enabled`), overridable with `GRAPH_MAX_ITERATIONS` and
-`GRAPH_CHECKPOINTING_ENABLED`. Checkpointing uses an in-process
-`InMemorySaver`; a durable saver drops into `compile_research_graph`
-without touching a node.
+`research.session`; the session span's outputs carry the session id, the final
+status, the full list of route decisions, the extra-pass iteration, the
+per-collection counts and the error count. Graph configuration lives in
+`config.yaml` under `graph:` (`max_extra_passes`, `checkpointing_enabled`),
+overridable with `GRAPH_MAX_EXTRA_PASSES` and `GRAPH_CHECKPOINTING_ENABLED`.
+Checkpointing uses an in-process `InMemorySaver`; a durable saver drops into
+`compile_research_graph` without touching a node.
 
 | Event type | Emitted by | Key metadata |
 | --- | --- | --- |
-| `graph.session.started` | Runner | `session_id`, `max_iterations`, `checkpointing` |
+| `graph.session.started` | Runner | `session_id`, `max_extra_passes`, `checkpointing` |
 | `graph.node.started` | Every node | `node`, `iteration` |
 | `graph.node.completed` | Every node | `node`, `iteration`, `event_count`, `error_count` |
 | `graph.node.skipped` | Every node after a halt | `node`, `iteration`, `reason` |
-| `graph.route.decided` | Critic node | `destination`, `reason`, `iteration`, `max_iterations`, `should_continue` |
-| `graph.refinement.started` | Refine node | `iteration`, `max_iterations` |
+| `graph.route.decided` | Report Reviewer node | `destination`, `reason`, `iteration`, `max_extra_passes`, `missing_required_target_ids` |
+| `graph.extra_pass.started` | Extra-pass node | `iteration`, `max_extra_passes`, `targets` |
 | `graph.session.completed` | Runner | `status`, `iteration`, `error_count`, `has_report` |
+
+The `graph.route.decided` fragment is always the router's own enumerated reason
+(`report_accepted`, `report_not_accepted`, `review_unavailable`,
+`extra_pass_requested`, `extra_passes_exhausted`, `halted`), never report prose.
 
 ## FastAPI Interface
 
@@ -688,7 +776,7 @@ curl -X POST http://localhost:8000/research \
     "output_format": "markdown",
     "config_overrides": {
       "output": {"directory": "api-output/"},
-      "llm": {"model_overrides": {"critic": "deepseek-v4-pro"}}
+      "llm": {"model_overrides": {"report_reviewer": "deepseek-v4-pro"}}
     }
   }'
 ```
@@ -699,6 +787,20 @@ The `202` response carries the session snapshot: `session_id`, `status`,
 `status` is `running` until the run reaches `completed`, `max_iterations`,
 `incomplete`, or `failed`. Poll `status` or subscribe to the stream —
 nothing blocks on research work.
+
+A finished session's snapshot also carries the outcome's own readings, added
+to the response without changing any existing field: `evidence_path` and
+`quality_path` (the other two files of the published set), the
+`quality_contract_version`, the `semantic_review_status` and
+`semantic_review_score`, the `duration_seconds` the recorded events cover, and
+two nested blocks — `coverage` (the required and answered target counts, the
+targets no verified finding answers, and the targets the report lists under
+Not found) and `evidence_counts` (the distinct
+read/work/source/finding counts, and the Evidence Verifier's own readings:
+verified, corrected, dropped, unchecked-context and cited findings).
+While a session is still running every one of those fields is `null` rather
+than `0`: nothing has been measured yet, and a zero would be a claim the run
+never made.
 
 Streams are server-sent events: each frame is one typed `ResearchEvent` as
 JSON, preceded by its id and event type:
@@ -757,10 +859,11 @@ python -m deep_research --resume <session_id>
 | `question` | The research question. Mutually exclusive with `--interactive` and `--resume`. |
 | `--interactive` | Prompt once for the question, run once, exit. |
 | `--resume SESSION_ID` | Continue a checkpointed session. See the limitation below. |
-| `--max-iterations N` | Macro refinement passes the critic may request. Defaults to `graph.max_iterations`. |
+| `--max-iterations N` | Extra research passes for missing required targets. Zero is accepted — a run that buys no extra pass. Defaults to `graph.max_extra_passes` (1). |
 | `--output-format` | Report format. Only `markdown` is supported in this build. |
 | `--config PATH` | YAML config file. Defaults to `config.yaml`. |
-| `--verbose` | Print every progress event, tool call counts, and token totals. |
+| `--verbose` | Print every progress event and the run's totals: per-tool calls with their failures and retries, the proposals the researcher dropped, per-provider attempts and tokens. |
+| `--debug-events` | Print the complete bounded event record: every recorded event, named by its enumerated type and source, with no event metadata rendered. |
 | `--require-quality` | Exit 4 unless the terminal quality gates accepted the report; without it, a finished partial report exits 0. |
 
 Every interface calls the same `deep_research.main.run_research()`, which loads
@@ -781,6 +884,49 @@ true must be present in the environment or in a `.env` file next to
 Recoverable research errors never fail the command. They are printed as
 `warning:` lines and disclosed inside the report's Limitations section.
 
+The summary's evidence lines are the same typed records the artifacts render
+from, so the console, the reader report, the ledger and the quality record
+cannot disagree about one run:
+
+```text
+Quality: partial (review scored 0.86)
+Quality reasons: 1 gate failure (unjudged_sentences)
+Required targets: 6/7 answered
+Not found: topic-02-target-01
+Sources: 10 assessed, 8 cited; reads 14 (network 11, cache reuse 3), works 10, publishers 6, findings 10
+Review: scored (fingerprint 8f2c1d…)
+Findings: 7 checked (1 with corrected context, 2 unchecked context), 3 dropped; 6 cited
+Integrity: 0 duplicate fact rows; 0 uncited statements; 1 unjudged sentences; 2 forecasts without release
+Unresolved: 1 missing required target (topic-02-target-01)
+```
+
+`Findings` counts the Evidence Verifier's own readings: the total is every
+finding it kept (7), one of which it kept with a corrected context and two with
+an unchecked context, and three more it dropped; six of the kept findings are
+cited by the report. `Integrity` counts the structural invariants the quality
+gates judge; `forecasts without release` is counted and printed but is not a
+gate (PD-24).
+
+### Lowering parallelism when a provider throttles (spec 7.3)
+
+Six concurrency bounds decide how many provider calls one run makes at once,
+and they are the *only* caps. Lowering one is a config or environment change,
+with no code edit and no re-run of anything:
+
+| Setting | Default | What it bounds | Environment override |
+| --- | --- | --- | --- |
+| `agents.sub_topic_concurrency` | 10 | researcher sub-topics in flight | `AGENTS_SUB_TOPIC_CONCURRENCY` |
+| `agents.source_scoring_concurrency` | 6 | source-evaluator scoring batches in flight | `AGENTS_SOURCE_SCORING_CONCURRENCY` |
+| `agents.verifier_batch_size` | 5 | Context Check and Statement Check items per call | `AGENTS_VERIFIER_BATCH_SIZE` |
+| `agents.verifier_concurrency` | 16 | verification calls in flight | `AGENTS_VERIFIER_CONCURRENCY` |
+| `agents.extraction_concurrency` | 16 | one sub-topic's per-page extraction calls in flight (S6) | `AGENTS_EXTRACTION_CONCURRENCY` |
+| `agents.writer_section_concurrency` | 10 | the parallel writer's section drafts in flight (spec §6.10) | `AGENTS_WRITER_SECTION_CONCURRENCY` |
+
+On a run that meets recurring `429` responses, lower the knob of the agent the
+telemetry names at the peak — `agents.verifier_concurrency` first, then
+`agents.sub_topic_concurrency` — and lower `agents.verifier_batch_size` only if
+the calls themselves are being truncated.
+
 **Progress is a post-run log, not a live stream.** `run_research_graph` invokes
 the graph to completion and returns one result, so the CLI prints
 `ResearchState.events` once the run is over. Live progress arrives with the
@@ -797,14 +943,103 @@ and evidence paths and the normal summary, but returns exit code 4 when the
 terminal status is not `accepted`. The default exit code remains 0 for a
 finished partial report so an operator can inspect its limitations.
 
+### Artifacts
+
+A finished run publishes three files under `output.directory`, and it
+advertises all three or none of them: a publication that failed a write prints
+no path at all rather than pointing at an earlier refinement pass's file. The
+three names are one family, derived from the session id and the pass:
+
+| Artifact | Answers | Name |
+| --- | --- | --- |
+| Reader report | The bottom line first, an optional question-shaped table, one section per plan part, What we couldn't confirm, and **Sources** listing only the sources its statements cite (publisher, title, date). A figure's own organisation, kind, period, scope and release live in the evidence log and the quality record, not beside the reader sentence. | `report-<session>-<iteration>.md` |
+| Evidence ledger | What was checked and what the check found. It carries every finding with its snippet and read locator, every figure kept or dropped with its reason, the verification record, and every drafted sentence the Statement Check refused, in full. | `report-<session>-<iteration>-evidence.md` |
+| Quality record | The replay surface: counts, ids, the SHA-256 of each published document, the quality contract version, the findings with their verification, the fact rows, Not found, and the review's status and packet fingerprint. | `report-<session>-<iteration>-quality.json` |
+
+Finding-to-memory writes are a *separate* write, attempted only for an accepted
+report, and they are outside that artifact set: a failed memory write is
+reported as its own count and leaves the three paths advertised.
+
+The reader report prints an **Evidence as of** line — the evidence date and
+the count of sources it cites, read from the newest timestamp
+the *recorded evidence* carries — the reads' retrieval times and the findings'
+extraction times, never a graph event and never a clock read — so the same
+session always renders the same date and a session with no dated evidence says
+so instead of printing when it happened to be printed. The ledger states the
+session and the pass instead, and neither document prints the run's own clock
+date: that date is carried as `generated_on` in the quality record. Sources are
+attributed where the report cites them: its **Sources** list carries only the
+pages its own statements cite, while the ledger keeps every finding the pass
+recorded — cited by a statement or not — with the snippet it was read from, its
+read locator and its verification. How many sources were assessed, and how many
+of those the report cited, is published as the counts `assessed_sources` and
+`cited_assessed_sources` in the run's evidence counts, not as rows in either
+document.
+
+### Quality Semantics
+
+The terminal status is printed on every summary and stamped on all three
+artifacts. Nine deterministic gates decide the structural half of acceptance,
+and each fires on its own defect:
+
+`unresolved_citations`, `uncited_settled_points`, `duplicate_fact_rows`,
+`missing_as_of`, `missing_scope`, `unjudged_sentences`,
+`unaccounted_required_targets`, `missing_reader_report`,
+`missing_evidence_ledger`.
+
+Three of them deserve a sentence. `duplicate_fact_rows` is an *invariant*:
+`fact_rows()` merges same-fact rows, and the gate exists to catch a hand-built
+or future composition that did not go through it. `unjudged_sentences` is the
+same kind of invariant: `compose_written_report` records a Statement Check
+verdict for every kept sentence, so a kept sentence with neither a verdict nor
+a recorded batch failure is the only way to fail it. `unaccounted_required_targets`
+fires only for a required target that no finding answers **and** that Not found
+does not list: a missing target the report discloses is accounted for.
+
+A run is **accepted** only when all three of these hold:
+
+- no gate above failed;
+- the Report Reviewer scored the report with a mean of 0.80 or above over its
+  seven dimensions, with no material defect and complete coverage — every
+  statement it read carrying a recorded disposition;
+- the router's own route was `report_accepted` (PD-23), which is also what
+  decides `completed` when passes are spent and a target is listed under Not
+  found.
+
+Anything else is **partial** — including a report no quality pass ever judged,
+and one whose review was missing, incomplete, or lost to a provider failure.
+Only an accepted report's cited findings are written to memory.
+
+### Upgrading
+
+The Evidence Verifier pipeline replaced the fact checker, the critic and the
+synthesizer. Existing invocations keep working — the CLI flag
+`--max-iterations` and the API field `max_iterations` kept their names and now
+set the extra-pass ceiling — but a custom configuration and an existing
+checkpoint need attention:
+
+| Old | Now | What happens if you leave it |
+| --- | --- | --- |
+| `GRAPH_MAX_ITERATIONS` (env) | `GRAPH_MAX_EXTRA_PASSES` | The old export is **ignored without a warning**: the environment key is no longer read, so the config file's `graph.max_extra_passes` stays in force. |
+| `graph.max_iterations` (config) | `graph.max_extra_passes` | **Fails validation**, naming `graph.max_iterations`: the config models forbid unknown keys. |
+| `agents.claim_batch_size`, `agents.claim_batches_per_pass`, `agents.critic_review_max_tokens`, `agents.claim_verification_max_tokens` | removed (`agents.verifier_batch_size` and `agents.verifier_concurrency` bound the Context and Statement Checks) | Each **fails validation**, naming the key. |
+| `agents.tool_budget_overrides.fact_checker` (and any other removed agent's entry) | remove the entry | **Fails validation**, naming the offending key: the table rejects a name outside the five production agents. |
+| `llm.model_overrides.fact_checker`, `.synthesizer`, `.critic`, `.report_judge` | `.report_writer`, `.report_reviewer` | The old entries are **ignored**: `model_overrides` is a free-form mapping, so an unused key is accepted and has no effect. |
+| `AGENTS_MAX_ITERATIONS` | unchanged | This one is the researcher's per-turn cap, not the macro budget; it still applies. |
+
+Checkpoints written before the cutover **cannot be resumed**: `ResearchState`
+rejects the removed fields, so a checkpoint that carries them fails to load
+rather than being read with them silently ignored. Start a fresh session.
+
 ## Individual Agent Evaluation
 
 A separate, dedicated CLI at `python -m deep_research.evaluation` runs
 per-agent controlled and live experiments against LangSmith, scored by
 deterministic gates and a judge model. It is independent of the graph-level
 CLI above: it never imports `deep_research.graph`, and evaluates each of the
-six agents (`planner`, `researcher`, `source-evaluator`, `fact-checker`,
-`synthesizer`, `critic`) in isolation against 24 code-backed cases.
+five agents (`planner`, `researcher`, `source-evaluator`, `evidence-verifier`,
+`report-writer`) in isolation against code-backed cases — four controlled and
+one live per agent.
 
 The individual-agent controlled tier exercises one agent contract at a time
 with the configured provider and LangSmith experiment. Its live tier adds the
@@ -816,7 +1051,7 @@ replacement, terminal publication, or the reader/evidence pair.
 # List agents, tiers, cases, repetitions, and dataset names.
 python -m deep_research.evaluation list
 
-# Run all three controlled cases for one agent, three times each.
+# Run all four controlled cases for one agent, three times each.
 python -m deep_research.evaluation agent researcher
 
 # Run one controlled case, still with three repetitions.
@@ -828,7 +1063,7 @@ python -m deep_research.evaluation agent researcher --tier live
 # Compare one agent at a different effort without editing the baseline config.
 python -m deep_research.evaluation agent researcher --reasoning-effort medium
 
-# Run controlled experiments for all six agents.
+# Run controlled experiments for all five agents.
 python -m deep_research.evaluation suite
 ```
 
@@ -879,57 +1114,96 @@ addition to the LangSmith experiment:
 
 The graph-level campaign is a separate CLI and package:
 `python -m deep_research.e2e_evaluation`. Individual-agent evaluation checks
-one agent's contract in isolation; whole-report evaluation checks the six-agent
-handoff, canonical source and claim snapshots, provenance, citation linkage,
-refinement, terminal publication, memory timing, and agreement between the
-typed state and the CLI summary. A deterministic integrity failure is a hard
-failure even when a judge score is high.
+one agent's contract in isolation; whole-report evaluation checks the
+five-agent handoff, the verified-finding snapshot, citations and the evidence
+log's provenance, what the report could not confirm, the Statement Check's
+verdicts, the targeted extra pass, terminal publication, memory timing, and
+each row's declared result against the run that produced it. The package
+ships one controlled
+harness, and its CLI exposes exactly two commands: `list` and `suite`.
 
-Task 9's controlled tier is network-zero. Its three cases use scripted search,
-read, memory, and publication doubles while compiling and running the
-production graph with six deterministic agent doubles. The campaign compares
-typed graph state and events with the production CLI summary formatter, and
-runs exactly three repetitions per case. The live tier is *declared only*: the
-three live cases exist as typed definitions with `tier="live"` and
-`authorization_required=True`, and `run_case`/`run_suite` raise for
-`tier="live"` unconditionally — no live runner exists in this package. Live
-provider, search, judge, and LangSmith calls belong to a separately authorized
-canary.
+### Real-agent harness
 
-Whole-report gates are independent of the individual-agent gates: every
-integrity failure (including duplicate canonical rows, missing read
-provenance, unresolved citations, incomplete attempts, or publication timing)
-hard-fails the repetition regardless of judge score. The controlled runner's
-acceptance floors are 0.70 for every repetition and 0.80 for the three-run
-mean, with coverage and evidence gates applied separately. The production CLI
-`--require-quality` flag is a graph-run exit policy (exit 4 for a non-accepted
-terminal quality status); it does not replace these campaign gates.
+`suite` runs the real agents: the 35 rows of the versioned replay manifest
+(manifest v8, case semantics v2), each started through the production
+`deep_research.cli` entrypoint with the five production agent classes, the real
+graph, reviewer, renderer, and publisher, and only the external boundaries
+scripted. The socket layer is denied for every repetition and the attempts it
+records are carried into the result, so a suite that reached the network is not
+accepted however clean every row looked. A row passes when all three of its
+repetitions met its declared expected product result *and* produced one
+identical outcome — exit code, terminal quality, answered targets, and published
+report. The repetitions exist to check that order, identity resolution and
+state isolation are deterministic, so a row whose repetitions disagree fails as
+`NON-deterministic` rather than passing with a note beside it, and a suite
+holding such a row is not accepted. A repetition's dates come from the
+harness's own declared instant rather than from the wall clock, so the `As of`
+stamp in the reader report is the same on every run and a suite that straddles
+midnight UTC cannot fail a row on the clock instead of on the agents. This
+harness computes no judge score at all.
+
+The rows cover the pipeline's own failure and recovery paths, including
+`broad-constraints`, `comparative-conflict`, `same-work-mirror`,
+`report-relay-labelled-as-relay`, `forecast-versus-actual-kept-apart`,
+`missing-target-triggers-one-extra-pass`, `extra-pass-recovers-missing-target`,
+`extra-pass-finds-nothing`, `blocked-html-pdf-fallback`, `unsupported-mechanism`,
+`review-unavailable`, `non-constraint-answer`, `empty-but-clean`,
+`memory-is-not-read`, `validated-cache-reuse`,
+`decision-context-late-candidate`, `figure-not-on-page-dropped`,
+`evidence-words-not-on-page-rejected`, `report-scope-corrected-to-all-segments`,
+`revision-noted` and `statement-check-failure-keeps-sentences`. Each row states
+its own sources, its Context Check and Statement Check overrides, its declared
+result (accepted or partial, and the exit code) and its invariants over
+production state — for example `report-scope-corrected-to-all-segments`
+requires the kept figure's scope to be "all segments", the finding to be
+`verified_corrected`, and no reader sentence to say "grid-scale".
+
+```
+Mode: real-agent (21 cases from replay manifest v3, case semantics v2)
+Agents: production classes through the real graph
+```
+
+The live tier is *declared only*: `suite --tier live` parses and is then refused
+before anything runs (`run_replay_suite` raises "live tier is declared only and
+has no runner; running it requires a separately authorized canary"), and no live
+runner exists in this package. Live provider, search, judge, and LangSmith calls
+belong to a separately authorized canary.
+
+Whole-report gates are independent of the individual-agent gates: the quality
+pass's own hard failures (`unresolved_citations`, `uncited_settled_points`,
+`duplicate_fact_rows`, `missing_as_of`, `missing_scope`, `unjudged_sentences`,
+`unaccounted_required_targets`, `missing_reader_report`,
+`missing_evidence_ledger`) reach `suite` as `hard:<name>` gap kinds, and a row
+fails on any kind its case does not allow. No row's allow-list tolerates a hard
+failure, so an integrity failure is never a note beside a passing row. The
+production CLI `--require-quality` flag is a graph-run exit policy (exit 4 for a
+non-accepted terminal quality status); it does not replace these gates.
 
 ```powershell
-# List the three controlled whole-report cases.
+# List the 21 row ids, with the manifest and case-semantics versions.
 python -m deep_research.e2e_evaluation list
 
-# Run one controlled case three times.
-python -m deep_research.e2e_evaluation case broad-constraints --tier controlled --repetitions 3
-
-# Run the complete controlled campaign (network-zero).
+# Run the campaign: 21 rows, three repetitions each, network-zero.
+# The controlled tier runs exactly three repetitions; any other count is refused.
 python -m deep_research.e2e_evaluation suite --tier controlled --repetitions 3
 ```
 
-Each run writes a local JSON campaign artifact under
-`output/evaluations/e2e/` containing the graph revision, all six target prompt
-fingerprints, report/quality/case schema versions, model settings, request
-counts, typed deterministic metrics, the exact bounded `WholeReportJudgeInput`,
-and the result. The bounded judge input contains only the question, scoped
-plan, reader report, deterministic metrics, and a bounded evidence-ledger
-summary; it never contains secrets, raw provider output, tool payloads, or
-hidden reasoning. The research output itself remains two distinct Markdown
-artifacts per repetition: the concise reader report (`report.md`) and the full evidence ledger
-(`evidence-ledger.md`). The reader report contains only unique cited sources;
-the ledger retains source assessments, checked claims, verification passages,
-unchecked findings, and run errors for auditability. Controlled stdout prints
-case/suite quality summaries and paths, never report bodies or raw tool/model
-payloads.
+Each suite writes its own JSON artifact under `output/evaluations/e2e/`:
+`replay-suite.json`. It carries the campaign identity, the tier and mode, the
+manifest and case-semantics versions, the graph revision, the suite's `accepted`
+and `rows_accepted` verdicts, and, for every row, every repetition's exit code,
+terminal quality, expectation failures, answered targets, recorded network
+attempts, published report fingerprint and the seven deterministic counts read
+from that run's own final state — `verified_findings`, `dropped_findings`,
+`context_unchecked_findings`, `duplicate_fact_rows`, `unjudged_sentences`,
+`missing_required_targets` and `extra_passes` (the extra passes the graph
+spent). The counts the quality snapshot holds are `null` only where the run
+stamped no snapshot, because a pass that composed no report judged nothing;
+`extra_passes` is `state.iteration` and is always recorded. Each repetition's
+own published documents sit under
+`output/evaluations/e2e/replay/<case-id>/repetition-<n>/`. Controlled stdout
+prints the mode header, one line per row, the suite verdict, the artifact path
+and the network line — never report bodies or raw tool/model payloads.
 
 ### Manual Live Verification
 
@@ -974,6 +1248,6 @@ RUN_DEEPSEEK_LIVE_TESTS=1 python -m pytest -o addopts= -m live tests/live/test_d
 
 - Phase 1: Core package foundation, config, types, providers
 - Phase 2: Memory and tools
-- Phase 3: Agents and LangGraph orchestration ← complete (all six agents and the graph)
+- Phase 3: Agents and LangGraph orchestration ← complete (the five agents and the graph)
 - Phase 4: CLI ← complete; FastAPI API ← complete; Streamlit UI ← complete
 - Phase 5: Tests and verification

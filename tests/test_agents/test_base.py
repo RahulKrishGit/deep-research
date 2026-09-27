@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 import pytest
 from pydantic import ConfigDict, Field
 
-from deep_research.agents.base import BaseAgent
+from deep_research.agents.base import BaseAgent, call_configuration_fingerprint
 from deep_research.agents.errors import AgentConfigurationError
 from deep_research.agents.prompts import AgentTask
 from deep_research.agents.steps import ReActRun, ReActStep
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderTimeoutError
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import ContractModel, ResearchState
 from tests.agent_fakes import (
     BoomTool,
@@ -75,6 +75,20 @@ class SufficientAgent(SummaryAgent):
             step.observation is not None and step.observation.success
             for step in steps
         )
+
+
+class ContextAgent(SummaryAgent):
+    name = "context_summarizer"
+
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        del task, steps
+        return f"target=target-{iteration}; complete context for turn {iteration}"
 
 
 class FlakyAgent(SummaryAgent):
@@ -160,6 +174,36 @@ async def test_run_renders_the_task_tools_and_scratchpad_into_the_prompt(
     )
     assert "- [observation] echo succeeded" in second_messages[1].content
     assert "Iteration 2 of 3." in second_messages[1].content
+
+
+@pytest.mark.asyncio
+async def test_react_decision_prompt_receives_fresh_complete_decision_context(
+    tracker: Tracker,
+) -> None:
+    completer = ScriptedCompleter(
+        [
+            use_tool("Check the echo.", "echo", '{"value": "hi"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = _agent(
+        tracker,
+        completer,
+        agent_class=ContextAgent,
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        await agent.run(_state())
+
+    assert "## Acquisition context" in completer.react_calls[0].messages[1].content
+    assert "target=target-1" in completer.react_calls[0].messages[1].content
+    assert "target=target-2" in completer.react_calls[1].messages[1].content
+    # The context is rebuilt per turn, never reused from the previous prompt,
+    # and the section heading appears exactly once in each turn.
+    assert "target=target-1" not in completer.react_calls[1].messages[1].content
+    assert completer.react_calls[1].messages[1].content.count(
+        "## Acquisition context"
+    ) == 1
 
 
 @pytest.mark.asyncio
@@ -460,6 +504,126 @@ def test_an_agent_class_without_a_name_is_rejected(tracker: Tracker) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_every_provider_call_carries_its_own_configuration_fingerprint(
+    tracker: Tracker,
+) -> None:
+    """A run says which configuration produced each of its requests.
+
+    The ReAct decision and the structured output are different calls with
+    different output budgets, so they cannot share one fingerprint — and both
+    move when the model profile does, which is why the profile is part of the
+    payload rather than only the agent's name.
+    """
+    completer = ScriptedCompleter(
+        decisions=[finish("Nothing to look up.", "Rayleigh.")],
+        outputs=[Summary(headline="Rayleigh.")],
+    )
+    agent = SchemaAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(SchemaAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(max_iterations=3),
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="max",
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert set(outcome.call_fingerprints) == {"ReactDecision", "Summary"}
+    assert len(set(outcome.call_fingerprints.values())) == 2
+
+    other = SchemaAgent(
+        provider=ScriptedCompleter(
+            decisions=[finish("Nothing to look up.", "Rayleigh.")],
+            outputs=[Summary(headline="Rayleigh.")],
+        ),
+        tracker=tracker,
+        scratchpad=_pad(SchemaAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(max_iterations=3),
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        cheaper = await other.run(_state())
+
+    assert cheaper.call_fingerprints != outcome.call_fingerprints
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "agent_name",
+        "model",
+        "thinking_mode",
+        "reasoning_effort",
+        "output_limit",
+        "context_limit",
+        "schema_name",
+        "prompt_version",
+    ],
+)
+def test_a_call_fingerprint_covers_every_configured_input(field: str) -> None:
+    """Changing any one input changes the fingerprint, and only that input."""
+    baseline = {
+        "agent_name": "planner",
+        "model": "deepseek-v4-flash",
+        "thinking_mode": "enabled",
+        "reasoning_effort": "max",
+        "output_limit": 32768,
+        "context_limit": 8,
+        "schema_name": "ResearchPlanDraft",
+        "prompt_version": "planner-2",
+    }
+    changed = dict(baseline)
+    changed[field] = "changed" if isinstance(baseline[field], str) else 4096
+
+    assert call_configuration_fingerprint(**baseline) == (
+        call_configuration_fingerprint(**baseline)
+    )
+    assert call_configuration_fingerprint(**changed) != (
+        call_configuration_fingerprint(**baseline)
+    )
+
+
+def test_an_unresolved_model_profile_is_recorded_rather_than_invented(
+    tracker: Tracker,
+) -> None:
+    """A hand-built agent fingerprints the field as unresolved."""
+    agent = SummaryAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=_pad(),
+        tools=[EchoTool(tracker)],
+    )
+
+    assert agent.model_profile is None
+    fingerprint = agent.fingerprint_call("Summary")
+    resolved = SummaryAgent(
+        provider=ScriptedCompleter(),
+        tracker=tracker,
+        scratchpad=_pad(),
+        tools=[EchoTool(tracker)],
+        model_profile=EffectiveModelConfig(
+            model="deepseek-v4-flash",
+            thinking_mode="enabled",
+            reasoning_effort="high",
+        ),
+    ).fingerprint_call("Summary")
+
+    assert fingerprint != resolved
+
+
 def test_the_default_config_bounds_the_loop(tracker: Tracker) -> None:
     agent = SummaryAgent(
         provider=ScriptedCompleter(),
@@ -470,6 +634,107 @@ def test_the_default_config_bounds_the_loop(tracker: Tracker) -> None:
 
     assert agent.config == AgentRuntimeConfig()
     assert agent.toolset.names == ("echo",)
+
+
+class BudgetAgent(SummaryAgent):
+    """A synthetic agent declared under a canonical agent name.
+
+    ``tool_budget_overrides`` is keyed by the six production agent names, so
+    only an agent that *is* one of them can look up an override. Declaring a
+    test double under ``report_writer`` is what makes the base loop's
+    budget
+    lookup observable: with the override in place the loop must stop after
+    one executed tool call even though the global budget is three.
+    """
+
+    name = "report_writer"
+
+
+@pytest.mark.asyncio
+async def test_the_base_loop_uses_the_agent_specific_budget(
+    tracker: Tracker,
+) -> None:
+    """The ReAct loop is bounded by this agent's budget, not the global one."""
+    completer = ScriptedCompleter(
+        [
+            use_tool("Echo once.", "echo", '{"value": "one"}'),
+            use_tool("Echo twice.", "echo", '{"value": "two"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=3,
+            tool_budget_overrides={"report_writer": 1},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 1
+    assert outcome.react.stop_reason == "tool_budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_a_zero_budget_override_lets_an_agent_think_without_tools(
+    tracker: Tracker,
+) -> None:
+    """``tool_budget_overrides={"report_writer": 0}`` is a real bound, not a
+    fallback to the global default."""
+    completer = ScriptedCompleter([finish("Nothing to look up.", "Rayleigh.")])
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            tool_budget_overrides={"report_writer": 0},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 0
+    assert outcome.react.stop_reason == "finished"
+
+
+@pytest.mark.asyncio
+async def test_another_agents_budget_override_does_not_apply_here(
+    tracker: Tracker,
+) -> None:
+    """A planner override must not narrow the report writer's own loop."""
+    completer = ScriptedCompleter(
+        [
+            use_tool("Echo once.", "echo", '{"value": "one"}'),
+            use_tool("Echo twice.", "echo", '{"value": "two"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = BudgetAgent(
+        provider=completer,
+        tracker=tracker,
+        scratchpad=_pad(BudgetAgent.name),
+        tools=[EchoTool(tracker)],
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=2,
+            tool_budget_overrides={"planner": 0},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.react.tool_calls == 2
 
 
 def test_the_agent_exposes_its_provider_and_tracker(tracker: Tracker) -> None:

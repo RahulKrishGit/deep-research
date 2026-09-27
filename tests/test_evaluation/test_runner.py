@@ -107,7 +107,7 @@ def test_repetition_result_retains_structured_diagnostics(
             "errors": [
                 {
                     "details": {
-                        "operation": "critic_report_review",
+                        "operation": "evidence_verifier_context_check",
                         "provider_failure": {
                             "kind": "schema_output",
                             "exception_type": "StructuredOutputError",
@@ -135,7 +135,7 @@ def test_repetition_result_retains_structured_diagnostics(
     diagnostic = result.fallback_provider_diagnostic
     assert diagnostic is not None
     assert diagnostic.kind == "schema_output"
-    assert diagnostic.operation == "critic_report_review"
+    assert diagnostic.operation == "evidence_verifier_context_check"
     assert [item.attempt for item in diagnostic.diagnostics] == [1, 2]
     assert [item.category for item in diagnostic.diagnostics] == [
         "json_invalid",
@@ -155,7 +155,7 @@ def test_repetition_result_normalizes_an_unsafe_diagnostic_path(
             "errors": [
                 {
                     "details": {
-                        "operation": "critic_report_review",
+                        "operation": "evidence_verifier_context_check",
                         "provider_failure": {
                             "kind": "schema_output",
                             "diagnostics": [
@@ -204,7 +204,9 @@ def test_repetition_result_keeps_a_fallback_with_no_diagnostics(
     assert diagnostic.diagnostics == ()
 
 
-@pytest.mark.parametrize("agent_name", ["source_evaluator", "synthesizer"])
+@pytest.mark.parametrize(
+    "agent_name", ["source_evaluator", "evidence_verifier", "report_writer"]
+)
 def test_non_react_agents_project_no_stop_reason(
     clean_target_output, agent_name
 ) -> None:
@@ -548,7 +550,7 @@ def test_the_summary_feedback_names_the_first_failed_gate(
     payload = build_evaluation_summary_feedback(
         failing_experiment_result.cases,
         tier="controlled",
-        runtime=runtime_config_for("synthesizer"),
+        runtime=runtime_config_for("report_writer"),
     )
 
     assert _summary_values(payload) == {
@@ -793,11 +795,11 @@ async def test_the_summary_observes_every_completed_row_before_it_runs(
         **partially_failing_harness.kwargs(tmp_path),
     )
 
-    assert len(runner.rows) == 9
+    assert len(runner.rows) == 12
     assert _summary_values({"results": runner.summary_feedback}) == {
         "evaluation_status": result.status,
         "evaluation_failure_reason": (
-            "focused-decomposition repetition 2 failed provider_failure"
+            "scoped-evidence-targets repetition 1 failed provider_failure"
         ),
     }
 
@@ -876,7 +878,7 @@ async def test_project_metadata_merges_shared_status_values_by_experiment_id(
                 "unrelated_key": "preserve me",
                 "evaluation_status": "FAILED",
                 "evaluation_failure_reason": (
-                    "focused-decomposition repetition 2 failed provider_failure"
+                    "scoped-evidence-targets repetition 1 failed provider_failure"
                 ),
             },
         }
@@ -1014,10 +1016,10 @@ async def test_missing_experiment_id_is_verdict_neutral_and_secret_safe(
 
 
 @pytest.mark.asyncio
-async def test_a_full_controlled_run_produces_nine_repetitions(
+async def test_a_full_controlled_run_produces_every_case_by_three_repetitions(
     settings, runtime_config_for, tmp_path, evaluation_harness
 ) -> None:
-    """Three cases times three repetitions, each with a judge evaluation."""
+    """Four cases times three repetitions, each with a judge evaluation."""
     runner = FakeEvaluateRunner(examples=evaluation_harness.examples)
 
     result = await run_agent_evaluation(
@@ -1029,8 +1031,8 @@ async def test_a_full_controlled_run_produces_nine_repetitions(
     )
 
     repetitions = [r for case in result.cases for r in case.repetitions]
-    assert len(result.cases) == 3
-    assert len(repetitions) == 9
+    assert len(result.cases) == 4
+    assert len(repetitions) == 12
     assert all(r.judge is not None for r in repetitions)
     assert all(r.judge.status == "scored" for r in repetitions)
 
@@ -1317,9 +1319,9 @@ async def test_one_failed_repetition_does_not_stop_the_other_cases(
         **partially_failing_harness.kwargs(tmp_path),
     )
 
-    assert len(result.cases) == 3
+    assert len(result.cases) == 4
     assert result.status == "FAILED"
-    assert sum(len(case.repetitions) for case in result.cases) == 9
+    assert sum(len(case.repetitions) for case in result.cases) == 12
 
 
 @pytest.mark.asyncio
@@ -1368,7 +1370,7 @@ async def test_the_artifact_is_written_and_revalidates(
     assert restored == result
     assert len(
         [r for case in restored.cases for r in case.repetitions]
-    ) == 9
+    ) == 12
     assert set(_summary_values({"results": runner.summary_feedback})) == {
         "evaluation_status",
         "evaluation_failure_reason",

@@ -254,6 +254,7 @@ async def test_disabled_nested_spans_record_local_context_events_and_metrics() -
         "input_tokens": 11,
         "output_tokens": 7,
         "total_tokens": 18,
+        "reasoning_tokens": 0,
     }
     assert [event.event_type for event in tracker.events] == [
         "observability.span.started",
@@ -433,6 +434,7 @@ async def test_enabled_tracing_emits_nested_runs_and_captures_trace_url() -> Non
         "input_tokens": 12,
         "output_tokens": 4,
         "total_tokens": 16,
+        "reasoning_tokens": 0,
     }
     assert trace_factory.managers[4].run.end_calls[-1]["outputs"] == {"results": 3}
     session_metric = next(
@@ -801,6 +803,7 @@ async def test_enabled_tracing_activates_context_nests_runs_and_inherits_url(
         "input_tokens": 12,
         "output_tokens": 4,
         "total_tokens": 16,
+        "reasoning_tokens": 0,
     }
     tool_metadata = trace_factory.managers[4].run.end_calls[-1]["metadata"]
     assert tool_metadata["success"] is True

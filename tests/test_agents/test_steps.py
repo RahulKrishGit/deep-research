@@ -23,7 +23,7 @@ from deep_research.utils.types import ResearchError
 
 
 def test_summary_limit_default_is_prompt_sized() -> None:
-    assert DEFAULT_SUMMARY_LIMIT == 200
+    assert DEFAULT_SUMMARY_LIMIT == 2000
 
 
 def test_summarize_text_collapses_whitespace() -> None:
@@ -429,6 +429,21 @@ def _tool_step(
     ("data", "expected"),
     [
         ({"url": "https://a.test/page", "text": "Read body."}, ("https://a.test/page",)),
+        # A redirect must not leave only the requested URL behind: the body
+        # came from the resolved URL, so that is the read URL.
+        (
+            {
+                "url": "https://a.test/asked",
+                "resolved_url": "https://served.test/page",
+                "text": "Read body.",
+            },
+            ("https://served.test/page",),
+        ),
+        # A payload with no resolved URL still reads the one it asked for.
+        (
+            {"url": "https://a.test/asked", "resolved_url": "  ", "text": "Body."},
+            ("https://a.test/asked",),
+        ),
         # A URL with nothing read from it is a candidate, not a read.
         ({"url": "https://a.test/page", "text": "   "}, ()),
         ({"url": "https://a.test/page"}, ()),
@@ -449,6 +464,19 @@ def test_only_a_scraped_page_with_text_is_read(
             {"source": "https://b.test/doc.pdf", "chunks": ["chunk"]},
             ("https://b.test/doc.pdf",),
         ),
+        (
+            {
+                "source": "https://b.test/asked.pdf",
+                "resolved_source": "https://cdn.test/doc.pdf",
+                "chunks": ["chunk"],
+            },
+            ("https://cdn.test/doc.pdf",),
+        ),
+        (
+            {"source": "https://b.test/doc.pdf", "resolved_source": None,
+             "chunks": ["chunk"]},
+            ("https://b.test/doc.pdf",),
+        ),
         # An empty chunk list means the document was never actually read.
         ({"source": "https://b.test/doc.pdf", "chunks": []}, ()),
         ({"source": "https://b.test/doc.pdf"}, ()),
@@ -462,12 +490,9 @@ def test_only_a_document_with_chunks_is_read(
 
 
 @pytest.mark.parametrize(
-    ("data", "expected"),
+    "data",
     [
-        (
-            {"matches": [{"content": "Recalled.", "source_url": "https://c.test/m"}]},
-            ("https://c.test/m",),
-        ),
+        ({"matches": [{"content": "Recalled.", "source_url": "https://c.test/m"}]}),
         (
             {
                 "matches": [
@@ -476,23 +501,56 @@ def test_only_a_document_with_chunks_is_read(
                         "metadata": {"source_url": "https://c.test/m"},
                     }
                 ]
-            },
-            ("https://c.test/m",),
+            }
         ),
-        # A match with no readable content was never read.
-        ({"matches": [{"source_url": "https://c.test/m"}]}, ()),
-        ({"matches": [{"content": "   ", "source_url": "https://c.test/m"}]}, ()),
-        # Content with no source is not a source.
-        ({"matches": [{"content": "Recalled."}]}, ()),
-        ({"matches": []}, ()),
-        ({"matches": ["not-a-dict"]}, ()),
-        ({"matches": [{"metadata": "not-a-dict"}]}, ()),
+        # Whatever a memory match claims about itself — a URL, high
+        # confidence, a previous "verified" label, a claimed read id — it is
+        # recalled prose, not a read of the source it names.
+        (
+            {
+                "matches": [
+                    {
+                        "content": "Recalled.",
+                        "source_url": "https://c.test/m",
+                        "confidence": 0.99,
+                        "verified": True,
+                        "read_id": "read-remembered",
+                        "metadata": {
+                            "source_url": "https://c.test/m",
+                            "verified": True,
+                        },
+                    }
+                ]
+            }
+        ),
+        ({"matches": [{"source_url": "https://c.test/m"}]}),
+        ({"matches": [{"content": "   ", "source_url": "https://c.test/m"}]}),
+        ({"matches": [{"content": "Recalled."}]}),
+        ({"matches": []}),
+        ({"matches": ["not-a-dict"]}),
+        ({"matches": [{"metadata": "not-a-dict"}]}),
     ],
 )
-def test_only_a_memory_match_with_content_and_a_source_is_read(
-    data: object, expected: tuple[str, ...]
-) -> None:
-    assert read_evidence_urls(_tool_step("query_memory", data)) == expected
+def test_a_memory_match_is_never_read_evidence(data: object) -> None:
+    assert read_evidence_urls(_tool_step("query_memory", data)) == ()
+
+
+def test_recalled_fact_is_not_a_source_read() -> None:
+    from deep_research.agents.steps import ReActStep, read_evidence_urls
+    from deep_research.tools.base import ToolResult
+
+    step = ReActStep(
+        iteration=1, thought="Test fixture.", action="use_tool",
+        tool_name="query_memory",
+        tool_result=ToolResult(
+            tool_name="query_memory", success=True, latency_ms=0,
+            data={"matches": [{
+                "content": "A previous generated answer says capacity is 10 GW.",
+                "source_url": "https://remembered.example/report",
+                "confidence": 0.99,
+            }]}),
+    )
+    assert read_evidence_urls(step) == ()
 
 
 def test_search_results_are_discovery_only() -> None:
@@ -544,24 +602,52 @@ def test_a_step_without_a_tool_result_reads_nothing() -> None:
     assert read_evidence_urls(step) == ()
 
 
-def test_read_evidence_urls_normalizes_in_order_and_deduplicates_within_the_step() -> (
-    None
-):
+def test_read_evidence_urls_normalizes_the_serving_url_it_selects() -> None:
+    """A redirect leaves the served URL normalized, not the requested one."""
     step = _tool_step(
-        "query_memory",
+        "web_scraper",
         {
-            "matches": [
-                {"content": "One.", "source_url": "HTTPS://A.test/one/"},
-                {"content": "One again.", "source_url": "https://a.test/one"},
-                {"content": "Two.", "source_url": "https://www.b.test/two?x=1#frag"},
-            ]
+            "url": "HTTPS://WWW.a.test/asked/",
+            "resolved_url": "https://b.test/one/",
+            "text": "Read body.",
         },
     )
 
-    assert read_evidence_urls(step) == (
-        "https://a.test/one",
-        "https://b.test/two?x=1",
+    assert read_evidence_urls(step) == ("https://b.test/one",)
+
+
+def test_read_evidence_urls_normalizes_one_page_reported_two_ways() -> None:
+    """Two tools, one page: each step reports the same canonical URL.
+
+    The first asked for a URL that redirects, the second reports the served
+    URL directly. ``retrieved_finding_urls`` folds those steps into one entry,
+    which only works because each step reports the canonical serving URL.
+    """
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[
+            _tool_step(
+                "web_scraper",
+                {
+                    "url": "HTTPS://WWW.b.test/two/?x=1",
+                    "resolved_url": "https://b.test/two?x=1",
+                    "text": "Read body.",
+                },
+            ),
+            _tool_step(
+                "document_reader",
+                {"source": "https://b.test/two?x=1#frag", "chunks": ["chunk"]},
+            ),
+        ],
+        iterations=2,
+        tool_calls=2,
     )
+
+    assert [read_evidence_urls(step) for step in run.steps] == [
+        ("https://b.test/two?x=1",),
+        ("https://b.test/two?x=1",),
+    ]
 
 
 def test_a_native_final_answer_becomes_an_internal_finish_decision() -> None:

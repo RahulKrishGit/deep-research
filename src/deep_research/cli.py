@@ -25,6 +25,12 @@ once. ``RequestBudgetStream`` serializes those lines and, like the rest of the
 diagnostic detail, prints them only under ``--verbose``. The terminal section
 in the summary is the same data read once, from the budget's own immutable
 snapshots.
+
+Three levels of detail, and each adds its own surface rather than repeating
+another: plain output streams progress and prints the summary, ``--verbose``
+adds tool-call, budget and token totals, and ``--debug-events`` streams the
+complete bounded event record — every recorded event, identified by its
+enumerated type and source, with no event metadata rendered.
 """
 
 from __future__ import annotations
@@ -32,16 +38,21 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TextIO
 
 from pydantic import JsonValue
 
+from deep_research.agents.report import error_reading
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
     SUPPORTED_OUTPUT_FORMATS,
     run_research_sync,
+)
+from deep_research.observability import (
+    render_telemetry_advice,
+    render_telemetry_line,
 )
 from deep_research.request_budget import (
     RequestBudgetSnapshot,
@@ -51,11 +62,12 @@ from deep_research.runtime.errors import (
     ResearchConfigurationError,
     configuration_error,
 )
-from deep_research.runtime.outcome import ResearchOutcome
+from deep_research.runtime.outcome import DroppedProposals, ResearchOutcome
 from deep_research.utils.types import (
-    ReportQualitySnapshot,
+    QUALITY_STATUS_ACCEPTED,
     ResearchError,
     ResearchEvent,
+    ReviewDefect,
 )
 
 PROGRAM_NAME = "python -m deep_research"
@@ -87,6 +99,13 @@ class CliOptions:
     config: str
     verbose: bool
     require_quality: bool
+    debug_events: bool = False
+    """True when ``--debug-events`` asked for the complete bounded event log.
+
+    A fourth output level beside the summary, the progress stream, and
+    ``--verbose``'s totals: the event record itself, one line per recorded
+    event, printed with the enumerated type and source that identify it.
+    """
 
     # Request-scoped budget controls. ``None`` means "this run requested
     # nothing", so the value the config file declares stays in force; the CLI
@@ -106,6 +125,24 @@ def _positive_int(value: str) -> int:
         ) from error
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    """Parse ``N >= 0``, the interval ``graph.max_extra_passes`` validates.
+
+    Zero is a legitimate ceiling — a run that may buy no extra research pass,
+    which is exactly what ``--max-iterations 0`` asks for — so this is not the
+    positive-integer parser the request-budget ceilings use.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a whole number"
+        ) from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
     return parsed
 
 
@@ -141,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
             "examples:\n"
             f'  {PROGRAM_NAME} "What are the security implications of '
             'quantum computing?"\n'
-            f'  {PROGRAM_NAME} "AI in healthcare" --max-iterations 5 '
+            f'  {PROGRAM_NAME} "AI in healthcare" --max-iterations 1 '
             "--output-format markdown --verbose\n"
             f"  {PROGRAM_NAME} --interactive\n"
             f"  {PROGRAM_NAME} --resume <session_id>"
@@ -170,9 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--max-iterations",
-        type=_positive_int,
+        type=_non_negative_int,
         default=None,
-        help="macro refinement passes the critic may request",
+        help=(
+            "extra research passes for missing required targets "
+            "(default: graph.max_extra_passes, 1)"
+        ),
     )
     parser.add_argument(
         "--output-format",
@@ -193,6 +233,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "print tool calls, token totals, each agent's completion "
             "records, and the typed error messages behind the warnings"
+        ),
+    )
+    parser.add_argument(
+        "--debug-events",
+        action="store_true",
+        help=(
+            "print every recorded event, with its type and source "
+            "(a diagnostic stream; the span lifecycle stays out)"
         ),
     )
     parser.add_argument(
@@ -273,6 +321,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         config=namespace.config,
         verbose=bool(namespace.verbose),
         require_quality=bool(namespace.require_quality),
+        debug_events=bool(namespace.debug_events),
         request_deepseek_attempt_ceiling=(
             namespace.request_deepseek_attempt_ceiling
         ),
@@ -314,12 +363,13 @@ def request_budget_overrides(
 
 
 # The events a plain run shows: the session's boundaries, which agent is
-# running, and every macro routing decision. Enough to see progress without
-# reading a log, which is exactly what the design asks for.
+# running, the extra pass when one is bought, and every routing decision.
+# Enough to see progress without reading a log, which is exactly what the
+# design asks for.
 PROGRESS_EVENT_TYPES = (
     "graph.session.started",
     "graph.node.started",
-    "graph.refinement.started",
+    "graph.extra_pass.started",
     "graph.route.decided",
     "graph.session.completed",
 )
@@ -331,23 +381,26 @@ SPAN_EVENT_PREFIX = "observability.span."
 # Every agent (and the graph itself) names its terminal record this way.
 COMPLETION_EVENT_SUFFIX = ".completed"
 
-# The two records ``--verbose`` adds that are not completions: the placeholder
-# a halted run emits where a node's completion would go, and the single
-# enumerated provider-failure event an agent can emit.
+# The three records ``--verbose`` adds that are not completions: the
+# placeholder a halted run emits where a node's completion would go, the single
+# enumerated provider-failure event an agent can emit, and the Report Writer's
+# own announcement that it wrote a report — which is not a completion record of
+# an agent loop, and is the one line that says a draft exists.
 VERBOSE_EVENT_TYPES = (
     "graph.node.skipped",
     "agent.provider_failure",
+    "report_writer.report.written",
 )
 
 # What a non-failing but non-ideal ending means, in one sentence.
 STATUS_NOTES = {
     "max_iterations": (
-        "Research completed with limitations: the refinement budget was "
-        "exhausted before the critic accepted the report."
+        "Research completed with limitations: extra passes exhausted with "
+        "required targets still missing, and the report not accepted."
     ),
     "incomplete": (
-        "Research completed with limitations: the run ended without an "
-        "accepted critique."
+        "Research completed with limitations: the report was published "
+        "without an accepted quality judgement."
     ),
     "failed": (
         "The research run stopped on a non-recoverable failure; everything "
@@ -356,16 +409,29 @@ STATUS_NOTES = {
 }
 
 
-def is_streamed_event(event_type: str, *, verbose: bool) -> bool:
+def is_streamed_event(
+    event_type: str,
+    *,
+    verbose: bool,
+    debug: bool = False,
+) -> bool:
     """True when one event type belongs in the live progress stream.
 
     Type-gated on purpose. Verbose adds agent completion records and the
     enumerated failure records above, and *only* those: a report body, provider
     text, or evidence excerpt is never streamed, because none of them is an
     event and no other event type is ever rendered.
+
+    ``debug`` is the complete record: every event type is streamed, including
+    the ones neither plain output nor verbose shows. Two exclusions remain,
+    and both are structural rather than editorial — the tracker's own span
+    lifecycle (two records per span, which would bury the log), and the
+    request-budget updates, which are a separate channel on their own switch.
     """
     if event_type.startswith(SPAN_EVENT_PREFIX):
         return False
+    if debug:
+        return True
     if event_type in PROGRESS_EVENT_TYPES:
         return True
     if not verbose:
@@ -376,16 +442,31 @@ def is_streamed_event(event_type: str, *, verbose: bool) -> bool:
     )
 
 
-def render_progress(event: ResearchEvent, *, verbose: bool) -> str | None:
+def render_progress(
+    event: ResearchEvent,
+    *,
+    verbose: bool,
+    debug: bool = False,
+) -> str | None:
     """The one line ``event`` streams, or ``None`` when the stream skips it.
 
     Called the moment the graph records the event, so a run that takes minutes
     shows progress while it runs. The final summary is a different surface and
     never reprints these records; every event therefore appears exactly once.
+
+    The debug form prefixes the enumerated ``event_type`` and ``source`` so a
+    record is identifiable rather than merely readable. Only those bounded
+    fields are added: the event's ``metadata`` is never rendered, so no URL,
+    query, or provider value can reach the terminal through this surface.
     """
-    if not is_streamed_event(event.event_type, verbose=verbose):
+    if not is_streamed_event(event.event_type, verbose=verbose, debug=debug):
         return None
     iteration = event.metadata.get("iteration", 0)
+    if debug:
+        return (
+            f"  [{iteration}] {event.event_type} ({event.source}): "
+            f"{event.message}"
+        )
     return f"  [{iteration}] {event.message}"
 
 
@@ -406,12 +487,21 @@ class ProgressStream:
     not need one here.
     """
 
-    def __init__(self, stream: TextIO, *, verbose: bool) -> None:
+    def __init__(
+        self,
+        stream: TextIO,
+        *,
+        verbose: bool,
+        debug: bool = False,
+    ) -> None:
         self._stream = stream
         self._verbose = verbose
+        self._debug = debug
 
     def __call__(self, event: ResearchEvent) -> None:
-        line = render_progress(event, verbose=self._verbose)
+        line = render_progress(
+            event, verbose=self._verbose, debug=self._debug
+        )
         if line is not None:
             print(line, file=self._stream, flush=True)
 
@@ -524,86 +614,281 @@ def _named_coverage_ids(errors: Sequence[ResearchError]) -> list[str]:
 
 
 def _warning_line(error: ResearchError) -> str:
-    """One recorded error as its enumerated type and its recorded reason.
+    """One recorded error as its enumerated type and its reading.
 
     Both are project-owned: ``agents.errors`` and ``graph.errors`` build every
     record from an enumeration, and neither ever records ``str(exception)`` or
-    provider text, so these lines are safe to print.
+    provider text, so these lines are safe to print. The reading is
+    ``agents.report.error_reading``: a skip record has one message per reason,
+    and the reason is what says whether the topic was deferred by the pass's
+    cap or lost to a provider failure that stopped the pass.
     """
-    return f"warning: [{error.error_type}] {error.message}"
+    return f"warning: [{error.error_type}] {error_reading(error)}"
+
+
+# The typed detail keys a producer records a *cause* under. Read in this order,
+# because ``reason`` is the enumerated "why" a producer stamps and the other
+# two name the failure class when a producer has no reason to give.
+_CAUSE_DETAIL_KEYS = ("reason", "cause", "failure_type", "exception_type")
+
+
+def _error_cause(error: ResearchError) -> str:
+    """The recorded cause of one error, or ``""`` when none was recorded.
+
+    Only a project-stamped detail key counts. A message is never parsed for a
+    cause: "the search provider timed out" is prose, and reading it as the
+    cause of a failure is how a display reason becomes a causal claim.
+    """
+    for key in _CAUSE_DETAIL_KEYS:
+        value = error.details.get(key)
+        if isinstance(value, str) and value.strip():
+            return f"{key} {value.strip()}"
+    return ""
+
+
+def _topic_titles(outcome: ResearchOutcome) -> dict[str, str]:
+    """The plan's own title for each coverage topic id.
+
+    This is what lets an unresolved access problem name the *question* it
+    leaves unanswered instead of only the id it was filed under.
+    """
+    return {
+        topic.coverage_id: topic.title
+        for topic in outcome.state.sub_topics
+        if topic.coverage_id and topic.title
+    }
+
+
+def _error_targets(
+    errors: Sequence[ResearchError], *, titles: dict[str, str]
+) -> list[str]:
+    """The affected coverage topics and target ids a group's records name.
+
+    Read from the typed ``coverage_id`` / ``target_ids`` details a producer
+    stamps, never inferred from a message. A named topic carries its plan title
+    beside its id, so the line says which question lost out.
+    """
+    tokens: list[str] = []
+    for error in errors:
+        coverage_id = error.details.get("coverage_id")
+        if isinstance(coverage_id, str) and coverage_id.strip():
+            title = titles.get(coverage_id)
+            token = f'{coverage_id} "{title}"' if title else coverage_id
+            if token not in tokens:
+                tokens.append(token)
+        named = error.details.get("target_ids")
+        if isinstance(named, list):
+            for item in named:
+                if isinstance(item, str) and item.strip() and item not in tokens:
+                    tokens.append(item)
+    return tokens
+
+
+# The typed details a producer stamps when it recorded *how* a failure was
+# resolved — a validated cache entry that answered a refused read, say.
+# Presence of a non-empty one is the resolution, and the only thing that earns
+# the word "recovered": ``recoverable`` means something else entirely, so it
+# can never be read as one.
+_RESOLUTION_DETAIL_KEYS = ("resolved_by", "recovered_by")
+
+
+def _recorded_resolution(error: ResearchError) -> bool:
+    """True when some producer recorded that this failure was resolved."""
+    for key in _RESOLUTION_DETAIL_KEYS:
+        value = error.details.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    return False
+
+
+def _recovery_phrase(errors: Sequence[ResearchError]) -> str:
+    """How a group's records ended: recovered, non-fatal, or fatal.
+
+    "Recovered" is earned by a recorded resolution and nothing else: a
+    producer stamps one only when something actually answered the failure.
+    ``recoverable`` is not that. It is the producer's own field meaning *the
+    run continued past this* — a provider-failed terminal review and a failed
+    terminal write both carry it, and neither was resolved by anyone — so it
+    is rendered here in the ledger's own vocabulary, ``non-fatal`` for
+    ``recoverable`` and ``fatal`` for its absence. The two surfaces then say
+    the same thing about the same record instead of the CLI claiming a
+    recovery the ledger does not.
+    """
+    total = len(errors)
+    resolved = sum(_recorded_resolution(error) for error in errors)
+    if resolved == total:
+        return "recovered"
+    unresolved = [error for error in errors if not _recorded_resolution(error)]
+    fatal = sum(not error.recoverable for error in unresolved)
+    parts: list[str] = []
+    if resolved:
+        parts.append(f"recovered {resolved} of {total}")
+    if fatal == len(unresolved):
+        parts.append("fatal")
+    elif fatal:
+        parts.append(f"fatal {fatal} of {len(unresolved)}")
+    else:
+        parts.append("non-fatal")
+    return "; ".join(parts)
+
+
+def _error_breakdown(
+    errors: Sequence[ResearchError], *, titles: dict[str, str]
+) -> list[str]:
+    """One line per (agent, type, cause) an error source actually recorded.
+
+    The source line above this says *who* lost out; these say *what* went
+    wrong, how often, how it ended, and which obligation it left open. Repeated
+    identical failures collapse into one line with a count, which is the
+    aggregation a reader needs — the alternative is one line per occurrence,
+    which is a log rather than a summary.
+    """
+    groups: dict[tuple[str, str, str], list[ResearchError]] = {}
+    for error in errors:
+        key = (error.source, error.error_type, _error_cause(error))
+        groups.setdefault(key, []).append(error)
+
+    lines: list[str] = []
+    for (_, error_type, cause), rows in groups.items():
+        count = f"x{len(rows)}" if len(rows) > 1 else ""
+        parts = [part for part in (count, _recovery_phrase(rows), cause) if part]
+        targets = _error_targets(rows, titles=titles)
+        detail = f": {', '.join(targets)}" if targets else ""
+        lines.append(f"    {error_type} ({'; '.join(parts)}){detail}")
+    return lines
 
 
 def render_warnings(
     outcome: ResearchOutcome, *, verbose: bool = False
 ) -> list[str]:
-    """Render recoverable errors grouped by the agent that recorded them.
+    """Render repeated errors grouped by agent, type, and cause.
 
-    Plain output is one line per affected source with its error count and the
-    coverage topics its records name, so a reader can see *who* contributed
-    nothing and *which* planned topic lost out without reading a log. The
-    messages themselves are verbose detail: they are enumerated and safe, but
-    they are not what makes the run actionable.
+    The header counts the same three readings each group line reports:
+    resolutions that were recorded, failures the run continued past, and
+    failures no producer recorded as recoverable. Counting ``recoverable`` as
+    "recovered" — as this header once did — publishes a recovery nobody made,
+    so a record earns the first count only from a recorded resolution. Each
+    source then gets a line, and each (type, cause) inside it gets a line that
+    keeps the affected coverage topics — with the plan's own title for each,
+    so an access problem that ended a pass names the question it leaves
+    unanswered.
+
+    A sub-topic skip gets its reason's own message (``error_reading``), so a
+    deferred topic is never published as one that was never researched.
+
+    The messages are verbose detail: they are enumerated and safe, but a
+    concrete cause with its targets is what makes the run actionable.
     """
     if not outcome.errors:
         return []
-    lines = ["Warnings:"]
-    for source, errors in _errors_by_source(outcome.errors).items():
-        coverage = _named_coverage_ids(errors)
-        count = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
+    titles = _topic_titles(outcome)
+    return _warning_lines(list(outcome.errors), titles=titles, verbose=verbose)
+
+
+def _warning_lines(
+    errors: Sequence[ResearchError],
+    *,
+    titles: dict[str, str],
+    verbose: bool,
+) -> list[str]:
+    """The header and one block per source for the errors that lost coverage."""
+    if not errors:
+        return []
+    resolved = sum(_recorded_resolution(error) for error in errors)
+    fatal = sum(
+        not _recorded_resolution(error) and not error.recoverable
+        for error in errors
+    )
+    counts = f"{len(errors)} error" + ("" if len(errors) == 1 else "s")
+    lines = [
+        f"Warnings: {counts} "
+        f"({resolved} recovered, {len(errors) - resolved - fatal} non-fatal, "
+        f"{fatal} fatal)"
+    ]
+    for source, rows in _errors_by_source(errors).items():
+        coverage = _named_coverage_ids(rows)
         detail = f" (coverage {', '.join(coverage)})" if coverage else ""
-        lines.append(f"  {source}: {count}{detail}")
+        lines.append(f"  {source}: {len(rows)} error"
+                     + ("" if len(rows) == 1 else "s") + detail)
+        lines.extend(_error_breakdown(rows, titles=titles))
         if verbose:
-            lines.extend(f"    {_warning_line(error)}" for error in errors)
+            lines.extend(f"    {_warning_line(error)}" for error in rows)
     return lines
 
 
-def _scored_cited_sources(quality: ReportQualitySnapshot) -> int:
-    """How many of the cited sources carry a numeric score.
+def _verdict_lines(outcome: ResearchOutcome) -> list[str]:
+    """The terminal verdict, and the judgement it rests on.
 
-    ``scored_cited_source_ratio`` is the snapshot's own field and is defined
-    as ``scored / cited``, so multiplying recovers the exact count the quality
-    pass measured. Nothing is recomputed from the report.
-    """
-    return round(quality.scored_cited_source_ratio * quality.cited_sources)
-
-
-def _quality_lines(outcome: ResearchOutcome) -> list[str]:
-    """The terminal verdict, and the typed metrics it rests on.
-
-    A fragment is printed only when the state carries it: no model review
-    means no critic score, and a run no quality pass judged prints its verdict
-    alone rather than a row of invented zeroes.
+    Acceptance is earned by the deterministic gates and the terminal semantic
+    review, so the review's own status and mean are the fragment printed beside
+    the verdict. A run no review judged prints its verdict alone rather than a
+    score nobody gave: the review's dimensions are never averaged into an
+    acceptance it did not pass.
     """
     parts: list[str] = []
-    critique = outcome.state.critique
-    if critique is not None:
-        parts.append(f"critic {critique.score}/10")
-    quality = outcome.quality
-    if quality is not None:
+    status = outcome.semantic_review_status.strip()
+    if status:
+        score = outcome.semantic_review_score
         parts.append(
-            f"{quality.covered_topics}/{quality.planned_topics} topics "
-            f"covered, {quality.coverage_ratio:.0%}"
+            f"review {status}" + (f" {score:.2f}" if score is not None else "")
         )
     detail = f" ({'; '.join(parts)})" if parts else ""
-    lines = [f"Quality: {outcome.quality_status}{detail}"]
-    if quality is None:
-        return lines
-    lines.append(
-        f"Evidence: {quality.cited_sources} cited sources; "
-        f"{_scored_cited_sources(quality)} scored; "
-        f"{quality.verified_claims} verified, "
-        f"{quality.contradicted_claims} contradicted"
-    )
-    lines.append(
-        f"Integrity: {quality.duplicate_claims} duplicate claims; "
-        f"{quality.duplicate_source_rows} duplicate source rows; "
-        f"{quality.uncited_settled_points} uncited settled points"
-    )
-    if quality.unresolved_topic_ids:
-        lines.append(
-            f"Open coverage: {', '.join(quality.unresolved_topic_ids)}"
-        )
-    return lines
+    return [f"Quality: {outcome.quality_status}{detail}"]
+
+
+def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
+    """What the Evidence Verifier kept, and the run's structural integrity.
+
+    Nothing is invented for a run no quality pass judged: with no snapshot
+    there are no counts to print, and a row of zeroes would read as a clean
+    report rather than as an unjudged one.
+
+    The findings row keeps the verifier's readings apart — the total kept,
+    how many of those were kept with corrected context, how many were kept with
+    an unchecked context, how many were dropped, and how many are cited —
+    because they are different answers: a corrected finding is a kept one whose
+    context the verifier amended, so it is *inside* the total rather than
+    beside it; a dropped finding is in neither; and a cited one is not the same
+    as a checked one. The integrity row reads the snapshot's own fields, and
+    the unjudged count is the length of the list the quality record publishes,
+    so the number and the list can never disagree.
+    """
+    counts = outcome.evidence_counts
+    quality = outcome.quality
+    if counts is None or quality is None:
+        return []
+    kept = counts.verified_findings + counts.corrected_findings
+    return [
+        f"Findings: {kept} checked "
+        f"({counts.corrected_findings} with corrected context, "
+        f"{counts.context_unchecked_findings} unchecked context), "
+        f"{counts.quoted_findings} quoted (snippet on the page only), "
+        f"{counts.dropped_findings} dropped; {counts.cited_findings} cited",
+        f"Integrity: {quality.duplicate_fact_rows} duplicate fact rows; "
+        f"{quality.uncited_settled_points} uncited statements; "
+        f"{len(quality.unjudged_sentences)} unjudged sentences; "
+        f"{quality.forecasts_without_release} forecasts without release",
+    ]
+
+
+def _telemetry_lines(outcome: ResearchOutcome) -> list[str]:
+    """The run's §7.3 figures: one line, then the advice they trigger.
+
+    Rendered by the telemetry's own renderers, never re-rendered here: the
+    line's wording, its order and the config keys in the advice are one
+    implementation's, so the CLI and the quality record cannot describe the
+    same run in two ways. Nothing is computed and nothing is acted on — the
+    advice is for an operator reading the summary, and the run never tunes
+    itself (§12).
+
+    A run whose collector recorded nothing is a run nothing measured — a
+    harness, or a runtime with no collector — and it prints no line at all:
+    a row of zeroes would read as a measured idle run.
+    """
+    telemetry = outcome.state.run_telemetry
+    if telemetry is None:
+        return []
+    return [render_telemetry_line(telemetry), *render_telemetry_advice(telemetry)]
 
 
 def _request_budget_lines(
@@ -640,8 +925,255 @@ def _request_budget_lines(
     return lines
 
 
+def _quality_reason_line(outcome: ResearchOutcome) -> list[str]:
+    """Why this verdict, from the typed records behind it.
+
+    A verdict with no reason is not actionable. The specific reason here is the
+    gate's own hard-failure names and the semantic review's own status — both
+    enumerated values, never report prose — and the line is printed only when
+    there is one, so an accepted run carries no invented qualifier.
+
+    The review's status is read from the outcome, not from the snapshot's
+    field alone: a snapshot written before the review was stamped carries an
+    empty status while the state holds a scored judgement, and printing "no
+    semantic review was recorded" directly above the row that reports one
+    would make the summary contradict itself.
+    """
+    quality = outcome.quality
+    reasons: list[str] = []
+    if quality is not None and quality.hard_failures:
+        reasons.append(
+            f"{len(quality.hard_failures)} gate failure"
+            + ("" if len(quality.hard_failures) == 1 else "s")
+            + f" ({', '.join(quality.hard_failures)})"
+        )
+    status = outcome.semantic_review_status.strip()
+    if status and status != "scored":
+        reasons.append(f"semantic review {status}")
+    elif not status:
+        reasons.append("no semantic review was recorded")
+    if not reasons:
+        return []
+    return [f"Quality reasons: {'; '.join(reasons)}"]
+
+
+def _coverage_line(outcome: ResearchOutcome) -> list[str]:
+    """Required-target completion, then what no search could answer.
+
+    Two readings of one denominator, kept apart (§6.4). The count is the
+    gate's own: required targets some verified finding answers. The Not found
+    row is the report's own account of what it searched for and did not find,
+    printed under its own name so a reader can tell an accounted obligation
+    from an unaccounted one — the Unresolved row is where a missing target no
+    search reported on shows up. Printing one number for both readings would
+    either hide an unaccounted obligation or report an accounted one as a
+    defect.
+    """
+    coverage = outcome.coverage
+    if coverage is None:
+        return []
+    lines = [
+        f"Required targets: {coverage.answered_targets}/"
+        f"{coverage.required_targets} answered"
+    ]
+    if coverage.not_found_target_ids:
+        lines.append(f"Not found: {', '.join(coverage.not_found_target_ids)}")
+    return lines
+
+
+def _source_lines(outcome: ResearchOutcome) -> list[str]:
+    """Assessed versus cited, and reads versus works versus cache reuses.
+
+    Four different quantities on one line, each labelled: every assessed source
+    is not every cited one (the last run had ten and eight), a physical read
+    call is not a unique validated work, and a cache reuse is not a second read
+    of the network.
+    """
+    counts = outcome.evidence_counts
+    if counts is None:
+        return []
+    return [
+        f"Sources: {counts.assessed_sources} assessed, "
+        f"{counts.cited_assessed_sources} cited; "
+        f"reads {counts.read_records} "
+        f"(network {counts.network_reads}, cache reuse {counts.cache_reads}), "
+        f"works {counts.unique_works}, "
+        f"publishers {counts.publishers}, "
+        f"findings {counts.findings}"
+    ]
+
+
+def _review_line(outcome: ResearchOutcome) -> list[str]:
+    """The judgement's own row: its status, and the packet it was made over.
+
+    The mean is printed once, on the verdict line it earned; this row carries
+    the judgement's identity so two runs' judgements can be told apart. A
+    missing judgement is printed as missing — never as a score of zero, and
+    never left off the summary, because an absent review is the reason a run
+    cannot be accepted, and a reader who cannot see it cannot see why the
+    verdict is ``partial``.
+    """
+    if outcome.quality is None:
+        return []
+    status = outcome.semantic_review_status.strip()
+    if not status:
+        return ["Review: no semantic review was recorded"]
+    if outcome.semantic_review_score is None:
+        return [f"Review: {status} (no score was recorded)"]
+    fingerprint = outcome.semantic_review_fingerprint.strip()
+    return [
+        f"Review: {status} (fingerprint {fingerprint or 'unrecorded'})"
+    ]
+
+
+def _unresolved_lines(outcome: ResearchOutcome) -> list[str]:
+    """The defects the reviewer named, and the required targets still owed.
+
+    Read from the Report Reviewer's own material defects and the gate's own
+    missing-target list, each with the target ids it affects. A run with
+    nothing open prints nothing; a run with something open names it rather
+    than saying "limitations remain".
+    """
+    review = outcome.state.report_review
+    defects = (
+        review.material_defects
+        if review is not None and review.status == "scored"
+        else []
+    )
+    coverage = outcome.coverage
+    missing = (
+        () if coverage is None else coverage.missing_required_target_ids
+    )
+    if not defects and not missing:
+        return []
+    parts: list[str] = []
+    if defects:
+        parts.append(f"{_defect_phrase(defects)} (semantic review)")
+    if missing:
+        parts.append(
+            f"{len(missing)} missing required target"
+            + ("" if len(missing) == 1 else "s")
+            + f" ({', '.join(missing)})"
+        )
+    return [f"Unresolved: {'; '.join(parts)}"]
+
+
+def _defect_phrase(defects: Sequence[ReviewDefect]) -> str:
+    """One defect list as its count and its bounded kind/scope pairs."""
+    scopes: list[str] = []
+    for defect in defects:
+        named = [*defect.target_ids, *defect.statement_ids]
+        scopes.append(f"{defect.kind} {named[0]}".strip() if named else defect.kind)
+    return (
+        f"{len(defects)} defect"
+        + ("" if len(defects) == 1 else "s")
+        + (f" ({', '.join(scopes)})" if scopes else "")
+    )
+
+
+def _elapsed_line(outcome: ResearchOutcome) -> list[str]:
+    """The span the run's recorded events cover, as minutes and seconds.
+
+    A sub-second span is reported as such rather than rounded to ``0s``: the
+    record really does hold two timestamps, and "0s" is a different claim from
+    "less than a second".
+    """
+    seconds = outcome.duration_seconds
+    if seconds is None:
+        return []
+    if seconds < 1:
+        return ["Elapsed: less than a second"]
+    whole = int(round(seconds))
+    minutes, remainder = divmod(whole, 60)
+    rendered = f"{minutes}m {remainder}s" if minutes else f"{remainder}s"
+    return [f"Elapsed: {rendered}"]
+
+
+def _artifact_lines(outcome: ResearchOutcome) -> list[str]:
+    """The three artifacts, and a truthful record of an incomplete publication.
+
+    The set is published whole or advertised not at all. The distinction is on
+    the lines: a path is printed when the whole set was written, and when a
+    write failed the line says the path is *not advertised* — never that the
+    file does not exist, because a sibling write may well have succeeded and
+    left a file on disk. A run that never attempted a publication keeps the
+    older wording, which is true of it.
+
+    A memory write of a cited finding is outside the set: its failures are
+    counted, and the three artifact lines are unaffected by them.
+    """
+    failed = outcome.failed_publication_artifacts
+    lines: list[str] = []
+    if failed:
+        lines.append(
+            "Publication: incomplete; these writes failed: "
+            f"{', '.join(failed)}. No artifact path is advertised until the "
+            "whole set is written."
+        )
+    withheld = "not advertised; the artifact set is published whole or not at all."
+    artifacts = (
+        (
+            "Report",
+            outcome.report_path,
+            "not written to disk; the report text is in the session state only.",
+        ),
+        (
+            "Evidence ledger",
+            outcome.evidence_path,
+            "not written to disk; the ledger text is in the session state only.",
+        ),
+        ("Quality record", outcome.quality_path, withheld),
+    )
+    for label, path, missing in artifacts:
+        if path is not None:
+            lines.append(f"{label}: {path}")
+        elif failed:
+            lines.append(f"{label}: {withheld}")
+        else:
+            lines.append(f"{label}: {missing}")
+    memory_failures = outcome.failed_memory_writes
+    if memory_failures:
+        count = f"{memory_failures} finding write"
+        lines.append(
+            f"Memory: {count}{'' if memory_failures == 1 else 's'} to memory "
+            "failed; memory writes are outside the artifact set, so the paths "
+            "above are unaffected."
+        )
+    return lines
+
+
+def _dropped_proposal_lines(dropped: DroppedProposals) -> list[str]:
+    """Proposals the researcher did not keep, by reason, as their own number.
+
+    Ruling 7 labels these apart from the calls and tokens beside them: a
+    proposal the pass dropped is not a failed call and not evidence, and its
+    two reasons stay distinct. A zero a recorded pass measured is printed —
+    it is an answer — while a run with no researcher record at all prints
+    nothing, because no record is not the same claim as a measured zero.
+    """
+    if dropped.total == 0:
+        return ["Dropped proposals: none"]
+    reasons: list[str] = []
+    if dropped.duplicates:
+        reasons.append(
+            f"{dropped.duplicates} duplicate finding"
+            + ("" if dropped.duplicates == 1 else "s")
+        )
+    if dropped.beyond_cap:
+        reasons.append(f"{dropped.beyond_cap} past the per-sub-topic cap")
+    return [f"Dropped proposals: {dropped.total} ({', '.join(reasons)})"]
+
+
 def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
-    """Render the run's identity, quality verdict, artifacts, and costs."""
+    """Render the run's identity, verdict, counts, artifacts, and costs.
+
+    The order is deliberate: what the run was, what it decided, how much of the
+    question it answered, what the evidence actually supports, what is still
+    open, where the artifacts are, and how long it took. The numbers on these
+    lines come from the same typed records the artifacts render from, which is
+    what keeps the printed summary, the reader report, the ledger and the
+    quality JSON in agreement about one run.
+    """
     lines = [
         f"Session ID: {outcome.session_id}",
         f"Status: {outcome.status}",
@@ -650,39 +1182,48 @@ def render_summary(outcome: ResearchOutcome, *, verbose: bool) -> list[str]:
     if note is not None:
         lines.append(note)
 
-    lines.extend(_quality_lines(outcome))
+    lines.extend(_verdict_lines(outcome))
+    lines.extend(_quality_reason_line(outcome))
+    lines.extend(_coverage_line(outcome))
+    lines.extend(_source_lines(outcome))
+    lines.extend(_review_line(outcome))
+    lines.extend(_evidence_lines(outcome))
 
-    if outcome.report_path is None:
-        lines.append(
-            "Report: not written to disk; the report text is in the session "
-            "state only."
-        )
-    else:
-        lines.append(f"Report: {outcome.report_path}")
+    # Directly after the integrity readings, which it belongs with: both are
+    # facts about the run rather than judgements of the report, and the
+    # advice below them is the operator's to act on, never the run's.
+    lines.extend(_telemetry_lines(outcome))
 
-    if outcome.evidence_path is None:
-        lines.append(
-            "Evidence ledger: not written to disk; the ledger text is in the "
-            "session state only."
-        )
-    else:
-        lines.append(f"Evidence ledger: {outcome.evidence_path}")
+    lines.extend(_unresolved_lines(outcome))
+    lines.extend(_artifact_lines(outcome))
 
     if outcome.trace_url is not None:
         lines.append(f"Trace: {outcome.trace_url}")
+
+    lines.extend(_elapsed_line(outcome))
 
     if verbose:
         if outcome.tool_calls:
             lines.append("Tool calls:")
             for summary in outcome.tool_calls:
-                failures = (
-                    f" ({summary.failures} failed)" if summary.failures else ""
-                )
+                notes: list[str] = []
+                if summary.failures:
+                    notes.append(f"{summary.failures} failed")
+                if summary.retries:
+                    notes.append(
+                        f"{summary.retries} retr"
+                        + ("y" if summary.retries == 1 else "ies")
+                    )
+                detail = f" ({', '.join(notes)})" if notes else ""
                 lines.append(
-                    f"  {summary.tool_name}: {summary.calls} calls{failures}"
+                    f"  {summary.tool_name}: {summary.calls} calls{detail}"
                 )
         else:
             lines.append("Tool calls: none recorded")
+
+        dropped = outcome.dropped_proposals
+        if dropped is not None:
+            lines.extend(_dropped_proposal_lines(dropped))
 
         if outcome.request_budget_snapshots:
             # The budget reported the tokens, per provider, so the pooled
@@ -710,10 +1251,47 @@ EXIT_GRAPH_FAILED = 3
 EXIT_QUALITY_UNACCEPTED = 4
 EXIT_INTERRUPTED = 130
 
+QUALITY_STATUS_KEY = "quality_status"
+"""The one key ``strict_quality_exit`` reads, and the name it reads it under."""
+
+
+def strict_quality_exit(
+    snapshot: Mapping[str, object],
+    *,
+    require_quality: bool,
+) -> int:
+    """The exit code a *completed* run's quality verdict earns.
+
+    A pure helper, and deliberately a narrow one: it answers one question —
+    did this run's terminal quality status accept the report? — and it is
+    called only after the configuration, usage, graph-failure and interrupt
+    exits have already been decided. Those stay where they are; nothing here
+    can reorder them.
+
+    The verdict is read from the enumerated status alone. Every other field a
+    snapshot may carry (hard-failure names, the semantic review's status and
+    mean, the required and answered target ids, the verifier's finding counts,
+    coverage ratios) is a diagnostic, and none of them can buy acceptance: a
+    report the terminal gates did not accept exits 4 under
+    ``--require-quality`` even when every counter looks clean. A snapshot with
+    no status at all is not accepted either — an absent judgement is never an
+    acceptance, and a missing key must not read as a pass.
+
+    Without ``--require-quality`` a completed run exits 0 whether or not the
+    report was accepted. That 0 means "the run finished"; it is explicitly not
+    a claim that the report was accepted, which is why the summary prints the
+    quality status beside it on every run.
+    """
+    if not require_quality:
+        return EXIT_OK
+    if snapshot.get(QUALITY_STATUS_KEY) == QUALITY_STATUS_ACCEPTED:
+        return EXIT_OK
+    return EXIT_QUALITY_UNACCEPTED
+
 INTERACTIVE_PROMPT = "Research question: "
 
 _STARTING_NOTICE = (
-    "Preparing the research run. A full session runs the six agents and "
+    "Preparing the research run. A full session runs the five agents and "
     "can take several minutes."
 )
 
@@ -794,7 +1372,9 @@ def main(
         for line in lines:
             print(line, file=out)
 
-    progress = ProgressStream(out, verbose=options.verbose)
+    progress = ProgressStream(
+        out, verbose=options.verbose, debug=options.debug_events
+    )
     budget = RequestBudgetStream(out, verbose=options.verbose)
 
     try:
@@ -804,7 +1384,7 @@ def main(
             question=question,
             resume_session_id=options.resume,
             config_path=options.config,
-            max_iterations=options.max_iterations,
+            max_extra_passes=options.max_iterations,
             output_format=options.output_format,
             config_overrides=request_budget_overrides(options),
             event_handler=progress,
@@ -822,7 +1402,10 @@ def main(
     emit(render_summary(outcome, verbose=options.verbose))
     if outcome.failed:
         return EXIT_GRAPH_FAILED
-    if options.require_quality and not outcome.accepted:
+    quality_exit = strict_quality_exit(
+        {QUALITY_STATUS_KEY: outcome.quality_status},
+        require_quality=options.require_quality,
+    )
+    if quality_exit == EXIT_QUALITY_UNACCEPTED:
         emit([_QUALITY_UNACCEPTED_NOTICE])
-        return EXIT_QUALITY_UNACCEPTED
-    return EXIT_OK
+    return quality_exit

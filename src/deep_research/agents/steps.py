@@ -34,7 +34,7 @@ StopReason: TypeAlias = Literal[
 ]
 ReActActionType: TypeAlias = Literal["use_tool", "finish"]
 
-DEFAULT_SUMMARY_LIMIT = 200
+DEFAULT_SUMMARY_LIMIT = 2000
 _ELLIPSIS = "..."
 
 
@@ -164,6 +164,8 @@ class ReActObservation(ContractModel):
 class ReActStep(ContractModel):
     """One completed think -> act -> observe cycle."""
 
+    proposal_id: str | None = Field(default=None, min_length=1)
+    """Local identity for one provider proposal, never a vendor call id."""
     iteration: int = Field(ge=1)
     thought: str = Field(min_length=1)
     action: ReActActionType
@@ -191,6 +193,15 @@ class ReActRun(ContractModel):
     stop_reason: StopReason
     iterations: int = Field(default=0, ge=0)
     tool_calls: int = Field(default=0, ge=0)
+    cache_hits: int = Field(default=0, ge=0)
+    """Local reuse observations, kept out of ``tool_calls``.
+
+    A policy may answer a requested read from the run's shared successful-read
+    cache instead of spending an external call. That is a completed action with
+    an observation, but it is not a tool call: counting it in ``tool_calls``
+    reported acquired work that never happened, and corroboration that never
+    happened either.
+    """
     max_loop_iterations: int = Field(default=0, ge=0)
     max_loop_tool_calls: int = Field(default=0, ge=0)
     final_answer: str | None = Field(default=None, min_length=1)
@@ -223,40 +234,39 @@ def _has_text(value: JsonValue) -> bool:
 def _read_payload_urls(tool_name: str, data: dict[str, JsonValue]) -> list[str]:
     """The URLs one payload's tool READ content from, in payload order.
 
+    Both read tools report the URL they were asked for *and* the one the
+    transport resolved to, so the serving URL wins wherever a payload carries
+    one: after a redirect the body came from the resolved page, and crediting
+    it to the requested one is the attribution this contract exists to fix. A
+    payload without it — including every payload written before this field
+    existed — falls back to the requested URL.
+
     Shapes are the real ones each tool returns, and a malformed entry
     contributes nothing rather than raising.
     """
     if tool_name == "web_scraper":
-        url = data.get("url")
-        if _has_text(data.get("text")) and isinstance(url, str):
+        url = _payload_url(data, "resolved_url", "url")
+        if _has_text(data.get("text")) and url is not None:
             return [url]
         return []
     if tool_name == "document_reader":
-        source = data.get("source")
+        source = _payload_url(data, "resolved_source", "source")
         chunks = data.get("chunks")
-        if isinstance(source, str) and isinstance(chunks, list) and chunks:
+        if source is not None and isinstance(chunks, list) and chunks:
             return [source]
         return []
-    if tool_name == "query_memory":
-        matches = data.get("matches")
-        if not isinstance(matches, list):
-            return []
-        urls: list[str] = []
-        for match in matches:
-            if not isinstance(match, dict) or not _has_text(match.get("content")):
-                continue
-            url = match.get("source_url")
-            if not isinstance(url, str):
-                metadata = match.get("metadata")
-                url = (
-                    metadata.get("source_url")
-                    if isinstance(metadata, dict)
-                    else None
-                )
-            if isinstance(url, str):
-                urls.append(url)
-        return urls
     return []
+
+
+def _payload_url(
+    data: dict[str, JsonValue], resolved_key: str, requested_key: str
+) -> str | None:
+    """One payload's serving URL, or the requested URL it falls back to."""
+    for key in (resolved_key, requested_key):
+        value = data.get(key)
+        if _has_text(value):
+            return value  # type: ignore[return-value]
+    return None
 
 
 def read_evidence_urls(step: ReActStep) -> tuple[str, ...]:
@@ -268,10 +278,17 @@ def read_evidence_urls(step: ReActStep) -> tuple[str, ...]:
     report a finding from a page it never opened) and the agents that follow
     it cannot disagree about what counts as evidence:
 
-    * ``web_scraper`` — only with a URL and non-blank ``text``;
-    * ``document_reader`` — only with a source URL and non-empty ``chunks``;
-    * ``query_memory`` — only for a match carrying non-blank ``content`` and
-      a ``source_url``, which may also sit under the match's ``metadata``;
+    * ``web_scraper`` — only with a URL and non-blank ``text``, and the
+      ``resolved_url`` when the payload reports one;
+    * ``document_reader`` — only with a source and non-empty ``chunks``, and
+      the ``resolved_source`` when the payload reports one;
+    * ``query_memory`` — never: recall is discovery and procedural guidance,
+      even when the entry carries text, a source URL (direct or under its
+      metadata), high confidence, a previous "verified" label, or a claimed
+      read ID. Recalled prose is not a read, and its self-declared metadata is
+      not validation. A stored read is re-admitted only by resolving the
+      original artifact through the local read registry
+      (``agents.evidence.validate_cached_read``);
     * ``web_search`` — never: a result list is a set of candidates, and the
       model has not read any of them;
     * ``save_to_memory`` — never: a write is not evidence;

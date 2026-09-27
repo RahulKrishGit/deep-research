@@ -1,291 +1,147 @@
-"""Typed contracts for the controlled whole-report quality campaign.
+"""Typed contracts for the offline real-agent replay matrix.
 
-The campaign deliberately has its own contracts.  The individual-agent
-evaluation package remains responsible for agent trajectories, while this
-module describes the cross-agent report, its evidence ledger, and the bounded
-judge hand-off.
+The retired scripted-double harness's contracts (the six-agent campaign,
+its whole-report judge, and its deterministic evaluation of claim-era state)
+are gone: PD-14 replaces that harness entirely with the real-agent replay
+matrix, which judges a run by its own declared result and invariants
+(``e2e_evaluation.replay.expectation_failures``), not by a bounded judge
+adapter over a scripted double's state.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue
 
-from deep_research.utils.types import (
-    Claim,
-    ContractModel,
-    Finding,
-    ReportComposition,
-    ResearchState,
-    ScoredSource,
-    SubTopic,
-)
+from deep_research.utils.types import ContractModel
 
-CAMPAIGN_SCHEMA_VERSION = 1
-CASE_SCHEMA_VERSION = 1
-CASE_REGISTRY_VERSION = 1
-REPORT_SCHEMA_VERSION = 1
-QUALITY_GATE_VERSION = 1
-
-AGENT_NAMES: tuple[str, ...] = (
-    "planner",
-    "researcher",
-    "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
-)
+REPLAY_SUITE_SCHEMA_VERSION = 1
 
 
-class SnapshotPass(ContractModel):
-    """One scripted graph pass and the evidence it emits."""
+class ReplayRepetitionResult(ContractModel):
+    """One repetition of one real-agent replay row.
 
-    iteration: int = Field(ge=0)
-    findings: list[Finding] = Field(default_factory=list)
-    sources: list[ScoredSource] = Field(default_factory=list)
-    claims: list[Claim] = Field(default_factory=list)
-    critic_targets: list[str] = Field(default_factory=list)
-    new_evidence_topics: list[str] = Field(default_factory=list)
-    force_refinement: bool = False
-
-
-class EvidenceLedgerSummary(ContractModel):
-    """Bounded, content-light evidence context allowed to reach a judge."""
-
-    source_count: int = Field(ge=0)
-    scored_source_count: int = Field(ge=0)
-    claim_count: int = Field(ge=0)
-    verified_claim_count: int = Field(ge=0)
-    contradicted_claim_count: int = Field(ge=0)
-    verification_passage_count: int = Field(ge=0)
-    duplicate_source_rows: int = Field(ge=0)
-    duplicate_claims: int = Field(ge=0)
-    source_titles: list[str] = Field(default_factory=list, max_length=16)
-    claim_summaries: list[str] = Field(default_factory=list, max_length=16)
-
-
-class WholeReportJudgeInput(ContractModel):
-    """The only input shape a whole-report judge may receive.
-
-    There is intentionally no provider transcript, tool payload, secret,
-    hidden reasoning, or raw trajectory field in this contract.
+    The real-agent harness's repetition record: a replay runs the five
+    production agents through the real graph, the real reviewer, renderer
+    and publisher, and judges nothing with a whole-report judge, so a
+    repetition carries what the run actually produced — the terminal
+    quality, the exit code, the ways it fell short of its case's declared
+    result — plus the two pieces of harness evidence a declared result has
+    no place for: the socket connections the run attempted, and the
+    fingerprint of the report it published.
     """
 
-    question: str = Field(min_length=1, max_length=2_000)
-    scoped_plan: list[SubTopic] = Field(min_length=1, max_length=7)
-    reader_report: str = Field(min_length=1, max_length=16_000)
-    deterministic_metrics: dict[str, float | int | bool] = Field(
-        min_length=1, max_length=64
-    )
-    evidence_ledger_summary: EvidenceLedgerSummary
-
-    @model_validator(mode="after")
-    def forbid_unbounded_or_unsafe_metrics(self) -> "WholeReportJudgeInput":
-        for key in self.deterministic_metrics:
-            if key.casefold() in {
-                "secret",
-                "api_key",
-                "raw_provider_output",
-                "tool_payload",
-                "hidden_reasoning",
-                "chain_of_thought",
-            }:
-                raise ValueError("judge metrics contain a prohibited field")
-        return self
-
-
-class WholeReportRubric(ContractModel):
-    """Bounded reader-facing dimensions for a whole-report judge."""
-
-    rubric_id: str = "whole-report-quality"
-    version: int = Field(default=1, ge=1)
-    dimensions: dict[str, str] = Field(
-        default_factory=lambda: {
-            "completeness": "Answers every planned topic and names gaps.",
-            "prioritization": "Ranks mechanisms and decisions clearly.",
-            "evidence_quality": "Uses read, scored, provenance-bearing evidence.",
-            "attribution": "Links settled points to the sources supporting them.",
-            "uncertainty": "Discloses contradiction and evidence limits.",
-            "readability": "Keeps the reader report concise and navigable.",
-            "actionability": "Makes implications and decisions clear.",
-        },
-        min_length=7,
-        max_length=7,
-    )
-
-
-class WholeReportJudgeScore(ContractModel):
-    """A bounded judge verdict; no judge prose is needed by the gates."""
-
-    score: float = Field(ge=0.0, le=1.0)
-    dimensions: dict[str, float] = Field(default_factory=dict)
-    rationale: str = Field(default="", max_length=1_000)
-    rubric: WholeReportRubric = Field(default_factory=WholeReportRubric)
-
-
-class DeterministicEvaluation(ContractModel):
-    """Every deterministic metric and the hard failures it produced."""
-
-    planned_topics: int = Field(ge=0)
-    attempted_topics: int = Field(ge=0)
-    covered_topics: int = Field(ge=0)
-    coverage_ratio: float = Field(ge=0.0, le=1.0)
-    read_sources: int = Field(ge=0)
-    cited_sources: int = Field(ge=0)
-    scored_cited_sources: int = Field(ge=0)
-    source_read_provenance_ratio: float = Field(ge=0.0, le=1.0)
-    checked_claims: int = Field(ge=0)
-    claims_with_provenance: int = Field(ge=0)
-    checked_claim_provenance_ratio: float = Field(ge=0.0, le=1.0)
-    resolved_citations: int = Field(ge=0)
-    citation_count: int = Field(ge=0)
-    citation_linkage_ratio: float = Field(ge=0.0, le=1.0)
-    duplicate_claims: int = Field(ge=0)
-    duplicate_source_rows: int = Field(ge=0)
-    duplicate_finding_rows: int = Field(default=0, ge=0)
-    contradicted_claims: int = Field(ge=0)
-    disclosed_contradictions: int = Field(ge=0)
-    uncited_settled_points: int = Field(ge=0)
-    reader_report_words: int = Field(ge=0)
-    evidence_ledger_words: int = Field(ge=0)
-    reader_report_chars: int = Field(ge=0)
-    evidence_ledger_chars: int = Field(ge=0)
-    refinement_passes: int = Field(ge=1)
-    critic_targets: int = Field(ge=0)
-    closed_critic_targets: int = Field(ge=0)
-    new_evidence_in_refinement: int = Field(ge=0)
-    repeated_source_snapshot_passes: int = Field(ge=0)
-    repeated_claim_snapshot_passes: int = Field(ge=0)
-    gate_forced_refinement_passes: int = Field(ge=0)
-    # A gate-forced refinement pass that the Critic gave no target for. Not a
-    # failure — the gate is the graph's own verdict and the broad case exists
-    # to exercise it — but a pass that spends budget and cannot be aimed at
-    # anything, so the artifact records it rather than accepting it silently.
-    targetless_gate_forced_refinements: int = Field(default=0, ge=0)
-    publication_events: int = Field(ge=0)
-    report_writes: int = Field(ge=0)
-    evidence_writes: int = Field(ge=0)
-    memory_writes: int = Field(ge=0)
-    cli_summary_matches: bool
-    rendered_citation_resolution: bool = True
-    # Whether the state this verdict came from carried the production graph's
-    # own node events. When it did not, every *observed* metric leg was
-    # substituted from the case fixture and is true by construction, so the
-    # verdict has to say which branch ran.
-    graph_observed: bool = True
-    integrity_failures: list[str] = Field(default_factory=list)
-    hard_failures: list[str] = Field(default_factory=list)
-
-    @property
-    def integrity_passed(self) -> bool:
-        return not self.integrity_failures and not self.hard_failures
-
-
-class CampaignMetadata(ContractModel):
-    """Reproducibility fields written to local and trace-shaped metadata."""
-
-    campaign_schema_version: int = CAMPAIGN_SCHEMA_VERSION
-    case_schema_version: int = CASE_SCHEMA_VERSION
-    case_registry_version: int = CASE_REGISTRY_VERSION
-    report_schema_version: int = REPORT_SCHEMA_VERSION
-    quality_gate_version: int = QUALITY_GATE_VERSION
-    graph_revision: str = Field(min_length=1)
-    target_prompt_fingerprints: dict[str, str] = Field(min_length=6, max_length=6)
-    target_model: str = Field(min_length=1)
-    target_reasoning_effort: str = Field(min_length=1)
-    judge_model: str = Field(min_length=1)
-    judge_reasoning_effort: str = Field(min_length=1)
-    case_id: str = Field(min_length=1)
-    case_version: int = Field(ge=1)
-    tier: Literal["controlled", "live"]
-    repetition: int = Field(ge=1)
-    request_counts: dict[str, int] = Field(default_factory=dict)
-
-
-class ControlledCase(ContractModel):
-    """One graph-shaped scripted case, with no external dependencies."""
-
-    case_id: str = Field(min_length=1)
-    version: int = Field(default=CASE_SCHEMA_VERSION, ge=1)
-    tier: Literal["controlled", "live"] = "controlled"
-    title: str = Field(min_length=1)
-    question: str = Field(min_length=1)
-    sub_topics: list[SubTopic] = Field(min_length=1, max_length=7)
-    passes: list[SnapshotPass] = Field(min_length=1)
-    network_zero: bool = True
-    scripted_dependencies: bool = True
-    authorization_required: bool = False
-    expected_contradictions: int = Field(default=0, ge=0)
-    expected_refinement_topics: list[str] = Field(default_factory=list)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
-
-    def first_pass(self) -> SnapshotPass:
-        return self.passes[0]
-
-    def final_pass(self) -> SnapshotPass:
-        return self.passes[-1]
-
-    @property
-    def repeated_snapshots(self) -> bool:
-        if len(self.passes) < 2:
-            return False
-        first = self.passes[0]
-        return any(
-            pass_item.sources == first.sources and pass_item.claims == first.claims
-            for pass_item in self.passes[1:]
-        )
-
-
-class CampaignRepetition(ContractModel):
-    """One deterministic repetition of one case."""
-
     case_id: str
     repetition: int = Field(ge=1)
-    state: ResearchState
-    composition: ReportComposition
-    report: str = Field(min_length=1)
-    evidence_ledger: str = Field(min_length=1)
-    deterministic: DeterministicEvaluation
-    judge: WholeReportJudgeScore
-    cli_summary: dict[str, JsonValue] = Field(default_factory=dict)
-    cli_output: list[str] = Field(default_factory=list)
-    judge_input: WholeReportJudgeInput
-    publication_operations: list[str] = Field(default_factory=list)
-    metadata: CampaignMetadata
-    langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    session_id: str
+    terminal_quality: str
+    exit_code: int
+    expectation_failures: list[str] = Field(default_factory=list)
+    answered_target_ids: list[str] = Field(default_factory=list)
+    verified_findings: int | None = None
+    """The seven counts, read from the run's own final state.
 
-    @property
-    def accepted(self) -> bool:
-        return self.deterministic.integrity_passed and self.judge.score + 1e-9 >= 0.70
+    ``verified_findings``, ``dropped_findings``,
+    ``context_unchecked_findings``, ``duplicate_fact_rows``,
+    ``unjudged_sentences`` and ``missing_required_targets`` come from
+    ``state.quality`` -- the snapshot ``compute_report_quality`` stamped on the
+    finished pass -- and ``extra_passes`` from ``state.iteration``. They are
+    read rather than counted again here: a second count made by the harness
+    could only disagree with the run it is judging.
+
+    ``None`` is the honest value for the six the snapshot holds when no
+    snapshot was stamped: a pass that composed no report judged nothing, and a
+    recorded zero would read as a judgement it never made.
+
+    ``duplicate_fact_rows`` and ``unjudged_sentences`` are recorded, not
+    re-enforced. Both are already gates of the quality pass, and a row fails on
+    any ``hard:<gate>`` gap its case does not allow, so the suite does not
+    check them a second time.
+    """
+    dropped_findings: int | None = None
+    context_unchecked_findings: int | None = None
+    duplicate_fact_rows: int | None = None
+    unjudged_sentences: int | None = None
+    """Kept sentences with no verdict and no batch failure to blame."""
+    missing_required_targets: int | None = None
+    """Required targets the run's own accounting left unanswered."""
+    network_attempts: list[str] = Field(default_factory=list)
+    """Every socket connect this repetition attempted. Empty is the evidence.
+
+    A suite that cannot show this empty on every repetition is not accepted:
+    the harness exists to be network-zero, so an attempt is a failure of the
+    proof rather than a warning about it.
+    """
+    report_fingerprint: str
+    """The published report's hash, over its canonical form.
+
+    Canonicalized because one thing about a report is a fact about the
+    *session* that made it: which ordinal each reference was assigned. The
+    byline is hashed with the rest of the report, so two repetitions that
+    told the reader different counts are two different outcomes. The
+    fingerprint is what makes "the same result every time" a measurable
+    claim rather than a hope.
+    """
+    extra_passes: int = Field(ge=0)
+    """The extra passes the graph spent (``state.iteration``).
+
+    Required rather than defaulted: the iteration count exists for every
+    finished run, so a repetition that does not state it is a repetition that
+    recorded nothing about the repair round.
+    """
 
 
-class CaseCampaignResult(ContractModel):
+class ReplayCaseResult(ContractModel):
+    """One declared replay row, and the repetitions that ran it."""
+
     case_id: str
-    repetitions: list[CampaignRepetition] = Field(min_length=1)
-    mean_coverage: float = Field(ge=0.0, le=1.0)
-    mean_judge_score: float = Field(ge=0.0, le=1.0)
-    accepted: bool
-    hard_failures: list[str] = Field(default_factory=list)
+    version: int = Field(ge=1)
+    expected_product_result: str
+    decisive_assertion: str
+    repetitions: list[ReplayRepetitionResult] = Field(min_length=1)
+    deterministic: bool
+    """Whether every repetition produced one identical outcome."""
+    passed: bool
+    """Whether every repetition met its case's declared result, deterministically.
+
+    Determinism is required, not merely reported: the repetitions exist to
+    show order and identity are deterministic and that the runs are
+    isolated, so a row whose repetitions disagree did not pass however clean
+    each repetition's own result was.
+    """
     artifact_path: str | None = None
 
 
-class CampaignResult(ContractModel):
-    """Round-trippable whole-report campaign artifact."""
+class ReplaySuiteResult(ContractModel):
+    """Round-trippable real-agent suite artifact."""
 
     campaign_id: str = Field(min_length=1)
-    tier: Literal["controlled", "live"]
+    tier: Literal["controlled"]
+    mode: Literal["real-agent"]
+    manifest_version: int = Field(ge=1)
+    case_version: int = Field(ge=1)
     repetitions: int = Field(ge=1)
-    cases: list[CaseCampaignResult] = Field(min_length=1)
+    cases: list[ReplayCaseResult] = Field(min_length=1)
     accepted: bool
+    """The suite's verdict: every row produced the result it declares.
+
+    A real-agent row can declare a partial result — ``same-work-mirror`` does
+    — and a suite that read that as a failure could not hold the negative
+    half of its own matrix. Determinism is part of the verdict too: a row
+    that passed is a row whose repetitions agreed, so a suite holding a row
+    whose runs disagreed is not accepted. The stricter, product-level fact is
+    ``rows_accepted``.
+    """
+    rows_accepted: bool = True
+    """Every repetition's own product result was an accepted one."""
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
     artifact_path: str | None = None
-    langsmith_metadata: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-# Descriptive aliases keep the public vocabulary focused on the whole-report
-# campaign while the shorter internal names remain convenient in the runner.
-WholeReportCase = ControlledCase
-WholeReportRepetition = CampaignRepetition
-WholeReportCaseResult = CaseCampaignResult
-WholeReportResult = CampaignResult
+__all__ = [
+    "REPLAY_SUITE_SCHEMA_VERSION",
+    "ReplayCaseResult",
+    "ReplayRepetitionResult",
+    "ReplaySuiteResult",
+]

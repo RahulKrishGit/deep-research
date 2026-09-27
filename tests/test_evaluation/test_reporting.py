@@ -30,9 +30,9 @@ def test_the_summary_matches_the_shape_the_spec_shows(
     body = "\n".join(lines)
 
     assert lines[0] == "Researcher - controlled"
-    assert "Cases:       3/3 passed" in body
-    assert "Repetitions: 9/9 completed" in body
-    assert "Hard gates:  9/9 passed" in body
+    assert "Cases:       4/4 passed" in body
+    assert "Repetitions: 12/12 completed" in body
+    assert "Hard gates:  12/12 passed" in body
     assert "Mean score:  0.86" in body
     assert "Status:      REVIEW REQUIRED" in body
     assert "Experiment:  https://" in body
@@ -40,6 +40,7 @@ def test_the_summary_matches_the_shape_the_spec_shows(
     assert "multi-source-coverage" in body
     assert "conflicting-evidence" in body
     assert "partial-search-failure" in body
+    assert "read-bearing-acquisition" in body
     assert "Results: " in body
     assert "results.json" in body
 
@@ -87,6 +88,50 @@ def test_verbose_output_prints_no_model_payload_and_no_secret(
     assert "messages" not in body.lower()
 
 
+def test_verbose_output_discloses_the_resolved_production_parity(
+    researcher_experiment_result,
+) -> None:
+    body = "\n".join(
+        render_experiment(researcher_experiment_result, verbose=True)
+    )
+
+    assert (
+        "production parity: on (configuration) — target profile from "
+        "production; release evidence: yes"
+    ) in body
+
+
+def test_verbose_output_labels_an_invocation_override(
+    researcher_experiment_result,
+) -> None:
+    result = researcher_experiment_result.model_copy(
+        update={
+            "metadata": {
+                **researcher_experiment_result.metadata,
+                "production_parity": False,
+                "production_parity_source": "invocation",
+                "target_profile_source": "evaluation",
+                "release_evidence": False,
+            }
+        }
+    )
+
+    body = "\n".join(render_experiment(result, verbose=True))
+
+    assert (
+        "production parity: off (invocation) — target profile from "
+        "evaluation; release evidence: no"
+    ) in body
+
+
+def test_non_verbose_output_omits_the_parity_line(
+    researcher_experiment_result,
+) -> None:
+    lines = render_experiment(researcher_experiment_result, verbose=False)
+
+    assert not any(line.startswith("production parity:") for line in lines)
+
+
 def test_a_judge_not_run_repetition_is_shown_with_its_reason(
     judge_not_run_experiment_result,
 ) -> None:
@@ -110,9 +155,8 @@ def test_the_listing_shows_every_agent_case_and_dataset(
         "planner",
         "researcher",
         "source-evaluator",
-        "fact-checker",
-        "synthesizer",
-        "critic",
+        "evidence-verifier",
+        "report-writer",
     ):
         assert name in body
         assert f"deep-research-{name}-controlled-v1" in body
@@ -120,8 +164,9 @@ def test_the_listing_shows_every_agent_case_and_dataset(
 
     assert "focused-decomposition" in body
     assert "planner-live-scope" in body
-    assert "missing-evidence-or-budget-exhausted" in body
-    assert body.count("controlled") >= 6
+    assert "relay-labelled-as-relay" in body
+    assert "canonical-evidence-report" in body
+    assert body.count("controlled") >= 5
     assert "3 repetitions" in body
     assert "1 repetition" in body
 
@@ -175,7 +220,7 @@ def test_the_artifact_contains_every_repetition_result(
     repetitions = [
         item for case in payload["cases"] for item in case["repetitions"]
     ]
-    assert len(repetitions) == 9
+    assert len(repetitions) == 12
     for item in repetitions:
         assert "gates" in item
         assert "deterministic_quality" in item

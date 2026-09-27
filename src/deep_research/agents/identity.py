@@ -28,7 +28,10 @@ import unicodedata
 from collections.abc import Sequence
 
 from deep_research.agents.sources import normalize_source_url
-from deep_research.utils.types import Claim, Finding, ScoredSource
+from deep_research.utils.types import (
+    Finding,
+    ScoredSource,
+)
 
 # Punctuation and symbols that survive normalization because they can change
 # what a claim asserts: units and ranges ("km/h", "40%", "3-5 kg"), comparisons
@@ -73,16 +76,6 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def claim_fingerprint(text: str) -> str:
-    """Return the stable identity of one claim's text.
-
-    Two claims share a fingerprint exactly when they assert the same thing and
-    differ only in how it was written; materially different years, numbers,
-    units, comparisons, negation, or geography always differ.
-    """
-    return _digest(_normalized_text(text))
-
-
 def finding_fingerprint(finding: Finding) -> str:
     """Return the stable identity of one finding.
 
@@ -102,6 +95,108 @@ def finding_fingerprint(finding: Finding) -> str:
     )
 
 
+def _figure_keys(finding: Finding) -> tuple[tuple[str, str, str, str, str], ...]:
+    """The figures one finding carries, as ``(value, unit, period, kind, subject)`` keys.
+
+    Subject is part of D13's "figure set" (P2 fix): without it, two loops
+    quoting one comparison-table sentence for two different products with the
+    same value and unit fold into one record at the passage stage, and the
+    survivor's target ids silently claim a binding it never stated for the
+    other product's obligation.
+    """
+    return tuple(
+        sorted(
+            (
+                figure_.value,
+                figure_.unit,
+                figure_.period or "",
+                figure_.kind or "",
+                _normalized_text(figure_.subject or ""),
+            )
+            for figure_ in finding.figures
+        )
+    )
+
+
+def _verified_figure_keys(
+    finding: Finding,
+) -> tuple[tuple[str, str, str, str, str, str], ...] | None:
+    """How one finding's figures were judged, or ``None`` before any judgement."""
+    verification = finding.verification
+    if verification is None:
+        return None
+    return tuple(
+        sorted(
+            (
+                result.figure.value,
+                result.figure.unit,
+                result.figure.period or "",
+                result.figure.kind or "",
+                str(result.kept),
+                result.dropped_reason or "",
+            )
+            for result in verification.figure_results
+        )
+    )
+
+
+def _assertion_key(finding: Finding) -> tuple[object, ...]:
+    """What one finding asserts, as the key the passage fold may collapse on.
+
+    Two records mined from one passage are the same evidence only when this
+    matches. A sentence can state two facts — an actual and the forecast beside
+    it, a figure and the date it was released — and the fold would keep the
+    winner's figures and drop the loser's, so the dropped fact would never be
+    verified and the obligation it answered would read Not found.
+
+    A record's assertion is therefore its figures (value, unit, period, kind)
+    and, once a verification exists, each figure's own outcome, because a
+    figure kept and a figure dropped are not the same claim. A record with no
+    figures asserts only its content, so two different content-less-of-figures
+    restatements of one sentence stay two findings.
+    """
+    figures = _figure_keys(finding)
+    if not figures:
+        return ("prose", _normalized_text(finding.content))
+    return ("figures", figures, _verified_figure_keys(finding))
+
+
+def _passage_key(finding: Finding) -> tuple[str, ...] | None:
+    """The identity of the evidence one finding carries, or ``None``.
+
+    A finding the acquisition path produced names the read and locator it was
+    mined from and quotes the page verbatim, so ``(url, read, locator,
+    snippet)`` says exactly which sentence of which page this is. Two bound
+    records with that key are one piece of evidence however each restated it
+    -- and however each was mined: a passage a later loop re-reads for a
+    *different* sub-topic is still that passage when both records carry
+    explicit target ids (D13, the run's own F01/F19/F27 shape), because the
+    fold unions bindings rather than choosing one.
+
+    An *unbound* record (``target_ids`` empty) keeps its own sub-topic in the
+    key (P1 fix): its only path to answering anything is the sub-topic
+    fallback (1A), carried on ``related_sub_topic`` alone, and folding it into
+    an unbound record from a *different* sub-topic would keep one survivor's
+    sub-topic and silently delete the other's only route to its target --
+    reported "Not found" for a fact the run did extract and verify. Folding
+    two unbound records of the *same* sub-topic is still safe and still
+    happens, which is the shape a re-read of one page by one sub-topic's own
+    later pass produces. A record that names no passage (a legacy or raw
+    caller) has no such key, and nothing folds on it.
+    """
+    if not finding.read_id or not finding.locator or not finding.snippet:
+        return None
+    base = (
+        normalize_source_url(finding.source_url),
+        finding.read_id,
+        finding.locator,
+        _normalized_text(finding.snippet),
+    )
+    if not finding.target_ids:
+        return (*base, _normalized_text(finding.related_sub_topic))
+    return base
+
+
 def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     """Fold ``findings`` onto one record per identity, in first-seen order.
 
@@ -109,14 +204,118 @@ def deduplicate_findings(findings: Sequence[Finding]) -> list[Finding]:
     so the result does not depend on how a caller ordered equal-confidence
     restatements. Deliberately exact-match only — no embeddings and no fuzzy
     thresholds, because a near-miss merge would silently drop evidence.
+
+    Identity is read twice, and the second reading is what makes a re-read
+    free. ``finding_fingerprint`` keys the record on the page, the sub-topic
+    and the prose, which is right when two records are the same *statement*.
+    ``_passage_key`` then folds the records that are the same *evidence*: one
+    passage of one page, quoted identically, restated twice — the shape a later
+    pass produces when it re-reads a page the run already read and mines the
+    sentence it already holds. That fold is gated on ``_assertion_key``, so it
+    collapses only records that assert the same thing: one sentence can carry
+    two facts (an actual and the forecast beside it), and merging those would
+    keep the winner's figures and drop the loser's *before anything is
+    verified*, which reports an extracted, verified fact as Not found. Two
+    different sentences of one passage stay two findings for the same reason —
+    the fold is on the sentence and on what it says, not on the passage alone.
+
+    The fold keeps the record, and not its silences. ``raw_findings`` is
+    append-only across research rounds, and a later extraction of the same
+    passage may come back unbound — an id outside the plan is dropped rather
+    than fatal — so a confidence-only fold would let a restatement delete the
+    only record of which planned target that evidence answers. Target ids are
+    unioned in the kept record's order, and its own dates and provenance win,
+    with a field it lacks filled from the duplicate: the same argument covers
+    whose figure the evidence is, because a restatement that recorded no
+    attribution must not put an issuer's count back under the host that
+    carried it.
     """
     kept: dict[str, Finding] = {}
     for finding in findings:
         fingerprint = finding_fingerprint(finding)
         existing = kept.get(fingerprint)
-        if existing is None or finding.confidence > existing.confidence:
+        if existing is None:
             kept[fingerprint] = finding
+            continue
+        if finding.confidence > existing.confidence:
+            winner, loser = finding, existing
+        else:
+            winner, loser = existing, finding
+        kept[fingerprint] = _merge_duplicate_findings(winner, loser)
+
+    # One passage may carry several asserted facts, so the fold holds one
+    # survivor *per fact* rather than one per passage: a duplicate of any of
+    # them still collapses, and no fact loses its record to a sibling's.
+    by_passage: dict[tuple[str, ...], dict[tuple[object, ...], str]] = {}
+    for fingerprint, finding in list(kept.items()):
+        key = _passage_key(finding)
+        if key is None:
+            continue
+        held_by_assertion = by_passage.setdefault(key, {})
+        held = held_by_assertion.get(_assertion_key(finding))
+        if held is None:
+            held_by_assertion[_assertion_key(finding)] = fingerprint
+            continue
+        kept[held] = _merge_duplicate_findings(kept[held], finding)
+        del kept[fingerprint]
     return list(kept.values())
+
+
+def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
+    """The record to keep, carrying both records' bindings and provenance.
+
+    Only the fields a fold could otherwise erase are merged. Content, URL,
+    topic and confidence are the identity and the ranking, and the kept
+    record's own values stand.
+
+    Provenance is filled from the duplicate the way a date is, and in the same
+    order — the kept record's own value wins and a field it lacks is filled —
+    except for the attribution pair, which is one claim recorded in two
+    halves: an attribution without its quote is not admitted, so a record that
+    already carries a named body keeps both of its own halves rather than
+    taking the loser's name beside its own phrase.
+
+    A dispute finding (``Finding.disputes``) and a plain one are never
+    merged into each other, whatever identity or passage key they land on
+    (RevZ1, run 7 fix wave review, P2): unioning ``target_ids`` would bind
+    the survivor to a target its own text does not dispute when it is the
+    dispute record that wins, and a plain ``model_copy`` would drop the
+    flag silently when it is the plain record that wins. The winner is
+    kept exactly as extracted and the loser's own record is dropped.
+    """
+    if winner.disputes != loser.disputes:
+        return winner
+    target_ids = list(dict.fromkeys([*winner.target_ids, *loser.target_ids]))
+    dates = {
+        name: getattr(winner, name) or getattr(loser, name)
+        for name in (
+            "vintage",
+            "statement_date",
+            "data_period",
+            "measure_scope",
+            "release_date",
+        )
+    }
+    merged = winner.model_copy(update={"target_ids": target_ids, **dates})
+    if not merged.attributed_issuer:
+        merged = merged.model_copy(
+            update={
+                "attributed_issuer": loser.attributed_issuer,
+                "attribution_quote": loser.attribution_quote,
+            }
+        )
+    if not merged.snippet and loser.snippet:
+        merged = merged.model_copy(
+            update={
+                "snippet": loser.snippet,
+                "read_id": loser.read_id,
+                "locator": loser.locator,
+                "figures": list(loser.figures),
+            }
+        )
+    if merged == winner:
+        return winner
+    return merged
 
 
 def merge_source_snapshot(
@@ -130,38 +329,41 @@ def merge_source_snapshot(
     losing sources this pass never revisited: the latest assessment for a
     canonical URL wins, a source first seen earlier keeps its position, and
     each canonical URL appears at most once.
+
+    A provider failure, source cap, or missing model row is an operational
+    status rather than a quality judgement, so a previously valid score is
+    preserved through those transient states — but only while it is still an
+    assessment of the same content. ``assessment_revision`` is the recorded
+    evidence of that: once both records carry one and they differ, the
+    document changed, the new record is about content the old score never saw,
+    and the stale score is dropped rather than credited to it. Two records
+    with no recorded revision cannot show a change, so they keep the historic
+    behavior and the earlier score survives.
     """
     merged: dict[str, ScoredSource] = {}
     for source in (*previous, *current):
         url = normalize_source_url(source.url)
         existing = merged.get(url)
-        # A provider failure, source cap, or missing model row is an
-        # operational status rather than a quality judgement. Preserve a
-        # previously valid score through those transient states; a new scored
-        # record still replaces any older unscored record.
         if (
             existing is not None
             and existing.evaluation_status == "scored"
             and source.evaluation_status != "scored"
+            and not _revision_changed(existing, source)
         ):
             continue
         merged[url] = source
     return list(merged.values())
 
 
-def merge_claim_snapshot(
-    previous: Sequence[Claim],
-    current: Sequence[Claim],
-) -> list[Claim]:
-    """Return the canonical claim snapshot after this pass re-verified.
+def _revision_changed(existing: ScoredSource, incoming: ScoredSource) -> bool:
+    """True when two assessments are demonstrably about different content.
 
-    Keyed by ``claim_fingerprint``, so the latest verdict for a claim wins: a
-    claim the latest pass contradicted no longer reads as verified, and a
-    stale positive judgement cannot outlive the evidence against it. Claims
-    this pass never revisited keep their first-seen position, and each
-    fingerprint appears at most once.
+    An empty revision is not evidence of a change: every record written before
+    the revision contract existed carries none, and an unscored record built
+    without a read says nothing about which content it was about.
     """
-    merged: dict[str, Claim] = {}
-    for claim in (*previous, *current):
-        merged[claim_fingerprint(claim.text)] = claim
-    return list(merged.values())
+    return (
+        bool(existing.assessment_revision)
+        and bool(incoming.assessment_revision)
+        and existing.assessment_revision != incoming.assessment_revision
+    )

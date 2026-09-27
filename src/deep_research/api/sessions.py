@@ -17,7 +17,11 @@ from typing import TypeAlias
 
 from pydantic import JsonValue
 
-from deep_research.api.models import SessionStatus
+from deep_research.api.models import (
+    CoverageProgressResponse,
+    EvidenceCountsResponse,
+    SessionStatus,
+)
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.types import ResearchError, ResearchEvent
@@ -66,6 +70,64 @@ class ResearchSession:
         self.changed.set()
 
 
+def outcome_response_fields(
+    outcome: ResearchOutcome | None,
+) -> dict[str, object]:
+    """The additive API fields one finished outcome contributes, or ``{}``.
+
+    Every value is the outcome's own typed property, which is built from the
+    same records the summary, the reader report and the quality JSON render
+    from — so the API cannot disagree with the CLI about one run, and nothing
+    here re-derives a number from a report body.
+
+    A session with no outcome contributes nothing at all: a running session
+    has no artifact paths, no contract version, no review, no coverage and no
+    span, and defaulting any of them would answer a question the run has not
+    reached. An empty review status is ``None`` for the same reason — "no
+    review was recorded" is not a status.
+    """
+    if outcome is None:
+        return {}
+    fields: dict[str, object] = {
+        "evidence_path": outcome.evidence_path,
+        "quality_path": outcome.quality_path,
+        "quality_contract_version": outcome.quality_contract_version,
+        "semantic_review_status": outcome.semantic_review_status or None,
+        "semantic_review_score": outcome.semantic_review_score,
+        "duration_seconds": outcome.duration_seconds,
+    }
+    coverage = outcome.coverage
+    if coverage is not None:
+        fields["coverage"] = CoverageProgressResponse(
+            required_targets=coverage.required_targets,
+            answered_targets=coverage.answered_targets,
+            missing_required_target_ids=list(
+                coverage.missing_required_target_ids
+            ),
+            not_found_target_ids=list(coverage.not_found_target_ids),
+        )
+    counts = outcome.evidence_counts
+    if counts is not None:
+        fields["evidence_counts"] = EvidenceCountsResponse(
+            read_records=counts.read_records,
+            network_reads=counts.network_reads,
+            cache_reads=counts.cache_reads,
+            unique_works=counts.unique_works,
+            publishers=counts.publishers,
+            source_urls=counts.source_urls,
+            findings=counts.findings,
+            assessed_sources=counts.assessed_sources,
+            cited_assessed_sources=counts.cited_assessed_sources,
+            verified_findings=counts.verified_findings,
+            corrected_findings=counts.corrected_findings,
+            quoted_findings=counts.quoted_findings,
+            dropped_findings=counts.dropped_findings,
+            context_unchecked_findings=counts.context_unchecked_findings,
+            cited_findings=counts.cited_findings,
+        )
+    return fields
+
+
 class SessionStore:
     """Own one process's research sessions and their background tasks."""
 
@@ -78,7 +140,7 @@ class SessionStore:
         *,
         session_id: str,
         query: str,
-        max_iterations: int | None,
+        max_extra_passes: int | None,
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
@@ -88,6 +150,10 @@ class SessionStore:
         The record is visible (and its status is ``running``) before the
         background task gets its first chance to execute, so a caller can
         never observe a session that was started but not yet registered.
+
+        ``max_extra_passes`` is the extra-pass ceiling the request asked for,
+        never ``max_iterations``: the request field kept its name for existing
+        clients, and this is the graph's own vocabulary for what it sets.
         """
         if session_id in self._sessions:
             raise ValueError(f"a session already exists for {session_id!r}")
@@ -102,7 +168,7 @@ class SessionStore:
             self._run(
                 session=session,
                 query=query,
-                max_iterations=max_iterations,
+                max_extra_passes=max_extra_passes,
                 output_format=output_format,
                 config_overrides=config_overrides,
                 config_path=config_path,
@@ -170,7 +236,7 @@ class SessionStore:
         *,
         session: ResearchSession,
         query: str,
-        max_iterations: int | None,
+        max_extra_passes: int | None,
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
@@ -186,7 +252,7 @@ class SessionStore:
             outcome = await self._runner(
                 question=query,
                 session_id=session.session_id,
-                max_iterations=max_iterations,
+                max_extra_passes=max_extra_passes,
                 output_format=output_format,
                 config_overrides=config_overrides,
                 config_path=config_path,

@@ -1,311 +1,198 @@
-"""Pure report-quality metrics and hard-failure detection.
+"""The written report's deterministic gate set (spec §6.4, PD-10).
 
-The quality pass consumes the typed research state and the typed composition
-that the Synthesizer is about to render.  It deliberately never inspects
-Markdown: reader points, claim links, source URLs, and the composition's
-explicit metadata are the source of truth.
+Nine gates over one pass's report and the verified findings behind it:
+unresolved citations, uncited settled points, duplicate fact rows, a missing
+as-of or scope, sentences the Statement Check never judged, required targets
+neither answered nor listed as Not found, and the two missing artifacts.
+Every reading is typed state or the typed composition -- nothing here
+inspects Markdown.
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable
 
-from deep_research.agents.identity import (
-    claim_fingerprint,
-    deduplicate_findings,
-    merge_claim_snapshot,
-    merge_source_snapshot,
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import ReportComposition, answered_not_stated_targets
+from deep_research.agents.verified_facts import (
+    _rows_share_a_subject,
+    answered_target_ids,
+    same_organisation,
+    same_period,
 )
-from deep_research.agents.report import ReportComposition, ReportPoint
-from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
-    Claim,
+    EvidenceTarget,
+    FactRow,
     ReportQualitySnapshot,
+    ReportReview,
     ResearchState,
-    ScoredSource,
-)
-
-# A plan with five or more topics is broad enough that an apparently good
-# report must still account for most of the planned surface.
-BROAD_PLAN_MIN_TOPICS = 5
-BROAD_PLAN_COVERAGE_THRESHOLD = 0.80
-
-_UNRESOLVED_MARKERS = frozenset(
-    {
-        "?",
-        "[?]",
-        "[citation needed]",
-        "citation needed",
-        "n/a",
-        "tbd",
-        "unknown",
-        "unresolved",
-    }
 )
 
 
-def _reader_points(composition: ReportComposition) -> Iterator[ReportPoint]:
-    """Yield every typed point that appears in the reader report."""
+def _one_fact(left: FactRow, right: FactRow,
+              targets: Iterable[EvidenceTarget]) -> bool:
+    """Whether two rows would be one fact to ``fact_rows`` (F11, PD-9, D11).
 
-    yield from composition.summary
-    yield from composition.constraints
-    for section in composition.sections:
-        yield from section.points
+    Invariant (F11): ``fact_rows()`` already merges same-fact rows, so this
+    guards hand-built compositions and future producers, and it may only count a
+    pair the rows path would have merged. Two of its rules keep rows apart, and
+    both are mirrored here (the final review's P2-3 and I6):
 
+    * a row that states no subject is not the same fact as a row that names one.
+      ``same_subject`` treats no subject as compatible with any, which is what
+      lets a subject-less figure join its fact's group, but as a duplicate test
+      it would fail a clean report for two rows the rows path deliberately kept
+      apart;
+    * two rows answering different obligations are two facts, however equal
+      their values -- the two parts of one question, not one fact stated twice.
 
-def _source_rows(
-    state: ResearchState,
-    composition: ReportComposition,
-) -> list[ScoredSource]:
-    """Choose the state snapshot, falling back to the composition fixture."""
-
-    return list(state.evaluated_sources or composition.sources)
-
-
-def _claim_rows(state: ResearchState, composition: ReportComposition) -> list[Claim]:
-    """Choose the state snapshot, falling back to the composition fixture."""
-
-    return list(state.verified_claims or composition.claims)
-
-
-def _canonical_sources(
-    state: ResearchState,
-    composition: ReportComposition,
-) -> list[ScoredSource]:
-    """Return one source assessment per canonical URL."""
-
-    rows = _source_rows(state, composition)
-    return merge_source_snapshot([], rows)
-
-
-def _canonical_claims(
-    state: ResearchState,
-    composition: ReportComposition,
-) -> list[Claim]:
-    """Return one checked claim per canonical claim identity."""
-
-    rows = _claim_rows(state, composition)
-    return merge_claim_snapshot([], rows)
-
-
-def _canonical_url_set(sources: Sequence[ScoredSource]) -> set[str]:
-    return {
-        normalized
-        for source in sources
-        if (normalized := normalize_source_url(source.url))
-    }
-
-
-def _point_claims(
-    point: ReportPoint,
-    claims_by_id: dict[str, Claim],
-) -> list[Claim]:
-    """Resolve a point's claim IDs while preserving point order."""
-
-    resolved: list[Claim] = []
-    seen: set[str] = set()
-    for claim_id in point.claim_ids:
-        claim = claims_by_id.get(claim_id)
-        if claim is None or claim.claim_id in seen:
-            continue
-        seen.add(claim.claim_id)
-        resolved.append(claim)
-    return resolved
-
-
-def _claim_aliases(claims: Sequence[Claim]) -> dict[str, Claim]:
-    """Map canonical IDs and text fingerprints to checked claims."""
-
-    aliases: dict[str, Claim] = {}
-    for claim in claims:
-        aliases[claim.claim_id] = claim
-        aliases.setdefault(claim_fingerprint(claim.text), claim)
-    return aliases
-
-
-def _normalized_unique(values: Sequence[str]) -> list[str]:
-    """Return normalized non-empty values in first-seen order."""
-
-    result: list[str] = []
-    for value in values:
-        normalized = normalize_source_url(value)
-        if normalized and normalized not in result:
-            result.append(normalized)
-    return result
-
-
-def _is_unresolved_marker(value: str) -> bool:
-    return value.strip().casefold() in _UNRESOLVED_MARKERS
-
-
-def _mentions_coverage_id(note: str, coverage_id: str) -> bool:
-    """Match a plan ID in a typed uncertainty/gap note.
-
-    This is intentionally a token match over a typed note, not a parse of
-    rendered Markdown.  It prevents ``topic-01`` from matching
-    ``topic-010`` while allowing ordinary prose around the ID.
+    The subject term is asked over the same context the rows path builds
+    (Task 5.6c fix round 1).
     """
-
-    pattern = rf"(?<![\w-]){re.escape(coverage_id.casefold())}(?![\w-])"
-    return re.search(pattern, note.casefold()) is not None
+    if left.kind != right.kind or left.value != right.value:
+        return False
+    if not same_period(left.period, right.period):
+        return False
+    if not same_organisation(left.organisation, right.organisation):
+        return False
+    if (left.subject is None) != (right.subject is None):
+        return False
+    if left.target_ids and right.target_ids and not set(left.target_ids) & set(right.target_ids):
+        return False
+    return _rows_share_a_subject(left, right, targets)
 
 
 def compute_report_quality(
     state: ResearchState,
     composition: ReportComposition,
 ) -> ReportQualitySnapshot:
-    """Compute deterministic report metrics and integrity hard failures.
+    """The written report's own gate set (spec §6.4, PD-10).
 
-    ``state`` supplies the cumulative evidence snapshots and artifact
-    presence.  ``composition`` supplies the exact typed points that were
-    selected for the reader report.  No report prose is parsed.
+    ``state`` supplies the plan's targets, the verified findings and the two
+    published artifacts; ``composition`` supplies the sentences that reached
+    the reader and the rows the Key Facts table prints. No report prose is
+    parsed, and nothing here is a judgement of the writing: the Statement
+    Check and the Report Reviewer judge sentences and evidence, and this
+    function only reads what they recorded.
+
+    A required target is missing when no verified finding answers it
+    (``verified_facts.answered_target_ids``), and accounted for when the
+    reader report lists it under Not found: §2.3 requires every remaining
+    obligation to be disclosed, not to be met.
+    """
+    targets = [t for topic in state.sub_topics for t in topic.evidence_targets]
+    required = [t.target_id for t in targets if t.required]
+    # The plan goes in with the findings (improvement 1A): an extraction that
+    # bound no target is answered through the sub-topic it names, which is what
+    # stops the gate declaring an obligation the report itself answers.
+    answered = answered_target_ids(state.verified_findings, targets,
+                                   sub_topics=state.sub_topics)
+    missing = [t for t in required if t not in answered]
+    listed = {row.target_id for row in composition.not_found} | set(
+        answered_not_stated_targets(composition)
+    )
+    by_id = {finding_fingerprint(f): f for f in composition.findings}
+    points = [*composition.summary, *(p for s in composition.sections for p in s.points)]
+    stated = {identifier for p in points if p.statement is not None
+              for identifier in p.statement.finding_ids}
+    # Review F2 (extended, P1-3, and its disclosure follow-up): an answered
+    # target is not yet *accounted for*, whichever way it was answered. With
+    # the fallback (1A) an unbound finding answers a target of its own
+    # sub-topic; an explicit binding answers it directly. Either way,
+    # nothing else forces that answer to reach the reader -- a required
+    # question could be neither stated nor disclosed while every other gate
+    # passed, whether because the writer never bound it (the fallback case)
+    # or because the part that would have stated it vanished (a redraft
+    # that carried the part over unchanged, or a part whose every drafted
+    # point was refused). Once the renderer's "We found sources on these..."
+    # group discloses such a target (``answered_not_stated_targets``, the
+    # same helper folded into ``listed`` above), it is no longer a silent
+    # gap and the gate stops flagging it: a required target counts as
+    # accounted for when a kept statement cites one of its answering
+    # findings, or when the report lists it under Not found, or when the
+    # report discloses it as answered-but-unstated.
+    unaccounted = [
+        t for t in required
+        if t not in listed and (t not in answered or not set(answered[t]) & stated)
+    ]
+    uncited = sum(1 for p in points if p.statement is None or not p.statement.finding_ids)
+    unresolved = sum(1 for p in points if p.statement is not None and (
+        any(i not in by_id for i in p.statement.finding_ids) or not p.source_urls))
+    # §6.4, D8: every kept sentence was judged by the Statement Check, or its
+    # batch failure is recorded. A kept sentence with neither is the gate.
+    failure_recorded = any(
+        error.error_type in {"evidence_verifier_statement_check_failed", "report_writer_statement_check_failed"}
+        for error in composition.errors
+    )
+    judged = {"consistent", "corrected"}
+    unjudged = [
+        p.statement.statement_id for p in points
+        if p.statement is not None
+        and (verdict := composition.statement_verdicts.get(p.statement.statement_id)) not in judged
+        and not (verdict == "unchecked" and failure_recorded)
+    ]
+    rows = composition.fact_rows
+    finding_by_id = {finding_fingerprint(f): f for f in composition.findings}
+    duplicates = sum(1 for n, a in enumerate(rows) for b in rows[n + 1:]
+                     if _one_fact(a, b, targets))
+    statuses = [f.verification for f in state.verified_findings if f.verification is not None]
+    failures = [name for name, failed in (
+        ("unresolved_citations", unresolved > 0), ("uncited_settled_points", uncited > 0),
+        ("duplicate_fact_rows", duplicates > 0), ("missing_as_of", not composition.as_of),
+        ("missing_scope", not composition.scope), ("unjudged_sentences", bool(unjudged)),
+        ("unaccounted_required_targets", bool(unaccounted)),
+        ("missing_reader_report", not state.report), ("missing_evidence_ledger", not state.report_evidence),
+    ) if failed]
+    return ReportQualitySnapshot(
+        required_target_ids=required, answered_target_ids=sorted(answered),
+        missing_required_target_ids=missing, unaccounted_target_ids=unaccounted,
+        verified_findings=sum(1 for v in statuses if v.status == "verified"),
+        corrected_findings=sum(1 for v in statuses if v.status == "verified_corrected"),
+        quoted_findings=sum(1 for v in statuses if v.status == "quoted"),
+        dropped_findings=sum(1 for v in statuses if v.status == "dropped"),
+        context_unchecked_findings=sum(1 for v in statuses if v.context_unchecked),
+        dropped_figures=sum(1 for v in statuses for r in v.figure_results if not r.kept),
+        cited_findings=len({i for p in points if p.statement for i in p.statement.finding_ids}),
+        cited_sources=len({u for p in points for u in p.source_urls}),
+        duplicate_fact_rows=duplicates, uncited_settled_points=uncited,
+        unresolved_citations=unresolved, unjudged_sentences=unjudged,
+        refused_sentences=len(composition.rejected_points), hard_failures=failures,
+        forecasts_without_release=sum(
+            1 for row in rows
+            if row.kind == "forecast"
+            and not (
+                (finding := finding_by_id.get(row.finding_id)) is not None
+                and (finding.release_date or finding.statement_date)
+            )
+        ),
+    )
+
+
+def review_status_fields(
+    review: ReportReview | None,
+) -> dict[str, object]:
+    """The semantic-review fields a quality snapshot records beside its own.
+
+    Kept here rather than in the review module so the snapshot's vocabulary is
+    written in one place. A ``None`` review is recorded as an empty status and
+    no score — never as a zero, which would read as a judgement that the report
+    scored nothing rather than that no judgement was made.
     """
 
-    points = list(_reader_points(composition))
-    claim_rows = _claim_rows(state, composition)
-    canonical_claims = _canonical_claims(state, composition)
-    source_rows = _source_rows(state, composition)
-    canonical_sources = _canonical_sources(state, composition)
-    findings = list(state.raw_findings or composition.findings)
-    topics = list(state.sub_topics or composition.sub_topics)
-    topic_ids = [topic.coverage_id for topic in topics]
-    topic_id_set = set(topic_ids)
-
-    claims_by_id = _claim_aliases(canonical_claims)
-    covered_ids: set[str] = set()
-    cited_urls: list[str] = []
-    unresolved_citations = False
-    uncited_settled_points = 0
-    contradicted_settled_claim = False
-
-    assessed_urls = _canonical_url_set(canonical_sources)
-    for point in points:
-        claims = _point_claims(point, claims_by_id)
-        point_urls = _normalized_unique(point.source_urls)
-        cited_urls.extend(point_urls)
-
-        if not point.claim_ids or not point_urls or not claims:
-            uncited_settled_points += 1
-        if any(claim_id not in claims_by_id for claim_id in point.claim_ids):
-            unresolved_citations = True
-        if any(_is_unresolved_marker(url) for url in point.source_urls):
-            unresolved_citations = True
-
-        for claim in claims:
-            if claim.verdict == "contradicted":
-                contradicted_settled_claim = True
-            covered_ids.update(
-                coverage_id
-                for coverage_id in claim.consumed_coverage_ids
-                if coverage_id in topic_id_set
-            )
-            claim_urls = {
-                normalize_source_url(url) for url in claim.source_urls
-            }
-            if any(url not in claim_urls for url in point_urls):
-                unresolved_citations = True
-
-        if any(url not in assessed_urls for url in point_urls):
-            unresolved_citations = True
-
-    cited_urls = _normalized_unique(cited_urls)
-    source_by_url = {
-        normalize_source_url(source.url): source for source in canonical_sources
+    if review is None:
+        return {
+            "semantic_review_status": "",
+            "semantic_review_score": None,
+            "semantic_review_fingerprint": "",
+        }
+    return {
+        "semantic_review_status": review.status,
+        "semantic_review_score": review.mean_score,
+        "semantic_review_fingerprint": review.input_fingerprint,
     }
-    scored_cited_sources = sum(
-        source_by_url[url].evaluation_status == "scored"
-        for url in cited_urls
-        if url in source_by_url
-    )
-    unscored_cited_sources = any(
-        url not in source_by_url
-        or source_by_url[url].evaluation_status != "scored"
-        for url in cited_urls
-    )
-
-    planned_topics = len(topics)
-    covered_topics = len(covered_ids)
-    coverage_ratio = covered_topics / planned_topics if planned_topics else 0.0
-    unresolved_topic_ids = [
-        coverage_id
-        for coverage_id in topic_ids
-        if coverage_id not in covered_ids
-        and any(
-            _mentions_coverage_id(note, coverage_id)
-            for note in composition.uncertainty_notes
-        )
-    ]
-
-    unique_source_urls = _canonical_url_set(canonical_sources)
-    unique_findings = len(deduplicate_findings(findings))
-    duplicate_source_rows = max(0, len(source_rows) - len(unique_source_urls))
-    seen_claim_ids: set[str] = set()
-    seen_claim_fingerprints: set[str] = set()
-    duplicate_claims = 0
-    for claim in claim_rows:
-        fingerprint = claim_fingerprint(claim.text)
-        if (
-            claim.claim_id in seen_claim_ids
-            or fingerprint in seen_claim_fingerprints
-        ):
-            duplicate_claims += 1
-        seen_claim_ids.add(claim.claim_id)
-        seen_claim_fingerprints.add(fingerprint)
-
-    hard_failures: list[str] = []
-    if duplicate_claims:
-        hard_failures.append("duplicate_claims")
-    if duplicate_source_rows:
-        hard_failures.append("duplicate_source_rows")
-    if unresolved_citations:
-        hard_failures.append("unresolved_citations")
-    if uncited_settled_points:
-        hard_failures.append("uncited_settled_points")
-    if unscored_cited_sources:
-        hard_failures.append("unscored_cited_sources")
-    if contradicted_settled_claim:
-        hard_failures.append("contradicted_settled_claims")
-    if (
-        planned_topics >= BROAD_PLAN_MIN_TOPICS
-        and coverage_ratio < BROAD_PLAN_COVERAGE_THRESHOLD
-    ):
-        hard_failures.append("broad_plan_coverage_below_0.80")
-    if not composition.scope.strip():
-        hard_failures.append("missing_scope")
-    if not composition.as_of.strip():
-        hard_failures.append("missing_as_of")
-    if not state.report or not state.report.strip():
-        hard_failures.append("missing_reader_report")
-    if not state.report_evidence or not state.report_evidence.strip():
-        hard_failures.append("missing_evidence_ledger")
-
-    return ReportQualitySnapshot(
-        coverage_ratio=coverage_ratio,
-        planned_topics=planned_topics,
-        covered_topics=covered_topics,
-        unresolved_topic_ids=unresolved_topic_ids,
-        unique_findings=unique_findings,
-        unique_sources=len(unique_source_urls),
-        cited_sources=len(cited_urls),
-        scored_cited_source_ratio=(
-            scored_cited_sources / len(cited_urls) if cited_urls else 0.0
-        ),
-        verified_claims=sum(
-            claim.verdict == "verified" for claim in canonical_claims
-        ),
-        contradicted_claims=sum(
-            claim.verdict == "contradicted" for claim in canonical_claims
-        ),
-        duplicate_claims=duplicate_claims,
-        duplicate_source_rows=duplicate_source_rows,
-        uncited_settled_points=uncited_settled_points,
-        hard_failures=hard_failures,
-    )
 
 
 __all__ = [
-    "BROAD_PLAN_COVERAGE_THRESHOLD",
-    "BROAD_PLAN_MIN_TOPICS",
     "compute_report_quality",
+    "review_status_fields",
 ]

@@ -15,7 +15,9 @@ defect and is deliberately allowed to propagate.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import Any, TypeAlias
 from uuid import uuid4
 
@@ -26,7 +28,11 @@ from deep_research.graph.orchestrator import (
     resume_research_graph,
     run_research_graph,
 )
-from deep_research.request_budget import RequestBudgetObserver
+from deep_research.observability import RunTelemetryCollector
+from deep_research.request_budget import (
+    RequestBudgetObserver,
+    RequestBudgetUpdate,
+)
 from deep_research.runtime.assembly import ResearchRuntime, build_runtime
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
@@ -118,13 +124,75 @@ def prepare_research_settings(
     return settings
 
 
+def _budget_observer(
+    collector: RunTelemetryCollector | None,
+    handler: RequestBudgetObserver | None,
+) -> RequestBudgetObserver | None:
+    """The one callable the run's budget notifies, out of up to two parties.
+
+    ``RequestBudget.set_observer`` holds a single callable, and two want it:
+    the run's §7.3 collector, which the assembly built and handed to the
+    providers, and the caller's own observer — the CLI's stream, the API's
+    recorder. Giving the slot to either alone would silence the other, and
+    the collector's figures describe the run rather than the observer, so
+    both are notified for every update: the collector first, because its
+    reading is the run's own record, and then the caller's handler.
+
+    Neither present is ``None``, and no observer is installed: the budget
+    then behaves exactly as it did before either existed. A run whose
+    collector is ``None`` (an injected stand-in, a harness) is not a
+    different case — the handler alone is installed, as it always was.
+    """
+    if collector is None:
+        return handler
+    if handler is None:
+        return collector.observe_budget
+
+    def observe(update: RequestBudgetUpdate) -> None:
+        collector.observe_budget(update)
+        handler(update)
+
+    return observe
+
+
+#: The event-loop lag monitor's tick (P1-B): it sleeps this long repeatedly
+#: and records each wake-up's delay beyond it. A "block" is a delay at or
+#: beyond five ticks -- five seconds in production -- so a test can shorten
+#: the tick and still exercise the block path without a real 5 s wait.
+_LOOP_LAG_TICK_SECONDS = 1.0
+_LOOP_LAG_BLOCK_TICKS = 5
+
+
+async def _monitor_loop_lag(
+    collector: RunTelemetryCollector, *, tick: float = _LOOP_LAG_TICK_SECONDS
+) -> None:
+    """Record the run's event-loop lag for the Telemetry line (P1-B, §1.2).
+
+    Sleeps ``tick`` seconds at a time for as long as the run lasts, recording
+    each wake-up's delay beyond what was asked for -- time the loop spent
+    blocked elsewhere, such as the page-admission normalisation the stall
+    investigation found. Cancellation is the only way this task ends: it
+    must never keep the run alive past its own work, and a reading it cannot
+    make sense of is dropped by the collector rather than raised, so this
+    monitor can never fail the run it is watching.
+    """
+    loop = asyncio.get_running_loop()
+    block_threshold = tick * _LOOP_LAG_BLOCK_TICKS
+    while True:
+        before = loop.time()
+        await asyncio.sleep(tick)
+        lag = loop.time() - before - tick
+        if lag > 0:
+            collector.note_loop_wakeup(lag, block_threshold=block_threshold)
+
+
 async def run_research(
     question: str | None = None,
     *,
     session_id: str | None = None,
     resume_session_id: str | None = None,
     config_path: str = DEFAULT_CONFIG_PATH,
-    max_iterations: int | None = None,
+    max_extra_passes: int | None = None,
     output_format: str | None = None,
     config_overrides: Mapping[str, JsonValue] | None = None,
     runtime_builder: RuntimeBuilder = build_runtime,
@@ -132,6 +200,12 @@ async def run_research(
     request_budget_handler: RequestBudgetObserver | None = None,
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
+
+    ``max_extra_passes`` bounds how many extra research passes the run may
+    buy after its first one (D4) and defaults to
+    ``settings.graph.max_extra_passes``. The CLI's ``--max-iterations`` flag
+    and the API's ``max_iterations`` field keep their own names and arrive
+    here as this argument (PD-15).
 
     ``runtime_builder`` is injected rather than imported at the call site so
     a test can drive the real graph with scripted agents and no provider.
@@ -148,6 +222,10 @@ async def run_research(
     outlive one run (a resume reuses the runtime that made the checkpoint),
     and a stale observer would attribute a later run's attempts to this
     caller. The terminal snapshots reach the outcome either way.
+    The slot is shared with the run's §7.3 collector, which the assembly
+    built: the collector is notified first and this handler after it for
+    every update, so neither the caller's stream nor the run's telemetry
+    goes blind (see ``_budget_observer``).
 
     Inputs are normalized and validated before any configuration or runtime
     setup: outer whitespace is stripped, and blank questions and session ids
@@ -210,10 +288,19 @@ async def run_research(
     # ceilings enforced while the summary reported no budget section at all,
     # which is exactly the "the summary matches the run" property this
     # reporting exists to guarantee. Failing loudly is the honest failure.
+    # ``run_telemetry`` is read the same way for the same reason: it is
+    # optional by *value* — a stand-in runtime that carries ``None`` gets no
+    # collector installed — but not by *name*, so a runtime that dropped it
+    # would fail here rather than run unmeasured.
     budget = runtime.request_budget
-    observing = request_budget_handler is not None
-    if observing:
-        budget.set_observer(request_budget_handler)
+    observer = _budget_observer(runtime.run_telemetry, request_budget_handler)
+    if observer is not None:
+        budget.set_observer(observer)
+    monitor_task = (
+        None
+        if runtime.run_telemetry is None
+        else asyncio.create_task(_monitor_loop_lag(runtime.run_telemetry))
+    )
     try:
         if resume_session_id is not None:
             try:
@@ -221,7 +308,7 @@ async def run_research(
                     graph=runtime.graph,
                     tracker=runtime.tracker,
                     session_id=resume_session_id,
-                    max_iterations=max_iterations,
+                    max_extra_passes=max_extra_passes,
                     event_handler=event_handler,
                 )
             except GraphResumeError as error:
@@ -234,28 +321,56 @@ async def run_research(
                 ) from error
         else:
             assert question is not None  # narrowed by the guards above
+            # ``purpose="planning"`` is the whole point of this call site: the
+            # session's startup recall IS the planner's single procedural
+            # lookup, so it reads procedural guidance and never long-term
+            # findings or reputations. Remembered prose reaching the planner
+            # would become a settled premise in the plan; the Researcher
+            # discovers prior source leads separately under its own budget and
+            # must re-admit whatever it finds as evidence of this run.
             memory_context = await recall_memory_context(
                 question=question,
                 long_term=runtime.long_term,
                 procedural=runtime.procedural,
+                purpose="planning",
             )
             run = await run_research_graph(
                 graph=runtime.graph,
                 tracker=runtime.tracker,
                 session_id=effective_session_id,
                 question=question,
-                max_iterations=(
-                    settings.graph.max_iterations
-                    if max_iterations is None
-                    else max_iterations
+                max_extra_passes=(
+                    settings.graph.max_extra_passes
+                    if max_extra_passes is None
+                    else max_extra_passes
                 ),
                 memory_context=memory_context,
                 event_handler=event_handler,
             )
         snapshots = budget.snapshots()
     finally:
-        if observing:
+        if observer is not None:
             budget.set_observer(None)
+        if monitor_task is not None:
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
+
+    # The terminal finalizer takes the collector's reading for a run that
+    # reaches publication, and stamps it into the state it publishes from. A
+    # halted run reaches none of that -- the finalizer is skipped, and a halted
+    # run publishes nothing -- so without this the run that hit repeated 429s
+    # or spent its attempt budget, which is precisely the run the rate-limit
+    # advice is about, would report no telemetry at all. The same snapshot is
+    # therefore taken here for the outcome, and taken only when the finalizer
+    # did not already take it: one reading per run, never two.
+    if run.state.run_telemetry is None and runtime.run_telemetry is not None:
+        run = replace(
+            run,
+            state=run.state.model_copy(
+                update={"run_telemetry": runtime.run_telemetry.snapshot()}
+            ),
+        )
 
     return build_outcome(
         run,

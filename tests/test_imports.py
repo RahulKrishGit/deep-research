@@ -30,13 +30,19 @@ def test_all_subpackages_import() -> None:
 
 def test_shared_research_types_import_from_utils_package() -> None:
     from deep_research.utils import (  # noqa: F401
+        INCOMPLETE_CONTENT_SHA256,
+        LEGACY_QUALITY_CONTRACT_VERSION,
+        QUALITY_CONTRACT_VERSION,
         AwareISOString,
-        Claim,
-        ClaimVerdict,
-        CriticScore,
-        Critique,
+        BoundaryAudit,
+        EvidenceDisposition,
+        EvidenceTarget,
+        EvidenceUnit,
         Finding,
+        FindingVerification,
         MemorySnapshot,
+        ReadRecord,
+        ReportQualitySnapshot,
         ResearchError,
         ResearchEvent,
         ResearchState,
@@ -45,6 +51,7 @@ def test_shared_research_types_import_from_utils_package() -> None:
         SourceEvaluationStatus,
         SubTopic,
         UnitScore,
+        WorkIdentity,
         advance_research_iteration,
         merge_research_state,
     )
@@ -168,26 +175,17 @@ def test_provider_public_api_imports() -> None:
 
 def test_agent_runtime_contracts_import_from_package() -> None:
     from deep_research.agents import (  # noqa: F401
-        ACCEPTANCE_SCORE,
-        CRITIC_CLAIM_DIGEST,
-        CRITIC_EVIDENCE_CHARS,
-        CRITIC_NAME,
-        CRITIC_REPORT_CHARS,
-        CRITIQUE_FALLBACK_REASONS,
-        DEFAULT_MAX_NOTES,
         DEFAULT_SUMMARY_LIMIT,
-        FACT_CHECKER_NAME,
+        EVIDENCE_VERIFIER_NAME,
+        FALLBACK_REASONS,
         LOW_CONFIDENCE_THRESHOLD,
-        MAX_CRITIC_SCORE,
         MAX_SUB_TOPICS,
-        MIN_CRITIC_SCORE,
         MIN_SUB_TOPICS,
         NATIVE_REACT_RESPONSE_CONTRACT,
-        REPORT_SECTIONS,
-        ROUTING_REASONS,
+        REPORT_REVIEWER_ROLE,
+        REPORT_WRITER_NAME,
+        SEMANTIC_REVIEW_MEAN,
         SOURCE_EVALUATOR_NAME,
-        SYNTHESIZER_NAME,
-        VERDICT_VALUES,
         AgentCompleter,
         AgentConfigurationError,
         AgentError,
@@ -195,17 +193,11 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         AgentTask,
         AgentToolset,
         BaseAgent,
+        BottomLineDraft,
         Citation,
-        ClaimDraft,
-        ClaimsDraft,
-        ClaimTask,
-        ClaimVerdictDraft,
-        CriticAgent,
-        CritiqueDraft,
-        CritiqueTask,
         DecideCallback,
         EvaluatedSources,
-        FactCheckerAgent,
+        EvidenceVerifierAgent,
         FindingDraft,
         PlannerAgent,
         PlanningError,
@@ -214,19 +206,25 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         ReActObservation,
         ReActRun,
         ReActStep,
-        ReportDraft,
+        ReportReviewDraft,
+        ReportReviewer,
+        ReportReviewInput,
         ReportSection,
-        ReportSectionDraft,
+        ReportWriterAgent,
+        ReportWriterTask,
         ReputationSource,
         ResearcherAgent,
         ResearchFindings,
         ResearchPlan,
         ResearchPlanDraft,
+        SectionDraft,
         SourceEvaluationTask,
         SourceEvaluatorAgent,
         SourceGroup,
         SourceScoreDraft,
         SourceScoresDraft,
+        StatementCheckDraft,
+        StatementVerdictDraft,
         StepCallback,
         StopReason,
         StructuredCompleter,
@@ -234,59 +232,41 @@ def test_agent_runtime_contracts_import_from_package() -> None:
         SubTopicFindingsDraft,
         SubTopicTask,
         SufficiencyCallback,
-        SynthesisTask,
-        SynthesizedReport,
-        SynthesizerAgent,
         ToolDescriptor,
-        VerifiedClaims,
+        VerifiedFindings,
+        WrittenReport,
         agent_error,
         agent_event,
-        build_citation_index,
-        build_claim,
-        build_critique,
         build_findings,
-        build_report_composition,
+        build_report_review_input,
         build_scored_source,
-        clamp_score,
-        compose_report,
-        critique_completed_event,
-        critique_messages,
-        critique_provider_error,
-        critique_started_event,
+        canonical_publisher_id,
+        compose_written_report,
         existing_sources_for,
         extraction_provider_error,
-        fallback_critique,
         group_findings_by_url,
-        invalid_draft_error,
         is_high_priority,
-        limitation_reasons,
         merge_react_runs,
-        missing_report_error,
-        no_evidence_error,
-        normalize_notes,
         normalize_source_url,
-        normalize_verdict,
         parse_tool_input,
         react_decision_from_native_turn,
-        render_claim_digest,
-        render_evidence_ledger,
+        render_finding_log,
         render_memory_guidance,
         render_react_messages,
-        render_reader_report,
         render_scratchpad,
+        render_written_report,
         report_filename,
-        report_provider_error,
-        resolve_verdict,
-        retrieved_source_urls,
-        route_decision,
+        report_written_event,
+        require_boundary_manifest,
+        resolve_work_identities,
+        retrieved_finding_urls,
+        review_messages,
         run_react_loop,
         select_sub_topics,
         source_domain,
         summarize_text,
-        synthesis_completed_event,
-        synthesis_started_event,
+        validate_cached_read,
         validate_plan_draft,
-        verdict_counts,
     )
 
 
@@ -394,16 +374,14 @@ def test_agent_runtime_config_imports_from_utils_config() -> None:
 
 def test_concrete_agents_expose_their_identity_and_tools() -> None:
     from deep_research.agents import (
-        CriticAgent,
-        FactCheckerAgent,
+        EvidenceVerifierAgent,
         PlannerAgent,
+        ReportReviewer,
+        ReportWriterAgent,
         ResearcherAgent,
         SourceEvaluatorAgent,
-        SynthesizerAgent,
     )
 
-    assert CriticAgent.name == "critic"
-    assert CriticAgent.allowed_tools == ("web_search", "query_memory")
     assert PlannerAgent.name == "planner"
     assert PlannerAgent.allowed_tools == ("query_memory", "web_search")
     assert ResearcherAgent.name == "researcher"
@@ -415,23 +393,22 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
     }
     assert SourceEvaluatorAgent.name == "source_evaluator"
     assert SourceEvaluatorAgent.allowed_tools == ()
-    assert FactCheckerAgent.name == "fact_checker"
-    assert set(FactCheckerAgent.allowed_tools) == {
-        "web_search",
-        "web_scraper",
-        "document_reader",
-        "query_memory",
-    }
-    assert SynthesizerAgent.name == "synthesizer"
-    assert SynthesizerAgent.allowed_tools == ("write_document", "save_to_memory")
+    assert EvidenceVerifierAgent.name == "evidence_verifier"
+    assert EvidenceVerifierAgent.allowed_tools == ()
+    assert ReportWriterAgent.name == "report_writer"
+    assert ReportWriterAgent.allowed_tools == ("write_document", "save_to_memory")
+    # Task 8: the reviewer judges the candidate's packet and calls no tool at
+    # all, so its allowlist is empty by declaration.
+    assert ReportReviewer.name == "report_reviewer"
+    assert ReportReviewer.allowed_tools == ()
 
 
 def test_graph_contracts_import_from_package() -> None:
     from deep_research.graph import (  # noqa: F401
         AGENT_NODE_ORDER,
-        CRITIC_NODE,
-        DEFAULT_MAX_ITERATIONS,
-        FACT_CHECKER_NODE,
+        DEFAULT_MAX_EXTRA_PASSES,
+        EVIDENCE_VERIFIER_NODE,
+        EXTRA_PASS_NODE,
         GRAPH_ERROR_REASONS,
         GRAPH_ROUTES,
         GRAPH_SOURCE,
@@ -439,12 +416,12 @@ def test_graph_contracts_import_from_package() -> None:
         HALTING_ERROR_TYPES,
         NODE_NAMES,
         PLANNER_NODE,
-        REFINE_NODE,
+        REPORT_REVIEWER_NODE,
+        REPORT_WRITER_NODE,
         RESEARCHER_NODE,
         ROUTE_END,
-        ROUTE_REFINE,
+        ROUTE_EXTRA_PASS,
         SOURCE_EVALUATOR_NODE,
-        SYNTHESIZER_NODE,
         GraphConfigurationError,
         GraphError,
         GraphNode,
@@ -458,8 +435,9 @@ def test_graph_contracts_import_from_package() -> None:
         build_checkpointer,
         build_research_graph,
         compile_research_graph,
-        critic_node,
         dump_state,
+        extra_pass_node,
+        extra_pass_started_event,
         graph_error,
         graph_event,
         graph_recursion_limit,
@@ -475,10 +453,9 @@ def test_graph_contracts_import_from_package() -> None:
         node_started_event,
         planning_failed_error,
         provider_configuration_error,
-        refine_node,
-        refinement_started_event,
+        report_reviewer_node,
         resume_research_graph,
-        route_after_critic,
+        route_after_review,
         route_decided_event,
         run_research_graph,
         session_completed_event,
@@ -543,20 +520,27 @@ def test_graph_submodule_public_names_all_reach_all() -> None:
 def test_the_graph_nodes_cover_the_designed_sequence() -> None:
     from deep_research.graph import (
         AGENT_NODE_ORDER,
-        CRITIC_NODE,
+        EVIDENCE_VERIFIER_NODE,
+        EXTRA_PASS_NODE,
         FINALIZE_NODE,
         NODE_NAMES,
+        REDRAFT_NODE,
+        REPORT_REVIEWER_NODE,
+        REPORT_WRITER_NODE,
     )
 
     assert AGENT_NODE_ORDER == (
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
+        "evidence_verifier",
+        "report_writer",
     )
-    assert CRITIC_NODE == "critic"
-    assert NODE_NAMES[-2] == "refine"
+    assert EVIDENCE_VERIFIER_NODE == "evidence_verifier"
+    assert REPORT_WRITER_NODE == "report_writer"
+    assert REPORT_REVIEWER_NODE == "report_reviewer"
+    assert NODE_NAMES[-3] == EXTRA_PASS_NODE == "extra_pass"
+    assert NODE_NAMES[-2] == REDRAFT_NODE == "writer_redraft"
     assert NODE_NAMES[-1] == FINALIZE_NODE == "finalize_report"
 
 
@@ -636,4 +620,4 @@ def test_the_agent_names_match_the_graph_node_names() -> None:
     from deep_research.graph import NODE_NAMES
     from deep_research.runtime import AGENT_NAMES
 
-    assert AGENT_NAMES == NODE_NAMES[:6]
+    assert AGENT_NAMES == NODE_NAMES[:5]

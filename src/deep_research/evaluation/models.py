@@ -50,9 +50,8 @@ AgentName: TypeAlias = Literal[
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 ]
 EvaluationTier: TypeAlias = Literal["controlled", "live"]
 
@@ -60,9 +59,8 @@ AGENT_NAMES: tuple[AgentName, ...] = (
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 )
 CLI_AGENT_NAMES: tuple[str, ...] = tuple(
     name.replace("_", "-") for name in AGENT_NAMES
@@ -295,7 +293,6 @@ class EvidenceContext(ContractModel):
 
     sources: list[dict[str, JsonValue]] = Field(default_factory=list)
     findings: list[dict[str, JsonValue]] = Field(default_factory=list)
-    claims: list[dict[str, JsonValue]] = Field(default_factory=list)
     scripted_search_urls: list[str] = Field(default_factory=list)
 
 

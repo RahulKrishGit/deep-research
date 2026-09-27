@@ -43,7 +43,7 @@ REPOSITORY_CONFIG_PATH = REPOSITORY_ROOT / "config.yaml"
 
 SENTINEL = "PROBE_SENTINEL_MUST_NOT_BE_RETAINED_7C31"
 
-MODEL = "deepseek-v4-flash"
+MODEL = "deepseek-flash"
 ALLOWED_TOOLS = frozenset({"web_search", "query_memory"})
 
 DSML_FINAL = (
@@ -757,10 +757,12 @@ def test_the_dry_run_inventory_proves_request_construction(probe: Any) -> None:
     assert inventory["model"] == MODEL
     assert inventory["reasoning_effort"] == "max"
     assert inventory["thinking"] == "enabled"
-    assert inventory["max_tokens"] == 32768
+    # The request carried the reviewed cap the probe checks it against,
+    # not a number this test restates.
+    assert inventory["max_tokens"] == probe.EXPECTED_MAX_TOKENS
     assert inventory["tool_choice"] == "auto"
     assert inventory["response_format_present"] is False
-    assert inventory["native_tool_names"] == ["web_search", "query_memory"]
+    assert inventory["native_tool_names"] == ["query_memory", "web_search"]
     assert inventory["repository_retry_count"] == _configured_retry_count()
     assert inventory["probe_retry_override"] == 0
     assert inventory["sdk_retry_count"] == 0

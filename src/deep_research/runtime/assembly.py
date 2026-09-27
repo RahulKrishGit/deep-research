@@ -8,21 +8,21 @@ injectable so this module can be tested without an API key or a network.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, MutableMapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 from deep_research.agents.base import AgentCompleter
-from deep_research.agents.critic import CriticAgent
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.fact_checker import FactCheckerAgent
-from deep_research.agents.planner import PlannerAgent
+from deep_research.agents.evidence_verifier import EvidenceVerifierAgent
+from deep_research.agents.planner import Clock, PlannerAgent
+from deep_research.agents.report_reviewer import REPORT_REVIEWER_ROLE, ReportReviewer
+from deep_research.agents.report_writer import ReportWriterAgent
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.agents.source_evaluator import (
     ReputationSource,
     SourceEvaluatorAgent,
 )
-from deep_research.agents.synthesizer import SynthesizerAgent
 from deep_research.graph.orchestrator import (
     ResearchAgents,
     build_checkpointer,
@@ -32,7 +32,7 @@ from deep_research.memory.errors import MemoryInitializationError
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.memory.procedural import ProceduralMemory
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
+from deep_research.observability import RunTelemetryCollector, Tracker
 from deep_research.providers import (
     ProviderConfigurationError,
     build_chat_provider,
@@ -48,7 +48,8 @@ from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
 from deep_research.tools.write_document import WriteDocumentTool
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import SERVICE_ROLE_NAMES, ConfigSettings
+from deep_research.utils.types import ReadRecord
 
 TAVILY_API_KEY_VARIABLE = "TAVILY_API_KEY"
 
@@ -65,7 +66,7 @@ def build_tools(
 ) -> list[BaseTool]:
     """Build every tool any agent declares, in one shared registry.
 
-    One registry for all six agents rather than a per-agent subset:
+    One registry for all five agents rather than a per-agent subset:
     ``AgentToolset`` already selects the names an agent declares and
     ignores the rest, and it raises ``AgentConfigurationError`` when a
     declared tool was never injected — so the wiring guard is kept without
@@ -99,15 +100,17 @@ def build_tools(
     ]
 
 
-# The six agents, in graph order. Equal to ``graph.state.NODE_NAMES[:6]``
-# by construction: node names deliberately equal agent names.
+# The five agents, in graph order. Equal to ``graph.state.NODE_NAMES[:5]``
+# by construction: node names deliberately equal agent names. The service
+# roles below are deliberately not in this tuple — they are not agents, they
+# hold no ReAct loop, and no consumer that means "the agents that research"
+# should pick one up.
 AGENT_NAMES = (
     "planner",
     "researcher",
     "source_evaluator",
-    "fact_checker",
-    "synthesizer",
-    "critic",
+    "evidence_verifier",
+    "report_writer",
 )
 
 
@@ -124,10 +127,13 @@ def _scratchpad(
     )
 
 
-# Keyed by the six canonical agent names. Every entry receives the identical
-# shared kwargs; only the Source Evaluator consumes ``reputation``. Bodies
-# name the agent classes rather than capturing them, so a test that patches
-# a class on this module still sees its own class constructed.
+# Keyed by the five canonical agent names. Every entry receives the identical
+# shared kwargs, apart from two that only some constructors accept:
+# ``read_cache``, which only the Researcher consumes, and ``clock``, which goes
+# to the three agents named in ``_CLOCK_AWARE_AGENTS`` below. Only the Source
+# Evaluator consumes ``reputation``. Bodies name the agent classes rather than
+# capturing them, so a test that patches a class on this module still sees its
+# own class constructed.
 #
 # The Researcher is the one agent with a cap on how much of the plan one pass
 # attempts, and it reads that bound off the very ``AgentRuntimeConfig`` every
@@ -137,15 +143,31 @@ def _scratchpad(
 _AGENT_CONSTRUCTORS: dict[str, Callable[..., Any]] = {
     "planner": lambda reputation, **shared: PlannerAgent(**shared),
     "researcher": lambda reputation, **shared: ResearcherAgent(
-        max_sub_topics=shared["config"].max_sub_topics, **shared
+        max_sub_topics=shared["config"].max_sub_topics,
+        read_admission_chars=shared["config"].read_admission_chars,
+        evidence_packet_chars=shared["config"].evidence_packet_chars,
+        decision_context_chars=shared["config"].decision_context_chars,
+        **shared,
     ),
     "source_evaluator": lambda reputation, **shared: SourceEvaluatorAgent(
         reputation=reputation, **shared
     ),
-    "fact_checker": lambda reputation, **shared: FactCheckerAgent(**shared),
-    "synthesizer": lambda reputation, **shared: SynthesizerAgent(**shared),
-    "critic": lambda reputation, **shared: CriticAgent(**shared),
+    "evidence_verifier": lambda reputation, **shared: EvidenceVerifierAgent(
+        **shared
+    ),
+    "report_writer": lambda reputation, **shared: ReportWriterAgent(**shared),
 }
+
+# The three agents whose constructors read the run's clock: the planner dates
+# the answer contract from it, the researcher stamps every read and finding
+# from it, and the report writer records the composition's own
+# ``generated_on`` from it. The reader report's own date line is its ``As of``,
+# which comes from the plan rather than from a clock read. A caller that
+# injects one clock therefore gets one run with one clock in it, and a run
+# whose dates must not move with the machine's can be pinned. The
+# other two hold no clock at all — handing one a clock would be a keyword no
+# constructor accepts. An agent that grows a ``clock`` parameter belongs here.
+_CLOCK_AWARE_AGENTS = frozenset({"planner", "researcher", "report_writer"})
 
 
 def build_agent(
@@ -157,12 +179,26 @@ def build_agent(
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> Any:
     """Construct exactly one production-configured agent.
 
-    The single place any agent is wired. ``build_agents`` calls it six
+    The single place any agent is wired. ``build_agents`` calls it five
     times; the evaluation harness calls it once. Sharing the mapping is
     what keeps evaluation from drifting away from production wiring.
+
+    ``read_cache`` is source-cache state the caller already holds — bodies an
+    earlier session read, keyed by URL. Only the Researcher looks a URL up
+    before downloading it, so only the Researcher is handed the registry; the
+    other four never fetch a body and a cache they cannot consult would be a
+    parameter with no meaning.
+
+    ``clock`` is the run's clock, read by the three agents that stamp a date or
+    a time (``_CLOCK_AWARE_AGENTS``). ``None`` leaves each of them on its own
+    wall-clock default, which is what the production entrypoint wants; a caller
+    that pins it — the replay harness is the one that does — gets a run whose
+    dates are that caller's rather than the machine's.
 
     ``AgentConfigurationError`` is raised, not converted: the graph path
     wants a ``ResearchConfigurationError`` and converts in ``build_agents``,
@@ -174,16 +210,24 @@ def build_agent(
         raise AgentConfigurationError(
             f"unknown agent name {name!r}; expected one of: {valid}"
         )
-    return constructor(
-        reputation=reputation,
-        provider=provider,
-        tracker=tracker,
-        tools=tools,
-        config=settings.agents,
-        scratchpad=_scratchpad(
+    shared: dict[str, Any] = {
+        "provider": provider,
+        "tracker": tracker,
+        "tools": tools,
+        "config": settings.agents,
+        # The resolved profile, not the raw ``llm`` mapping: every per-call
+        # configuration fingerprint then carries the model and effort this
+        # agent's requests actually run under, per-agent overrides included.
+        "model_profile": settings.llm.resolve_for(name),
+        "scratchpad": _scratchpad(
             settings, session_id=session_id, agent_name=name
         ),
-    )
+    }
+    if read_cache is not None and name == "researcher":
+        shared["cache"] = read_cache
+    if clock is not None and name in _CLOCK_AWARE_AGENTS:
+        shared["clock"] = clock
+    return constructor(reputation=reputation, **shared)
 
 
 def build_agents(
@@ -194,14 +238,19 @@ def build_agents(
     tools: Sequence[BaseTool],
     session_id: str,
     reputation: ReputationSource | None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> ResearchAgents:
-    """Construct the six agents one graph runs.
+    """Construct the five agents one graph runs.
 
     A tool an agent declares but nobody injected is an
     ``AgentConfigurationError`` raised at construction, not a failure
     deferred to the first tool call. That is converted into a
     ``ResearchConfigurationError`` so the CLI can print it without a
     traceback.
+
+    ``clock`` is passed to every agent that reads one, so the five are built
+    against a single clock rather than each choosing its own.
     """
     try:
         return ResearchAgents(
@@ -214,6 +263,8 @@ def build_agents(
                     tools=tools,
                     session_id=session_id,
                     reputation=reputation,
+                    read_cache=read_cache,
+                    clock=clock,
                 )
                 for name in AGENT_NAMES
             }
@@ -223,6 +274,29 @@ def build_agents(
             reason="agents_misconfigured",
             message=f"The research agents could not be assembled: {error}",
         ) from error
+
+
+def build_report_reviewer(
+    settings: ConfigSettings,
+    *,
+    tracker: Tracker,
+    provider: AgentCompleter,
+) -> ReportReviewer:
+    """Construct the terminal semantic reviewer as its own service role.
+
+    Resolved through ``LLMConfig.resolve_for("report_reviewer")`` rather than
+    through an agent's profile: the reviewer is a separate call role with its
+    own model and effort, and giving it one of the agents' configurations
+    would silently tie a quality judgement to whichever agent happened to be
+    configured that way. It is tool-free by construction — there is no toolset
+    parameter to pass it.
+    """
+    return ReportReviewer(
+        provider=provider,
+        tracker=tracker,
+        config=settings.agents,
+        model_profile=settings.llm.resolve_for(REPORT_REVIEWER_ROLE),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +310,21 @@ class ResearchRuntime:
     graph: Any
     long_term: LongTermMemory | None
     procedural: ProceduralMemory | None
+    run_telemetry: RunTelemetryCollector | None = None
+    """The run's §7.3 collector, or ``None`` for a runtime that has none.
+
+    Created beside ``request_budget`` and handed to the providers and the
+    graph, so every provider call of the run reports to one object. It is
+    read here, at the runtime's own edge, by the entry point that installs it
+    on the budget's observer: the assembly builds it but never observes with
+    it, because the observer slot belongs to whoever starts the run.
+
+    ``None`` means no call of this run reports to a collector at all: the
+    runtime was built with an injected chat provider, or assembled by a test
+    or a harness that carries none. Defaulted rather than required so such a
+    runtime still builds, and so "no collector" is a value the runtime can
+    carry instead of a case it cannot express.
+    """
 
 
 async def build_runtime(
@@ -249,6 +338,8 @@ async def build_runtime(
     tavily_api_key: str | None = None,
     search_client: Any | None = None,
     http_client: Any | None = None,
+    read_cache: MutableMapping[str, ReadRecord] | None = None,
+    clock: Clock | None = None,
 ) -> ResearchRuntime:
     """Build everything one research session needs, or fail cleanly.
 
@@ -258,9 +349,21 @@ async def build_runtime(
     store, a tool an agent declares but nobody built — becomes a
     ``ResearchConfigurationError`` here rather than an exception the user
     sees as a traceback.
+
+    ``read_cache`` is source-cache state the session starts with: bodies an
+    earlier session already read, keyed by URL. It is state rather than a
+    collaborator — the Researcher validates each entry locally before reusing
+    it, and a run that supplies none simply starts with an empty cache.
+
+    ``clock`` is the session's clock, handed to the agents that stamp a date or
+    a time. ``None`` runs on the wall clock, which is what the CLI wants; a
+    caller that pins it gets a run whose dates are its own, which is how the
+    replay harness keeps a row's repetitions identical.
     """
     try:
-        validate_agent_model_configs(settings.llm, AGENT_NAMES)
+        validate_agent_model_configs(
+            settings.llm, (*AGENT_NAMES, *SERVICE_ROLE_NAMES)
+        )
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",
@@ -312,9 +415,29 @@ async def build_runtime(
     # double every declared ceiling while each half looked correct on its own.
     request_budget = RequestBudget(settings.request_budget)
 
+    # Exactly one telemetry collector for the whole run, for the same reason
+    # there is one budget: §7.3's peak is a figure about calls that overlap
+    # each other, so a collector per collaborator would report a peak of one
+    # forever. It is handed to the providers exactly as the budget is, and to
+    # the graph, whose terminal finalizer stamps its snapshot into the state.
+    #
+    # And only when this build constructs the provider itself. An injected
+    # provider is the caller's -- the e2e replay hands in a scripted completer
+    # -- and nothing here wraps it, so a collector beside it would record
+    # nothing for the whole run: it would print "peak 0 provider calls in
+    # flight" and publish a row of zeroes where the honest answer is that there
+    # is no measurement. ``None`` is that answer, and it reaches the state, the
+    # quality record (``telemetry: null``) and the CLI (no line at all).
+    run_telemetry = (
+        RunTelemetryCollector() if chat_provider is None else None
+    )
+
     try:
         provider = chat_provider or build_chat_provider(
-            settings.llm, tracker, request_budget=request_budget
+            settings.llm,
+            tracker,
+            request_budget=request_budget,
+            telemetry=run_telemetry,
         )
     except ProviderConfigurationError as error:
         raise configuration_error(
@@ -342,12 +465,22 @@ async def build_runtime(
         tools=tools,
         session_id=session_id,
         reputation=long_term,
+        read_cache=read_cache,
+        clock=clock,
     )
+    reviewer = build_report_reviewer(
+        settings, tracker=tracker, provider=provider
+    )
+    # One place supplies the reviewer: the dataclass slot the graph reads. A
+    # second `report_reviewer=` argument on the graph builders would be a second
+    # source of the same fact, and the two could disagree about which reviewer
+    # judged a report.
     graph = compile_research_graph(
-        agents,
+        replace(agents, report_reviewer=reviewer),
         checkpointer=build_checkpointer(
             enabled=settings.graph.checkpointing_enabled
         ),
+        run_telemetry=run_telemetry,
     )
     return ResearchRuntime(
         session_id=session_id,
@@ -357,4 +490,5 @@ async def build_runtime(
         graph=graph,
         long_term=long_term,
         procedural=procedural,
+        run_telemetry=run_telemetry,
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import pytest
@@ -17,10 +18,226 @@ from deep_research.api.models import (
     TraceResponse,
     ValidationIssue,
 )
-from deep_research.api.sessions import SessionStore
+from deep_research.api.sessions import SessionStore, outcome_response_fields
+from deep_research.graph.orchestrator import GraphRun
 from deep_research.runtime.errors import configuration_error
-from deep_research.utils.types import ResearchError, ResearchEvent
+from deep_research.runtime.outcome import ResearchOutcome, build_outcome
+from deep_research.utils.types import (
+    QUALITY_CONTRACT_VERSION,
+    REVIEW_DIMENSIONS,
+    FigureContext,
+    FigureResult,
+    Finding,
+    FindingVerification,
+    NotFoundTarget,
+    ReadRecord,
+    ReportComposition,
+    ReportPoint,
+    ReportQualitySnapshot,
+    ReportReview,
+    ResearchError,
+    ResearchEvent,
+    ResearchState,
+    ScoredSource,
+    SubTopic,
+)
+from tests.evidence_fakes import figure, make_finding, make_read
 from tests.test_api.fakes import GateRunner, ScriptedRunner
+
+REPORT_PATH = "output/report-session-1-0.md"
+EVIDENCE_PATH = "output/report-session-1-0-evidence.md"
+QUALITY_PATH = "output/report-session-1-0-quality.json"
+
+QUESTION = "How mature is quantum error correction?"
+ANSWERED_TARGET_IDS = ("topic-01-target-01", "topic-01-target-02")
+MISSING_TARGET_ID = "topic-02-target-01"
+SOURCE_URL = "https://www.eia.gov/todayinenergy/detail.php?id=64705"
+OWNER = "U.S. Energy Information Administration"
+
+
+def scored_review(**overrides: object) -> ReportReview:
+    """A scored terminal review, which is what a judged pass carries."""
+    payload: dict[str, object] = {
+        "status": "scored",
+        "dimensions": {name: 0.75 for name in REVIEW_DIMENSIONS},
+        "reviewed_statement_ids": ["S001"],
+        "per_statement_dispositions": {"S001": "supported"},
+        "input_fingerprint": "packet-1",
+        "composition_fingerprint": "composition-1",
+    }
+    payload.update(overrides)
+    return ReportReview.model_validate(payload)
+
+
+def quality_snapshot(**overrides: object) -> ReportQualitySnapshot:
+    """The pass's snapshot: target ids and the verifier's finding readings.
+
+    Only the readings this pipeline computes are named. The retired readings
+    the type still carries are left at their defaults, so this fixture never
+    depends on one.
+    """
+    payload: dict[str, object] = {
+        "required_target_ids": [*ANSWERED_TARGET_IDS, MISSING_TARGET_ID],
+        "answered_target_ids": list(ANSWERED_TARGET_IDS),
+        "missing_required_target_ids": [MISSING_TARGET_ID],
+        "verified_findings": 2,
+        "dropped_findings": 1,
+        "cited_findings": 2,
+    }
+    payload.update(overrides)
+    return ReportQualitySnapshot.model_validate(payload)
+
+
+def kept_finding(
+    snippet: str, *, value: str, unit: str, target_ids: Sequence[str]
+) -> Finding:
+    """One finding the Evidence Verifier kept, figure and context included."""
+    read = make_read()
+    wanted = figure(value, unit, "2024", "actual")
+    return make_finding(
+        read,
+        snippet,
+        figures=[wanted],
+        target_ids=list(target_ids),
+        verification=FindingVerification(
+            status="verified",
+            figure_results=[
+                FigureResult(
+                    figure=wanted,
+                    matched=True,
+                    context=FigureContext(
+                        period="2024",
+                        attribution="own",
+                        organisation=OWNER,
+                        kind="actual",
+                    ),
+                    evidence_words=snippet,
+                )
+            ],
+        ),
+    )
+
+
+def kept_findings() -> list[Finding]:
+    """The two findings the pass kept, each answering one required target."""
+    return [
+        kept_finding(
+            "Generators added 10.4 gigawatts (GW) of new battery storage "
+            "capacity in 2024",
+            value="10.4",
+            unit="GW",
+            target_ids=["topic-01-target-01"],
+        ),
+        kept_finding(
+            "capacity growth from battery storage could set a record",
+            value="19.6",
+            unit="GW",
+            target_ids=["topic-01-target-02"],
+        ),
+    ]
+
+
+def scored_source() -> ScoredSource:
+    return ScoredSource(
+        url=SOURCE_URL,
+        title="U.S. battery capacity increased 66% in 2024",
+        authority_score=0.8,
+        recency_score=0.8,
+        relevance_score=0.8,
+        overall_score=0.8,
+        rationale="Read primary material with a stated date.",
+        publisher_id="eia.gov",
+    )
+
+
+def judged_composition() -> ReportComposition:
+    """The pass's composition: the kept findings, and what it could not find."""
+    return ReportComposition(
+        question=QUESTION,
+        session_id="session-1",
+        sources=[scored_source()],
+        findings=kept_findings(),
+        not_found=[
+            NotFoundTarget(
+                target_id=MISSING_TARGET_ID,
+                question="How much battery storage is planned for 2025?",
+                queries=["battery storage 2025 plans"],
+                searched=True,
+            )
+        ],
+        summary=[
+            ReportPoint(
+                text="Battery storage capacity grew by 66% in 2024.",
+                source_urls=[SOURCE_URL],
+            )
+        ],
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-01",
+                title="Battery storage capacity",
+                rationale="It answers the question.",
+                search_queries=["battery storage capacity 2024"],
+                success_criteria=["A read source answers it."],
+                priority=1,
+            )
+        ],
+    )
+
+
+def judged_state() -> ResearchState:
+    """One judged pass: a quality snapshot, a review, and a composition.
+
+    The snapshot carries the required and answered target ids the coverage
+    block publishes and the Evidence Verifier's own finding readings the
+    evidence block counts; the composition carries the Not found list and the
+    findings the read-side counts are taken from, so every additive field has
+    a typed record behind it.
+    """
+    findings = kept_findings()
+    reads: dict[str, ReadRecord] = {
+        read.read_id: read for read in (make_read(),)
+    }
+    return ResearchState(
+        session_id="session-1",
+        original_question=QUESTION,
+        verified_findings=findings,
+        evaluated_sources=[scored_source()],
+        sub_topics=list(judged_composition().sub_topics),
+        read_records=reads,
+        composition=judged_composition(),
+        quality=quality_snapshot(),
+        report_review=scored_review(),
+        quality_contract_version=QUALITY_CONTRACT_VERSION,
+        evidence_path=EVIDENCE_PATH,
+        quality_path=QUALITY_PATH,
+        events=[
+            ResearchEvent(
+                event_type="graph.node.started",
+                source="graph.planner",
+                message="Node planner started.",
+                timestamp="2026-08-03T12:00:00+00:00",
+            ),
+            ResearchEvent(
+                event_type="graph.node.completed",
+                source="graph.planner",
+                message="Node planner completed.",
+                timestamp="2026-08-03T12:00:30+00:00",
+            ),
+        ],
+    )
+
+
+def outcome_of(state: ResearchState) -> ResearchOutcome:
+    """The outcome one finished session holds, paths and all."""
+    return build_outcome(
+        GraphRun(
+            session_id="session-1",
+            state=state,
+            status="completed",
+            trace_url=None,
+        ),
+        metrics=(),
+    )
 
 
 def start_session(
@@ -28,13 +245,13 @@ def start_session(
     *,
     session_id: str = "session-1",
     query: str = "Question",
-    max_iterations: int | None = None,
+    max_extra_passes: int | None = None,
     config_overrides: dict[str, object] | None = None,
 ) -> None:
     store.start(
         session_id=session_id,
         query=query,
-        max_iterations=max_iterations,
+        max_extra_passes=max_extra_passes,
         output_format="markdown",
         config_overrides=config_overrides or {},
         config_path="config.yaml",
@@ -69,12 +286,20 @@ def test_research_request_applies_safe_defaults() -> None:
     assert request.config_overrides == {}
 
 
+def test_research_request_accepts_zero_extra_passes() -> None:
+    """PD-15: the field keeps its name and zero is a legitimate ceiling."""
+    request = ResearchRequest.model_validate(
+        {"query": "Question", "max_iterations": 0}
+    )
+
+    assert request.max_iterations == 0
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         {},
         {"query": "   "},
-        {"query": "Question", "max_iterations": 0},
         {"query": "Question", "max_iterations": -1},
         {"query": "Question", "output_format": "pdf"},
         {"query": "Question", "unknown_field": "x"},
@@ -133,6 +358,97 @@ def test_session_response_accepts_a_complete_lifecycle() -> None:
     assert response.iteration == 2
     assert response.report_path == "report-session-1.md"
     assert response.errors[0].recoverable is False
+
+
+def test_session_response_defaults_the_outcome_fields_to_no_answer() -> None:
+    """A running session answers ``None``, not a zero it never measured.
+
+    The additive fields are the finished outcome's own readings, so a session
+    that has none carries no path, no version, no score, no span and no
+    counts — never a legacy version, an empty bucket set or a zero duration.
+    """
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="running",
+        iteration=0,
+        started_at=datetime.now(timezone.utc),
+    )
+
+    assert response.evidence_path is None
+    assert response.quality_path is None
+    assert response.quality_contract_version is None
+    assert response.semantic_review_status is None
+    assert response.semantic_review_score is None
+    assert response.duration_seconds is None
+    assert response.coverage is None
+    assert response.evidence_counts is None
+
+
+def test_session_response_reads_the_typed_measurements_a_pass_recorded() -> None:
+    """Every additive field is the outcome property, not a re-derived number.
+
+    The coverage block keeps the gate's missing-target reading apart from the
+    report's Not found list, the evidence block keeps the read-side counts
+    apart from the Evidence Verifier's own finding readings, and the review
+    fields carry the status and score the snapshot was stamped with. An empty
+    review status is ``None`` here: "no review was recorded" is not a status.
+    """
+    state = judged_state()
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="completed",
+        iteration=1,
+        started_at=datetime.now(timezone.utc),
+        report_path=REPORT_PATH,
+        **outcome_response_fields(outcome_of(state)),
+    )
+
+    assert response.evidence_path == EVIDENCE_PATH
+    assert response.quality_path == QUALITY_PATH
+    assert response.quality_contract_version == QUALITY_CONTRACT_VERSION
+    assert response.semantic_review_status == "scored"
+    assert response.semantic_review_score == 0.75
+    assert response.duration_seconds == 30.0
+    assert response.coverage is not None
+    assert (response.coverage.required_targets, response.coverage.answered_targets) == (
+        3,
+        2,
+    )
+    assert response.coverage.missing_required_target_ids == [MISSING_TARGET_ID]
+    assert response.coverage.not_found_target_ids == [MISSING_TARGET_ID]
+    assert response.evidence_counts is not None
+    assert (
+        response.evidence_counts.verified_findings,
+        response.evidence_counts.dropped_findings,
+    ) == (2, 1)
+    assert response.evidence_counts.cited_findings == 2
+    assert response.evidence_counts.findings == 2
+    assert response.evidence_counts.assessed_sources == 1
+    assert response.evidence_counts.cited_assessed_sources == 1
+
+
+def test_session_response_counts_quoted_findings_apart() -> None:
+    """D21: a quoted finding is neither verified nor dropped; the API's
+    evidence counts must carry it as its own reading, not silently drop it."""
+    state = judged_state().model_copy(
+        update={"quality": quality_snapshot(quoted_findings=5)}
+    )
+    response = ResearchSessionResponse(
+        session_id="session-1",
+        status="completed",
+        iteration=1,
+        started_at=datetime.now(timezone.utc),
+        report_path=REPORT_PATH,
+        **outcome_response_fields(outcome_of(state)),
+    )
+
+    assert response.evidence_counts is not None
+    assert response.evidence_counts.quoted_findings == 5
+
+
+def test_session_response_fields_are_empty_without_an_outcome() -> None:
+    """No outcome contributes nothing: no field is defaulted into the reply."""
+    assert outcome_response_fields(None) == {}
 
 
 @pytest.mark.parametrize(
@@ -233,7 +549,7 @@ async def test_start_is_non_blocking_and_progress_updates_status() -> None:
     session = store.start(
         session_id="session-1",
         query="How mature is quantum error correction?",
-        max_iterations=2,
+        max_extra_passes=2,
         output_format="markdown",
         config_overrides={"output": {"directory": "api-output/"}},
         config_path="config.yaml",
@@ -246,6 +562,9 @@ async def test_start_is_non_blocking_and_progress_updates_status() -> None:
     assert runner.calls[0]["config_overrides"] == {
         "output": {"directory": "api-output/"}
     }
+    # The request's ``max_iterations`` reaches the runner as the extra-pass
+    # ceiling, in the graph's own vocabulary (PD-15).
+    assert runner.calls[0]["max_extra_passes"] == 2
 
     runner.release.set()
     assert session.task is not None

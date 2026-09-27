@@ -9,8 +9,13 @@ from hashlib import sha256
 import pytest
 
 from deep_research.agents.errors import PlanningError
-from deep_research.agents.planner import ResearchPlanDraft, SubTopicDraft
-from deep_research.agents.steps import ReActDecision
+from deep_research.agents.planner import (
+    EvidenceTargetDraft,
+    PlanReviewDraft,
+    ResearchPlanDraft,
+    SubTopicDraft,
+)
+from deep_research.agents.steps import ReActDecision, ReActStep
 from deep_research.evaluation.dependencies import (
     bounded_url_fingerprints,
     build_controlled_dependencies,
@@ -20,6 +25,8 @@ from deep_research.evaluation.targets import (
     TRACE_TAG,
     RepetitionCounter,
     _classify_failure,
+    _redact_source_urls,
+    _trajectory_from_steps,
     build_target,
     correlation_metadata,
     trace_tags,
@@ -84,7 +91,7 @@ def test_every_trace_carries_the_tags_the_spec_lists(
     assert "repetition:2" in tags
     assert f"experiment:{runtime.experiment_name}" in tags
     assert "git:abc1234" in tags
-    assert "target_model:deepseek-v4-flash" in tags
+    assert "target_model:deepseek-flash" in tags
     assert "rubric_version:1" in tags
 
 
@@ -127,7 +134,7 @@ async def test_a_successful_target_returns_a_typed_redacted_output(
     assert output.agent_name == "planner"
     assert output.repetition == 1
     assert output.session_id.startswith("evaluation-")
-    assert output.target_model_requested == "deepseek-v4-flash"
+    assert output.target_model_requested == "deepseek-flash"
     assert output.target_reasoning_effort == "max"
     assert output.react is not None
 
@@ -317,12 +324,103 @@ async def test_a_live_researcher_records_only_source_url_fingerprints(
     ).hexdigest()
     assert output.dependencies.source_url_fingerprints == [expected]
     assert all(
-        len(step.observation_summary) <= 200 for step in output.trajectory
+        len(step.observation_summary) <= 2000 for step in output.trajectory
     )
     assert "https://example.com/sodium-ion-energy-density" not in " ".join(
         step.observation_summary for step in output.trajectory
     )
     assert "example.com" not in repr(output.dependencies)
+
+
+def test_a_url_deep_inside_a_long_observation_is_still_redacted() -> None:
+    """The clamp is a length bound, not the privacy boundary.
+
+    A raw source URL sitting well past where a 200-character clamp used to
+    cut every observation short must not survive just because the clamp
+    grew to 2000: redaction runs before any length handling, so the
+    boundary holds at whatever the clamp is.
+    """
+    url = "https://example.com/sodium-ion-energy-density"
+    padding = "x" * 1900
+    text = f"{padding} {url} more text after it"
+
+    redacted = _redact_source_urls(text)
+
+    assert url not in redacted
+    expected = sha256(
+        "https://example.com/sodium-ion-energy-density".encode("utf-8")
+    ).hexdigest()
+    assert f"source:{expected}" in redacted
+    assert redacted[:1900] == padding
+
+
+def test_a_scheme_free_url_is_also_redacted() -> None:
+    """A length bound is not the only place a URL can hide.
+
+    ``www.host/path`` and ``//host/path`` name a source exactly as plainly
+    as ``https://host/path`` does; the redaction boundary must not depend
+    on the model having spelled out a scheme.
+    """
+    text = (
+        "See www.example.com/sodium-ion-energy-density and also "
+        "//example.com/sodium-ion-energy-density for details."
+    )
+
+    redacted = _redact_source_urls(text)
+
+    assert "www.example.com/sodium-ion-energy-density" not in redacted
+    assert "//example.com/sodium-ion-energy-density" not in redacted
+
+
+def test_a_bare_slash_or_www_mid_token_is_not_a_url() -> None:
+    """The scheme-free alternatives never fire mid-token.
+
+    A bare ``//`` or ``www.`` is a URL only at a genuine boundary -- nothing
+    word-like, ``:`` or ``/`` immediately before it. Without that anchor a
+    path separator, an integer ratio, or a Windows drive path would be
+    redacted as if it named a source, while a real scheme-free URL right
+    beside them still must be.
+    """
+    text = (
+        "a//b and ratio 1//2 and C://temp, but see www.example.com/report "
+        "and //example.com/report for the real sources."
+    )
+
+    redacted = _redact_source_urls(text)
+
+    assert "a//b" in redacted
+    assert "ratio 1//2" in redacted
+    assert "C://temp" in redacted
+    assert "www.example.com/report" not in redacted
+    assert "//example.com/report" not in redacted
+
+
+def test_a_researchers_thought_is_also_redacted() -> None:
+    """RevSelectionR3 P2: the clamp covers observations and thoughts alike.
+
+    ``thought`` is cut with the same clamp as ``observation_summary`` but,
+    before this fix, was never redacted first: a model thought naming the
+    exact source URL in full ("Next I will read https://...") survived once
+    the clamp grew past its length. The live-tier researcher harness always
+    synthesizes a fixed placeholder thought for its own reasons (native
+    tool-calling carries no free-text thought at all), so this is exercised
+    directly against the trajectory builder with a step whose ``thought``
+    is real free text, exactly the shape a free-text ReAct loop produces.
+    """
+    url = "https://example.com/sodium-ion-energy-density"
+    step = ReActStep(
+        iteration=1,
+        thought=f"Next I will read {url} to confirm the figure",
+        action="finish",
+        final_answer="Done.",
+    )
+
+    trajectory = _trajectory_from_steps([step], limit=2000)
+
+    assert len(trajectory) == 1
+    assert url not in trajectory[0].thought
+    expected = sha256(url.encode("utf-8")).hexdigest()
+    assert f"source:{expected}" in trajectory[0].thought
 
 
 @pytest.mark.asyncio
@@ -415,7 +513,7 @@ async def test_the_output_records_both_model_identifiers(
                       "agent": "planner", "tier": "controlled"})
     )
 
-    assert output.target_model_requested == "deepseek-v4-flash"
+    assert output.target_model_requested == "deepseek-flash"
     assert output.target_model_returned == "deepseek-v4-flash-fake"
 
 
@@ -447,6 +545,13 @@ def _planner_script() -> list[object]:
                     search_queries=[f"query about {title}"],
                     success_criteria=[f"evidence about {title}"],
                     priority=index,
+                    evidence_targets=[
+                        EvidenceTargetDraft(
+                            question=f"What does {title} measure?",
+                            required=True,
+                            measure=title,
+                        )
+                    ],
                 )
                 for index, title in enumerate(
                     (
@@ -457,6 +562,13 @@ def _planner_script() -> list[object]:
                     start=1,
                 )
             ]
+        ),
+        PlanReviewDraft(
+            sound=True,
+            missing_dimensions=[],
+            atomicity_defects=[],
+            unsupported_premises=[],
+            repair_instruction="",
         ),
     ]
 
@@ -478,7 +590,13 @@ class _LedgerProvider(FakeStructuredProvider):
         self._repair = repair
 
     async def complete_structured(
-        self, messages, schema, *, agent_name=None, max_tokens=None
+        self,
+        messages,
+        schema,
+        *,
+        agent_name=None,
+        max_tokens=None,
+        reasoning_effort=None,
     ):
         attempts = (1, 2) if self._repair else (1,)
         for attempt in attempts:
@@ -500,6 +618,7 @@ class _LedgerProvider(FakeStructuredProvider):
                         schema,
                         agent_name=agent_name,
                         max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
                     )
             except StructuredOutputError:
                 if attempt == len(attempts):
@@ -547,13 +666,16 @@ async def test_a_repaired_structured_call_is_counted_without_its_content(
     output = TargetOutput.model_validate(payload)
 
     assert output.completed is True, output.failure
+    # Two structured calls, and this scripted provider fails the first
+    # attempt of each: the plan draft and the planner's tool-free plan
+    # review. Neither call's content may appear in the ledger.
     assert output.structured_calls == StructuredCallSummary(
-        calls=1, repaired_calls=1, failed_attempts=1
+        calls=2, repaired_calls=2, failed_attempts=2
     )
     assert output.model_dump(mode="json")["structured_calls"] == {
-        "calls": 1,
-        "repaired_calls": 1,
-        "failed_attempts": 1,
+        "calls": 2,
+        "repaired_calls": 2,
+        "failed_attempts": 2,
     }
     serialized = json.dumps(payload)
     assert _LEDGER_SENTINEL not in serialized
@@ -575,8 +697,9 @@ async def test_a_first_try_structured_call_is_not_counted_as_repaired(
     output = TargetOutput.model_validate(payload)
 
     assert output.completed is True
+    # The plan draft and the plan review, both first-try.
     assert output.structured_calls == StructuredCallSummary(
-        calls=1, repaired_calls=0, failed_attempts=0
+        calls=2, repaired_calls=0, failed_attempts=0
     )
 
 
@@ -600,7 +723,7 @@ async def test_concurrent_repetitions_count_only_their_own_attempts(
     assert len({output.session_id for output in outputs}) == 2
     for output in outputs:
         assert output.completed is True
-        # A session-blind count would report two calls and two repairs here.
+        # A session-blind count would report four calls and four repairs here.
         assert output.structured_calls == StructuredCallSummary(
-            calls=1, repaired_calls=1, failed_attempts=1
+            calls=2, repaired_calls=2, failed_attempts=2
         )

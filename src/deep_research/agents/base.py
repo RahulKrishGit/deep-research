@@ -13,15 +13,21 @@ framework.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import ClassVar, Generic, Protocol, TypeVar, runtime_checkable
 
 from pydantic import BaseModel
 
 from deep_research.agents.errors import AgentConfigurationError
-from deep_research.agents.prompts import AgentTask, render_react_messages
+from deep_research.agents.prompts import (
+    PROMPT_VERSION,
+    AgentTask,
+    render_react_messages,
+)
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.steps import (
     ReActDecision,
@@ -34,7 +40,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, NativeToolTurn, ToolDefinition
 from deep_research.tools.base import BaseTool
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     ResearchError,
     ResearchState,
@@ -43,6 +49,85 @@ from deep_research.utils.types import (
 
 ResultT = TypeVar("ResultT", bound=BaseModel)
 _SchemaT = TypeVar("_SchemaT", bound=BaseModel)
+
+
+def call_configuration_fingerprint(
+    *,
+    agent_name: str,
+    model: str,
+    thinking_mode: str,
+    reasoning_effort: str,
+    output_limit: int | None,
+    context_limit: int,
+    schema_name: str,
+    prompt_version: str,
+) -> str:
+    """A stable fingerprint of everything one provider call is configured by.
+
+    Twelve hex characters over a sorted JSON payload, the same shape the
+    evaluation harness uses for its configuration fingerprints. Every input
+    is part of it on purpose: two artifacts whose calls differ in model,
+    thinking, reasoning effort, output budget, context budget, response
+    schema, or prompt version must not compare equal, and a field that is
+    missing from this payload is a field whose change nobody can see.
+
+    ``output_limit`` is the operation's own output budget (``None`` means the
+    provider's global cap), and ``context_limit`` is how many scratchpad
+    entries the request carries.
+    """
+
+    payload = {
+        "agent_name": agent_name,
+        "model": model,
+        "thinking_mode": thinking_mode,
+        "reasoning_effort": reasoning_effort,
+        "output_limit": output_limit,
+        "context_limit": context_limit,
+        "schema_name": schema_name,
+        "prompt_version": prompt_version,
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:12]
+
+
+OUTPUT_LIMIT_RETRY_EFFORT = "high"
+"""The effort a truncated structured call is re-asked at.
+
+A reasoning token is a completion token, so the same output budget buys more
+answer at a lower effort — and every agent whose calls are large enough to hit
+a cap reasons at ``max``, so the retry is where the effort comes *down*. Lower
+rather than higher on purpose: this is a second attempt at getting the reply
+the run could not get, not a request for a better one, and the budget is
+deliberately unchanged. The rule it belongs to is branch-level — one retry
+under the same cap, then the caller's own failure path — and it lives here
+because base is the module that owns the structured-call contract every one of
+those callers goes through. One value, never a copy per agent.
+"""
+
+OUTPUT_LIMIT_RETRY_OUTCOMES = ("answered", "truncated", "failed")
+"""What one retry can come back with.
+
+``answered`` is a reply — whether the caller used it or had to re-ask it, which
+is the caller's own record to make; ``truncated`` is the same truncation a
+second time; ``failed`` is a provider failure that is neither, where no reply
+arrived at all and the caller's own failure path takes over. Three outcomes of
+the *retry call*, never a verdict about the artifact it feeds, so the record
+cannot disagree with what follows it.
+"""
+
+OUTPUT_LIMIT_RETRY_READINGS: dict[str, str] = {
+    "answered": "the retry returned a reply.",
+    "truncated": "the retry was truncated as well.",
+    "failed": "the retry failed at the provider.",
+}
+"""The sentence one outcome contributes to its record's message.
+
+Shared by every call that records a retry, so the same outcome cannot read two
+ways in two artifacts, and so a record whose outcome is not in
+``OUTPUT_LIMIT_RETRY_OUTCOMES`` cannot be built at all.
+"""
 
 
 class StructuredCompleter(Protocol):
@@ -62,11 +147,18 @@ class StructuredCompleter(Protocol):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> _SchemaT:
         """Return validated structured output for ``schema``.
 
         ``max_tokens`` is a per-call output-budget override for this request
         only; ``None`` means the provider's configured global cap.
+        ``reasoning_effort`` is the same kind of override for the effort this
+        request reasons at: ``None`` means the effort the agent's own profile
+        resolves to, which is what every ordinary call sends, and a value is
+        validated against the same capability registry the configured effort
+        goes through. It exists so a truncated call can be re-asked at another
+        effort without editing the agent's configuration.
         """
         raise NotImplementedError
 
@@ -104,6 +196,16 @@ class AgentRun(Generic[ResultT]):
     react: ReActRun
     errors: list[ResearchError]
     state_update: ResearchStateUpdate
+    call_fingerprints: dict[str, str] = field(default_factory=dict)
+    """One configuration fingerprint per kind of provider call this run made.
+
+    Keyed by the call label — the response schema's name for a structured
+    call, ``"ReactDecision"`` for a model-directed turn — so a run says which
+    configuration produced each kind of request rather than only which agent
+    ran. Repeating a call kind within one run does not add an entry: the
+    agent's configuration does not change between its own calls, so the label
+    is the right key and a loop of five decisions stays one line.
+    """
 
 
 class BaseAgent(ABC, Generic[ResultT]):
@@ -113,6 +215,13 @@ class BaseAgent(ABC, Generic[ResultT]):
     description: ClassVar[str]
     allowed_tools: ClassVar[tuple[str, ...]] = ()
     preserve_provider_errors: ClassVar[bool] = False
+    prompt_version: ClassVar[str] = PROMPT_VERSION
+    """Which prompt instructions this agent's calls use.
+
+    The shared library version by default; an agent whose own prompt contract
+    changed sets its own, so an artifact records the instructions it was
+    produced under rather than a value that moves for every agent at once.
+    """
 
     def __init__(
         self,
@@ -122,6 +231,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         scratchpad: ScratchpadMemory,
         tools: Sequence[BaseTool] = (),
         config: AgentRuntimeConfig | None = None,
+        model_profile: EffectiveModelConfig | None = None,
     ) -> None:
         name = getattr(type(self), "name", "")
         if not isinstance(name, str) or not name.strip():
@@ -144,6 +254,8 @@ class BaseAgent(ABC, Generic[ResultT]):
         self._tracker = tracker
         self._scratchpad = scratchpad
         self._config = config or AgentRuntimeConfig()
+        self._model_profile = model_profile
+        self._call_fingerprints: dict[str, str] = {}
         # Built once at construction time so a declared-but-uninjected tool
         # fails loudly here rather than being deferred to first use.
         self._toolset = AgentToolset(tools, allowed=self.allowed_tools)
@@ -151,6 +263,58 @@ class BaseAgent(ABC, Generic[ResultT]):
     @property
     def config(self) -> AgentRuntimeConfig:
         return self._config
+
+    @property
+    def model_profile(self) -> EffectiveModelConfig | None:
+        """The resolved model and effort this agent's calls run under.
+
+        ``None`` until the assembly hands one over: production
+        (``runtime.assembly``) and evaluation (``evaluation.factory``) both
+        pass ``settings.llm.resolve_for(name)``, so a per-agent model or
+        effort override reaches the fingerprint of every call the agent
+        makes. A hand-built agent that omits it fingerprints the field as
+        unresolved rather than inventing a model.
+        """
+        return self._model_profile
+
+    def fingerprint_call(
+        self,
+        label: str,
+        *,
+        output_limit: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        """Fingerprint one provider call and record it for this run.
+
+        Called at the call site, so the label names the request actually being
+        made (a schema name, or ``"ReactDecision"``) and the output limit is
+        that request's own budget rather than a single run-wide number.
+
+        A per-call ``reasoning_effort`` override is part of what a request is
+        configured by, so it stands in for the profile's value here when one is
+        passed; ``None`` fingerprints the profile's own effort, which is what
+        every ordinary call sends.
+        """
+        profile = self._model_profile
+        effort = (
+            reasoning_effort
+            if reasoning_effort is not None
+            else ("unresolved" if profile is None else profile.reasoning_effort)
+        )
+        value = call_configuration_fingerprint(
+            agent_name=self._name,
+            model="unresolved" if profile is None else profile.model,
+            thinking_mode=(
+                "unresolved" if profile is None else profile.thinking_mode
+            ),
+            reasoning_effort=effort,
+            output_limit=output_limit,
+            context_limit=self._config.prompt_context_entries,
+            schema_name=label,
+            prompt_version=self.prompt_version,
+        )
+        self._call_fingerprints[label] = value
+        return value
 
     @property
     def provider(self) -> AgentCompleter:
@@ -214,6 +378,22 @@ class BaseAgent(ABC, Generic[ResultT]):
         del result
         return {"errors": list(run.errors)}
 
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        """Return complete structured context for the next ReAct decision.
+
+        The default is empty so non-acquisition agents keep their existing
+        prompt shape. Agents that carry bounded candidate/read state override
+        this hook; it is called immediately before every provider turn.
+        """
+        del task, iteration, steps
+        return ""
+
     # --- runtime ------------------------------------------------------------
 
     async def complete_output(self, messages: Sequence[ChatMessage]) -> ResultT:
@@ -223,6 +403,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         and raises ``StructuredOutputError`` if the retry also fails; do not
         add another retry here.
         """
+        self.fingerprint_call(self.output_schema.__name__)
         return await self._provider.complete_structured(
             messages,
             self.output_schema,
@@ -234,6 +415,9 @@ class BaseAgent(ABC, Generic[ResultT]):
         task: AgentTask,
         *,
         iteration: int,
+        steps: Sequence[ReActStep] = (),
+        decision_context: str | None = None,
+        scratchpad: ScratchpadMemory | None = None,
     ) -> tuple[ReActDecision, ...]:
         """Ask the provider for one native ReAct turn, adapted to loop state.
 
@@ -242,23 +426,48 @@ class BaseAgent(ABC, Generic[ResultT]):
         no agent can reintroduce a prompt-encoded tool protocol of its own.
         One turn may select several tools at once, so a tuple of decisions
         comes back rather than a single one.
+
+        The tools travel through ``self.toolset`` rather than the internal
+        attribute, so an agent that narrows its own toolset for one run — the
+        planner withholding ``query_memory`` once startup recall has supplied
+        the guidance — offers the provider exactly the tools it will execute.
+
+        ``scratchpad`` is the caller's own notes for this loop (D9): an agent
+        that runs several loops at once hands each one its own pad, so a
+        prompt renders this loop's observations and no sibling's. ``None``
+        keeps the agent's single shared pad, which is what every
+        single-loop caller wants.
         """
+        pad = self._scratchpad if scratchpad is None else scratchpad
+        self.fingerprint_call(
+            "ReactDecision",
+            output_limit=self._config.react_decision_max_tokens,
+        )
+        context = (
+            self.build_decision_context(
+                task,
+                iteration=iteration,
+                steps=steps,
+            )
+            if decision_context is None
+            else decision_context
+        )
         turn = await self._provider.complete_react(
             render_react_messages(
                 system_prompt=self.system_prompt(task),
                 task=task,
-                scratchpad=self._scratchpad.recent(
+                scratchpad=pad.recent(
                     self._config.prompt_context_entries
                 ),
                 iteration=iteration,
                 max_iterations=self._config.max_iterations,
+                decision_context=context,
             ),
-            self._toolset.provider_definitions(),
+            self.toolset.provider_definitions(),
             agent_name=self._name,
             max_tokens=self._config.react_decision_max_tokens,
         )
         return react_decision_from_native_turn(turn)
-
     async def run(self, state: ResearchState) -> AgentRun[ResultT]:
         """Run one bounded ReAct loop and finalize its result."""
         task = self.build_task(state)
@@ -268,8 +477,11 @@ class BaseAgent(ABC, Generic[ResultT]):
             iteration: int,
             steps: Sequence[ReActStep],
         ) -> tuple[ReActDecision, ...]:
-            del steps
-            return await self._complete_react_decision(task, iteration=iteration)
+            return await self._complete_react_decision(
+                task,
+                iteration=iteration,
+                steps=steps,
+            )
 
         async with self._tracker.agent_span(self._name) as span:
             react = await run_react_loop(
@@ -278,7 +490,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 tools=toolset,
                 decide=decide,
                 max_iterations=self._config.max_iterations,
-                tool_budget=self._config.tool_budget,
+                tool_budget=self._config.tool_budget_for(self._name),
                 on_step=self._record_step,
                 is_sufficient=self.is_sufficient,
                 summary_limit=self._config.observation_summary_chars,
@@ -297,6 +509,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                     "iterations": react.iterations,
                     "tool_calls": react.tool_calls,
                     "produced_result": result is not None,
+                    "call_fingerprints": dict(self._call_fingerprints),
                 }
             )
 
@@ -306,17 +519,28 @@ class BaseAgent(ABC, Generic[ResultT]):
             react=react,
             errors=list(react.errors),
             state_update=self.state_update(result, react),
+            call_fingerprints=dict(self._call_fingerprints),
         )
 
-    async def _record_step(self, step: ReActStep) -> None:
-        """Write one iteration into the scratchpad the next prompt renders."""
-        self._scratchpad.add(
+    async def _record_step(
+        self,
+        step: ReActStep,
+        *,
+        scratchpad: ScratchpadMemory | None = None,
+    ) -> None:
+        """Write one iteration into the scratchpad the next prompt renders.
+
+        ``scratchpad`` is the loop's own pad when a caller runs several loops
+        at once (D9); ``None`` writes to the agent's single shared pad.
+        """
+        pad = self._scratchpad if scratchpad is None else scratchpad
+        pad.add(
             step.thought,
             kind="thought",
             metadata={"iteration": step.iteration},
         )
         if step.observation is not None:
-            self._scratchpad.add(
+            pad.add(
                 step.observation.summary,
                 kind="observation",
                 metadata={
@@ -326,7 +550,7 @@ class BaseAgent(ABC, Generic[ResultT]):
                 },
             )
         elif step.final_answer is not None:
-            self._scratchpad.add(
+            pad.add(
                 step.final_answer,
                 kind="decision",
                 metadata={"iteration": step.iteration},

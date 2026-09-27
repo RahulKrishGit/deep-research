@@ -224,8 +224,19 @@ __marimo__/
 # SDD scratch workspace
 .superpowers/
 
+# Ad-hoc investigation/diagnostic scaffolding from SDD implementer rounds.
+# Never intended to ship; must stay untracked.
+scratch/
+
 # Local Git worktrees
 .worktrees/
+
+# DSH project-memory index (dsh-project-memory).
+# Workspace-scoped: one store per worktree root, because branch trees diverge
+# (this branch changes 42 of 101 files under src/). Must stay untracked or the
+# SDD ledger's clean-tree precondition breaks. No leading slash, so the pattern
+# matches at any depth.
+.dsh-project-memory/
 
 # Local DeepSeek/Claude routing helper; never commit credentials or tooling.
 /.local-deepseek/

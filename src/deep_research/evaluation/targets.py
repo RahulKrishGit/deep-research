@@ -11,6 +11,7 @@ the experiment.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,7 @@ from deep_research.evaluation.dependencies import (
     SCENARIOS,
     DependencyBundle,
     read_url_fingerprints,
+    source_url_fingerprint,
 )
 from deep_research.evaluation.factory import (
     AgentConstructionError,
@@ -290,6 +292,69 @@ def _minimal_output(
         target_model_requested=target_model,
         target_reasoning_effort=target_reasoning_effort,  # type: ignore[arg-type]
     )
+
+
+_SOURCE_URL_PATTERN = re.compile(
+    r"(?:https?://|(?<![\w:/])(?://|www\.))[^\s\"'<>]+"
+)
+
+
+def _redact_source_urls(text: str) -> str:
+    """Replace every URL in ``text`` with its fingerprint, before any clamp.
+
+    A trajectory's public observation prose is bounded by
+    ``observation_summary_chars`` so a downstream reader sees a short prefix,
+    not the packet -- but a length bound is not a privacy boundary, and a
+    clamp long enough to carry a source URL in full must never do it in the
+    clear. So a URL is redacted first, and the clamp is applied to the
+    redacted text: the boundary holds whatever the clamp is, rather than
+    depending on the URL falling past it by luck. A URL that cannot carry a
+    fingerprint (not an absolute HTTP(S) URL) is replaced with a generic
+    marker instead of leaking the raw text unredacted. The pattern also
+    catches a scheme-free source (``www.host/path``, ``//host/path``): a
+    model names a source exactly as plainly without spelling out ``https://``,
+    and the boundary must not depend on it having done so. The scheme-free
+    alternatives are anchored so they never fire mid-token: a bare ``//`` or
+    ``www.`` is a URL only when nothing word-like, ``:`` or ``/`` sits
+    immediately before it -- otherwise ``a//b``, ``ratio 1//2`` and
+    ``C://temp`` would be redacted too.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        fingerprint = source_url_fingerprint(url)
+        return f"source:{fingerprint}" if fingerprint else "[redacted-url]"
+
+    return _SOURCE_URL_PATTERN.sub(_replace, text)
+
+
+def _trajectory_from_steps(
+    steps: Sequence[Any], *, limit: int
+) -> list[TrajectoryStep]:
+    """One run's typed steps, as the trajectory's own redacted, clamped rows.
+
+    RevSelectionR3 P2: a model's ``thought`` is exactly as free-text as an
+    observation, and just as capable of naming a source URL in full ("Next
+    I will read https://...") -- the clamp that bounds its length is not a
+    privacy boundary either, so it is redacted before the same clamp
+    ``observation_summary`` already goes through.
+    """
+    return [
+        TrajectoryStep(
+            iteration=step.iteration,
+            thought=_redact_source_urls(step.thought)[:limit],
+            tool_name=step.tool_name,
+            succeeded=(
+                None if step.observation is None else step.observation.success
+            ),
+            observation_summary=(
+                _redact_source_urls(step.observation.summary)[:limit]
+                if step.observation is not None
+                else ""
+            ),
+        )
+        for step in steps
+    ]
 
 
 def _finish(
@@ -579,22 +644,7 @@ def _success_output(
         }
     )
 
-    trajectory = [
-        TrajectoryStep(
-            iteration=step.iteration,
-            thought=step.thought[:limit],
-            tool_name=step.tool_name,
-            succeeded=(
-                None if step.observation is None else step.observation.success
-            ),
-            observation_summary=(
-                step.observation.summary[:limit]
-                if step.observation is not None
-                else ""
-            ),
-        )
-        for step in run.react.steps
-    ]
+    trajectory = _trajectory_from_steps(run.react.steps, limit=limit)
 
     return TargetOutput(
         case_id=case.case_id,
@@ -631,10 +681,6 @@ def _success_output(
                 finding.model_dump(mode="json")
                 for finding in case.state.raw_findings
             ],
-            claims=[
-                claim.model_dump(mode="json")
-                for claim in case.state.verified_claims
-            ],
             scripted_search_urls=(
                 list(script.scripted_search_urls) if script is not None else []
             ),
@@ -658,9 +704,8 @@ def _safe_agent_name(value: Any) -> AgentName:
         "planner",
         "researcher",
         "source_evaluator",
-        "fact_checker",
-        "synthesizer",
-        "critic",
+        "evidence_verifier",
+        "report_writer",
     ):
         return value  # type: ignore[return-value]
     return "planner"

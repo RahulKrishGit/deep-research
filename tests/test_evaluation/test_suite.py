@@ -10,6 +10,7 @@ from deep_research.evaluation import runner as runner_module
 from deep_research.evaluation.models import AGENT_NAMES, SuiteResult
 from deep_research.evaluation.reporting import render_suite, write_suite_artifact
 from deep_research.evaluation.runner import run_suite_evaluation
+from deep_research.utils.config import ConfigSettings, LLMConfig
 from tests.evaluation_fakes import FakeStructuredProvider
 
 # ``run_suite_evaluation`` reads the process environment for its preflight, and
@@ -37,7 +38,7 @@ def _suite_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_suite_runs_all_six_agents_controlled(
+async def test_the_suite_runs_every_agent_controlled(
     settings, tmp_path, suite_harness
 ) -> None:
     result = await run_suite_evaluation(settings, **suite_harness.kwargs(tmp_path))
@@ -76,6 +77,37 @@ async def test_a_judge_override_applies_uniformly_to_every_agent(
 
 
 @pytest.mark.asyncio
+async def test_a_production_parity_override_applies_uniformly_to_every_agent(
+    tmp_path, suite_harness
+) -> None:
+    """A suite-wide ``--no-production-parity`` must reach every agent's own
+    ``build_runtime_config`` call, the same way the judge override does."""
+    settings = ConfigSettings(
+        llm=LLMConfig(
+            model_overrides={
+                name: {"reasoning_effort": "high"} for name in AGENT_NAMES
+            }
+        )
+    )
+
+    await run_suite_evaluation(
+        settings,
+        **{**suite_harness.kwargs(tmp_path), "production_parity": False},
+    )
+
+    sources = {
+        call["metadata"]["target_profile_source"]
+        for call in suite_harness.runner.calls
+    }
+    parity_sources = {
+        call["metadata"]["production_parity_source"]
+        for call in suite_harness.runner.calls
+    }
+    assert sources == {"evaluation"}
+    assert parity_sources == {"invocation"}
+
+
+@pytest.mark.asyncio
 async def test_each_agent_keeps_its_own_target_effort_in_the_suite(
     settings, tmp_path, suite_harness
 ) -> None:
@@ -90,9 +122,8 @@ async def test_each_agent_keeps_its_own_target_effort_in_the_suite(
         "planner": "max",
         "researcher": "high",
         "source_evaluator": "high",
-        "fact_checker": "max",
-        "synthesizer": "max",
-        "critic": "max",
+        "evidence_verifier": "high",
+        "report_writer": "high",
     }
 
 
@@ -121,7 +152,7 @@ async def test_one_failing_agent_does_not_stop_the_others(
         settings, **partially_failing_suite_harness.kwargs(tmp_path)
     )
 
-    assert len(result.experiments) == 6
+    assert len(result.experiments) == len(AGENT_NAMES)
     assert result.status == "FAILED"
     assert any(item.status == "REVIEW REQUIRED" for item in result.experiments)
 
@@ -151,12 +182,11 @@ async def test_each_agent_still_writes_its_own_results_artifact(
     written = sorted(path.parent.parent.name
                      for path in tmp_path.rglob("results.json"))
     assert written == [
-        "critic",
-        "fact-checker",
+        "evidence-verifier",
         "planner",
+        "report-writer",
         "researcher",
         "source-evaluator",
-        "synthesizer",
     ]
 
 
@@ -198,7 +228,7 @@ def test_the_suite_summary_lists_every_agent_and_its_status(
 ) -> None:
     body = "\n".join(render_suite(suite_result, verbose=False))
 
-    for agent_name in ("planner", "researcher", "critic"):
+    for agent_name in ("planner", "researcher", "evidence-verifier"):
         assert agent_name in body
     assert "REVIEW REQUIRED" in body
     assert "summary.json" in body

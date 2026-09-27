@@ -24,7 +24,13 @@ from __future__ import annotations
 
 import pytest
 
-from deep_research.agents.planner import PlannerAgent, ResearchPlanDraft, SubTopicDraft
+from deep_research.agents.planner import (
+    EvidenceTargetDraft,
+    PlannerAgent,
+    PlanReviewDraft,
+    ResearchPlanDraft,
+    SubTopicDraft,
+)
 from deep_research.agents.researcher import (
     DEFAULT_MAX_SUB_TOPICS,
     FindingDraft,
@@ -43,8 +49,11 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import ScriptedCompleter, finish, use_tool
 from tests.research_fakes import (
+    QEC_PASSAGE,
+    QEC_SOURCE_URL,
     FakeSearchClient,
     planner_tools,
+    qec_read_record,
     research_tools,
     search_response,
 )
@@ -118,6 +127,14 @@ def _plan_draft() -> ResearchPlanDraft:
                 search_queries=[query],
                 success_criteria=[criterion],
                 priority=priority,
+                evidence_targets=[
+                    EvidenceTargetDraft(
+                        question="Which United States instrument settles "
+                        f"{title.lower()}?",
+                        required=True,
+                        measure=f"the binding rule for {title.lower()}",
+                    )
+                ],
             )
             for title, priority, query, criterion in _DRAFTED_SUB_TOPICS
         ]
@@ -138,23 +155,32 @@ def _state() -> ResearchState:
 def _search_and_scrape_decisions(query: str) -> list[object]:
     return [
         use_tool("Find sources.", "web_search", f'{{"query": "{query}"}}'),
+        # The read follows the URL the search actually returned. A same-host
+        # URL the run was never given is a guess, and the acquisition policy
+        # refuses it — the seam test is about plan composition, not about
+        # inventing a path the publisher never published.
         use_tool(
             "Read the best source.",
             "web_scraper",
-            '{"url": "https://example.test/interconnection"}',
+            f'{{"url": "{QEC_SOURCE_URL}"}}',
         ),
         finish("I have a source-backed answer.", "Evidence found."),
     ]
 
 
-def _findings_draft(title: str) -> SubTopicFindingsDraft:
+def _findings_draft(title: str, *, target_id: str) -> SubTopicFindingsDraft:
+    read = qec_read_record()
     return SubTopicFindingsDraft(
         findings=[
             FindingDraft(
                 content=f"{title} finding.",
-                source_url="https://example.test/interconnection",
-                source_title="Grid-scale storage deployment data",
+                source_url=QEC_SOURCE_URL,
+                source_title=read.title,
                 confidence=0.8,
+                read_id=read.read_id,
+                locator="chunk-0",
+                snippet=QEC_PASSAGE,
+                target_ids=[target_id],
             )
         ]
     )
@@ -164,7 +190,16 @@ async def _planned_state(tracker: Tracker) -> ResearchState:
     """Run the real Planner and merge its plan the way the orchestrator does."""
     planner_completer = ScriptedCompleter(
         decisions=[finish("I understand the question.", "Five angles matter.")],
-        outputs=[_plan_draft()],
+        outputs=[
+            _plan_draft(),
+            PlanReviewDraft(
+                sound=True,
+                missing_dimensions=[],
+                atomicity_defects=[],
+                unsupported_premises=[],
+                repair_instruction="",
+            ),
+        ],
     )
     planner = PlannerAgent(
         provider=planner_completer,
@@ -198,6 +233,12 @@ def _researcher_for(
             search=FakeSearchClient([search_response() for _ in decisions]),
         ),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=4),
+        # Order-pinned (rule R3 of Task 4.13): both tests below script one
+        # loop's decisions in plan order under the order-based
+        # ScriptedCompleter, which is only unambiguous while one loop is in
+        # flight (D9). The other remedy R3 allows -- the target-keyed
+        # completer -- would be a rewrite of these fixtures, not a re-pin.
+        sub_topic_concurrency=1,
     )
 
 
@@ -239,7 +280,10 @@ async def test_a_full_planner_output_composes_into_the_researcher(
             for title in researched_titles
             for decision in _search_and_scrape_decisions(title)
         ],
-        outputs=[_findings_draft(title) for title in researched_titles],
+        outputs=[
+            _findings_draft(title, target_id=f"topic-{position:02d}-target-01")
+            for position, title in enumerate(researched_titles, start=1)
+        ],
     )
 
     async with tracker.session_span("session-1", state.original_question):
@@ -295,7 +339,7 @@ async def test_a_provider_failure_names_every_topic_never_attempted(
             *_search_and_scrape_decisions(first.title),
             ProviderTimeoutError("timed out"),
         ],
-        outputs=[_findings_draft(first.title)],
+            outputs=[_findings_draft(first.title, target_id=first.coverage_id)],
     )
 
     async with tracker.session_span("session-1", state.original_question):
