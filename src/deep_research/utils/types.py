@@ -2270,6 +2270,12 @@ class CallAttemptTelemetry(ContractModel):
     ``seconds`` is this attempt's own wall time -- never the call's total.
     ``outcome`` is ``"ok"``, ``"timeout"``, ``"connection error"``, or the
     failing exception's class name for anything else (P1-B).
+
+    ``first_event_seconds`` and ``first_token_seconds`` are set only for a
+    streaming attempt (Phase 2): the first chunk or event, and the first
+    content or reasoning delta, both relative to the attempt's own start.
+    Absent for a non-streaming attempt, which reports no bytes until the
+    whole response arrives, so there is nothing earlier to time.
     """
 
     model_config = ConfigDict(
@@ -2280,6 +2286,8 @@ class CallAttemptTelemetry(ContractModel):
     start_offset: float = Field(ge=0.0)
     seconds: float = Field(ge=0.0)
     outcome: str = Field(min_length=1)
+    first_event_seconds: float | None = Field(default=None, ge=0.0)
+    first_token_seconds: float | None = Field(default=None, ge=0.0)
 
 
 class OperationTelemetry(ContractModel):

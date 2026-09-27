@@ -66,6 +66,12 @@ llm:
   # evaluator and the report writer): lifted with the caps, 1800 s covering a
   # full 393,216-token reply at ~225 tokens/s.
   timeout: 1800.0
+  # Streaming keeps bytes flowing during generation, so a dead request is
+  # detected at the idle timeout below instead of at the full timeout above.
+  stream: true
+  # Seconds with no bytes on a streaming attempt before it fails (stall-fix
+  # Phase 2): the total timeout above still bounds one attempt end to end.
+  idle_timeout: 150.0
   # Repo-owned retry policy: up to 5 retries with exponential backoff from
   # 1s doubling to a 16s cap (the openai SDK only exposes max_retries with a
   # fixed 0.5s/8s internal backoff, so the policy lives in providers/retry.py).

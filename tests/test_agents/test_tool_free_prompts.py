@@ -1142,6 +1142,66 @@ FAULT_REPLIES = (
 )
 
 
+class _FakeAsyncStream:
+    """Minimal async stream double for Chat Completions JSON mode."""
+    def __init__(self, chunks: list[object]) -> None:
+        self._chunks = list(chunks)
+
+    async def __aenter__(self) -> "_FakeAsyncStream":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _chat_stream_chunks(response: object) -> list[SimpleNamespace]:
+    """Rebuild one Chat Completions response as stream chunks."""
+    choice = response.choices[0]
+    message = choice.message
+    response_id = getattr(response, "id", None)
+    model = getattr(response, "model", None)
+
+    def _chunk(*, delta: SimpleNamespace | None, finish_reason, usage) -> SimpleNamespace:
+        choices = (
+            []
+            if delta is None and finish_reason is None
+            else [SimpleNamespace(delta=delta, finish_reason=finish_reason)]
+        )
+        return SimpleNamespace(id=response_id, model=model, choices=choices, usage=usage)
+
+    return [
+        _chunk(
+            delta=SimpleNamespace(
+                content=getattr(message, "content", None),
+                reasoning_content=getattr(message, "reasoning_content", None),
+                tool_calls=None,
+            ),
+            finish_reason=None,
+            usage=None,
+        ),
+        _chunk(
+            delta=SimpleNamespace(content=None, reasoning_content=None, tool_calls=None),
+            finish_reason=getattr(choice, "finish_reason", None),
+            usage=None,
+        ),
+        _chunk(delta=None, finish_reason=None, usage=getattr(response, "usage", None)),
+    ]
+
+def _responses_stream_events(response: object) -> list[SimpleNamespace]:
+    """One terminal Responses-API event carrying the whole fixture response."""
+    status = getattr(response, "status", "completed")
+    event_type = {
+        "completed": "response.completed",
+        "incomplete": "response.incomplete",
+    }.get(status, "response.failed")
+    return [SimpleNamespace(type=event_type, response=response)]
+
+
+
 class _RecordingTransport:
     """A transport recorder: one queued outcome per request, in order."""
 
@@ -1160,8 +1220,16 @@ class _RecordingTransport:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        # If streaming is requested, wrap response in stream
+        if kwargs.get("stream"):
+            # Detect response type: Chat Completions has 'choices', Responses API has 'status'
+            if hasattr(outcome, 'choices'):
+                # Chat Completions response
+                return _FakeAsyncStream(_chat_stream_chunks(outcome))
+            else:
+                # Responses API response
+                return _FakeAsyncStream(_responses_stream_events(outcome))
         return outcome
-
 
 def _deepseek_config() -> LLMConfig:
     return LLMConfig.model_validate(

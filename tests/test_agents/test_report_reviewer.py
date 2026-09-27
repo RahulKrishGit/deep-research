@@ -1619,13 +1619,30 @@ async def test_report_judge_generation_respects_its_own_request_deadline(
     deadline = config.resolve_for("report_reviewer").timeout
     generation_seconds = deadline + seconds_past_deadline
 
+    class _FakeAsyncStream:
+        """Minimal async stream double for Responses API."""
+        def __init__(self, events: list[object]) -> None:
+            self._events = list(events)
+
+        async def __aenter__(self) -> "_FakeAsyncStream":
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
+
+        async def __aiter__(self):
+            for event in self._events:
+                yield event
+
     class TimedResponses:
         async def create(self, **kwargs):
-            if generation_seconds > kwargs.get("timeout", config.timeout):
+            # The deadline is wrapped in asyncio.timeout context; generation_seconds
+            # is how long the generation would take (absolute duration)
+            if generation_seconds > deadline:
                 raise APITimeoutError(
                     request=httpx.Request("POST", "https://api.deepseek.com/responses")
                 )
-            return SimpleNamespace(
+            response = SimpleNamespace(
                 status="completed",
                 incomplete_details=None,
                 output_text=_draft().model_dump_json(),
@@ -1634,6 +1651,11 @@ async def test_report_judge_generation_respects_its_own_request_deadline(
                     input_tokens=100, output_tokens=1000, total_tokens=1100
                 ),
             )
+            if kwargs.get("stream"):
+                # Return single response.completed event for Responses API streaming
+                event = SimpleNamespace(type="response.completed", response=response)
+                return _FakeAsyncStream([event])
+            return response
 
     tracker = _tracker()
     provider = DeepSeekSchemaChatProvider(

@@ -37,6 +37,8 @@ class AgentModelOverride(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     timeout: float | None = Field(default=None, gt=0)
     retry_count: int | None = Field(default=None, ge=0)
+    stream: bool | None = None
+    idle_timeout: float | None = Field(default=None, gt=0)
 
 
 class EffectiveModelConfig(BaseModel):
@@ -48,6 +50,8 @@ class EffectiveModelConfig(BaseModel):
     reasoning_effort: ReasoningEffort
     timeout: float | None = Field(default=None, gt=0)
     retry_count: int | None = Field(default=None, ge=0)
+    stream: bool | None = None
+    idle_timeout: float | None = Field(default=None, gt=0)
 
 
 class LLMConfig(BaseModel):
@@ -73,6 +77,8 @@ class LLMConfig(BaseModel):
     retry_count: int = Field(default=2, ge=0)
     retry_initial_delay: float = Field(default=1.0, ge=0)
     retry_max_delay: float = Field(default=16.0, ge=0)
+    stream: bool = True
+    idle_timeout: float = Field(default=150.0, gt=0)
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=32768, ge=1)
 
@@ -107,6 +113,14 @@ class LLMConfig(BaseModel):
             retry_count=(
                 None if override is None or override.retry_count is None
                 else override.retry_count
+            ),
+            stream=(
+                None if override is None or override.stream is None
+                else override.stream
+            ),
+            idle_timeout=(
+                None if override is None or override.idle_timeout is None
+                else override.idle_timeout
             ),
         )
 

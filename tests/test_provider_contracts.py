@@ -339,12 +339,16 @@ def test_provider_response_telemetry_carries_its_attempts() -> None:
             "start_offset": 0.0,
             "seconds": 1_800.0,
             "outcome": "timeout",
+            "first_event_seconds": None,
+            "first_token_seconds": None,
         },
         {
             "attempt": 2,
             "start_offset": 1_801.0,
             "seconds": 222.6,
             "outcome": "ok",
+            "first_event_seconds": None,
+            "first_token_seconds": None,
         },
     ]
 

@@ -277,6 +277,34 @@ def test_report_reviewer_timeout_and_retries_leave_other_roles_on_transport_defa
     assert llm.resolve_for("critic").retry_count is None
 
 
+def test_stream_defaults_to_true_and_idle_timeout_to_150_seconds() -> None:
+    llm = LLMConfig()
+
+    assert llm.stream is True
+    assert llm.idle_timeout == 150.0
+
+
+def test_stream_and_idle_timeout_resolve_per_role_like_timeout() -> None:
+    llm = LLMConfig(
+        model_overrides={
+            "report_reviewer": {"stream": False, "idle_timeout": 60.0},
+        },
+    )
+
+    assert llm.resolve_for("report_reviewer").stream is False
+    assert llm.resolve_for("report_reviewer").idle_timeout == 60.0
+    assert llm.resolve_for("critic").stream is None
+    assert llm.resolve_for("critic").idle_timeout is None
+
+
+@pytest.mark.parametrize("invalid_override", [{"idle_timeout": 0}, {"idle_timeout": -5}])
+def test_agent_model_override_rejects_a_non_positive_idle_timeout(
+    invalid_override: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        LLMConfig(model_overrides={"report_reviewer": invalid_override})
+
+
 @pytest.mark.parametrize(
     "invalid_override",
     [{"timeout": 0}, {"timeout": -5}, {"retry_count": -1}],

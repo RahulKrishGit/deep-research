@@ -53,6 +53,32 @@ from tests.evaluation_fakes import FakeRun, FakeStructuredProvider
 _CONTRACT_FINGERPRINT = "74b9cddfbbee"
 
 
+class _FakeAsyncStream:
+    """Minimal async stream double for Responses API."""
+    def __init__(self, events: list[object]) -> None:
+        self._events = list(events)
+
+    async def __aenter__(self) -> "_FakeAsyncStream":
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+    async def __aiter__(self):
+        for event in self._events:
+            yield event
+
+
+def _responses_stream_events(response: object) -> list[SimpleNamespace]:
+    """One terminal Responses-API event carrying the whole fixture response."""
+    status = getattr(response, "status", "completed")
+    event_type = {
+        "completed": "response.completed",
+        "incomplete": "response.incomplete",
+    }.get(status, "response.failed")
+    return [SimpleNamespace(type=event_type, response=response)]
+
+
 class _RecordingResponses:
     def __init__(self, *outcomes: object) -> None:
         self.outcomes = list(outcomes)
@@ -63,6 +89,9 @@ class _RecordingResponses:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        # If streaming is requested, wrap response in stream
+        if kwargs.get("stream"):
+            return _FakeAsyncStream(_responses_stream_events(outcome))
         return outcome
 
 
