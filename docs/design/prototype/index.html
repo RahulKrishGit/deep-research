@@ -1088,6 +1088,45 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .topbar-right{min-width:0}
 .chip{max-width:100%;min-width:0}
 .chip .kind{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ═══ 2026-09-26: the Evidence view ═══ */
+#stage-report[data-view="evidence"] .report-main{display:none}
+#stage-report:not([data-view="evidence"]) .evidence-view{display:none}
+.seg-view{flex:none}
+.seg-view button{flex:none;min-width:84px}
+.chip-filters{display:flex;gap:var(--space-2);flex-wrap:wrap}
+.chip-filter{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-pill);font-size:var(--text-sm);color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.chip-filter:hover{background:var(--border-soft);color:var(--fg)}
+.chip-filter[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.chip-filter .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta)}
+.ev-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.ev-list:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--radius-md)}
+.ev-row{
+  display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;
+  padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);cursor:pointer;
+}
+.ev-row:hover{border-color:var(--muted)}
+.ev-row[aria-selected="true"]{border-color:var(--fg)}
+.ev-row .lbl{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.ev-row .txt{font-size:var(--text-sm);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ev-row .tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pill{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--muted);white-space:nowrap}
+.pill[data-status="verified"],.pill[data-status="verified_corrected"]{color:var(--status-ok);border-color:var(--status-ok)}
+.pill[data-status="quoted"],.pill[data-status="not_found"]{color:var(--status-warn);border-color:var(--status-warn)}
+.pill[data-status="dropped"],.pill[data-status="refused"]{color:var(--status-danger);border-color:var(--status-danger)}
+.tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg);white-space:nowrap}
+.tag.soft{color:var(--muted)}
+.ev-detail .ev-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;margin:0}
+.ev-detail .ev-status{font-size:var(--text-sm);color:var(--muted)}
+.ev-detail blockquote{margin:0;padding-left:var(--space-3);border-left:2px solid var(--border);font-size:var(--text-sm);color:var(--fg)}
+.ev-detail .kv dd{text-align:left}
+.ev-detail ul{margin:0;padding-left:var(--space-5);font-size:var(--text-sm)}
+.ev-detail .ev-cited button{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
+.ev-detail .ev-cited button:hover{border-color:var(--muted)}
+@media (max-width:1120px){ .ev-detail{position:static} }
 </style>
 </head>
 <body>
@@ -1296,10 +1335,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       </section>
 
       <!-- ── STAGE · report ───────────────────────────────────────── -->
-      <section class="stage" id="stage-report" data-od-id="stage-report" aria-labelledby="report-h">
+      <section class="stage" id="stage-report" data-view="report" data-od-id="stage-report" aria-labelledby="report-h">
         <div class="report-head">
           <div class="report-head-bar">
             <p class="cap" id="reportMeta" data-od-id="report-meta">—</p>
+            <!-- Report | Evidence (Q2): two views over one session; Report is the default, the
+                 choice is per session and not persisted. Same recipe as the composer's segments. -->
+            <div class="seg seg-view" role="group" aria-label="Report view" id="segView">
+              <button type="button" data-view="report" aria-pressed="true">Report</button>
+              <button type="button" data-view="evidence" aria-pressed="false">Evidence</button>
+            </div>
             <div class="row wrap">
               <a class="btn btn-primary" href="#" id="downloadBtn" data-od-id="cta-download-report">Download Report</a>
               <a class="btn btn-ghost" href="#" id="traceBtn" data-od-id="cta-open-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
@@ -1438,6 +1483,20 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
               </details>
             </div>
           </aside>
+        </div>
+
+        <!-- ── the Evidence view (Q4) ──────────────────────────────────
+             A flat list of findings with status filters, a target tag per row and a detail pane
+             in the rail track. Until the service serves GET /research/{id}/evidence (api-gaps E1)
+             the real app shows one muted line here; the prototype renders the target state from a
+             fixture in E1's shape. -->
+        <div class="with-rail evidence-view" id="evidenceView">
+          <div class="stack" style="gap:var(--space-4)">
+            <div class="chip-filters" id="evChips" role="group" aria-label="Filter evidence by status"></div>
+            <ol class="ev-list" id="evList" role="listbox" aria-label="Evidence" tabindex="0"></ol>
+            <p class="avail" id="evEmpty" hidden>not served by the service yet</p>
+          </div>
+          <aside class="rail ev-detail card stack-2" id="evDetail" aria-label="Evidence detail" aria-live="polite"></aside>
         </div>
       </section>
 
@@ -3319,7 +3378,308 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         });
       }
     }
+    /* the view is per session and not persisted: every open starts on Report */
+    ev.sessionId = null;
+    setView("report");
   }
+  /* ═══ the Evidence view (Q4) ═══
+     One fixture in E1's shape (spec §4.5), for the one battery-storage report every finished
+     session reuses: at least one finding per status, one not-found target (T04) and one refused
+     sentence. F03's source scores 0.80 overall, which paints yellow on purpose (DESIGN.md §3.6). */
+  var EVIDENCE = {
+    "default": {
+      session_id:null, iteration:0,
+      findings:[
+        { label:"F01", status:"verified", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T01"],
+          content:"2,600 GW of proposed U.S. generation and storage projects were waiting for grid access at the end of 2023.",
+          snippet:"As of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more.",
+          passage:"The report notes that as of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more, and that fewer than a quarter of queued projects reach completion.",
+          source:{ url:"https://www.novoco.com/", title:"Resolving the Interconnection Queue Bottleneck", organisation:"Novogradac", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.62, recency_score:0.71, relevance_score:0.93, overall_score:0.74 },
+          figures:[{ value:"2,600 GW", kept:true, period:"end of 2023", scope:"proposed U.S. generation and storage awaiting grid access", organisation:"Lawrence Berkeley National Laboratory",
+                     attribution:"relayed", kind:"actual", release:"2024 queue study", evidence_words:"2,600 GW of proposed generation and storage projects", corrected:false, dropped_reason:null, reason:null }] },
+        { label:"F02", status:"verified_corrected", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T03"],
+          content:"China's average share of mineral supply, excluding rare earths, rose to 72 percent in 2025 from 70 percent in 2023.",
+          snippet:"Excluding rare earths, the average share of mineral supply held by China rose to 72% in 2025 from 70% in 2023.",
+          passage:null,
+          source:{ url:"https://crsreports.congress.gov/", title:"Critical Minerals and Materials for Selected Energy Technologies", organisation:"Congressional Research Service", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.91, recency_score:0.84, relevance_score:0.88, overall_score:0.89 },
+          figures:[{ value:"72%", kept:true, period:"2025", scope:"average share of mineral supply held by China, excluding rare earths", organisation:"Congressional Research Service",
+                     attribution:"own", kind:"actual", release:"R48149, 2025", evidence_words:"rose to 72% in 2025", corrected:true, dropped_reason:null, reason:"the draft read 2024; the page says 2025" }] },
+        { label:"F03", status:"quoted", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T03"],
+          content:"The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production at risk.",
+          snippet:"The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk.",
+          passage:null,
+          source:{ url:"https://www.aa.com.tr/", title:"Why the IEA says critical minerals have become a $6.5 trillion economic security risk", organisation:"Anadolu Agency", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.74, recency_score:0.90, relevance_score:0.80, overall_score:0.80 },
+          figures:[] },
+        { label:"F04", status:"dropped", dropped_reason:"snippet_not_on_page", context_unchecked:false, cited:false, target_ids:["T02"],
+          content:"The U.S. interconnection queue swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years.",
+          snippet:"a 2,600 GW backlog as of 2026 with median waits approaching five years",
+          passage:null,
+          source:{ url:"https://www.enkiai.com/", title:"Grid Interconnection Delays 2026: A Threat to US Energy", organisation:"Enki AI", evaluation_status:"scored", low_confidence:true,
+                   authority_score:0.38, recency_score:0.95, relevance_score:0.82, overall_score:0.67 },
+          figures:[] },
+        { label:"F05", status:null, dropped_reason:null, context_unchecked:false, cited:false, target_ids:["T01"],
+          content:"For every $1 billion in delayed transmission investment, consumers lose between $150 million and $370 million in net benefits per year of delay.",
+          snippet:"For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay.",
+          passage:null,
+          source:{ url:"https://www.enkiai.com/", title:"Grid Interconnection Delays 2026: A Threat to US Energy", organisation:"Enki AI", evaluation_status:"scored", low_confidence:true,
+                   authority_score:0.38, recency_score:0.95, relevance_score:0.82, overall_score:0.67 },
+          figures:[] },
+        { label:"F06", status:"verified", dropped_reason:null, context_unchecked:true, cited:true, target_ids:["T03"],
+          content:"China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024.",
+          snippet:"China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70-95% of global lithium, cobalt, phosphate and graphite.",
+          passage:null,
+          source:{ url:"https://www.iea.org/", title:"Global Critical Minerals Outlook 2025", organisation:"IEA", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.95, recency_score:0.88, relevance_score:0.92, overall_score:0.92 },
+          figures:[{ value:"70–95%", kept:true, period:"2024", scope:"share of global lithium, cobalt, phosphate and graphite processed in China", organisation:"IEA",
+                     attribution:"own", kind:"actual", release:"Global Critical Minerals Outlook 2025", evidence_words:"processing 70-95% of global lithium, cobalt, phosphate and graphite", corrected:false, dropped_reason:null, reason:null }] }
+      ],
+      not_found:[
+        { target_id:"T04", question:"How do non-U.S. grid connection regimes constrain battery deployment?",
+          queries:["EU grid connection queue battery storage 2025", "UK connections reform battery storage wait times"],
+          pages_read:["https://www.entsoe.eu/", "https://www.neso.energy/"], searched:true }
+      ],
+      refused:[
+        { where:"Critical minerals and supply-chain concentration",
+          text:"Export controls have already removed $6.5 trillion of production from world markets.",
+          reason:"The cited finding gives an estimate of production at risk under full implementation, not a realised loss.", finding_labels:["F03"] }
+      ]
+    }
+  };
+  function evidenceFor(session){ return EVIDENCE[session.id] || EVIDENCE["default"]; }
+
+  var EV_FILTERS = [
+    { id:"all",                label:"All" },
+    { id:"verified",           label:"Verified" },
+    { id:"verified_corrected", label:"Corrected" },
+    { id:"quoted",             label:"Quoted" },
+    { id:"dropped",            label:"Dropped" },
+    { id:"not_found",          label:"Not found" },
+    { id:"refused",            label:"Refused" }
+  ];
+  var PILL_TEXT = { verified:"verified", verified_corrected:"corrected", quoted:"quoted", dropped:"dropped", not_checked:"not checked", not_found:"not found", refused:"refused" };
+  /* The evidence log's verbs (report.py:1931-1935). */
+  var VERIFICATION_TEXT = { verified:"verified", verified_corrected:"verified with corrections", quoted:"quoted (snippet found on the page; not checked for context)", not_checked:"not checked" };
+  var ev = { rows:[], filter:"all", selected:0, sessionId:null };
+
+  function evidenceRows(data){
+    var rows = [];
+    data.findings.forEach(function(f){ rows.push({ kind:"finding", status: f.status || "not_checked", id:f.label, item:f }); });
+    data.not_found.forEach(function(t){ rows.push({ kind:"not_found", status:"not_found", id:t.target_id, item:t }); });
+    data.refused.forEach(function(r, i){ rows.push({ kind:"refused", status:"refused", id:"R" + String(i + 1).padStart(2, "0"), item:r }); });
+    return rows;
+  }
+  function evVisible(){
+    return ev.filter === "all" ? ev.rows : ev.rows.filter(function(r){ return r.status === ev.filter; });
+  }
+  function firstSentence(s){
+    var m = /^(.*?[.!?])(\s|$)/.exec(s || "");
+    return m ? m[1] : (s || "");
+  }
+  function el(tag, cls, textContent){
+    var e = document.createElement(tag);
+    if(cls) e.className = cls;
+    if(textContent !== undefined && textContent !== null) e.textContent = textContent;
+    return e;
+  }
+  function pill(status){
+    var p = el("span", "pill", PILL_TEXT[status] || status);
+    p.setAttribute("data-status", status);
+    return p;
+  }
+  function renderChips(){
+    var host = document.getElementById("evChips");
+    if(!host) return;
+    host.textContent = "";
+    EV_FILTERS.forEach(function(f){
+      var count = f.id === "all" ? ev.rows.length : ev.rows.filter(function(r){ return r.status === f.id; }).length;
+      var b = el("button", "chip-filter");
+      b.type = "button";
+      b.setAttribute("data-filter", f.id);
+      b.setAttribute("aria-pressed", String(ev.filter === f.id));
+      b.appendChild(document.createTextNode(f.label + " "));
+      b.appendChild(el("span", "n", String(count)));
+      b.addEventListener("click", function(){ ev.filter = f.id; ev.selected = 0; renderChips(); renderEvList(); });
+      host.appendChild(b);
+    });
+  }
+  function renderEvList(){
+    var host = document.getElementById("evList");
+    var empty = document.getElementById("evEmpty");
+    if(!host) return;
+    host.textContent = "";
+    var rows = evVisible();
+    if(empty) empty.hidden = rows.length > 0;
+    rows.forEach(function(r, i){
+      var li = el("li", "ev-row");
+      li.setAttribute("role", "option");
+      li.setAttribute("data-kind", r.kind);
+      li.setAttribute("data-status", r.status);
+      li.setAttribute("data-id", r.id);
+      li.setAttribute("aria-selected", String(i === ev.selected));
+      li.appendChild(pill(r.status));
+      li.appendChild(el("span", "lbl", r.id));
+      var tags = el("span", "tags");
+      if(r.kind === "finding"){
+        li.appendChild(el("span", "txt", firstSentence(r.item.snippet)));
+        (r.item.target_ids || []).forEach(function(t){ tags.appendChild(el("span", "tag", t)); });
+        if(r.item.context_unchecked) tags.appendChild(el("span", "tag soft", "context unchecked"));
+      } else if(r.kind === "not_found"){
+        li.appendChild(el("span", "txt", r.item.question));
+        tags.appendChild(el("span", "tag soft", r.item.searched
+          ? r.item.queries.length + " queries · " + r.item.pages_read.length + " pages read"
+          : "not searched in this run"));
+      } else {
+        li.appendChild(el("span", "txt", r.item.text));
+        tags.appendChild(el("span", "tag soft", r.item.finding_labels.length ? "cited " + r.item.finding_labels.join(", ") : "cited nothing"));
+      }
+      li.appendChild(tags);
+      li.addEventListener("click", function(){ evSelect(i); });
+      host.appendChild(li);
+    });
+    renderEvDetail(rows[ev.selected] || null);
+  }
+  function evSelect(index){
+    var rows = evVisible();
+    if(!rows.length) return;
+    ev.selected = Math.max(0, Math.min(rows.length - 1, index));
+    Array.prototype.forEach.call(document.querySelectorAll("#evList .ev-row"), function(li, i){
+      li.setAttribute("aria-selected", String(i === ev.selected));
+    });
+    renderEvDetail(rows[ev.selected]);
+  }
+  function evSelectById(id){
+    ev.filter = "all";
+    renderChips();
+    var idx = ev.rows.findIndex(function(r){ return r.id === id; });
+    ev.selected = idx < 0 ? 0 : idx;
+    renderEvList();
+  }
+  function kvRow(dl, k, v){
+    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dd", "plain", v));
+  }
+  function meterRow(label, value){
+    var row = el("div", "bar-row");
+    row.appendChild(el("span", null, label));
+    var bar = el("span", "bar");
+    var fill = el("span");
+    fill.style.width = (typeof value === "number") ? Math.round(value * 100) + "%" : "0%";
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    var n = el("span", "n", fmtScore(value) === null ? "not scored" : fmtScore(value));
+    if(fmtScore(value) === null) n.classList.add("avail");
+    row.appendChild(n);
+    return row;
+  }
+  function renderEvDetail(row){
+    var host = document.getElementById("evDetail");
+    if(!host) return;
+    host.textContent = "";
+    if(!row){ host.appendChild(el("p", "avail", "Nothing to show under this filter.")); return; }
+    var it = row.item;
+    if(row.kind === "finding"){
+      host.appendChild(el("h2", "ev-title", it.label + " — " + (it.source && it.source.title ? it.source.title : "untitled source")));
+      var verb = it.status === "dropped" ? "dropped (" + it.dropped_reason + ")" : (VERIFICATION_TEXT[it.status || "not_checked"]);
+      host.appendChild(el("p", "ev-status", verb + (it.context_unchecked ? "; context unchecked" : "")));
+      var q = el("div", "stack-2");
+      q.appendChild(el("span", "cap", "Snippet"));
+      q.appendChild(el("blockquote", null, it.snippet));
+      if(it.passage){ q.appendChild(el("span", "cap", "Passage")); q.appendChild(el("blockquote", null, it.passage)); }
+      host.appendChild(q);
+      if(it.source && it.source.url){
+        var a = el("a", "tlink", it.source.title || it.source.url);
+        a.href = it.source.url; a.target = "_blank"; a.rel = "noopener";
+        var src = el("p", "sm"); src.appendChild(document.createTextNode("Source: ")); src.appendChild(a);
+        host.appendChild(src);
+      }
+      /* The Context Check runs only on figure-bearing findings (evidence_verifier.py:903-917): no figures → it never ran;
+         flagged → a batch could not be judged; otherwise the kept figure's confirmed organisation, kind and release. */
+      var kept = (it.figures || []).filter(function(f){ return f.kept && f.organisation; })[0];
+      host.appendChild(el("p", "sm", "Context check: " + (!(it.figures || []).length ? "not run (no figures)" : it.context_unchecked || !kept
+        ? "context unchecked" : [kept.organisation, kept.kind, kept.release].filter(Boolean).join(" · "))));
+      var bars = el("div", "bars");
+      [["authority", it.source && it.source.authority_score], ["recency", it.source && it.source.recency_score],
+       ["relevance", it.source && it.source.relevance_score], ["overall", it.source && it.source.overall_score]].forEach(function(m){
+        bars.appendChild(meterRow(m[0], typeof m[1] === "number" ? m[1] : null));
+      });
+      host.appendChild(bars);
+      paintMeters(host);
+      if((it.figures || []).length){
+        var ul = el("ul", "ev-figures");
+        it.figures.forEach(function(f){
+          ul.appendChild(el("li", null, f.kept
+            ? f.value + ": kept · period " + (f.period || "not stated") + " · scope " + (f.scope || "not stated") + (f.corrected ? " · corrected" : "")
+            : f.value + ": dropped (" + f.dropped_reason + ") " + (f.reason || "")));
+        });
+        host.appendChild(el("span", "cap", "Figures"));
+        host.appendChild(ul);
+      }
+    } else if(row.kind === "not_found"){
+      host.appendChild(el("h2", "ev-title", it.target_id + " — not found"));
+      host.appendChild(el("p", "ev-status", it.question));
+      if(!it.searched){ host.appendChild(el("p", "avail", "not searched in this run")); return; }
+      host.appendChild(el("span", "cap", "Searched"));
+      var ql = el("ul", "ev-queries");
+      it.queries.forEach(function(qq){ ql.appendChild(el("li", null, qq)); });
+      host.appendChild(ql);
+      host.appendChild(el("span", "cap", "Pages read"));
+      var pl = el("ul", "ev-pages");
+      it.pages_read.forEach(function(u){
+        var li = el("li"); var a = el("a", "tlink", u); a.href = u; a.target = "_blank"; a.rel = "noopener"; li.appendChild(a); pl.appendChild(li);
+      });
+      host.appendChild(pl);
+    } else {
+      host.appendChild(el("h2", "ev-title", row.id + " — refused sentence"));
+      host.appendChild(el("blockquote", null, it.text));
+      var cited = el("p", "ev-cited sm");
+      cited.appendChild(document.createTextNode(it.finding_labels.length ? "cited " : "cited nothing"));
+      it.finding_labels.forEach(function(lbl){
+        var b = el("button", null, lbl); b.type = "button";
+        b.addEventListener("click", function(){ evSelectById(lbl); });
+        cited.appendChild(b);
+      });
+      host.appendChild(cited);
+      var dl = el("dl", "kv");
+      kvRow(dl, "reason", it.reason);
+      kvRow(dl, "where", it.where);
+      host.appendChild(dl);
+    }
+  }
+  function renderEvidence(session){
+    ev.rows = evidenceRows(evidenceFor(session));
+    ev.filter = "all";
+    ev.selected = 0;
+    ev.sessionId = session.id;
+    renderChips();
+    renderEvList();
+  }
+  function currentView(){
+    return stages.report.getAttribute("data-view") || "report";
+  }
+  function setView(name){
+    name = name === "evidence" ? "evidence" : "report";
+    stages.report.setAttribute("data-view", name);
+    Array.prototype.forEach.call(document.querySelectorAll("#segView button"), function(b){
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-view") === name));
+    });
+    var s = activeSession();
+    if(name === "evidence" && s && ev.sessionId !== s.id) renderEvidence(s);
+  }
+  (function wireEvidence(){
+    var seg = document.getElementById("segView");
+    if(seg) seg.addEventListener("click", function(e){
+      var b = e.target.closest("button[data-view]"); if(!b) return;
+      setView(b.getAttribute("data-view"));
+    });
+    var list = document.getElementById("evList");
+    if(list) list.addEventListener("keydown", function(e){
+      if(e.key === "ArrowDown"){ e.preventDefault(); evSelect(ev.selected + 1); }
+      if(e.key === "ArrowUp"){ e.preventDefault(); evSelect(ev.selected - 1); }
+    });
+  })();
   /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts. */
   var HALT_HEADLINES = {
     graph_planning_failed:                 "Planning failed",
@@ -3487,7 +3847,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       loop: function(){
         var wrap = document.getElementById("spineWrap");
         return wrap ? wrap.getAttribute("data-loop") : null;
-      }
+      },
+      view: function(name){ if(name) setView(name); return currentView(); },
+      evidence: function(id){ openSession(id); setView("evidence"); }
     }
   });
 })();
