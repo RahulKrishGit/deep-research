@@ -7,6 +7,8 @@ spacing, radius, elevation, motion budgets and component recipes come from that
 system and are not restated here except where a product fact forces a
 qualification.
 
+*Updated 2026-09-26 to the Evidence Verifier pipeline (f27ac7e); the 2026-09-16 design is otherwise unchanged.*
+
 Grounding sources read before this document was written:
 
 - `README.md` (§ FastAPI Interface, § LangGraph Orchestration, event tables per agent)
@@ -17,6 +19,9 @@ Grounding sources read before this document was written:
 - `src/deep_research/graph/state.py` — node names, route reasons, status derivation
 - `src/deep_research/runtime/outcome.py` — quality status, token totals, "zero means unavailable"
 - `src/deep_research/utils/types.py` — `ResearchEvent`, `ResearchError`, report composition
+- `src/deep_research/graph/events.py` — the graph's own progress events: node lifecycle, route decisions, extra passes, redrafts, publication
+- `src/deep_research/agents/report.py` — the consumer report and the evidence log, as published
+- `docs/superpowers/specs/2026-09-24-evidence-verifier-pipeline-design.md` and `docs/superpowers/specs/2026-09-25-consumer-report-format.md` — the workflow this revision matches
 
 ---
 
@@ -30,17 +35,21 @@ style choice does.
    monitor and must survive a refresh without losing its place.
 2. **A partially completed run is a normal outcome.** `max_iterations` and
    `incomplete` are first-class terminal statuses that still produce a report.
-   The interface must not present them as failures, and must not present them as
-   full successes either.
+   `max_iterations` now means the extra-pass ceiling was spent with a required
+   target still missing; `incomplete` means the review did not accept the report,
+   a quality gate blocked acceptance, or no review score exists. The interface
+   must not present them as failures, and must not present them as full
+   successes either.
 3. **Progress is replayable evidence, not a nicety.** `GET /research/{id}/stream`
    replays from event id 1 and then follows live. A late subscriber sees the same
    history as an early one, so the progress surface can be entered at any time and
    must render a 60-event backlog and a live tail identically.
 4. **Absence is meaningful.** `trace_url` is `null` while running; `report_path`
    is `null` for a run that published nothing; token usage is not in the API
-   response at all; a report is only *accepted* when a quality pass judged it.
-   Every one of those renders as muted text, never as `0`, `—`, `null`, a
-   placeholder, or a disabled control.
+   response at all; `evidence_counts` is `null` when a run left neither a
+   composition nor a quality snapshot; `semantic_review_score` `null` means no
+   score exists, never a score of zero. Every one of those renders as muted text,
+   never as `0`, `—`, `null`, a placeholder, or a disabled control.
 
 ---
 
@@ -53,10 +62,11 @@ tokens; they differ in what holds the primary column and where evidence lives.
 
 ### A. Narrative column with a details rail
 
-The centre column is the report as a document: executive summary, findings,
-verified claims, uncertainty, limitations, citations. A details rail beside it
-carries session facts, the stage spine, and the recent event tail, and can swap
-to source scores and claim verdicts for the passage currently in view.
+The centre column is the report as a document, in the server's own order: the
+bottom line, the findings or options table, the parts with their cited points,
+what could not be confirmed, the sources. A details rail beside it carries the
+review score, coverage, the evidence counts and the session facts, and can swap
+to source scores and figure checks for the passage currently in view.
 
 - **Optimises** for the deliverable. The operator reads top to bottom the way the
   report was composed, citations sit inline as numbered references, and the rail
@@ -68,12 +78,12 @@ to source scores and claim verdicts for the passage currently in view.
   be compressed into a tail plus a count, which loses the "what happened at
   14:32" question unless the rail can open a full log.
 - **Suits** the operator whose job is the answer: reads the report, spot-checks a
-  claim against the rail, closes the session.
+  finding against the rail, closes the session.
 
 ### B. Linear event timeline
 
 The run is the interface. Every `ResearchEvent` is a row — `graph.node.started`,
-`researcher.tool_call`, `fact_checker.claim.checked`, `graph.route.decided` —
+`researcher.tool_call`, `evidence_verifier.verification.completed`, `graph.route.decided` —
 in stream order with its `iteration` and `metadata` rendered as structured
 columns. The report appears as the terminal row's payload rather than as the
 page.
@@ -88,41 +98,49 @@ page.
 - **Suits** the operator debugging the pipeline, or watching a short run where the
   question is "is it progressing", not "what did it find".
 
-### C. Split ledger — claims against sources
+### C. Evidence ledger — findings against their sources
 
-A genuine two-pane ledger. Left: every `Claim` with its verdict and confidence.
-Right: the `ScoredSource` rows the selected claim rests on, with authority,
-recency, relevance, corroboration, `low_confidence`, and — where the run recorded
-one — the contradicting passage. Verification is done by walking the left pane,
-not by reading a document.
+A flat list of every finding the run kept or dropped, filtered by status —
+verified, corrected, quoted, dropped, not found, refused — with the required
+target it serves as a tag on each row, and a detail pane beside it for the
+selected row: the snippet and passage, the source's authority, recency,
+relevance and overall scores, and the Context Check line — the kept figure's
+organisation, kind and release when one was judged, `context unchecked` when a
+figure exists but none was confirmed kept, or `not run (no figures)` on a
+finding that carries no figures at all (every quoted or dropped finding) —
+and each figure kept or dropped with its reason. A not-found target
+shows the queries searched and the pages read; a refused sentence shows why it
+was kept out of the report.
 
-- **Optimises** for verification. Claim and evidence are visible at once, the
-  contradiction and insufficient-evidence states are impossible to miss, and
-  source quality stops being a footnote. It is the strongest answer to "should I
-  believe this", which is the actual question behind most runs.
-- **Costs** reading. Neither pane is wide enough for sustained prose, so the
-  narrative the report was written to deliver has to be reassembled by the
-  operator. A claim resting on five sources has no single-pane home, and the
-  ledger's value collapses if the panes are stacked on a narrow screen.
-- **Suits** the operator auditing a report they did not commission, or comparing a
-  refinement pass against the previous one.
+- **Optimises** for verification. A finding and the page it came from are
+  visible at once, a dropped snippet or an unchecked context is impossible to
+  miss, and source quality stops being a footnote. It is the strongest answer to
+  "should I believe this", which is the actual question behind most runs.
+- **Costs** reading. The list is not prose, so the narrative the report was
+  written to deliver has to be read in A. A finding cited from three places has
+  one row, not three, and the pane's value collapses if the list and the pane
+  are stacked on a narrow screen.
+- **Suits** the operator auditing a report they did not commission, or checking
+  why a required target was never answered.
 
 ### Recommendation: A, with C available as a mode
 
 Build **A** as the frame and keep **C** as a toggle on the same session object,
 not as a separate screen. The product facts decide this: the report is the
 deliverable, so the report gets the primary column; but the report's own content
-is claim-linked, and the ledger is the only layout that renders the claims and
+is finding-linked, and the ledger is the only layout that renders the findings and
 sources the run actually recorded. Making them two views over one session means
 the operator reads in A and verifies in C without losing scroll position or
 re-fetching anything. B's content — the event stream — is not discarded; it
 becomes the rail's expandable log in A and the timeline in the running state,
 where watching genuinely is the task.
 
-The prototype implements A for the investigation state. It deliberately does
-**not** render the event stream as a surface of its own: continuous event
-detail is observability the operator rarely reads, and B's contribution is
-reduced to the stage spine and the derived counters in the details rail (§5.8).
+The prototype implements A for the investigation state and C as the **Evidence**
+view of the same session — a `Report | Evidence` toggle in the report's head bar.
+It deliberately does **not** render the event stream as a surface of its own:
+continuous event detail is observability the operator rarely reads, and B's
+contribution is reduced to the stage spine and the counters block inside the
+pipeline card (§5.8).
 
 ---
 
@@ -135,9 +153,9 @@ chosen by the operator.
 | # | Stage | Server state that selects it | What it shows | Transition out |
 |---|---|---|---|---|
 | 1 | **Idle** | no active session | Composer only | Operator submits → `202` → stage 2 |
-| 2 | **Submitted** | `status == "running"`, first beat | The question read back, the model and effort in use — and nothing else | Held ~2.2s → stage 3 |
+| 2 | **Submitted** | `status == "running"`, first beat | The question read back and the five-chip settings strip (`model · thinking · effort · extra passes · out`) — and nothing else | Held ~2.2s → stage 3 |
 | 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it | Server status leaves `running` → stage 4 or 5 |
-| 4 | **Report** | any terminal status with a report | The question, the settings in force, actions, then the whole Markdown body and its evidence panels | Opening another session, or New research |
+| 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
 
 **Stage 2 carries the question and its settings, and nothing else.** It used to open a card
@@ -167,6 +185,13 @@ usage column that sat beside it has since been removed as well: it repeated the
 state the pipeline already showed, and its figures (`current_agent`, a token
 count that only arrives with the finished outcome) either duplicated a row or read
 `Not yet` for the whole run.
+The counters that used to sit in that column now live inside the pipeline card,
+below its spine in a footer section rather than under the header: they update
+once per node step, because that is how the stream delivers events (§5.7), and
+each reads `not yet` until its node finishes. This is a deviation from spec R1's
+"under its header" placement, made because under the header the block pushed
+the spine roughly 250px down at 1252×853, putting both arcs below the fold and
+the whole spine off-screen on phone.
 
 Supporting surfaces that are **not** stages:
 
@@ -198,13 +223,16 @@ collaboration affordance, and no billing — single local operator, no auth.
 
 ### 3.0 The settings strip
 
-Every stage after submission carries the same three facts, in the same order, as
-a mono chip row: **model, thinking, effort** (and the output directory when one
-was set). They are rendered from the session's own copy, not from the live
+Every stage after submission carries the same five facts, in the same order, as
+a mono chip row: **model, thinking, effort, extra passes, out** — `model
+deepseek-flash` · `thinking enabled` · `effort per agent` · `extra passes 1` ·
+`out output/`. They are rendered from the session's own copy, not from the live
 composer state, because a session's settings are fixed when it is created — the
-override dict is read once by `prepare_research_settings`. When thinking is
-`disabled` the strip reads `effort not sent` rather than showing a value that has
-no effect, which is the same rule §5.3 applies to the control itself.
+override dict is read once by `prepare_research_settings` — and the API echoes
+nothing back (api-gaps 1.3). When thinking is `disabled` the strip reads `effort
+not sent` rather than showing a value that has no effect: the resolver sends no
+effort at all in that mode (`providers/capabilities.py:77`). Effort is otherwise
+`per agent`, because every role carries its own configured value (§3.2).
 
 
 ### 3.1 The sidebar, and the one thing it cannot do
@@ -438,23 +466,46 @@ viewport-relative half keeps working without the script knowing anything about i
 composer also moves the control row the run-settings panel is anchored to, so that panel
 is re-placed while it is open rather than left pointing at where the row used to be.
 
-What the composer sends — the four knobs it exposes:
+What the composer sends — the four knobs it exposes, and the one line it only
+states:
 
-| Control | Override path | Constraint the UI enforces |
+| Control | Sent as | Constraint the UI enforces |
 |---|---|---|
-| Model | `llm.model` | `deepseek-v4-flash` or `deepseek-v4-pro`, from the capability registry |
-| Thinking | `llm.thinking_mode` | `enabled` or `disabled` |
-| Reasoning effort | `llm.reasoning_effort` | `high` or `max`; **omitted and disabled when thinking is off** |
-| Refinements | `max_iterations` | **1–5**, default **3**; the stepper's buttons disable at both bounds |
-| Output directory | `output.directory` | Free text under `config_overrides` |
+| Model | `config_overrides.llm.model` | `deepseek-flash` (default, the configured model), `deepseek-v4-flash` or `deepseek-v4-pro`, from the capability registry (`providers/capabilities.py:74`) |
+| Thinking | `config_overrides.llm.thinking_mode` | `enabled` or `disabled` |
+| Effort | nothing | **read-only line**: `effort per agent: planner max · reviewer max · others high`, or `effort: not sent (thinking disabled)` |
+| Extra passes | top-level `max_iterations` | **0–2**, default **1**; the stepper's buttons disable at both bounds; `0` is sent as `0`, never omitted |
+| Output directory | `config_overrides.output.directory` | Free text |
 
-The effort control is disabled — not hidden, not silently defaulted — when
-thinking is `disabled`, because `ModelCapability` for the DeepSeek family
-declares `enabled_efforts = {high, max}` and `disabled_effort = None`; the
-resolver rejects an effort paired with disabled thinking. Making that
-impossible in the UI is cheaper than a `422` the operator has to decode.
+The request body, exactly:
 
-### The refinement budget
+```json
+{"query": "…", "max_iterations": 1, "output_format": "markdown",
+ "config_overrides": {"llm": {"model": "deepseek-flash", "thinking_mode": "enabled"},
+                      "output": {"directory": "output/"}}}
+```
+
+Effort is not a control, and the reasons are recorded here rather than in the
+panel. Every role carries its own `reasoning_effort` in `llm.model_overrides`
+(`config.yaml:32-63`: planner `max`, report_reviewer `max`, the other four
+`high`), and a per-role value wins over `llm.reasoning_effort`
+(`utils/config.py:73-75`, `:85-107`) — so a global
+`{"llm": {"reasoning_effort": "max"}}` override is accepted and silently changes
+nothing. A per-agent override is worse: `llm.model_overrides` entries are
+replaced whole (`config.py:664-686`), so
+`{"llm": {"model_overrides": {"researcher": {"reasoning_effort": "max"}}}}` drops
+the researcher's `timeout`. With thinking `disabled` the DeepSeek capability
+declares `disabled_effort = None` (`capabilities.py:77`) and no effort is sent at
+all. The line states what is in force; nothing in the panel invites the operator
+to change it, and api-gaps lists per-agent effort editing among the gaps the
+front end should not close.
+
+The provider is not a control either. `{"llm": {"provider": "openai"}}` is
+accepted by validation, but nothing lists the valid provider/model/mode/effort
+combinations (api-gaps 1.4), so the composer offers the configured provider's
+three models and says nothing about others.
+
+### The extra-pass budget
 
 ### The settings panel must open where it can be used
 
@@ -479,8 +530,8 @@ and would otherwise drift from its anchor.
 interface's own words, and the mapping to override paths lives in the table above,
 not in the UI. A note reading "Sent as `llm.thinking_mode`" told the operator
 nothing the two buttons did not already say, and five such notes made the panel tall
-enough to fall off the screen. One sentence survives inside the panel: the effort
-control explaining why it is unavailable when thinking is off, which is state rather
+enough to fall off the screen. One sentence survives inside the panel: the read-only
+effort line and its thinking-off text, which is state rather
 than plumbing.
 
 The general rule this leaves behind: **a popover that is taller than the space it
@@ -495,32 +546,40 @@ values the run cannot honour. The stepper disables its minus at the floor and it
 plus at the ceiling, so the bound is *visible* rather than silently applied by a
 clamp.
 
-- **Floor is 1**, which is the schema's own: `graph.max_iterations` is validated
-  `ge=1`, so zero is not a budget, it is an invalid request.
-- **Ceiling is 5**, and that is a UI decision rather than a server one. The field
-  has no upper bound — only a lower one — so the ceiling is chosen because a
-  refinement costs an entire research pass and 5 is the largest budget this
-  console can present honestly. It is one constant to raise.
-- **Default is 3**, matching the configured `graph.max_iterations`.
+- **Floor is 0**, which is the schema's own: `max_iterations` is validated `ge=0`
+  (`api/models.py:48`), and zero is a real budget — no extra pass, ever. It is
+  sent as `0`, never dropped as an absent value.
+- **Ceiling is 2**, and that is a UI decision rather than a server one. The field
+  has no upper bound, so the ceiling is chosen because each extra pass can add a
+  large share of a 70–110 minute run and 2 is the largest budget this console can
+  present honestly. It is one constant to raise.
+- **Default is 1**, matching the configured `graph.max_extra_passes`
+  (`config.yaml:211`); the API passes `max_iterations` to the graph as
+  `max_extra_passes` (`api/app.py:183`).
 
-The value is a ceiling, not a target, and the control says so: a run the critic
-accepts first time uses one pass however high the budget is set. This is the same
-distinction §3.5 is built around, and it is why the budget is labelled
-"Refinements" with the count of passes rather than "iterations" with a maximum.
+The value is a ceiling, not a target, and the loop is not a retry: an extra pass
+is bought only when a required evidence target still has no verified finding
+after the review, and only while budget remains (`graph/state.py:295-297`). A run
+whose targets are all answered publishes after one pass however high the budget
+is set. This is the distinction §3.5 is built around, and it is why the control
+is labelled "Extra passes" — the passes beyond the first — rather than
+"iterations" with a maximum.
 
 **The chosen budget drives everything downstream.** On submit it becomes the
-session's pass ceiling, the pipeline script is built to that length, the top-right
-chip counts to it (`iteration n of 5`), and the report's iteration fact reports the
-pass the run actually ended on. Verified across budgets 1 and 5: the stepper value,
-`session.passes`, the chip sequence (`[0]` versus `[0,1,2,3,4]`) and the report
-fact all agree.
+session's pass ceiling `P = 1 + budget`, the topbar chip counts to it
+(`pass 1 of 2`), the pipeline's `pass p of P` reads it, and the report's pass
+fact reports the pass the run actually ended on. A budget of 0 reads
+`pass 1 of 1` everywhere. A run submitted from the composer plays a one-pass
+accepted script at any budget: the loop is a property of the run, and a run the
+reviewer accepts first time takes none.
 
 Output format is **not** surfaced. The API accepts `output_format`, so this is a
 product decision rather than a gap: `output.default_format: markdown` is used, and
-it is the only value the schema accepts today. There is also **no `llm.provider`
-override path** in `ConfigSettings`, so a model from another provider cannot be
-selected at all; the composer therefore offers DeepSeek models only, and says so
-rather than presenting OpenAI options that would fail validation.
+it is the only value the schema accepts today. The provider is not surfaced
+either: an `llm.provider` override is accepted by validation, but no route lists
+which providers, models, thinking modes and efforts go together, so the composer
+offers the configured provider's models and says so rather than presenting
+options that would fail at the first call.
 
 ### 3.3 The question, after it has been sent
 
@@ -624,7 +683,7 @@ begins at the first node and stops at the last, so there is no overhang to clip.
 | `pending` | hollow, `--border`, muted digit | `--border` | none | not reached |
 | `active` | solid `--status-ok`, inverted digit, 5px halo at 16% | `--border` | `--status-ok` at 6% | running now |
 | `done` | solid `--status-ok`, inverted digit, 4px ring at 9% | `--status-ok` | none | finished this pass |
-| `loop` | as `done` | `--status-ok` | none | re-armed by a refinement pass |
+| `loop` | as `done` | `--status-ok` | none | re-armed by an extra pass or a redraft, and completed again |
 | `skipped` | `--status-danger` outline | `--border` | `--status-danger` at 9% | never ran: the run halted |
 
 **Why the running step does not blink.** An earlier pass blinked the active
@@ -654,127 +713,161 @@ cleanly next to a 1px connector; anything without an edge reads as dirt.
 | **Motion is optional; state is not.** | Under `prefers-reduced-motion: reduce` the halo stops at a pinned radius, the connector arrives already filled — and every state still reads exactly as it does with motion, because none of the three states depends on an animation being mid-cycle. |
 
 **Pacing is a prototype concern, not a design one.** A real run takes minutes and
-each step holds its highlight for as long as it actually runs. The prototype
-cannot reproduce that, so it compresses the schedule and weights it per step —
-the researcher emits a tool-call event per tool per sub-topic and would otherwise
+each step holds its highlight for as long as it actually runs; on the real stream
+a node's events arrive together, once per node step, when the node finishes
+(`graph/orchestrator.py:312-346`). The prototype cannot reproduce either, so it
+plays one event per tick, compresses the schedule and weights it per node — the
+researcher emits a tool-call event per tool per sub-topic and would otherwise
 starve every other step of screen time. The weighting changes when a step is
-highlighted, never what it says.
+highlighted, never what it says, and every rule in §3.5 is written so the screen
+reads the same whether events arrive one at a time or as a burst.
 
-### 3.5 Passes, and why the pipeline restarts
+### 3.5 Passes, extra passes and redrafts
 
 A **pass** is one complete run of the seven steps. It is not a retry of a failed
-step: after each pass the critic either accepts the report or routes the whole run
-back for another pass, and `graph.max_iterations` bounds how many a run may take.
-So a run's real shape is a loop, and the pipeline control is linear. That mismatch
-is the single most confusing thing about this screen, and it needs to be designed
-for rather than left to emerge.
+step: after each pass the reviewer scores the report and the graph decides where
+to go — `finalize` and publish, `extra_pass` back to Researching for the required
+targets that still have no verified finding, or `redraft` back to Writing for a
+report with a material defect (`graph/state.py:259-314`). `max_extra_passes`
+bounds the extra passes and `MAX_WRITER_REDRAFTS = 1` bounds the redrafts. So a
+run's real shape is a loop with two return paths, and the pipeline control is
+linear. That mismatch is the single most confusing thing about this screen, and
+it needs to be designed for rather than left to emerge.
 
-**The number of passes varies, and the interface must not imply otherwise.**
-`graph_route` checks `state.iteration >= state.max_iterations` *before*
-`critique.should_continue`, so the bound is the graph's own law and outranks any
-model judgement — but the bound is a ceiling, not a target. A run the critic
-accepts on the first review publishes after one pass; a run that keeps drawing
-refinement requests uses the whole budget. Both are ordinary, and the same UI has
-to read correctly for a one-pass run, a two-pass run, and a budget-exhausted run.
-An earlier prototype hardcoded a three-pass arc, which made a variable loop look
-like a fixed ritual.
+**The number of passes varies, and the interface must not imply otherwise.** An
+extra pass is bought before acceptance is even considered, whenever a required
+target is missing and budget remains, so a `completed` run with a not-found
+target has spent its extra pass (or had a budget of 0). A run whose targets are
+all answered publishes after one pass; a run that keeps missing a target uses
+the whole budget and ends `max_iterations`. Both are ordinary, and the same UI
+has to read correctly for a one-pass run, an extra-pass run, a redrafted run and
+a budget-exhausted run.
 
-Three things make it legible, and **none of them is a sentence**:
+**The active row is derived, and it is derived from completions.** On the real
+stream a node's `graph.node.started` arrives only when the node has already
+finished, in the same burst as its own `graph.node.completed`, so the started
+event cannot mark the running row. The "Now" row is the **successor of the last
+`graph.node.completed`**: Planning until the planner completes, then
+Researching, and so on. The exceptions are keyed on the reviewer's route
+decision, which it emits before its own completion (`graph/nodes.py:819-841`):
 
-1. **The return arc is drawn.** A curved path runs down the left gutter from the
-   Reviewing node back up to the Planning node, with a dashed overlay that travels
-   along it and an arrowhead pointing into Planning. This is the piece that was
-   missing: the jump from Reviewing to Planning was invisible in a linear list, so
-   the reset read as progress being lost rather than as a loop closing. The arc is
-   measured from the live node positions on every layout pass, so it stays attached
-   to the nodes through a resize, a wrap, or a font change.
+| Trigger | Active row |
+|---|---|
+| no `graph.node.completed` yet | 1 Planning |
+| `graph.node.completed` for `planner` … `report_writer` | the next row |
+| `graph.route.decided` | the destination's row, immediately: `extra_pass` → Researching, `redraft` → Writing, `finalize` → Publishing, `end` → none (the failed stage follows) |
+| `graph.node.completed` for `report_reviewer` | **inert after a loop decision** — it neither marks Reviewing `done` nor moves the active row; after `finalize` or `end` it marks Reviewing `done` as any completion does |
+| `graph.node.completed` for the hops `extra_pass` / `writer_redraft` | nothing: hops never map to a row |
+| `graph.node.completed` for `finalize_report`, or `graph.session.completed` | none; the stage transition follows |
 
-   It has three states, driven by events rather than by a timer:
+Three things make the loop legible, and **none of them is a sentence**:
+
+1. **Two return arcs are drawn, in the spine's left gutter.** Each leaves the
+   Reviewing node and returns to the row the graph re-runs: the **extra-pass
+   arc** to Researching, stroked `--warn`, and the **redraft arc** to Writing,
+   stroked `--meta`. A dashed overlay travels along the lit arc and an arrowhead
+   points into the destination. The arc is measured from the live node positions
+   on every layout pass, so it stays attached to the nodes through a resize, a
+   wrap, or a font change; the endpoints are resolved from each row's
+   `data-stage`, never from list position, so Publishing — which is in neither
+   loop — can never be an endpoint.
+
+   Each arc has three states, driven by events rather than by a timer:
 
    | State | Set by | Reads as |
    |---|---|---|
-   | `off` | run start, session end | a run that has not looped |
-   | `flowing` | `graph.route.decided` = `refine` | the handoff: dashes travel Reviewing → Planning |
-   | `settled` | `graph.refinement.started` | this pass is the one running; the arc rests lit |
+   | `off` | run start; `graph.session.completed`; the next `graph.route.decided` | a run that has not looped, or whose loop is over |
+   | `flowing` | `graph.route.decided` with `destination: extra_pass` or `redraft` | the handoff: dashes travel from Reviewing to the destination |
+   | `settled` | `graph.extra_pass.started` / `graph.report.redraft_requested` | the re-armed rows are the ones running; the arc rests lit |
 
-   A one-pass run never shows it at all, which is correct — nothing looped.
+   At most one arc is lit; `#spineWrap` carries `data-arc="extra_pass"|"redraft"`
+   beside `data-loop`. A one-pass run never shows either, which is correct —
+   nothing looped. `--meta` is a stroke here and never text; the loop tag's amber
+   is the text-safe `--status-warn`. Under `prefers-reduced-motion` both arcs
+   arrive already lit.
 
-   **The endpoints are bound to stage identity, not list position.** The arc
-   resolves `critic` and `planner` from each row's `data-stage`, because anchoring
-   it to the last row instead drew a **Publishing → Planning** arc: the arrow
-   appeared to leave the step that finishes the run, so the diagram read as
-   "publishing is done, now refining". Publishing is not in the loop at all — the
-   routing decision is the critic's, and the next pass restarts from Planning.
-   Position-based anchoring would also silently re-point the arc if a stage were
-   ever added after Publishing.
+2. **The pipeline is always exactly one pass.** On `graph.route.decided` with
+   `destination: extra_pass` rows 2–6 go hollow and Planning keeps `done`; with
+   `destination: redraft` rows 5–6 go hollow and rows 1–4 keep `done`. The reset
+   fires on the route decision, not on the hop's own event, so the spine is
+   already hollow as the arc flows. **And the reviewer's own completion, which
+   arrives after its route decision in the same burst, is inert in a looping
+   pass.** An earlier build cleared nothing: it set the researcher to `loop` and
+   left steps 2–7 marked `done` from the pass before, which made the panel read
+   as progress moving *backwards*. The same defect returns in a subtler form if
+   the reviewer's completion is allowed to mark Reviewing `done` above the hollow
+   rows it just reset — so it is not allowed to.
 
-2. **The pipeline is always exactly one pass.** When the critic routes back, every
-   mark clears and the list starts hollow, so step 1 holding the highlight is
-   correct rather than contradictory. An earlier build cleared nothing: it set the
-   researcher to `loop` and left steps 2–7 marked `done` from the pass before,
-   which made the panel read as progress moving *backwards*. The reset fires on
-   `graph.route.decided` with `destination: refine` rather than on
-   `graph.refinement.started`, so the spine is already hollow as the arc flows
-   instead of showing a stale "Reviewing" for one frame.
-3. **A step re-armed by refinement carries a `↺` mark**, not a label.
+3. **A step re-armed by a loop carries a `↺` mark**, not a label: on Researching
+   for an extra pass, on Writing for a redraft, once the row has completed again.
 
-The **refinement track was removed from the running stage.** It was a second
-representation of the same fact the arc already carries — how many passes the run
-has taken — shown as a dot track in its own card with a `pass 2 of 3` label. Once
-the arc existed, the card was a duplicate sitting in a rail that should hold only
-supporting detail, and its label was the last piece of pass vocabulary on the
-screen. The arc is now the only statement that a loop is happening, and it is
-positioned on the pipeline where the loop actually occurs.
+**The loop's reason is the one sentence, and it lives in the header.** On
+`graph.extra_pass.started` a tag `extra pass` (text and border `--status-warn`)
+appears under the blurb with `{n} required targets had no verified finding`, `n`
+being the event's `targets`; on `graph.report.redraft_requested` a tag `redraft`
+(text `--muted`, border `--meta`) with `Reviewer named {n} material defects`. The
+tag clears on the next `graph.route.decided` or on `graph.session.completed`. A
+redraft does not change `iteration` (`nodes.py:1204`), so the chip stays
+`pass 1 of 2` while the grey tag shows; an extra pass advances it
+(`nodes.py:1141-1146`).
+Both templates pluralise honestly: singular at n = 1 (`1 required target had no
+verified finding`, `Reviewer named 1 material defect`) — the one recorded
+departure from the spec's copy, which is written for n ≥ 2.
 
-Its two nodes remain in the document as a visually-hidden host, because the event
-handling still writes to `#passTrack` and `#passSummary`. Keeping the nodes is
-deliberate: the wiring stays intact and the track can return by moving one `div`
-back into the layout. Removing them properly means deleting `renderPassTrack` and
-its call sites together, which is a larger change than dropping a card.
+The **pass track was removed from the running stage.** It was a second
+representation of the same fact the arc already carries — how many passes the
+run has taken — shown as a dot track in its own card. Once the arc existed, the
+card was a duplicate sitting in a rail that should hold only supporting detail.
+The arc is now the only drawn statement that a loop is happening, positioned on
+the pipeline where the loop actually occurs, and `pass p of P` in the header is
+the one counter.
 
-The reasoning that produced the track is kept here rather than discarded, because
-the visual language is reusable if the count is ever needed again: one dot per pass
-the run may take, on a hairline — hollow before it runs, filled with a halo while it
-runs, filled and quiet once done, with the connectors between dots filling as the
-run advances, and a pass in flight opening its dot into a ring on the same
-`refining` window the arc uses so the two agree.
+Its two nodes remain in the document as a visually-hidden host, because the
+event handling still writes to `#passTrack` and `#passSummary`. Keeping the
+nodes is deliberate: the wiring stays intact and the track can return by moving
+one `div` back into the layout. The visual language is recorded here in case the
+count is ever needed again: one dot per pass the run may take, on a hairline —
+hollow before it runs, filled with a halo while it runs, filled and quiet once
+done, with the connectors between dots filling as the run advances, and a pass
+in flight opening its dot into a ring while an arc is `flowing`, so the two
+agree.
 
 ### Why this says nothing in prose
 
 An earlier pass explained the loop in text: a paragraph on what a pass is, a line
-naming each pass's fate, and a caption defending the `6 of 7` count. That was
-wrong, and worth recording so it is not reintroduced.
+naming each pass's fate, and a caption defending a step count. That was wrong,
+and worth recording so it is not reintroduced.
 
 - **It explains the mechanism instead of showing the state.** A reader who needs
   the paragraph has already been failed by the interface; a reader who does not
   needs it out of the way. The loop is a property of the process, and a process is
   the one thing an in-progress screen can demonstrate rather than describe.
-- **It defends a number that should not have needed defending.** The `6 of 7` count
-  existed only because the strip counted steps. A dot does not invite the question
-  "out of how many", so dropping the count removed the need for the caption.
+- **It defends a number that should not have needed defending.** A step count
+  invites the question "out of how many"; `pass p of P` is the one counter kept,
+  because both of its numbers are the run's own.
 - **It ages badly.** The explanation described a ceiling as if it were a rule, and
   was wrong for any run that did not take exactly that many passes.
 
 The rule this leaves behind: **state that can be shown is not written.** Text on
-this screen is reserved for what cannot be shown — an enumerated error type, an
-absent field, a boundary the operator has to respect.
+this screen is reserved for what cannot be shown — the loop's reason, an
+enumerated error type, an absent field, a boundary the operator has to respect.
 
-**The prototype scripts the pass count per session** rather than fixing it, because
-the count is a property of the run: one demo session publishes after a single pass,
-one after two, and one uses its full budget. A session submitted from the composer —
-which has no recorded outcome yet — is scripted at the configured ceiling,
-`graph.max_iterations: 3`.
+**The prototype scripts the loop per session** rather than fixing it, because the
+loop is a property of the run: one demo session takes an extra pass, one takes a
+redraft, and a session submitted from the composer — which has no recorded
+outcome yet — plays a one-pass accepted script at whatever budget it was given.
 
 The honest limitation: the API reports `iteration` on the session snapshot but not
-the route history, so the refinement track is driven by `graph.route.decided` and
-`graph.refinement.started` rather than by the session. Reopening a finished session
-can therefore show `iteration` but not rebuild the track's history.
+the route history, so the arcs and the pass number are driven by
+`graph.route.decided`, `graph.extra_pass.started` and
+`graph.report.redraft_requested` rather than by the session. Reopening a finished
+session can therefore show `pass p of P` but not replay its loops.
 
 ### 3.6 Meter colour is a judgement about the number
 
-The four meters in the report's quality snapshot — claim confidence, source authority,
-corroboration, scored sources cited — carry a figure and a bar. The bar's colour is **derived
-from the figure**, in one place, rather than set beside it:
+The meters — the report rail's review score and scored sources cited, and the four source scores
+(authority, recency, relevance, overall) in the Evidence detail pane — carry a figure and a bar. The
+bar's colour is **derived from the figure**, in one place, rather than set beside it:
 
 | Figure | Fill | Role |
 |---|---|---|
@@ -787,7 +880,7 @@ The boundaries are the operator's, and `0.80` sits in the middle band: the green
 *above* it. `0.40` sits in the middle band too, since the red band is *below* it.
 
 **Deriving it was the point.** The first version carried the class on one bar by hand — the
-claim-confidence row was green and the other three fell through to the default grey, which read
+first row was green and the other three fell through to the default grey, which read
 as "no verdict" for three figures that plainly had one. A fill hand-classed `ok` while its row
 reads `0.62` is a disagreement nobody notices until it matters, so `paintMeters()` reads each
 row's own number and `meterClass()` is the only place the thresholds exist.
@@ -799,52 +892,75 @@ rendered as absent, never as a zero and never as a verdict it did not earn.
 The three fills use the product's existing status roles rather than new colours, so the meters
 cannot drift away from the rest of the status language.
 
+**`0.80` paints yellow, and that is recorded on purpose.** Review acceptance is `≥ 0.80`
+(`utils/types.py:1131`) while the green band starts *above* `0.80`, so a review score or a
+cited-sources ratio of exactly `0.80` sits in the middle band. Two fixtures show it: session
+`9ea4c220`'s `Scored sources cited` is 4 of 5 = 0.80, and Evidence finding `F03`'s source scores 0.80
+overall. Neither side is to be "fixed": the meter states the operator's bands, the reviewer states its
+own threshold, and the status text beside the meter says which outcome the run had.
+
 ---
 
 ## 4. Status mapping
 
-The API's `SessionStatus` is a five-value literal. The interface shows five
-statuses. This table is the contract between them, and it is exhaustive: no
-status may be invented and none may be dropped.
+The API's `SessionStatus` is a five-value literal (`api/models.py:13-19`). The
+interface shows five statuses. This table is the contract between them, and it is
+exhaustive: no status may be invented and none may be dropped.
 
-| Interface status | API `status` | Source of truth | Token role | Copy shown to the operator |
+| Interface status | API `status` | Also read | Token role | Copy shown to the operator |
 |---|---|---|---|---|
-| **Running** | `running` | `ResearchSessionResponse.status` | `--fg` label, `--success` live dot (the one non-text use) | `Running` + current stage |
-| **Completed** | `completed` | `…status` **and** `outcome.quality_status == "accepted"` | `--fg` label, `--success` dot | `Completed` |
-| **Partially completed** | `max_iterations`, `incomplete` | `…status`; `completed` also lands here when the quality gates did not accept the report | `--fg` label, `--warn` dot | `Partially completed` + the report's own reason |
-| **Failed** | `failed` | `…status` | `--fg` label, `--danger` dot | `Failed` + the enumerated error type |
-| **Unavailable** | *not a status* | any `null` field | `--muted` text, no chip, no icon, no control | `Not recorded`, `Not available while running` |
+| **Running** | `running` | the pass from the stream (§3.5) | `--fg` label, `--success` live dot (the one non-text use) | `Running · pass p of P` |
+| **Completed** | `completed` | `semantic_review_score`, `coverage.not_found_target_ids` | `--fg` label, `--success` dot | `Completed · review accepted · {score}` + the not-found clause |
+| **Partially completed** | `max_iterations` | `coverage` | `--fg` label, `--warn` dot | `Partially completed · extra passes used` + the not-found clause |
+| **Partially completed** | `incomplete` with `semantic_review_status == "scored"` | `semantic_review_score` | `--fg` label, `--warn` dot | `Partially completed · not accepted · {score}` |
+| **Partially completed** | `incomplete` with any other `semantic_review_status` | — | `--fg` label, `--warn` dot | `Partially completed · review unavailable` |
+| **Failed** | `failed` | `errors` | `--fg` label, `--danger` dot | `Failed · halted`; the failed stage headlines the halting type |
+| **Unavailable** | *not a status* | any `null` field | `--muted` text, no chip, no icon, no control | `not measured`, `not scored`, `Not recorded`, `Not available while running` |
 
 Rules that follow from the table:
 
-1. **`failed` is not the same as "no report".** `_record_failure` sets
-   `status="failed"` and appends a non-recoverable `ResearchError`, but
-   `GET /report` then answers `409 report_unavailable`, not 404. The failed
-   screen states the failure and then states, separately, that no artifact was
-   published.
-2. **`completed` is not automatically "accepted".** `graph_quality_status`
-   returns `partial` whenever `state.quality` is `None` or the route was not
-   `critique_satisfied`. A `completed` session with no quality snapshot renders
-   as *Partially completed* with the reason `not yet quality-gated`. The front end
-   must not infer acceptance from `status == "completed"`.
+1. **`failed` is not the same as "no report".** A halt sets `status="failed"` and
+   records a non-recoverable `ResearchError`, but `GET /report` then answers
+   `409 report_unavailable`, not 404. The failed screen states the failure and
+   then states, separately, that nothing was published.
+2. **`completed` is exactly `report_accepted`.** That route reason is the only one
+   that yields `completed` (`graph/state.py:116`, `:322-337`), so the chip infers
+   acceptance from the status alone and reads the score from
+   `semantic_review_score`, printed with two decimals. There is no
+   `quality_status` on the response and none is needed.
 3. **`max_iterations` and `incomplete` are not degraded states.** They render with
    the same visual weight as `completed` — a different dot colour and an accurate
-   label, never a warning banner, never an apology. The report is present and
-   authoritative.
+   clause, never a warning banner, never an apology. The clause is counted, never
+   assumed: `n = coverage.not_found_target_ids.length` is omitted at 0, reads
+   `· 1 target not found` at 1 and `· {n} targets not found` above 1
+   (`max_iterations` can end with an empty list when only the review's own
+   coverage defect remained, `state.py:312-313`). `not accepted · {score}` covers
+   a passed review too: acceptance needs a scored review with a mean of at least
+   0.80 and no material defect, complete coverage, and no quality-gate hard
+   failure (`agents/report_reviewer.py:416-443`, `state.py:306-314`), so a gate
+   can block acceptance while the review itself passed, and the clause says the
+   report was not accepted rather than that the review failed. The report is
+   present and authoritative, and it says itself what it could not confirm.
 4. **`unavailable` never becomes a value.** `trace_url: null` is
    `Not available while running` in `--muted`; `report_path: null` is
    `Not published`; token usage is `Not recorded` (its source —
    `total_token_usage` — documents that zero means "no provider reported usage",
-   so a summed `0` is not a fact about the run); a request-budget snapshot that is
-   absent is `Not recorded` and its ceiling stays absent rather than becoming a
-   limit of zero. No `0`, `—`, `null`, empty chip, or greyed-out button stands in
-   for a missing value. **A missing value is text, and it is always visible text.**
+   so a summed `0` is not a fact about the run); `evidence_counts: null` is
+   `not measured`; `semantic_review_score: null` is `not scored`. No `0`, `—`,
+   `null`, empty chip, or greyed-out button stands in for a missing value.
+   **A missing value is text, and it is always visible text.**
 5. **Status is never carried by colour alone.** Every status has a text label at
    `--text-sm` minimum; the dot is redundant reinforcement, and a duplicated
-   colour-vision simulation of the four chips is in `states.html`.
+   colour-vision simulation of the chips is in `states.html`.
 6. **`waiting` does not exist.** Before the first frame, or between
    `POST /research` and the first event, the screen is *Running* with stage
    `starting`. There is no sixth status.
+7. **The chip can shrink on a narrow viewport; its note cannot wrap.** Below the
+   width the full clause needs, the topbar chip's note truncates with an
+   ellipsis instead of wrapping or overflowing — the topbar's own height never
+   changes — while the fixed status label and its dot stay exactly as visible as
+   they are at full width. The clause the ellipsis hides is not lost: the report
+   stage's rail states it in full.
 
 ### Derived stage display
 
@@ -853,59 +969,64 @@ completion, and is `null` from the first `graph.node.completed` of the terminal
 node until the response arrives. The stage spine therefore derives its state from
 the event stream, not from `current_agent`:
 
-| Node | Label | Predecessor order |
+| Node | Label | Row |
 |---|---|---|
 | `planner` | Planning | 1 |
 | `researcher` | Researching | 2 |
 | `source_evaluator` | Evaluating sources | 3 |
-| `fact_checker` | Checking claims | 4 |
-| `synthesizer` | Writing report | 5 |
-| `critic` | Reviewing | 6 |
-| `refine` | Refinement pass | loops back to 2 |
+| `evidence_verifier` | Verifying evidence | 4 |
+| `report_writer` | Writing report | 5 |
+| `report_reviewer` | Reviewing | 6 |
+| `extra_pass` | — | a hop, not a row: the graph returns to 2 |
+| `writer_redraft` | — | a hop, not a row: the graph returns to 5 |
 | `finalize_report` | Publishing | 7 |
 
-`current_agent` is used only as a fallback when the log is empty. A node's state
-comes from `graph.node.started` / `graph.node.completed` / `graph.node.skipped`
-for that node name. Refinement is a loop, so the whole list resets when the critic
-routes back (§3.5) — `graph.route.decided` with `destination: refine` is the signal,
-not `graph.refinement.started`.
+`current_agent` is used only as a fallback when the log is empty. A row is `done`
+on its own `graph.node.completed` — except Reviewing, whose completion is inert
+after a loop decision (§3.5) — and `skipped` on its `graph.node.skipped`; the
+active row is the successor of the last completion, with the loop keyed on
+`graph.route.decided`. Publishing is marked `skipped` on a halted run by the
+client rule `graph.session.completed.status == "failed"` — never by
+`has_report`, which can be true when the halt came after a first-pass writer
+(`agents/report_writer.py:3262`) — because the graph never runs
+`finalize_report` after a halt and no event exists for it.
 
-### `iteration` in two places, and it must agree in both
+### `iteration` on every surface, and it must agree on all of them
 
-The session's iteration shows up in the topbar chip and the report header. Two
-rules, both learned from bugs:
+The session's pass shows up in the topbar chip, the running header and the report
+header. Three rules, all learned from bugs:
 
-- **It is read from the event stream, not the snapshot.** The API reports
-  `iteration` on the session, but while a run is live it is the events that move it:
-  every node event carries the iteration it belongs to. The chip is therefore
-  updated as events arrive. The topbar is otherwise only rebuilt on a stage
-  change, and an earlier build rendered it once — so the chip read
-  `iteration 0 of 3` for an entire run while the pipeline moved through three
-  passes.
-- **A finished run's iteration is the pass it ended on, not the ceiling.** It is
-  `last iteration carried by an event + 1`, so a one-pass run reports 1. Hardcoding
-  the configured maximum made a single-pass run claim it had refined twice, which
-  is the kind of number an operator would reasonably trust.
-- **The ceiling beside it comes from the run, not from a constant.** The chip read
-  `iteration {i} of 3` with the `3` written into the `STATUS` table, so a session created
-  with one refinement announced "of 3" for its whole life — the same class of error as the
-  one above, in the denominator rather than the numerator. It now reads `session.passes`,
-  the refinement budget the session was created with, which is the same figure the pipeline
-  and the `pass n of m` counters already use; the chip was the last surface still guessing.
-  A session carrying no pass count drops the clause and shows `iteration 1` alone, because a
-  wrong ceiling is worse than an absent one — it is a claim about the server's configuration
-  that the client has nothing to support.
+- **It is read from the event stream, not the snapshot — and only from the
+  graph's own events.** While a run is live the pass number is `iteration + 1`
+  from `graph.node.started` and `graph.extra_pass.started`, and from nothing
+  else: `researcher.tool_call` also carries an `iteration`, but that is the ReAct
+  step index (`agents/researcher.py:2612`), and a consumer that copied
+  `iteration` from every event would show the pass jumping mid-research.
+  `/status.iteration` is read only after the stream has closed. The topbar is
+  otherwise only rebuilt on a stage change, and an earlier build rendered it once
+  — so the chip read the first pass for an entire run while the pipeline moved
+  on.
+- **A finished run's pass is the pass it ended on, not the ceiling.** It is
+  `last iteration carried by a graph event + 1`, so a one-pass run reports
+  `pass 1 of 2`. Hardcoding the configured maximum made a single-pass run claim
+  it had looped.
+- **The ceiling beside it comes from the run, not from a constant.**
+  `P = 1 + max_extra_passes`, read from `graph.session.started` while the stream
+  is open and from the budget the session was created with otherwise; it is the
+  same figure the pipeline's `pass p of P` reads, so the two cannot drift. A
+  session carrying no ceiling drops the clause and shows `pass 1` alone, because
+  a wrong ceiling is worse than an absent one.
 
-Internal iteration is zero-based — the first pass is `iteration: 0`, and the router
-halts when `state.iteration >= state.max_iterations`, so a three-pass run carries
-0, 1, 2. **The interface never shows that value.** Every site that displays it adds
-one, through a single `passNumber()` helper, so the operator sees the pass they are
-on rather than a zero-based index:
+Internal iteration is zero-based — the first pass is `iteration: 0`; an extra
+pass advances it and a redraft does not. **The interface never shows that
+value.** Every site that displays it adds one, through a single `passNumber()`
+helper, so the operator sees the pass they are on rather than a zero-based index:
 
 | Shows | Value | Notes |
 |---|---|---|
-| Topbar chip | `passNumber(iteration)` over the run's own ceiling | `iteration 1 of 2` for a run created with two refinements |
-| Report header | the pass it ended on | already 1-based, set at publish time |
+| Topbar chip | `passNumber(iteration)` over the run's own ceiling | `pass 2 of 2` during the extra pass of a run created with one |
+| Running header | the same, from the run state | stays `pass 1 of 2` while a redraft runs |
+| Report header and Session facts | the pass it ended on | `pass 2 of 2` for `b41e77aa`, which spent its extra pass |
 
 The stored session keeps the API's zero-based value. Converting at the display
 boundary rather than in the data keeps the prototype's model faithful to the
@@ -916,41 +1037,64 @@ in the first place.
 ### Error rendering
 
 `ResearchError` carries `error_type`, `source`, `message`, `recoverable`,
-`timestamp`, `details`. Two levels only:
+`timestamp`, `details` (`utils/types.py:1345-1351`). Two levels only:
 
 - `recoverable: true` — **not surfaced while a run is in progress.** A recoverable
-  error is the normal case: it never stops the run, and the report already
-  enumerates it in its own Limitations section. A live counter was therefore a
+  error — a statement-check batch the writer could not judge
+  (`report_writer_statement_check_failed`), a context-check batch the verifier
+  could not judge (`evidence_verifier_context_check_failed`), a section the
+  writer could not draft — is the normal case: it never stops the run, and the
+  evidence log records what it left unchecked. A live counter was therefore a
   number that asked to be read and told the operator nothing actionable, and the
   card that held it was removed before the rail itself was.
-- `recoverable: false` — promoted into the failure panel, with the enumerated
-  `error_type` as the headline, the API's own `message` as the sentence beneath it, and
-  `source`, `recoverable` and `report_path` as labelled rows. This is the one
-  place an error is a headline, because it is the reason the run ended.
+- `recoverable: false` — promoted into the failure panel, with the halting type
+  **in plain words** as the headline, the API's own `message` as the sentence
+  beneath it, and the enumerated `error_type`, `source`, `recoverable` and
+  `report_path` as labelled rows. This is the one place an error is a headline,
+  because it is the reason the run ended.
 
 **`message` was being discarded, and that is now fixed.** `graph/errors.py` is explicit that
 an error's `message` is curated per enumerated type and is never `str(exception)`. The failed
 panel nonetheless carried a fixed sentence, and the rail's Errors card rendered `error_type`
 alone — so on both surfaces where errors appear, the one field written as a sentence for a
-human to read was the one field not shown. Both now render it, falling back to the old static
-copy when an error record carries no message. The fixture data was corrected at the same time:
-it had been carrying `synthesizer_report_not_written`, a type the API does not define — the
-synthesizer emits `synthesizer_report_provider_error`, `synthesizer_invalid_draft` and
-`synthesizer_no_evidence` — and no `message` on any error at all.
+human to read was the one field not shown. Both now render it, falling back to a static
+sentence when an error record carries no message. The fixture data was corrected at the same
+time: it had been carrying error types the API does not define, and no `message` on any error.
+The fixtures now carry only real types — `report_writer_statement_check_failed`
+(`agents/report_writer.py:2023`), `evidence_verifier_context_check_failed`
+(`agents/evidence_verifier.py:1106`) and the halting `graph_provider_configuration_error` —
+each with its curated message.
 
 **`timestamp` and `details` are still served and still not rendered**, and this section used to
 claim otherwise about `details`. It is a flat dict whose shape changes with the error type —
-`{"exception_type": …}` for a provider failure, `{"sub_topic", "priority", "stop_reason"}` for a
-coverage gap, `{"rejected": […]}` for a refused draft — so rendering it means deciding how to
-present arbitrary structured data: how many array items before truncating, what to do with a
-nested object, whether an empty dict shows nothing or a dash. That is a presentation decision
-rather than an oversight, which is why it is written down here instead of guessed at. `message`
-was the same class of gap with an obvious answer, which is why it was fixed and this was not.
+`{"exception_type": …}` for a provider failure, a batch index for a failed check, a part title
+for a failed section — so rendering it means deciding how to present arbitrary structured data:
+how many array items before truncating, what to do with a nested object, whether an empty dict
+shows nothing or a dash. That is a presentation decision rather than an oversight, which is why
+it is written down here instead of guessed at. `message` was the same class of gap with an
+obvious answer, which is why it was fixed and this was not.
 
-Halting types (`graph_planning_failed`, `graph_provider_configuration_error`,
-`graph_agent_configuration_error`, `graph_invalid_agent_state`,
-`graph_invalid_route`, `graph_request_attempt_limit_exceeded`) end the run;
-everything else is recoverable and does not.
+Halting types (`graph/state.py:141-150`) end the run; everything else is
+recoverable and does not. The failed stage headlines each in plain words:
+
+| `error_type` | Headline |
+|---|---|
+| `graph_planning_failed` | Planning failed |
+| `graph_provider_configuration_error` | Model provider misconfigured |
+| `graph_agent_configuration_error` | Agent misconfigured |
+| `graph_invalid_agent_state` | Invalid agent state |
+| `graph_invalid_route` | Invalid route |
+| `graph_request_attempt_limit_exceeded` | Request attempt limit reached |
+
+Two more headlines cover a failure the graph never sees: `sessions.py:262-276,297-315`
+can mark a session `failed` from the API layer alone — no graph error record, no
+`graph.session.completed` — and the client falls back to the session's own `status` to
+mark Publishing `skipped` in that case, the same as a graph halt:
+
+| `error_type` | Headline |
+|---|---|
+| `api.research.configuration_error` | Service configuration error |
+| `api.research.failed` | Research run failed |
 
 The report stage still carries an errors panel with a count and a disclosure, since
 that is a finished run being reviewed rather than a live one being watched, and the
@@ -1106,7 +1250,9 @@ accent budget.
 These are declared once in the prototype's `:root` and referenced everywhere else, so the
 layout carries no repeated magic numbers. There is no `--shell-max` and no `--spine`: the shell
 is a two-column grid sized by `--sidebar` and whatever remains, and the running stage's spine is
-a grid track rather than a named width.
+a grid track rather than a named width. The Evidence view reuses the same `--rail`
+track for its detail pane, and the running stage has no rail at all — its counters
+sit inside the pipeline card — so this revision added no custom property.
 
 `--reading-max` is the design system's answer-column figure, and §3.3 records that at 15px it
 runs to about 96 characters — past the system's 55–70 guidance. That trade was made
@@ -1361,49 +1507,95 @@ reading time and the two fade beats are not.
 
 ### 5.7 Event stream is not a surface
 
-The stream is consumed, not rendered. The running stage shows four things derived
+The stream is consumed, not rendered. The running stage shows what it derives
 from it — the active pipeline node (with its one-line explanation), the stage
-position, the pass number, and the progress bar — and nothing else. The tool-call
-and claim counts were among those derived values until the cost card that displayed
-them was removed; the counters are still accumulated, but nothing reads them. A raw
-log is deliberately absent from the main region.
+position, `pass p of P`, the progress bar, the two arcs and the loop tag, and the
+counters block — and nothing else. A raw log is deliberately absent from the main
+region.
+
+What each surface derives, and from which events (`graph/events.py`,
+`agents/*.py`): the active row from `graph.node.completed` and
+`graph.route.decided`; the pass from `graph.node.started` and
+`graph.extra_pass.started`; the ceiling from `graph.session.started`; the arcs
+and the loop tag from `graph.route.decided`, `graph.extra_pass.started` and
+`graph.report.redraft_requested`; the Planning row's own caption from
+`planner.planning.completed`; the counters from `researcher.sub_topic.completed`,
+`researcher.tool_call`, `researcher.research.completed`,
+`source_evaluator.evaluation.completed`,
+`evidence_verifier.verification.completed`, `report_writer.report.written` and
+`graph.report.reviewed`; the failed stage's skipped rows from
+`graph.node.skipped` and its Publishing row from `graph.session.completed`.
+
+**Delivery is once per node step.** The orchestrator publishes each
+`stream_mode="values"` snapshot's new events together
+(`graph/orchestrator.py:312-346`), so a node's `graph.node.started`, everything
+it emitted and its `graph.node.completed` arrive at once, when the node finishes.
+The screen therefore moves once per node — and during the researcher, the longest
+stage, the research counters read `not yet` for its whole duration. Every
+derivation above is written so the state after event *k* depends only on events
+1..*k*: a 100-event replay, a per-node burst and a one-per-tick playback paint
+the same screen. Live per-event delivery is an API gap (api-gaps 3.7), listed for
+the API work.
 
 This is a product judgement, stated so it can be overruled: a run emits well over
-200 events, the operator's question is "is it progressing and what is it costing",
-and a tail answers neither better than a stage spine does. The event stream stays
-the source of truth for the derived values, and the running screen reads them from
-it live, so nothing is lost that a future log view could not reintroduce.
+100 events, the operator's question is "is it progressing and what has it found",
+and a tail answers neither better than a stage spine with counters does. The
+event stream stays the source of truth for the derived values, so nothing is lost
+that a future log view could not reintroduce.
 
-### 5.8 Cost and usage, honestly
+### 5.8 Counted from the event stream
 
-The running stage no longer carries a "Cost and usage" card. It was removed along
-with the session-facts rail beside it: while a run is live the card could only
-show elapsed time, because token totals are **not** in
+The running stage carries a compact counters block inside the pipeline card,
+below its spine in a footer section, with the eyebrow `counted from the event
+stream` — a departure from spec R1's "under its header" placement, made because
+under the header the block pushed the spine roughly 250px down at 1252×853,
+putting both arcs below the fold and the whole spine off-screen on phone (§3).
+Its rows, each with its scope:
+
+| Row | Scope | From |
+|---|---|---|
+| sub-topics researched | this pass | `{count} this pass` while only `researcher.sub_topic.completed` events have arrived; then `{researched} of {researched + skipped}` from `researcher.research.completed` |
+| tool calls | whole run · researcher only | the number of `researcher.tool_call` events |
+| findings | this pass | `researcher.research.completed.findings` |
+| sources scored | whole run | `source_evaluator.evaluation.completed.source_count` |
+| verified / corrected / dropped | this pass | `evidence_verifier.verification.completed` |
+| sentences / refused | current draft | `report_writer.report.written.statements` / `.refused` |
+| review score | latest review | `graph.report.reviewed.mean_score`, two decimals; muted `not scored` when null |
+
+Rules: a counter whose event has not arrived reads muted `not yet`, never `0`;
+counters update once per node step, because that is how the stream delivers
+events (§5.7); on `graph.extra_pass.started` the this-pass rows reset to
+`not yet` and the block's caption reads `pass p`; on
+`graph.report.redraft_requested` the current-draft rows and the review score
+reset. The failed stage freezes the same rows at the halt, and a row whose node
+never ran reads `not reached`.
+
+The block is honest now where the earlier cost card was not: real values arrive
+during the run, one node at a time, and each row names the pass or draft it
+counts. Token usage is still `Not recorded`: totals are **not** in
 `ResearchSessionResponse` — they live in `ResearchOutcome.token_usage`, computed
-from tracker metrics at the end of the run — and the runner's own tool-call and
-claim counters were never returned at all. A card whose values read `Not yet` for
-the whole run, beside a pipeline that was already showing the same progress, was
-carrying no information the operator could act on.
-
-The report stage keeps its own "Cost and usage" card, where the honest statement
-is `Not recorded`. Nothing is ever rendered as `0`: `total_token_usage` already
-documents that a zero total means "no provider reported usage", so a rendered `0`
-would assert something the API never said.
+at the end of the run — and the report stage's "Cost and usage" card says so.
+Nothing is ever rendered as `0`: `total_token_usage` already documents that a
+zero total means "no provider reported usage", so a rendered `0` would assert
+something the API never said, and the stream-derived, researcher-only tool-call
+count is not copied into that card.
 
 ---
 
 ## 6. What each stage needs that the API does not serve
 
 Full detail, with the request shape each gap implies, is in
-[`api-gaps.md`](./api-gaps.md). Summary:
+[`api-gaps.md`](./api-gaps.md). Summary, keyed to the five stages of §3:
 
 | Stage | Blocked by |
 |---|---|
-| Idle | the session's own `query` is never returned; no endpoint lists sessions; no preflight/health route |
-| Running | no token or tool-call counts in the snapshot; no `max_iterations`; no terminal frame on the stream; no `quality_status` |
-| Report | no `evidence_path` in the snapshot; no report structure (sections, citations, claims, sources) — Markdown only |
-| Failed | configuration failures are only reachable by attempting a run |
-| Sidebar | no `GET /research`; no persisted store; SSE event history is not addressable after the fact |
+| Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
+| Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
+| Submitted | nothing beyond Idle |
+| Running | events arrive once per node step, not live per event; `max_extra_passes` is on the stream but not on `/status`; no token usage; no terminal frame; no event identity for reconnects; the halting vocabulary is a client copy; shutdown leaves `running` |
+| Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
+| Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
+| Sidebar | no `GET /research`; no result summary per row; no durable store |
 
 Every one of these is worked around in the prototype rather than faked: the gaps
 document names the workaround and, where there is no honest workaround, the
@@ -1434,18 +1626,59 @@ have to be kept in step by hand. The hold before the pipeline is the journey's o
 return value, not a constant: change a beat and the handoff follows it.
 
 For review, `window.drConsole` exposes `submit(question)`, `open(sessionId)`,
-`finish()`, `stage()` and the `sessions` ledger, so any stage can be reached
-directly without replaying a run. Jumping to a stage through that hook uses the
-plain stage transition rather than a handoff, which is the correct behaviour and
-also the quickest way to see the two side by side: toggle
-`prefers-reduced-motion` and repeat either handoff to confirm that no state
-information lives in the motion.
+`finish()`, `stage()`, `motion()` and the `sessions` ledger, plus — since
+2026-09-26 — `view(name?)` (switches or reports the `Report | Evidence` toggle),
+`evidence(sessionId)` (opens a session on its Evidence view),
+`advanceTo(eventType)` (plays the active playback session's script synchronously
+up to and including the first event of that type, then pauses), `arc()`
+(`"extra_pass"`, `"redraft"` or `null`) and `loop()` (`"off"`, `"flowing"` or
+`"settled"`). Any stage and either arc can be reached directly without watching a
+run. Jumping to a stage through the hook uses the plain stage transition rather
+than a handoff, which is the correct behaviour and also the quickest way to see
+the two side by side: toggle `prefers-reduced-motion` and repeat either handoff
+to confirm that no state information lives in the motion.
+
+**The fixture sessions** are shaped like `ResearchSessionResponse`, ids reused
+from the 2026-09-16 package and every question from the battery-storage set:
+`8f2c1d90` (playback; a pass-0 review names two missing targets → extra pass →
+accepted at 0.86 on pass 1), `c3d7e5f1` (playback; a pass-0 review names one
+material defect → redraft → re-review accepts at 0.84), `b41e77aa` (`completed`
+after its extra pass was spent, one target not found — the shape of the replay
+case `extra-pass-finds-nothing`), `7c0d13ff` (`max_iterations`, one target not
+found), `5ff1ab07` (`incomplete`, not accepted at 0.71, budget 0), `9ea4c220`
+(`incomplete`, review unavailable; its `Scored sources cited` is 4 of 5 = 0.80,
+painted yellow) and `2ad900b1` (`failed`, `graph_provider_configuration_error` in
+the planner). The halted fixture carries a static `HALTED_EVENTS` list —
+`graph.session.started`, `graph.node.started` for the planner, five
+`graph.node.skipped`, `graph.session.completed` with `status: "failed"` —
+consumed once by the failed-stage renderer through the same event handlers the
+running stage uses, never played. The two playback fixtures share one `play`
+state: opening one restarts its script from the beginning, and the other keeps
+`status: "running"` until it is reopened. Finishing a playback run, whether via
+`finish()` or by letting its script play to the end, sets its duration from the
+simulated run clock rather than wall time: `finishPlayback` rounds
+`play.elapsed` — the same figure the running header shows as elapsed — into
+`durationSeconds`, and derives `finished` by adding that duration to `started`.
+
+**The Evidence fixture** (`EVIDENCE.default`) is one set in the shape api-gaps
+E1 proposes, for the one battery-storage report: six findings covering every
+status (including one with no verification, shown only under `All`), one
+not-found target (`T04`) with its queries and pages read, and one refused
+sentence citing `F03`. Every value is one the engine can produce — figure
+attribution `own`/`relayed`, kind `actual`; here the quoted finding (`F03`) and
+the dropped one (`F04`) both carry no figures because `F04`'s drop is
+`snippet_not_on_page`, before the Context Check runs — not a blanket rule (an
+`all_figures_dropped` finding carries every figure instead, api-gaps E1) — and
+the `context unchecked` flag on a verified finding with a kept figure
+(`F06`). `F03`'s source scores 0.80 overall, so its `overall` meter paints yellow
+(§3.6).
 
 `prototype/states.html` is the review companion from the previous pass. It stays
 useful as the rendering contract for the states the console reaches only in
-unusual circumstances — empty, configuration error, session failed, partial
-report — and it carries the status-mapping table rendered as live chips, so §4 can
-be read against the actual pixels. It is not part of the app.
+unusual circumstances — empty, configuration error, session failed, the three
+partial outcomes, an options table wide enough to scroll — and it carries the
+status-mapping table rendered as live chips, so §4 can be read against the
+actual pixels. It is not part of the app.
 
 Both files are self-contained: no build step, no external scripts, no network
 fetches, no web fonts. All colour, type, space, radius and motion values resolve
@@ -1455,10 +1688,27 @@ and the last-opened session persist to `localStorage`
 (`dr.console.sidebar`, `dr.console.active`), and the page uses `window.scrollTo`
 rather than `scrollIntoView`.
 
+The nine reference renders in `docs/design/reference/` are captured by
+`scripts/render_design_reference.mjs`, desktop at 1252×853 and phone at
+390×844, except `06-states.png`, captured at the full height of `states.html`,
+and `09-running-extra-pass.png`: that one is captured at 1252×1300, taller
+than the rest, so the whole pipeline card — Reviewing, the full settled arc and
+the counters block — sits inside the frame instead of running off the bottom.
+
+One layout fact differs from the 2026-09-16 renders by design: at ≤ 900px the
+composer bar hides its `thinking` pill (`#pillThinking`) and holds `model` and
+`extra passes` on one row as before, thinking staying visible in the settings
+panel and the settings strip. On the report stage the `Report | Evidence`
+toggle takes the right end of the head bar; `#reportMeta` is the element that
+shrinks and wraps to make room (`flex:1 1 240px;min-width:0`), so the toggle
+and the two action buttons stay on the bar's one row and the question block
+starts within a few pixels of its 2026-09-16 position.
+
 **Three working behaviours are scripted rather than wired, and the UI no longer says so about
-all three.** The run is driven by an event sequence whose shape is taken from the documented
-event catalogue rather than a live `EventSource`; the sidebar is a client ledger because there is
-no collection route (§3.1); and the report body is one real published Markdown document reused
+all three.** The run is driven by an event sequence whose names and metadata keys are the
+engine's own (checked offline against two replayed runs, spec §4.6) rather than a live
+`EventSource`; the sidebar is a client ledger because there is no collection route (§3.1); and the
+report body is a hand re-composition in the consumer format, reused
 for every completed session.
 
 That last one used to be labelled inside the report card — a note explaining that the body is a
@@ -1468,4 +1718,3 @@ report stage shows is the same document for every session, and nothing on screen
 remains recorded here and in `api-gaps.md`, and it is the one thing in this file that should
 probably be disclosed on screen again — briefly — wherever the prototype is shown to someone who
 did not build it.
-

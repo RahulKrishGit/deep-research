@@ -431,17 +431,18 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
   overflow-wrap:anywhere;
 }
 
-/* ═══ the refinement loop ═══
-   When the critic sends the report back, the flow leaves Reviewing and returns to
-   Planning. That jump was the confusing part: a linear list cannot show a jump
-   backwards, and a reset pipeline on its own looks like progress was lost. So the
-   jump is drawn — a curved path down the left gutter from the Reviewing node back
-   up to the Planning node, with a dashed overlay that travels along it.
+/* ═══ the two return arcs ═══
+   When the reviewer routes a loop, the flow leaves Reviewing and returns to
+   Researching (an extra pass) or to Writing (a redraft). That jump was the confusing
+   part: a linear list cannot show a jump backwards, and a reset pipeline on its own
+   looks like progress was lost. So the jump is drawn — a path down the left gutter
+   from the Reviewing node back up to the destination node, with a dashed overlay that
+   travels along it, stroked amber for an extra pass and grey for a redraft.
 
    The overlay animates only during the handoff (`data-loop="flowing"`), then rests
-   filled while the new pass runs and disappears when that pass ends. The arc is
-   measured from the real node positions on every layout pass, so it stays attached
-   to the nodes rather than to a guessed geometry. */
+   lit while the re-armed rows run and clears when the next route is decided or the
+   run ends. The arc is measured from the real node positions on every layout pass,
+   so it stays attached to the nodes rather than to a guessed geometry. */
 .spine-wrap{position:relative}
 .loop-layer{
   position:absolute;left:0;top:0;pointer-events:none;overflow:visible;
@@ -580,13 +581,13 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
 .starter .arw{font-family:var(--font-mono);color:var(--meta);flex:none}
 .starter:hover .arw{color:var(--fg)}
 
-/* ═══ refinements ═══
-   No prose. A pass is one full run of the seven steps, and the critic can send the
-   report back, so the pipeline legitimately begins at step 1 again. That is shown
-   rather than described: a dot track says how many refinements the run has taken,
-   a connector between the dots says whether one is happening right now, and the
-   pipeline resetting under it is the loop itself. Nothing here explains the loop;
-   it is the loop. */
+/* ═══ passes ═══
+   No prose. A pass is one full run of the seven steps, and the reviewer's route can
+   send the run back — to Researching for an extra pass, to Writing for a redraft — so
+   the pipeline legitimately re-arms rows. That is shown rather than described: the
+   hidden pass track counts the passes the run may take, the arcs on the pipeline say
+   which return is happening right now, and the rows going hollow under them is the
+   loop itself. Nothing here explains the loop; it is the loop. */
 /* Even spacing, not stretched items. Each pass is only as wide as its dot plus
    its label, and the connectors take all the slack between them, so the labels
    land at equal intervals. Before this, each pass was `flex:1` while its own
@@ -627,7 +628,7 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
   animation:halo var(--motion-halo) var(--ease-entrance) infinite;
 }
 .pass[data-state="active"] .pass-n{color:var(--fg)}
-/* a refinement in flight: the dot opens into a ring so the loop is visible at the
+/* a loop in flight: the dot opens into a ring so the extra pass or redraft is visible at the
    moment it happens, not only in a count afterwards */
 .passtrack[data-refining="1"] .pass[data-state="active"] .dot{
   background:var(--surface);
@@ -715,7 +716,7 @@ h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;
 .plus:hover{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
 .plus[aria-expanded="true"]{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
 .plus svg{width:15px;height:15px}
-/* Refinement stepper. A bounded numeric control rather than a segmented row: the
+/* Extra-passes stepper. A bounded numeric control rather than a segmented row: the
    value has a minimum and a maximum, and the buttons disable at those bounds, so
    the limit is visible instead of being enforced silently by a clamp. */
 .stepper{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;width:fit-content}
@@ -986,6 +987,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .plus{width:44px;height:44px}
   .plus svg{width:18px;height:18px}
   .setting-pill{height:44px}
+  #pillThinking{display:none}
   .btn{height:44px}
   .btn-sm{height:38px}
   .icon-btn{width:44px;height:44px}
@@ -1030,6 +1032,109 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .loop-layer .loop-flow{animation:none !important;stroke-dasharray:none;opacity:1}
   .spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
 }
+/* ═══ 2026-09-26: the counters block ═══ */
+/* A compact two-column key/value list; one column at phone width. */
+.counters{padding-top:var(--space-5);border-top:1px solid var(--border)}
+.counters .kv{margin-top:var(--space-3)}
+.counters .kv dt, #failedCounters dt{white-space:normal}
+.counters .kv dt .cap, #failedCounters dt .cap{display:block;color:var(--muted)}
+#failedCounters dt, #failedCounters dd{line-height:var(--leading-tight)}
+.kv-2{grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr)}
+@media (max-width:900px){ .kv-2{grid-template-columns:auto minmax(0,1fr)} }
+/* An author `display` rule beats the browser's [hidden] rule, so the ↺ span says so itself. */
+.spine-lg .loops[hidden]{display:none}
+/* ═══ 2026-09-26: two arcs and the loop tag ═══ */
+/* The arc's stroke is the loop's kind: amber `--warn` for an extra pass, grey `--meta` for a
+   redraft (spec §4.1). `--meta` is a stroke here and never text. */
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-base,
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-flow{stroke:var(--warn)}
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-head{fill:var(--warn)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-base,
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-flow{stroke:var(--meta)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-head{fill:var(--meta)}
+/* The loop tag: a small bordered word plus the reason. Text amber is the text-safe
+   `--status-warn` (the same `.pop-note.warn` uses), never `--warn`. An author `display`
+   rule beats the browser's [hidden] rule, so the tag says so itself. */
+.loop-tag{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;font-size:var(--text-sm);color:var(--muted);margin-top:var(--space-2)}
+.loop-tag[hidden]{display:none}
+.loop-tag .tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg)}
+.loop-tag[data-kind="extra_pass"] .tag{color:var(--status-warn);border-color:var(--status-warn)}
+.loop-tag[data-kind="redraft"] .tag{color:var(--muted);border-color:var(--meta)}
+/* 2026-09-27 fix: at rest (settled) the arc composited to ≈1.3:1 (redraft) / ≈2:1 (extra
+   pass) against the card — the layer's own opacity and the base line's opacity were
+   multiplying. Settled now shows the layer fully opaque with the base line near-solid;
+   colour stays the loop's kind (amber/grey), never text. */
+.spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="settled"] .loop-layer .loop-base{opacity:.7}
+/* ═══ 2026-09-26: the consumer-format report ═══ */
+/* Tables sit in a frame that scrolls sideways; the page itself never does. The findings table
+   (4 columns) fits the desktop column; the options table (up to 6 columns, states.html) pins
+   its Option column over the scroll. */
+.tbl-frame{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.tbl-frame .tbl{margin:0}
+.tbl-frame .tbl td .cite{color:var(--fg)}
+.prose .sources{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose .sources li{margin-bottom:var(--space-2);overflow-wrap:anywhere}
+/* The 0.80 acceptance line on the review meter (types.py:1131). */
+.bar-row .bar{position:relative}
+.bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
+/* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since the
+   not-found clause) overflowed the topbar and pushed the whole page into horizontal scroll —
+   `.chip{white-space:nowrap}` plus no shrink budget anywhere in the topbar's flex chain. The
+   chip never wraps (the topbar's height must stay `--topbar`); instead its variable note
+   ellipsizes while the fixed status label and dot stay fully visible. `min-width:0` has to
+   apply at every flex-item link in the chain — `.topbar-right` inside `.topbar-in`, then
+   `.chip` inside `.topbar-right` — because a flex item's default min-width is its content's
+   width, which is exactly the nowrap text this rule needs to be allowed to shrink past. */
+.topbar-right{min-width:0}
+.chip{max-width:100%;min-width:0}
+.chip .kind{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ═══ 2026-09-26: the Evidence view ═══ */
+#stage-report[data-view="evidence"] .report-main{display:none}
+#stage-report:not([data-view="evidence"]) .evidence-view{display:none}
+.seg-view{flex:none}
+.seg-view button{flex:none;min-width:84px}
+.chip-filters{display:flex;gap:var(--space-2);flex-wrap:wrap}
+.chip-filter{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-pill);font-size:var(--text-sm);color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.chip-filter:hover{background:var(--border-soft);color:var(--fg)}
+.chip-filter[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.chip-filter .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.ev-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.ev-list:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--radius-md)}
+.ev-row{
+  display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;
+  padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);cursor:pointer;
+}
+.ev-row:hover{border-color:var(--muted)}
+.ev-row[aria-selected="true"]{border-color:var(--fg)}
+.ev-row .lbl{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.ev-row .txt{font-size:var(--text-sm);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ev-row .tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pill{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--muted);white-space:nowrap}
+.pill[data-status="verified"],.pill[data-status="verified_corrected"]{color:var(--status-ok);border-color:var(--status-ok)}
+.pill[data-status="quoted"],.pill[data-status="not_found"]{color:var(--status-warn);border-color:var(--status-warn)}
+.pill[data-status="dropped"],.pill[data-status="refused"]{color:var(--status-danger);border-color:var(--status-danger)}
+.tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg);white-space:nowrap}
+.tag.soft{color:var(--muted)}
+.ev-detail .ev-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;margin:0}
+.ev-detail .ev-status{font-size:var(--text-sm);color:var(--muted)}
+.ev-detail blockquote{margin:0;padding-left:var(--space-3);border-left:2px solid var(--border);font-size:var(--text-sm);color:var(--fg)}
+.ev-detail .kv dd{text-align:left}
+.ev-detail ul{margin:0;padding-left:var(--space-5);font-size:var(--text-sm)}
+.ev-detail .ev-cited button{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
+.ev-detail .ev-cited button:hover{border-color:var(--muted)}
+@media (max-width:1120px){ .ev-detail{position:static} }
+/* 2026-09-27 fix: at 1252px the meta line, the Report|Evidence toggle and the two action
+   buttons could not share `.report-head-bar`'s one row at their natural widths, so the row
+   wrapped and pushed the question ~53px lower than the 2026-09-16 design. `#reportMeta` is the
+   one child with prose that can wrap; letting it shrink (min-width:0 overrides the flex-item
+   default of never shrinking below its content's min-content) and wrap onto a second line
+   keeps the toggle and both buttons on the bar's single row, right-aligned. */
+#reportMeta{flex:1 1 240px;min-width:0}
 </style>
 </head>
 <body>
@@ -1108,7 +1213,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                     <div class="pop-row">
                       <span class="lbl" id="lblModel">Model</span>
                       <div class="seg" role="group" aria-labelledby="lblModel" id="segModel">
-                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="true">v4-flash</button>
+                        <button type="button" data-model="deepseek-flash" aria-pressed="true">flash</button>
+                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="false">v4-flash</button>
                         <button type="button" data-model="deepseek-v4-pro" aria-pressed="false">v4-pro</button>
                       </div>
                     </div>
@@ -1118,35 +1224,32 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                         <button type="button" data-thinking="enabled" aria-pressed="true">enabled</button>
                         <button type="button" data-thinking="disabled" aria-pressed="false">disabled</button>
                       </div>
-                    </div>
-                    <div class="pop-row">
-                      <span class="lbl" id="lblEffort">Reasoning effort</span>
-                      <div class="seg" role="group" aria-labelledby="lblEffort" id="segEffort">
-                        <button type="button" data-effort="high" aria-pressed="true">high</button>
-                        <button type="button" data-effort="max" aria-pressed="false">max</button>
-                      </div>
-                      <p class="pop-note" id="effortNote"></p>
+                      <!-- Effort is not a control. Every role has its own configured effort
+                           (config.yaml:32-63) and a global override would be shadowed by them; the
+                           line states what is in force and nothing else (DESIGN.md §3.2). -->
+                      <p class="pop-note" id="effortLine" aria-live="polite">effort per agent: planner max · reviewer max · others high</p>
                     </div>
                     <div class="pop-row">
                       <span class="lbl" for="outputDir">Output directory</span>
                       <input class="input mono-in" id="outputDir" value="output/">
                     </div>
                     <div class="pop-row">
-                      <span class="lbl" id="lblRefine">Refinements</span>
-                      <div class="stepper" role="group" aria-labelledby="lblRefine">
-                        <button type="button" id="refineMinus" aria-label="Fewer refinements">
+                      <span class="lbl" id="lblExtra">Extra passes</span>
+                      <div class="stepper" role="group" aria-labelledby="lblExtra" id="stepExtra">
+                        <button type="button" id="extraMinus" aria-label="Fewer extra passes">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M5 12h14"></path></svg>
                         </button>
-                        <span class="stepper-v mono" id="refineValue" role="status" aria-live="polite">3</span>
-                        <button type="button" id="refinePlus" aria-label="More refinements">
+                        <span class="stepper-v mono" id="extraValue" role="status" aria-live="polite">1</span>
+                        <button type="button" id="extraPlus" aria-label="More extra passes">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
                         </button>
                       </div>
                     </div>
                   </div>
                 </span>
-                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">v4-flash</span></span>
-                <span class="setting-pill" id="pillEffort"><span class="k">effort</span><span class="v" id="pillEffortV">high</span></span>
+                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">flash</span></span>
+                <span class="setting-pill" id="pillThinking"><span class="k">thinking</span><span class="v" id="pillThinkingV">enabled</span></span>
+                <span class="setting-pill" id="pillExtra"><span class="k">extra passes</span><span class="v" id="pillExtraV">1</span></span>
                 <span class="spacer"></span>
                 <button class="send" id="sendBtn" type="submit" data-od-id="cta-send">
                   <span class="sr">Start research</span>
@@ -1198,29 +1301,42 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
               <div>
                 <span class="cap">Now</span>
                 <div class="now-stage" id="runNow">Planning</div>
-                <p class="sm" id="runningBlurb">Planning the sub-topics.</p>
+                <p class="sm" id="runningBlurb">Turning the question into sub-topics and evidence targets.</p>
+                <!-- The loop's reason, shown while a loop is taken (Q3). Hidden when none. -->
+                <p class="loop-tag" id="runLoopTag" hidden><span class="tag"></span><span class="why"></span></p>
               </div>
               <div class="row-between">
                 <span class="avail-mono" id="runProgressLabel">stage 1 of 7</span>
-                <span class="avail-mono" id="runPasses">pass 1 of 3</span>
+                <span class="avail-mono" id="runPasses">pass 1 of 2</span>
               </div>
               <span class="track" id="runTrack" role="progressbar" aria-label="Pipeline progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="runTrackFill"></span></span>
             </div>
             <div class="spine-wrap" id="spineWrap" data-loop="off">
               <ol class="spine-lg" id="spine" data-od-id="running-spine"></ol>
             </div>
+            <!-- Counters (R1): inside the pipeline card, below the spine (R1's "under its header"
+                 deliberately not followed — see DESIGN.md §7). They update once per
+                 node step, because that is how the stream delivers events (orchestrator.py:312-346);
+                 a counter whose event has not arrived reads `not yet`, never 0. -->
+            <div class="counters" data-od-id="running-counters">
+              <div class="row-between">
+                <p class="eyebrow" style="margin:0">counted from the event stream</p>
+                <span class="avail-mono" id="runCountersPass">pass 1</span>
+              </div>
+              <dl class="kv kv-2" id="runCounters"></dl>
+            </div>
           </div>
 
-          <!-- The refinement track was removed from the interface: the running
-               stage now shows the loop only through the return arc on the
-               pipeline, and the pass count was a number nobody needed twice.
-               These two nodes stay in the document because the runtime writes
-               to them — keeping them here is what would let the track come back
-               without rewiring the event handling. Hidden with the existing
-               visually-hidden utility rather than a display rule, so nothing a
-               stylesheet says later can bring it back on screen by accident. -->
+          <!-- The pass track was removed from the interface: the running stage shows
+               a loop only through the return arcs on the pipeline and its reason in
+               the header, and `pass p of P` is the one counter. These two nodes stay
+               in the document because the runtime writes to them — keeping them here
+               is what would let the track come back without rewiring the event
+               handling. Hidden with the existing visually-hidden utility rather than
+               a display rule, so nothing a stylesheet says later can bring it back on
+               screen by accident. -->
           <div class="sr" aria-hidden="true">
-            <span id="passSummary">pass 1 of 3</span>
+            <span id="passSummary">pass 1 of 2</span>
             <ol class="passtrack" id="passTrack"></ol>
           </div>
 
@@ -1228,10 +1344,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       </section>
 
       <!-- ── STAGE · report ───────────────────────────────────────── -->
-      <section class="stage" id="stage-report" data-od-id="stage-report" aria-labelledby="report-h">
+      <section class="stage" id="stage-report" data-view="report" data-od-id="stage-report" aria-labelledby="report-h">
         <div class="report-head">
           <div class="report-head-bar">
             <p class="cap" id="reportMeta" data-od-id="report-meta">—</p>
+            <!-- Report | Evidence (Q2): two views over one session; Report is the default, the
+                 choice is per session and not persisted. Same recipe as the composer's segments. -->
+            <div class="seg seg-view" role="group" aria-label="Report view" id="segView">
+              <button type="button" data-view="report" aria-pressed="true">Report</button>
+              <button type="button" data-view="evidence" aria-pressed="false">Evidence</button>
+            </div>
             <div class="row wrap">
               <a class="btn btn-primary" href="#" id="downloadBtn" data-od-id="cta-download-report">Download Report</a>
               <a class="btn btn-ghost" href="#" id="traceBtn" data-od-id="cta-open-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
@@ -1241,89 +1363,125 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
           <div class="opts" id="reportOpts" data-od-id="report-options"></div>
         </div>
 
-        <div class="with-rail">
+        <div class="with-rail report-main">
           <div class="stack" style="gap:var(--space-6)">
+            <!-- The server's Markdown, rendered as-is: the server owns wording, order, numbering
+                 and the table (spec 2026-09-25 §3). Presentation-only adaptations (spec §4.4): the
+                 title is not repeated, [n] markers become anchors, the sources list carries ids,
+                 the table sits in a horizontally scrolling frame, the evidence-log link is muted text
+                 until the service serves the log (api-gaps E1). One battery-storage report is reused
+                 for every finished session (DESIGN.md §7). -->
             <article class="card stack" style="gap:var(--space-5)" data-od-id="report-body">
               <div class="prose">
-                <h2 style="margin-top:0">Executive Summary</h2>
-                <p>The constraints best supported by this pass's evidence are grid connection, documented almost entirely through U.S. data, and the concentration of battery supply chains in China. In the United States, 2,600 GW of proposed generation and storage projects were waiting for grid access at the end of 2023, typical waits stretch to five years or more, fewer than a quarter of queued projects are expected to reach completion at current rates, and delay carries quantified costs to consumers. <a class="cite" href="#">[8][10][13]</a></p>
-                <p>On the supply side, the IEA reports that China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024, is projected to remain dominant through 2035, and estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk. <a class="cite" href="#">[1][2][4]</a></p>
-                <p>FERC's Order 2023 and Order 2023-A introduced queue reform, including stronger financial and site-control requirements and improved storage modeling, and U.S. queue capacity fell for the first time in 2024, but the evidence does not show the bottleneck resolved. <a class="cite" href="#">[13]</a></p>
-                <p>Several constraint families raised in review remain unevidenced in this pass: tariffs and trade barriers, siting, permitting and fire-code compliance, wholesale market eligibility and accreditation rules, non-U.S. connection regimes, equipment lead times, and financing conditions.</p>
+                <p class="avail" id="repEvidenceLine">Evidence as of 2026-09-16 · 6 sources</p>
+                <h2 style="margin-top:var(--space-4)">Bottom line</h2>
+                <p>Grid connection is the binding constraint on grid-scale battery deployment in the evidence this run could verify, and that evidence is almost entirely from the United States: 2,600 GW of proposed generation and storage were waiting for grid access at the end of 2023, with typical waits of five years or more <a class="cite" href="#src-6">[6]</a>. The supply side is concentrated in one country: China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024 <a class="cite" href="#src-2">[2]</a>. Queue reform under FERC Order 2023 has begun and U.S. queue capacity fell for the first time in 2024, but nothing verified shows the bottleneck resolved <a class="cite" href="#src-6">[6]</a>.</p>
 
-                <h3>Grid connection as the binding timing constraint</h3>
-                <p>Grid connection is the most fully evidenced constraint on grid-scale battery deployment in this pass, although the grid-side evidence is confined to the United States. As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. Research cited from Lawrence Berkeley National Laboratory puts the average wait in U.S. interconnection queues at five years and indicates that, at current rates, less than a quarter of the energy projects entering those queues will make it to completion. <a class="cite" href="#">[13]</a></p>
-                <p>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays stretching from three to seven years in some markets. The delay is not limited to generators, as Google has reported potential transmission grid connection delays of up to 12 years for new data centers. <a class="cite" href="#">[11]</a></p>
+                <div class="tbl-frame" id="repFindingsFrame">
+                  <table class="tbl tbl-findings">
+                    <thead><tr><th>What was measured</th><th>Result</th><th>Who reported it (and when)</th><th class="n">Source</th></tr></thead>
+                    <tbody>
+                      <tr><td class="wrapcell">Proposed U.S. generation and storage awaiting grid access</td><td class="wrapcell">2,600 GW</td><td class="wrapcell">Lawrence Berkeley National Laboratory (end of 2023)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">Typical U.S. interconnection wait</td><td class="wrapcell">5 years or more</td><td class="wrapcell">Lawrence Berkeley National Laboratory (2024)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">Share of queued U.S. projects expected to reach completion</td><td class="wrapcell">under 25%</td><td class="wrapcell">Lawrence Berkeley National Laboratory (2024)</td><td class="n"><a class="cite" href="#src-6">[6]</a></td></tr>
+                      <tr><td class="wrapcell">China's share of global lithium, cobalt, phosphate and graphite processing</td><td class="wrapcell">70–95%</td><td class="wrapcell">IEA, Global Critical Minerals Outlook (2025, for 2024)</td><td class="n"><a class="cite" href="#src-2">[2]</a></td></tr>
+                      <tr><td class="wrapcell">Annual production at risk under full Chinese export controls</td><td class="wrapcell">$6.5 trillion</td><td class="wrapcell">IEA, as reported by Anadolu Agency (2025)</td><td class="n"><a class="cite" href="#src-3">[3]</a></td></tr>
+                      <tr><td class="wrapcell">China's average share of mineral supply, excluding rare earths</td><td class="wrapcell">72% in 2025, from 70% in 2023</td><td class="wrapcell">Congressional Research Service, R48149 (2025)</td><td class="n"><a class="cite" href="#src-4">[4]</a></td></tr>
+                      <tr><td class="wrapcell">Consumer loss per $1 billion of delayed transmission investment</td><td class="wrapcell">$150–370 million per year of delay</td><td class="wrapcell">Enki AI (2026)</td><td class="n"><a class="cite" href="#src-5">[5]</a></td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="tbl-foot"><em>Figures verified against their source pages; the source column links to the numbered list below.</em></p>
 
-                <h3>Critical minerals and supply-chain concentration</h3>
-                <p>Battery deployment also depends on a supply chain whose midstream is heavily concentrated in one country. The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a></p>
-                <p>The trend in the evidence runs toward more exposure, not less: excluding rare earths, the average share of mineral supply held by China rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by China's export controls has tripled since 2023. <a class="cite" href="#">[4][6]</a></p>
-
-                <h2>Verified claims</h2>
+                <h2>Grid connection</h2>
                 <ul>
-                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.90</span></li>
-                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70–95% of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#">[2]</a> <span class="cap">confidence 0.88</span></li>
-                  <li>FERC's Order 2023 mandated U.S. interconnection queue reform and included stronger financial and site control requirements to discourage speculative projects, plus improved storage modeling, with Order 2023-A reaffirming most of it. <a class="cite" href="#">[13]</a> <span class="cap">confidence 0.92</span></li>
-                  <li>For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay. <a class="cite" href="#">[11]</a> <span class="cap">confidence 0.90</span></li>
+                  <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>At current rates, less than a quarter of the energy projects entering U.S. interconnection queues are expected to reach completion <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays of three to seven years in some markets; Google has reported potential transmission connection delays of up to 12 years for new data centres <a class="cite" href="#src-5">[5]</a>.</li>
+                  <li>For every $1 billion of delayed transmission investment, consumers lose between $150 million and $370 million in net benefits per year of delay <a class="cite" href="#src-5">[5]</a>.</li>
                 </ul>
 
-                <h2>Uncertainty and conflicting evidence</h2>
-                <p>Several things should temper confidence in the picture above. The grid-side evidence is U.S.-only: non-U.S. connection regimes were sought in this pass but produced no verified claim or retrieved finding. One claim was contradicted: an assertion that the U.S. queue had swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years was rejected, while a verified claim places 2,600 GW in the queue as of the end of 2023. Queue magnitude estimates also conflict, and several central numbers rest on sources this pass flagged low confidence.</p>
+                <h2>Critical minerals and supply-chain concentration</h2>
+                <ul>
+                  <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite <a class="cite" href="#src-2">[2]</a>.</li>
+                  <li>Excluding rare earths, China's average share of mineral supply rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by its export controls has tripled since 2023 <a class="cite" href="#src-4">[4]</a>.</li>
+                  <li>The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk <a class="cite" href="#src-3">[3]</a>.</li>
+                  <li>Resource nationalism is rising among producer countries, which narrows the routes around any one supplier <a class="cite" href="#src-1">[1]</a>.</li>
+                </ul>
 
-                <h2>Limitations</h2>
-                <ul id="repLimitations"></ul>
-              </div>
+                <h2>Queue reform</h2>
+                <ul>
+                  <li>FERC's Order 2023 mandated interconnection queue reform, including stronger financial and site-control requirements to discourage speculative projects and improved storage modelling; Order 2023-A reaffirmed most of it <a class="cite" href="#src-6">[6]</a>.</li>
+                  <li>U.S. queue capacity fell for the first time in 2024, but the verified evidence does not show the bottleneck resolved <a class="cite" href="#src-6">[6]</a>.</li>
+                </ul>
 
-              <div data-od-id="citations-table">
-                <h2 class="sect" style="margin-bottom:var(--space-4)">Citations</h2>
-                <table class="tbl">
-                  <thead><tr><th class="n">#</th><th>Source</th><th class="n">Score</th><th>Band</th></tr></thead>
-                  <tbody>
-                    <tr><td class="n">1</td><td class="wrapcell"><a class="tlink" href="#">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a><br><span class="cap">rff.org</span></td><td class="n">0.76</td><td>normal</td></tr>
-                    <tr><td class="n">2</td><td class="wrapcell"><a class="tlink" href="#">Global Critical Minerals Outlook 2025</a><br><span class="cap">iea.blob.core.windows.net</span></td><td class="n">0.91</td><td>normal</td></tr>
-                    <tr><td class="n">4</td><td class="wrapcell"><a class="tlink" href="#">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a><br><span class="cap">aa.com.tr</span></td><td class="n">0.74</td><td>normal</td></tr>
-                    <tr><td class="n">6</td><td class="wrapcell"><a class="tlink" href="#">Critical Minerals and Materials for Selected Energy Technologies</a><br><span class="cap">congress.gov · CRS R48149</span></td><td class="n">0.78</td><td>normal</td></tr>
-                    <tr><td class="n">11</td><td class="wrapcell"><a class="tlink" href="#">Grid Interconnection Delays 2026: A Threat to US Energy</a><br><span class="cap">enkiai.com · contradicted one claim</span></td><td class="n">0.67</td><td>normal</td></tr>
-                    <tr><td class="n">13</td><td class="wrapcell"><a class="tlink" href="#">Resolving the Interconnection Queue Bottleneck</a><br><span class="cap">novoco.com</span></td><td class="n">0.20</td><td>low confidence</td></tr>
-                  </tbody>
-                </table>
-                <p class="tbl-foot">Six of the report's 80 citations. Row 13 was cited for verified claims and still scored 0.20 — past this run's scoring cap.</p>
+                <h2>What we couldn't confirm</h2>
+                <p>Non-U.S. grid connection regimes were sought, but no page read gave a verified figure. Tariffs and trade barriers, siting and fire-code compliance, wholesale market accreditation rules, equipment lead times and financing conditions were raised in review and have no verified finding in this run.</p>
+
+                <h2>Sources</h2>
+                <ol class="sources" id="repSources">
+                  <li id="src-1">Resources for the Future — <a class="tlink" href="https://www.rff.org/" target="_blank" rel="noopener">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a> (2025)</li>
+                  <li id="src-2">IEA — <a class="tlink" href="https://www.iea.org/" target="_blank" rel="noopener">Global Critical Minerals Outlook 2025</a> (2025)</li>
+                  <li id="src-3">Anadolu Agency — <a class="tlink" href="https://www.aa.com.tr/" target="_blank" rel="noopener">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a> (2025)</li>
+                  <li id="src-4">Congressional Research Service — <a class="tlink" href="https://crsreports.congress.gov/" target="_blank" rel="noopener">Critical Minerals and Materials for Selected Energy Technologies</a> (2025)</li>
+                  <li id="src-5">Enki AI — <a class="tlink" href="https://www.enkiai.com/" target="_blank" rel="noopener">Grid Interconnection Delays 2026: A Threat to US Energy</a> (2026)</li>
+                  <li id="src-6">Novogradac — <a class="tlink" href="https://www.novoco.com/" target="_blank" rel="noopener">Resolving the Interconnection Queue Bottleneck</a> (2024)</li>
+                </ol>
+                <!-- The report's last line. The relative link to the evidence log is rendered as muted text
+                     with the same words until the service serves the log's Markdown (api-gaps E1); with E1 it
+                     switches the toggle to Evidence instead. -->
+                <p class="avail" id="repEvidenceLink">How this was researched: <span class="mono">evidence log</span></p>
               </div>
             </article>
           </div>
 
           <aside class="rail" data-od-id="report-rail" aria-label="Report details">
-            <div class="card stack-2" data-od-id="report-quality">
-              <h2 class="card-title">Quality Snapshot</h2>
-              <p class="avail">Not served by the API. Transcribed from the published report's own evidence table.</p>
+            <div class="card stack-2" data-od-id="report-review">
+              <h2 class="card-title">Review</h2>
               <div class="bars">
-                <div class="bar-row"><span style="color:var(--fg)">Claim confidence</span><span class="bar"><span style="width:90%"></span></span><span class="n">0.90</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Source authority</span><span class="bar"><span style="width:91%"></span></span><span class="n">0.91</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Corroboration</span><span class="bar"><span style="width:100%"></span></span><span class="n">1.00</span></div>
-                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span style="width:20%"></span></span><span class="n">0.20</span></div>
+                <div class="bar-row" id="repReviewRow"><span style="color:var(--fg)">Review score</span><span class="bar bar-gate"><span id="repReviewFill"></span></span><span class="n" id="repReviewN">—</span></div>
+                <div class="bar-row"><span style="color:var(--fg)">Scored sources cited</span><span class="bar"><span id="repCitedFill"></span></span><span class="n" id="repCitedN">—</span></div>
               </div>
+              <p class="avail" id="repReviewStatus">—</p>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-coverage">
+              <h2 class="card-title">Coverage</h2>
+              <dl class="kv">
+                <dt>required targets answered</dt><dd id="repCovAnswered">—</dd>
+                <dt>not found</dt><dd id="repCovNotFound">—</dd>
+              </dl>
+            </div>
+
+            <div class="card stack-2" data-od-id="report-evidence">
+              <h2 class="card-title">Evidence</h2>
+              <dl class="kv" id="repEvidenceCounts"></dl>
+              <p class="avail" id="repEvidenceNone" hidden>not measured</p>
             </div>
 
             <div class="card stack-2" data-od-id="report-facts">
-              <h2 class="card-title">Session Facts</h2>
+              <h2 class="card-title">Session facts</h2>
               <dl class="kv">
                 <dt>status</dt><dd id="repFactStatus">—</dd>
-                <dt>iteration</dt><dd id="repFactIteration">—</dd>
+                <dt>pass</dt><dd id="repFactPass">—</dd>
                 <dt>started_at</dt><dd id="repFactStarted">—</dd>
                 <dt>finished_at</dt><dd id="repFactFinished">—</dd>
+                <dt>duration_seconds</dt><dd id="repFactDuration">—</dd>
                 <dt>report_path</dt><dd id="repFactPath">—</dd>
+                <dt>evidence_path</dt><dd id="repFactEvidence">—</dd>
+                <dt>quality_path</dt><dd id="repFactQuality">—</dd>
                 <dt>errors</dt><dd id="repFactErrors">—</dd>
               </dl>
             </div>
 
             <div class="card stack-2" data-od-id="report-cost">
-              <h2 class="card-title">Cost and Usage</h2>
+              <h2 class="card-title">Cost and usage</h2>
               <dl class="kv">
                 <dt>tool calls</dt><dd class="avail">Not recorded</dd>
                 <dt>input tokens</dt><dd class="avail">Not recorded</dd>
                 <dt>output tokens</dt><dd class="avail">Not recorded</dd>
               </dl>
-              <p class="avail">The runner holds these totals, but the session response carries neither. Nothing is rendered as <span class="mono">0</span>.</p>
+              <p class="avail">The response carries no token or tool-call totals. The running stage's tool-call counter is a stream-derived, researcher-only figure and is not copied here. Nothing is rendered as <span class="mono">0</span>.</p>
             </div>
 
             <div class="card stack-2" data-od-id="report-errors">
@@ -1334,6 +1492,20 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
               </details>
             </div>
           </aside>
+        </div>
+
+        <!-- ── the Evidence view (Q4) ──────────────────────────────────
+             A flat list of findings with status filters, a target tag per row and a detail pane
+             in the rail track. Until the service serves GET /research/{id}/evidence (api-gaps E1)
+             the real app shows one muted line here; the prototype renders the target state from a
+             fixture in E1's shape. -->
+        <div class="with-rail evidence-view" id="evidenceView">
+          <div class="stack" style="gap:var(--space-4)">
+            <div class="chip-filters" id="evChips" role="group" aria-label="Filter evidence by status"></div>
+            <ol class="ev-list" id="evList" role="listbox" aria-label="Evidence" tabindex="0"></ol>
+            <p class="avail" id="evEmpty" hidden>not served by the service yet</p>
+          </div>
+          <aside class="rail ev-detail card stack-2" id="evDetail" aria-label="Evidence detail" aria-live="polite"></aside>
         </div>
       </section>
 
@@ -1355,12 +1527,15 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         <div class="with-rail">
           <div class="stack" style="gap:var(--space-5)">
             <div class="note bad" data-od-id="failed-panel">
+              <!-- The headline is the halting type in plain words (spec §4.2); the enumerated
+                   error_type stays in the facts list and the API's own message is the sentence. -->
               <div class="note-head"><span class="mk">halt</span><span id="failedType">—</span></div>
-              <p id="failedMessage">The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.</p>
+              <p id="failedMessage">The run stopped on a non-recoverable error.</p>
             </div>
 
             <div class="card stack" style="gap:var(--space-4)" data-od-id="failed-facts">
-              <h2 class="card-title">Why there is no report</h2>
+              <h2 class="card-title">Why nothing was published</h2>
+              <p class="sm">A halted run skips publication: no report, evidence log or quality record was written.</p>
               <dl class="kv">
                 <dt>error_type</dt><dd id="failFactType">—</dd>
                 <dt>source</dt><dd id="failFactSource">—</dd>
@@ -1368,26 +1543,23 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                 <dt>report_path</dt><dd class="avail">Not published</dd>
                 <dt>GET /report</dt><dd>409 report_unavailable</dd>
               </dl>
-              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> — distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns.</p>
+              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> — distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns. There is no download control here, disabled or otherwise.</p>
             </div>
           </div>
 
           <aside class="rail" data-od-id="failed-rail" aria-label="Run details">
             <div class="card stack" style="gap:var(--space-4)">
               <div class="row-between">
-                <h2 class="card-title">Pipeline</h2>
-                <span class="avail-mono">halted at stage 1</span>
+                <h2 class="card-title">Where it stopped</h2>
+                <span class="avail-mono" id="failedHaltedAt">halted at stage 1</span>
               </div>
               <ol class="spine-lg" id="spineFailed"></ol>
             </div>
-            <div class="card stack-2">
+            <div class="card stack-2" data-od-id="failed-survived">
               <h2 class="card-title">What survived the halt</h2>
-              <dl class="kv">
-                <dt>findings</dt><dd>0</dd>
-                <dt>sources evaluated</dt><dd>0</dd>
-                <dt>claims checked</dt><dd>0</dd>
-              </dl>
-              <p class="avail">Real counts read from state, not absences. An absent value reads <span class="mono">Not recorded</span> — the two look different on purpose.</p>
+              <p class="eyebrow" style="margin:0">counted from the event stream</p>
+              <dl class="kv" id="failedCounters"></dl>
+              <p class="avail">The same counters the running stage keeps, frozen at the halt. A counter whose node never ran reads <span class="mono">not reached</span>: a value never measured, not a zero.</p>
             </div>
           </aside>
         </div>
@@ -1419,15 +1591,15 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     failed:    document.getElementById("stage-failed")
   };
 
-  /* ═══ model capability registry, mirrored from providers/capabilities.py ═══
-     deepseek: ^deepseek-v4-(flash|pro)$ — thinking enabled|disabled,
-     enabled efforts high,max, disabled_effort None. */
+  /* ═══ model capability registry, mirrored from providers/capabilities.py:71-77 ═══
+     deepseek: ^deepseek-(flash|v4-flash|v4-pro)$ — thinking enabled|disabled; efforts are
+     configured per role (config.yaml:32-63) and are not a request-time control here. */
   var MODELS = {
-    "deepseek-v4-flash": { label:"v4-flash", efforts:["high","max"] },
-    "deepseek-v4-pro":   { label:"v4-pro",   efforts:["high","max"] }
+    "deepseek-flash":    { label:"flash"    },
+    "deepseek-v4-flash": { label:"v4-flash" },
+    "deepseek-v4-pro":   { label:"v4-pro"   }
   };
-  var settings = { model:"deepseek-v4-flash", thinking:"enabled", effort:"high",
-                   outputDir:"output/", refinements:3 };
+  var settings = { model:"deepseek-flash", thinking:"enabled", outputDir:"output/", extraPasses:1 };
   var state = { stage:"idle", activeId:null };
   /* How long the "question locked in" beat is held before the pipeline takes the
      screen. Under reduced motion there is no journey to sit through, so the whole
@@ -1447,76 +1619,140 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return isNaN(n) ? fallback : n;
   }
 
-  /* ═══ the client's own session ledger ═══ */
+  /* ═══ the client's own session ledger ═══
+     Shapes follow ResearchSessionResponse (api/models.py:114-164): `iteration` is the API's
+     zero-based value, `passes` is 1 + max_extra_passes, `review` is semantic_review_status +
+     semantic_review_score, `coverage` and `evidenceCounts` are the response blocks of the same
+     names and are null while a run is live (or, for evidence_counts, when a halt left neither a
+     composition nor a quality snapshot — runtime/outcome.py:525). Playback sessions carry the
+     outcome they end on under `final`, applied when their script finishes. */
+  var BATTERY_COUNTS = { read_records:31, network_reads:24, cache_reads:7, unique_works:14, publishers:9,
+                         source_urls:17, findings:18, assessed_sources:14, cited_assessed_sources:12,
+                         verified_findings:12, corrected_findings:2, quoted_findings:1, dropped_findings:3,
+                         context_unchecked_findings:1, cited_findings:11 };
+  /* what a run submitted from the composer ends on: one pass, accepted at 0.86 (spec §4.3) */
+  var COMPOSER_FINAL = {
+    review:{ status:"scored", score:0.86 },
+    coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
+    evidenceCounts:BATTERY_COUNTS
+  };
+  var STATEMENT_CHECK_ERROR = { type:"report_writer_statement_check_failed", recoverable:true, source:"agent.report_writer",
+    message:"The report writer's statement check failed; every drafted point was kept unchanged." };
+  var CONTEXT_CHECK_ERROR = { type:"evidence_verifier_context_check_failed", recoverable:true, source:"agent.evidence_verifier",
+    message:"The Context Check failed for one batch; its findings keep their Figure Match result and are cited only as unchecked context." };
   var SESSIONS = [
     { id:"8f2c1d90", q:"What are the current constraints on grid-scale battery storage deployment?",
-      status:"running", iteration:0, passes:3, started:"2026-09-16T14:02:11Z", finished:null,
-      reportPath:null, trace:null, group:"Today", playback:true,
-      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher",
-               message:"A high-priority sub-topic produced no findings; the report will be incomplete for it."},
-              {type:"source_evaluator_reputation_unavailable", recoverable:true, source:"source_evaluator",
-               message:"Remembered source reputations could not be read; sources were scored directly instead."}] },
-    { id:"b41e77aa", q:"How mature is quantum error correction?",
-      status:"completed", iteration:3, passes:3, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
-      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher",
-               message:"A high-priority sub-topic produced no findings; the report will be incomplete for it."}] },
+      status:"running", routeReason:null, iteration:0, passes:2, started:"2026-09-16T14:02:11Z", finished:null, durationSeconds:null,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:null, group:"Today", playback:true, script:"extra_pass",
+      review:null, coverage:null, evidenceCounts:null,
+      final:{ review:{ status:"scored", score:0.86 },
+              coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
+              evidenceCounts:BATTERY_COUNTS },
+      errors:[STATEMENT_CHECK_ERROR, CONTEXT_CHECK_ERROR] },
+    { id:"c3d7e5f1", q:"How do lithium iron phosphate and NMC cells compare for grid-scale storage?",
+      status:"running", routeReason:null, iteration:0, passes:2, started:"2026-09-16T13:21:40Z", finished:null, durationSeconds:null,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:null, group:"Today", playback:true, script:"redraft",
+      review:null, coverage:null, evidenceCounts:null,
+      final:{ review:{ status:"scored", score:0.84 },
+              coverage:{ required_targets:3, answered_targets:3, missing_required_target_ids:[], not_found_target_ids:[] },
+              evidenceCounts:BATTERY_COUNTS },
+      errors:[] },
+    { id:"b41e77aa", q:"What is the levelised cost of grid-scale battery storage in 2025?",
+      status:"completed", routeReason:"report_accepted", iteration:1, passes:2, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z", durationSeconds:552,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
+      review:{ status:"scored", score:0.86 },
+      coverage:{ required_targets:4, answered_targets:3, missing_required_target_ids:["T04"], not_found_target_ids:["T04"] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[STATEMENT_CHECK_ERROR] },
     { id:"7c0d13ff", q:"What limits solid-state electrolyte scale-up for EV cells?",
-      status:"max_iterations", iteration:3, passes:3, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
-      errors:[{type:"synthesizer_invalid_draft", recoverable:true, source:"synthesizer",
-               message:"Some drafted report content was malformed, or rested on a claim or source that is not in the checked evidence; it is listed in the evidence ledger instead of the reader report.",
-               details:{rejected:["claim_4f21","claim_9c03"]}}] },
+      status:"max_iterations", routeReason:"extra_passes_exhausted", iteration:1, passes:2, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z", durationSeconds:842,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
+      review:{ status:"scored", score:0.74 },
+      coverage:{ required_targets:4, answered_targets:3, missing_required_target_ids:["T04"], not_found_target_ids:["T04"] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[CONTEXT_CHECK_ERROR] },
     { id:"5ff1ab07", q:"Which fire-code standards govern BESS siting in the U.S.?",
-      status:"incomplete", iteration:1, passes:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z",
-      reportPath:"api-output/report.md", trace:null, group:"Yesterday", errors:[] },
+      status:"incomplete", routeReason:"report_not_accepted", iteration:0, passes:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z", durationSeconds:418,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:null, group:"Yesterday",
+      review:{ status:"scored", score:0.71 },
+      coverage:{ required_targets:3, answered_targets:3, missing_required_target_ids:[], not_found_target_ids:[] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[] },
     { id:"9ea4c220", q:"What is the measured cost of interconnection queue delay?",
-      status:"completed", iteration:2, passes:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday", errors:[] },
+      status:"incomplete", routeReason:"review_unavailable", iteration:0, passes:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z", durationSeconds:690,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday",
+      review:{ status:"provider_failed", score:null },
+      coverage:{ required_targets:2, answered_targets:2, missing_required_target_ids:[], not_found_target_ids:[] },
+      /* 4 of 5 = 0.80: paints yellow on purpose (spec §4.4, DESIGN.md §3.6) */
+      evidenceCounts:Object.assign({}, BATTERY_COUNTS, { assessed_sources:5, cited_assessed_sources:4 }),
+      errors:[] },
     { id:"2ad900b1", q:"Compare EU and UK grid connection reform outcomes.",
-      status:"failed", iteration:0, passes:1, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z",
-      reportPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      status:"failed", routeReason:"halted", iteration:0, passes:2, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z", durationSeconds:4,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      review:null, coverage:null, evidenceCounts:null,
       errors:[{type:"graph_provider_configuration_error", recoverable:false, source:"graph",
                message:"The model provider is not configured, so the research run stopped.",
                details:{exception_type:"ValidationError"}}] }
   ];
 
+  /* Label and dot per API status (api/models.py:13-19). The second clause is not a constant:
+     it is built from the session's own review, coverage and pass fields — see statusNote(). */
   var STATUS = {
-    running:        { label:"Running",             dot:"dot-live",   note:"iteration {i} of {n}" },
-    completed:      { label:"Completed",           dot:"dot-ok",     note:"quality gates accepted" },
-    max_iterations: { label:"Partially completed", dot:"dot-warn",   note:"budget exhausted" },
-    incomplete:     { label:"Partially completed", dot:"dot-warn",   note:"no critique recorded" },
-    failed:         { label:"Failed",              dot:"dot-danger", note:"halted" }
+    running:        { label:"Running",             dot:"dot-live"   },
+    completed:      { label:"Completed",           dot:"dot-ok"     },
+    max_iterations: { label:"Partially completed", dot:"dot-warn"   },
+    incomplete:     { label:"Partially completed", dot:"dot-warn"   },
+    failed:         { label:"Failed",              dot:"dot-danger" }
   };
   /* `session.iteration` is the API value and is zero-based: the first pass carries
-     `iteration: 0`, and the router halts at `iteration >= max_iterations`. The
-     interface counts passes the way an operator does, from 1, so the display adds
-     one here rather than changing the stored value - the number on screen is a pass
-     number, the number in the session is an index. */
+     `iteration: 0`. The interface counts passes the way an operator does, from 1, so the
+     display adds one here rather than changing the stored value — the number on screen is a
+     pass number, the number in the session is an index. This is the only place the offset lives. */
   function passNumber(iteration){
     var n = Number(iteration);
     return (isFinite(n) ? n : 0) + 1;
   }
-  /* The chip's second clause is built from the session, not from a constant.
-
-     It used to read "iteration {i} of 3" with the 3 written into this table, so the chip
-     announced a ceiling of three for every run — including a run created with one
-     refinement, which said "of 3" for its whole life. The number was the client's default
-     standing in for a value the session already knew: `session.passes` is set from the
-     Refinements control when the session is created, and it is what the pipeline and the
-     `pass n of m` counters already read. The chip was the last surface still guessing.
-
-     A session that carries no pass count drops the clause rather than inventing one —
-     "iteration 1" is honest, "iteration 1 of 3" is a claim about the server's ceiling that
-     the client cannot support. */
+  /* The ceiling: 1 + max_extra_passes, carried by the session as `passes`. A session that has
+     none drops the "of P" clause rather than inventing a ceiling the server never confirmed. */
+  function passTotal(s){
+    var n = Number(s && s.passes);
+    return (isFinite(n) && n > 0) ? n : null;
+  }
+  function passText(s){
+    var total = passTotal(s);
+    return "pass " + passNumber(s.iteration) + (total === null ? "" : " of " + total);
+  }
+  /* Scores print with two decimals; null is "no score", never 0 (models.py: semantic_review_score). */
+  function fmtScore(v){
+    return (typeof v === "number" && isFinite(v)) ? v.toFixed(2) : null;
+  }
+  /* coverage.not_found_target_ids → " · 1 target not found" / " · n targets not found" / "" (spec §4.2) */
+  function notFoundClause(s){
+    var ids = (s && s.coverage && s.coverage.not_found_target_ids) || [];
+    if(!ids.length) return "";
+    return " · " + ids.length + (ids.length === 1 ? " target not found" : " targets not found");
+  }
+  /* The chip's second clause, one rule per API status (spec §4.2):
+       running         pass p of P                       (from the stream while live)
+       completed       review accepted · {score}         + not-found clause   (completed ⇔ report_accepted)
+       max_iterations  extra passes used                 + not-found clause
+       incomplete      not accepted · {score}            when the review was scored (R3: a gate can
+                                                         block acceptance while the review passed)
+                       review unavailable                otherwise (incomplete / provider_failed / null)
+       failed          halted */
   function statusNote(s){
-    var m = STATUS[s.status] || STATUS.running;
-    var n = Number(s.passes);
-    var total = (isFinite(n) && n > 0) ? n : null;
-    return m.note
-      .replace("{i}", passNumber(s.iteration))
-      .replace(" of {n}", total === null ? "" : " of " + total)
-      .replace("{n}", "");
+    var score = fmtScore(s.review && s.review.score);
+    switch(s.status){
+      case "completed":      return "review accepted" + (score === null ? "" : " · " + score) + notFoundClause(s);
+      case "max_iterations": return "extra passes used" + notFoundClause(s);
+      case "incomplete":     return (s.review && s.review.status === "scored" && score !== null) ? "not accepted · " + score : "review unavailable";
+      case "failed":         return "halted";
+      default:               return passText(s);
+    }
   }
   /* One chip, in the topbar, and therefore no `large` variant: the report head used to draw
      a second copy at 15px, and the parameter existed only for it. */
@@ -1532,6 +1768,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(isNaN(ms) || ms < 0) return null;
     var s = Math.round(ms / 1000);
     return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+  }
+  function fmtSeconds(s){
+    if(typeof s !== "number" || !isFinite(s) || s < 0) return null;
+    return Math.floor(s / 60) + "m " + String(Math.round(s % 60)).padStart(2, "0") + "s";
   }
   function fmtClock(iso){
     if(!iso) return null;
@@ -1574,19 +1814,33 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === state.activeId) return SESSIONS[i];
     return null;
   }
-  /* Settings actually used by a session. A session keeps its own copy because
-     the API echoes neither the query nor the overrides back. */
+  /* Settings actually used by a session: { model, thinking, outputDir, extraPasses }. A session
+     keeps its own copy because the API echoes neither the query nor the overrides back (api-gaps 1.3).
+     A seeded fixture carries no `settings` object of its own, so it borrows the global composer's
+     model/thinking/outputDir — but never the composer's live extra-pass value: that would make a
+     fixture's strip drift as the operator fiddles with the composer. Its own `passes` (1 +
+     max_extra_passes) gives the true budget it was submitted with. */
   function sessionSettings(session){
-    return (session && session.settings) || settings;
+    if(session && session.settings) return session.settings;
+    var total = passTotal(session);
+    if(session && total !== null){
+      var derived = {};
+      for(var k in settings) derived[k] = settings[k];
+      derived.extraPasses = total - 1;
+      return derived;
+    }
+    return settings;
   }
+  /* The settings strip: five mono chips, in this order, exactly as submitted (there is no
+     server echo — api-gaps 1.3). `out` is shown only when a directory was sent. */
   function optionsHTML(session){
     var s = sessionSettings(session);
-    var cap = MODELS[s.model];
-    var out = '<span class="opt"><span class="k">model</span>' + (cap ? cap.label : s.model) + "</span>"
-            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>";
-    out += s.thinking === "disabled"
-      ? '<span class="opt"><span class="k">effort</span>not sent</span>'
-      : '<span class="opt"><span class="k">effort</span>' + s.effort + "</span>";
+    var out = '<span class="opt"><span class="k">model</span>' + s.model + "</span>"
+            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>"
+            + (s.thinking === "disabled"
+                ? '<span class="opt"><span class="k">effort</span>not sent</span>'
+                : '<span class="opt"><span class="k">effort</span>per agent</span>')
+            + '<span class="opt"><span class="k">extra passes</span>' + s.extraPasses + "</span>";
     if(s.outputDir) out += '<span class="opt"><span class="k">out</span>' + s.outputDir + "</span>";
     return out;
   }
@@ -1950,7 +2204,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     pop.setAttribute("data-open", "true");
     placePop();
     btn.setAttribute("aria-expanded", "true");
-    syncEffort();
+    syncEffortLine();
   }
   function syncSeg(id, attr, val){
     var seg = document.getElementById(id);
@@ -1959,74 +2213,69 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       b.setAttribute("aria-pressed", String(b.getAttribute(attr) === val));
     });
   }
-  function syncEffort(){
-    var segE = document.getElementById("segEffort");
-    var note = document.getElementById("effortNote");
-    if(!segE) return;
+  /* The one sentence in the panel. Effort is fixed per role (planner max, report_reviewer max,
+     the other four high — config.yaml:32-63), so there is nothing to choose; with thinking off
+     the resolver sends no effort at all (capabilities.py:77). */
+  function syncEffortLine(){
+    var line = document.getElementById("effortLine");
+    if(!line) return;
     var off = settings.thinking === "disabled";
-    Array.prototype.forEach.call(segE.querySelectorAll("button"), function(b){ b.disabled = off; });
-    segE.style.opacity = off ? "0.5" : "1";
-    /* Only the unavailable state needs a sentence: the buttons are greyed out and
-       the operator should not have to infer why. The enabled state says nothing,
-       because the options already are what they are. No API field names here. */
-    if(note){
-      note.classList.toggle("warn", off);
-      note.textContent = off ? "Not available while thinking is disabled." : "";
-    }
+    line.classList.toggle("warn", off);
+    line.textContent = off ? "effort: not sent (thinking disabled)" : "effort per agent: planner max · reviewer max · others high";
   }
   function syncPills(){
     var cap = MODELS[settings.model];
     setText("pillModelV", cap ? cap.label : settings.model);
-    setText("pillEffortV", settings.thinking === "disabled" ? "thinking off" : settings.effort);
+    setText("pillThinkingV", settings.thinking);
+    setText("pillExtraV", String(settings.extraPasses));
   }
-  /* Refinement budget bounds. `graph.max_iterations` accepts any integer >= 1, so
-     the floor is the schema's own. The ceiling is a UI decision: a refinement costs
-     a whole research pass, and the prototype's scripted run is a fixed length, so 5
-     is the largest budget it can present honestly. */
-  var REFINE_MIN = 1;
-  var REFINE_MAX = 5;
-  var REFINE_DEFAULT = 3;   /* matches graph.max_iterations in config.yaml */
+  /* Extra-pass budget bounds. The request field is `max_iterations`, validated `ge=0`
+     (api/models.py:48) and passed to the graph as max_extra_passes (api/app.py:183); the
+     server default is 1 (config.yaml:211). Zero is a real budget: no extra pass, ever. The
+     ceiling is this console's: each extra pass can add a large share of a 70–110 minute run. */
+  var EXTRA_MIN = 0;
+  var EXTRA_MAX = 2;
+  var EXTRA_DEFAULT = 1;   /* matches graph.max_extra_passes in config.yaml */
 
-  function clampRefinements(n){
+  function clampExtra(n){
     n = Math.round(Number(n));
-    if(!isFinite(n)) n = REFINE_DEFAULT;
-    return Math.max(REFINE_MIN, Math.min(REFINE_MAX, n));
+    if(!isFinite(n)) n = EXTRA_DEFAULT;
+    return Math.max(EXTRA_MIN, Math.min(EXTRA_MAX, n));
   }
   /* The stepper is a bounded control: the buttons disable at the ends so the limit
      is visible rather than silently enforced by a clamp. */
-  function syncRefineUI(){
-    var v = document.getElementById("refineValue");
-    var minus = document.getElementById("refineMinus");
-    var plus = document.getElementById("refinePlus");
-    settings.refinements = clampRefinements(settings.refinements);
-    if(v) v.textContent = String(settings.refinements);
-    /* The bounds are shown by the buttons disabling at each end, so they are not
-       also written out as a range in a note. */
-    if(minus) minus.disabled = settings.refinements <= REFINE_MIN;
-    if(plus) plus.disabled = settings.refinements >= REFINE_MAX;
+  function syncExtraUI(){
+    var v = document.getElementById("extraValue");
+    var minus = document.getElementById("extraMinus");
+    var plus = document.getElementById("extraPlus");
+    settings.extraPasses = clampExtra(settings.extraPasses);
+    if(v) v.textContent = String(settings.extraPasses);
+    if(minus) minus.disabled = settings.extraPasses <= EXTRA_MIN;
+    if(plus) plus.disabled = settings.extraPasses >= EXTRA_MAX;
   }
-  function stepRefinements(delta){
-    settings.refinements = clampRefinements((settings.refinements || REFINE_DEFAULT) + delta);
-    syncRefineUI();
+  function stepExtra(delta){
+    settings.extraPasses = clampExtra(settings.extraPasses + delta);
+    syncExtraUI();
   }
 
   function syncSettingsUI(){
     syncSeg("segModel", "data-model", settings.model);
     syncSeg("segThinking", "data-thinking", settings.thinking);
-    syncSeg("segEffort", "data-effort", settings.effort);
     var dir = document.getElementById("outputDir");
     if(dir && settings.outputDir) dir.value = settings.outputDir;
-    syncEffort();
+    syncEffortLine();
     syncPills();
-    syncRefineUI();
+    syncExtraUI();
   }
-  function buildOverrides(){
+  /* The request body, exactly as POST /research would receive it (spec §4.3). No
+     reasoning_effort: a global value is shadowed by every role's own (utils/config.py:85-107).
+     `max_iterations` is always present — 0 is a budget, not an absence. */
+  function buildRequest(q){
     var dirEl = document.getElementById("outputDir");
-    var o = { llm: { model: settings.model, thinking_mode: settings.thinking } };
-    if(settings.thinking !== "disabled") o.llm.reasoning_effort = settings.effort;
     var dir = dirEl && dirEl.value ? dirEl.value.trim() : "";
-    if(dir) o.output = { directory: dir };
-    return o;
+    var overrides = { llm: { model: settings.model, thinking_mode: settings.thinking } };
+    if(dir) overrides.output = { directory: dir };
+    return { query: q, max_iterations: clampExtra(settings.extraPasses), output_format: "markdown", config_overrides: overrides };
   }
   /* Real questions, taken from this project's own evaluation cases and its
      published run — not invented example copy, and not questions chosen to make
@@ -2112,15 +2361,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       var b = e.target.closest("button[data-thinking]"); if(!b || b.disabled) return;
       settings.thinking = b.getAttribute("data-thinking"); syncSettingsUI();
     });
-    form.querySelector("#segEffort").addEventListener("click", function(e){
-      var b = e.target.closest("button[data-effort]"); if(!b || b.disabled) return;
-      settings.effort = b.getAttribute("data-effort"); syncSettingsUI();
-    });
     form.querySelector("#outputDir").addEventListener("input", function(e){
       settings.outputDir = e.target.value;
     });
-    form.querySelector("#refineMinus").addEventListener("click", function(){ stepRefinements(-1); });
-    form.querySelector("#refinePlus").addEventListener("click", function(){ stepRefinements(1); });
+    form.querySelector("#extraMinus").addEventListener("click", function(){ stepExtra(-1); });
+    form.querySelector("#extraPlus").addEventListener("click", function(){ stepExtra(1); });
     form.addEventListener("submit", function(e){ e.preventDefault(); submitResearch(); });
     /* The send button carries its own handler rather than relying on form submission.
        A preview pane is almost always a sandboxed iframe, and without `allow-forms`
@@ -2164,17 +2409,18 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       return;
     }
     closePop();
-    var budget = clampRefinements(settings.refinements);
+    var budget = clampExtra(settings.extraPasses);
+    var request = buildRequest(q);
     var session = {
-      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", iteration: 0,
-      /* the configured refinement budget becomes this run's pass ceiling, and the
-         scripted pipeline is built to that ceiling */
-      passes: budget,
-      started: new Date().toISOString(), finished: null, reportPath: null, trace: null,
-      errors: [], group: "Today", playback: true,
-      settings: { model: settings.model, thinking: settings.thinking, effort: settings.effort,
-                  outputDir: settings.outputDir, refinements: budget },
-      overrides: buildOverrides()
+      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", routeReason: null, iteration: 0,
+      /* P = 1 + the extra-pass budget; the scripted run is one accepted pass whatever the budget (§4.3) */
+      passes: 1 + budget,
+      started: new Date().toISOString(), finished: null, durationSeconds: null,
+      reportPath: null, evidencePath: null, qualityPath: null, trace: null,
+      review: null, coverage: null, evidenceCounts: null,
+      errors: [], group: "Today", playback: true, script: null, final: COMPOSER_FINAL,
+      settings: { model: settings.model, thinking: settings.thinking, outputDir: settings.outputDir, extraPasses: budget },
+      request: request
     };
     SESSIONS.unshift(session);
     renderList();
@@ -2196,29 +2442,27 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     }, hold);
   }
 
-  /* ═══ pipeline ═══ */
-  /* Every description below is the engine's own behaviour, checked against the
-     source rather than invented: the planner's 3–7 sub-topics (MIN/MAX_SUB_TOPICS),
-     the researcher's four declared tools (web_search, web_scraper, document_reader,
-     query_memory), the evaluator's three weights (0.45 authority, 0.15 recency,
-     0.40 relevance), the fact checker verifying each claim in its own bounded ReAct
-     loop with a cleared scratchpad (`FactCheckerAgent._check_claim`), synthesis
-     refusing any point with no checked claim behind it, the critic's 1–10 score
-     against an acceptance threshold of 7, and the two published artifacts.
-
-     None of these say "loop". "Loop" is already this interface's word for the
-     refinement — the return arc, `data-loop`, and the ↺ on a re-armed step — so
-     using it for the fact checker's per-claim tool loop named two different things
-     the same way. Same reason the step numbers lost their "P" prefix. */
+  /* ═══ pipeline ═══
+     Seven rows, one per agent node of the Evidence Verifier graph (graph/state.py:38-46,
+     orchestrator.py:184-211): planner → researcher → source_evaluator → evidence_verifier →
+     report_writer → report_reviewer → finalize_report. `extra_pass` and `writer_redraft` are
+     hops the graph runs between the reviewer and its destination; they never map to a row.
+     Every caption is the engine's own behaviour, checked against the source rather than
+     invented: the planner's 1–10 sub-topics (planner.py:82-83), the researcher's four tools
+     (researcher.py:3023-3028), the evaluator's three scores (types.py:625-631), the verifier's
+     snippet-on-page and context checks (evidence_verifier.py), the writer's statement check
+     (report_writer.py:2005), the reviewer's seven dimensions and 0.80 acceptance mean
+     (types.py:1118-1131), and the three published documents (report.py). */
   var STAGES = [
-    { id:"planner",          label:"Planning",           meta:"3–7 sub-topics" },
-    { id:"researcher",       label:"Researching",        meta:"search · scrape · read · memory" },
-    { id:"source_evaluator", label:"Evaluating sources", meta:"authority · recency · relevance" },
-    { id:"fact_checker",     label:"Checking claims",    meta:"each claim checked separately" },
-    { id:"synthesizer",      label:"Writing report",     meta:"checked claims only" },
-    { id:"critic",           label:"Reviewing",          meta:"score 1–10 · accept at 7" },
-    { id:"finalize_report",  label:"Publishing",         meta:"report + evidence ledger" }
+    { id:"planner",           label:"Planning",           meta:"1–10 sub-topics" },
+    { id:"researcher",        label:"Researching",        meta:"search · scrape · read · memory" },
+    { id:"source_evaluator",  label:"Evaluating sources", meta:"authority · recency · relevance" },
+    { id:"evidence_verifier", label:"Verifying evidence", meta:"snippet on page · context check" },
+    { id:"report_writer",     label:"Writing report",     meta:"verified findings only · statement check" },
+    { id:"report_reviewer",   label:"Reviewing",          meta:"7 dimensions · accept at mean 0.80" },
+    { id:"finalize_report",   label:"Publishing",         meta:"report · evidence log · quality record" }
   ];
+  var AGENT_ORDER = STAGES.map(function(s){ return s.id; });
   /* The step number is the constant — 1 through 7, always — and the colour is
      what changes: breathing while the step runs, filled solid once it is done.
      A step only shows a glyph when it never ran at all (a halted run), because
@@ -2233,7 +2477,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
      `--base` is a shared offset applied to every connector, and `--delay` is a
      per-number offset inside the bullet. Both exist so the fill reads as a wave
      travelling down the list rather than seven simultaneous state changes. */
-  var SPINE = { host:null, wrap:null, svg:null, rows:[], layout:{w:0,h:0} };
+  var SPINE = { host:null, wrap:null, svg:null, rows:[], layout:{w:0,h:0}, arc:null };
 
   /* The SVG uses the container's pixel geometry as its own coordinate system, so
      no viewBox is needed and nothing scales or letterboxes. */
@@ -2250,30 +2494,30 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return svg;
   }
 
-  /* The loop leaves Reviewing and returns to Planning, because `graph_route` runs
-     after the critic: the refinement decision is the critic's, and the next pass
-     restarts the chain. Publishing is not part of the loop at all — it happens
-     once, after the last pass's critic accepts — so the arc must not be anchored
-     to the last row. Anchoring to `rows[length - 1]` drew a Publishing → Planning
-     arc, which read as "publishing finished, now refining".
-
-     Endpoints are measured from the real nodes, so the arc stays attached to the
-     list through resizes, wrapping and font changes rather than to a guess. */
-  function loopRows(){
-    var from = null, to = null;
-    for(var i = 0; i < SPINE.rows.length; i++){
-      var id = SPINE.rows[i].el.getAttribute("data-stage");
-      if(id === "critic") from = SPINE.rows[i];
-      if(id === "planner") to = SPINE.rows[i];
-    }
-    /* fall back to first/last only if the list is ever built without stage ids */
-    if(!from) from = SPINE.rows[SPINE.rows.length - 1];
-    if(!to) to = SPINE.rows[0];
-    return { from: from, to: to };
+  /* Two arcs, both leaving Reviewing (the route decision is the reviewer's, nodes.py:819-841):
+     the extra pass returns to Researching (extra_pass → researcher, orchestrator.py:206) and
+     the redraft returns to Writing (writer_redraft → report_writer, :210). Publishing is in
+     neither loop. Endpoints are resolved from each row's data-stage, never from list position. */
+  var ARCS = {
+    extra_pass: { from:"report_reviewer", to:"researcher"    },
+    redraft:    { from:"report_reviewer", to:"report_writer" }
+  };
+  function loopRows(from, to){
+    var pair = { from:null, to:null };
+    SPINE.rows.forEach(function(row){
+      var id = row.el.getAttribute("data-stage");
+      if(id === from) pair.from = row;
+      if(id === to) pair.to = row;
+    });
+    return (pair.from && pair.to) ? pair : null;
   }
 
   function drawLoop(){
     if(!SPINE.wrap || !SPINE.svg || SPINE.rows.length < 2) return;
+    var arc = ARCS[SPINE.arc];
+    if(!arc) return;
+    var pair = loopRows(arc.from, arc.to);
+    if(!pair) return;
     var hostRect = SPINE.wrap.getBoundingClientRect();
     var w = Math.round(hostRect.width), h = Math.round(hostRect.height);
     if(!w || !h) return;
@@ -2282,35 +2526,39 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       SPINE.svg.setAttribute("width", w);
       SPINE.svg.setAttribute("height", h);
     }
-    var pair = loopRows();
-    var review = pair.from.bullet.getBoundingClientRect();   /* where the loop leaves */
-    var plan   = pair.to.bullet.getBoundingClientRect();     /* where it returns */
-    var x1 = plan.left   - hostRect.left + plan.width / 2;
-    var y1 = plan.top    - hostRect.top  + plan.height / 2;
-    var x2 = review.left - hostRect.left + review.width / 2;
-    var y2 = review.top  - hostRect.top  + review.height / 2;
+    var leave = pair.from.bullet.getBoundingClientRect();   /* where the loop leaves */
+    var enter = pair.to.bullet.getBoundingClientRect();     /* where it returns */
+    var x1 = enter.left - hostRect.left + enter.width / 2;
+    var y1 = enter.top  - hostRect.top  + enter.height / 2;
+    var x2 = leave.left - hostRect.left + leave.width / 2;
+    var y2 = leave.top  - hostRect.top  + leave.height / 2;
     /* the vertical runs in the container's padding, left of every row, so rows
        stay fully clickable and the arc never crosses a label */
-    var r = Math.max(2, x1 - plan.width / 2 - 8);
+    var r = Math.max(2, x1 - enter.width / 2 - 8);
     var d = "M " + x2 + " " + y2 + " H " + r + " V " + y1 + " H " + (x1 + 10);
     var base = SPINE.svg.querySelector(".loop-base");
     var flow = SPINE.svg.querySelector(".loop-flow");
     var head = SPINE.svg.querySelector(".loop-head");
     if(base) base.setAttribute("d", d);
     if(flow) flow.setAttribute("d", d);
-    /* arrowhead pointing into Planning */
+    /* arrowhead pointing into the destination row */
     if(head) head.setAttribute("d", "M " + (x1 + 3) + " " + (y1 - 4)
       + " L " + (x1 + 11) + " " + y1
       + " L " + (x1 + 3) + " " + (y1 + 4) + " Z");
   }
 
-  /* Three states for the return arc: off while a run has not looped, flowing
-     during the handoff (dashes travel from Reviewing to Planning), and settled
-     while the refined pass runs. */
-  function setLoopState(v){
+  /* Three states for an arc: off while a run has not looped, flowing during the handoff
+     (dashes travel from Reviewing to the destination), settled while the re-armed rows run.
+     `data-arc` names which of the two arcs is lit; at most one ever is. */
+  function setLoopState(v, arc){
     var wrap = document.getElementById("spineWrap");
     if(!wrap) return;
     if(wrap.getAttribute("data-loop") !== v) wrap.setAttribute("data-loop", v);
+    var a = arc || "";
+    if((wrap.getAttribute("data-arc") || "") !== a){
+      if(a) wrap.setAttribute("data-arc", a); else wrap.removeAttribute("data-arc");
+    }
+    SPINE.arc = arc || null;
     if(v !== "off") drawLoop();
   }
 
@@ -2321,41 +2569,31 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     STAGES.forEach(function(s, i){
       var li = document.createElement("li");
       li.setAttribute("data-state", "pending");
-      /* the stage id is what the return arc uses to find its two endpoints, so it
-         is bound to the node rather than to its position in the list */
+      /* the stage id is what the arcs use to find their endpoints, so it is bound to the
+         node rather than to its position in the list */
       li.setAttribute("data-stage", s.id);
       li.style.setProperty("--delay", String(i * 60));
-      /* No "P1"…"P7" prefix any more. The bullet already numbers the step, and "P"
-         reads as *pass* — which this interface has a separate and real concept for
-         ("pass 1 of 3", and the refinement that re-runs the whole chain). Seven "P"
-         numbers down a list that restarts on every pass was the misleading part. */
-      var meta = s.meta;
+      /* No "P1"…"P7" prefix. The bullet already numbers the step, and "P" reads as *pass* —
+         which this interface has a separate and real concept for ("pass 1 of 2"). */
       li.innerHTML = '<span class="bullet" aria-hidden="true">' + (i + 1) + "</span>"
         + '<span><span class="stage-name">' + s.label
         + '<span class="sr"></span></span>'
-        + '<span class="stage-meta">' + meta + "</span>"
+        + '<span class="stage-meta">' + s.meta + "</span>"
         + '<span class="stage-meta loops" hidden></span></span>';
       hostEl.appendChild(li);
       rows.push({
         el: li,
         bullet: li.querySelector(".bullet"),
         name: li.querySelector(".stage-name .sr"),
+        meta: li.querySelectorAll(".stage-meta")[0],
         loops: li.querySelector(".loops"),
         state: "pending",
         fed: null
       });
     });
-    /* The arc layer belongs to the list it annotates, so it is resolved from the
-       host rather than from a global id. `buildSpine` also builds the halted-run
-       spine, which has no wrapper at all; looking that up by id dropped a second
-       arc layer into the *running* stage's wrapper and pointed the live arc's
-       endpoints at a hidden list.
-
-       Exactly one layer, always. The stylesheet reveals every `.loop-layer` under
-       the wrapper whenever `data-loop` is set, so the layer left behind by the
-       previous build kept its old path and reappeared next to the live one —
-       which is what made a single return read as two different lines to
-       Planning. Nothing may be inserted until the previous layer is gone. */
+    /* The arc layer belongs to the list it annotates, so it is resolved from the host rather
+       than from a global id (the halted-run spine has no wrapper and gets no layer). Exactly one
+       layer, always: the previous build's layer is removed before a new one is inserted. */
     var wrap = hostEl.closest ? hostEl.closest(".spine-wrap") : null;
     if(wrap){
       Array.prototype.forEach.call(wrap.querySelectorAll(".loop-layer"), function(old){
@@ -2365,7 +2603,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       wrap.insertBefore(svg, hostEl);
       SPINE.svg = svg;
     } else {
-      /* no wrapper means no return arc to draw (the halted-run spine) */
       SPINE.svg = null;
     }
     SPINE.host = hostEl;
@@ -2375,7 +2612,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     drawLoop();
   }
 
-  /* One pointer for the whole list; reset the instant the run starts. */
+  /* One pointer for the whole list; reset the instant a loop re-arms rows. */
   function resetFlow(){
     if(SPINE.host) SPINE.host.style.setProperty("--base", "0");
   }
@@ -2383,11 +2620,14 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(SPINE.host) SPINE.host.style.setProperty("--base", "170");
   }
 
-  function syncSpine(marks, loops){
+  /* Paint the rows from a marks map (node id → state). `run` supplies the dynamic captions
+     and which row carries ↺: the first re-armed row, once it has completed again (§4.1). */
+  function syncSpine(marks, run){
     if(!SPINE.rows.length) return;
-    var done = function(state){ return state === "done" || state === "loop"; };
+    var done = function(st){ return st === "done" || st === "loop"; };
     SPINE.rows.forEach(function(row, i){
-      var st = (marks && marks[STAGES[i].id]) || "pending";
+      var id = STAGES[i].id;
+      var st = (marks && marks[id]) || "pending";
       if(st !== row.state){
         row.el.setAttribute("data-state", st);
         row.state = st;
@@ -2399,333 +2639,537 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         row.fed = fed;
       }
       if(row.name) row.name.textContent = st === "active" ? " (in progress)" : "";
-      /* A step re-armed by a refinement says so with a small loop mark rather
-         than a sentence. The count lives in the refinement strip. */
+      if(row.meta) row.meta.textContent = (run && run.captions[id]) || STAGES[i].meta;
       if(row.loops){
-        var show = STAGES[i].id === "researcher" && loops > 0;
+        var show = !!(run && run.rearmedFirst === id && st === "loop");
         row.loops.hidden = !show;
-        if(show) row.loops.textContent = "↺";
+        row.loops.textContent = show ? "↺" : "";
       }
     });
   }
 
-  /* Kept for the halted-run spine, which is static and never re-renders. */
-
-  /* The refinement strip. One dot per pass the run may take: hollow before it
-     runs, filled with a halo while it runs, filled and quiet once it is done, and
-     the connectors between them fill as the run moves forward. A pass in flight
-     opens its dot into a ring, which is the moment the refinement is happening.
-     There is no prose — the count is the header label, and the track carries the
-     rest. */
-  function renderPassTrack(){
+  /* The pass track stays a visually-hidden host (DESIGN.md §3.5): one dot per pass the run may
+     take, filled up to the pass in flight, opening into a ring while a loop is flowing. */
+  function renderPassTrack(run){
     var host = document.getElementById("passTrack");
-    if(!host) return;
-    if(!passes.length){ resetPasses(); return; }
-    host.setAttribute("data-refining", play.refining ? "1" : "0");
+    if(!host || !run) return;
+    host.setAttribute("data-refining", run.loop === "flowing" ? "1" : "0");
     host.innerHTML = "";
-    passes.forEach(function(p, i){
+    for(var i = 0; i < run.maxPasses; i++){
       var el = document.createElement("li");
       el.className = "pass";
-      el.setAttribute("data-state", p.state);
-      /* a connector is traversed once the run has moved past the pass before it */
-      if(i < openPass || (i === openPass && p.state === "active" && !play.refining)) el.setAttribute("data-traversed", "1");
+      var st = i < run.pass - 1 ? "done" : (i === run.pass - 1 ? "active" : "pending");
+      el.setAttribute("data-state", st);
+      if(i < run.pass - 1 || (i === run.pass - 1 && run.loop !== "flowing")) el.setAttribute("data-traversed", "1");
       el.style.setProperty("--delay", String(i * 60));
       el.innerHTML = '<span class="dot" aria-hidden="true"></span>'
         + '<span class="pass-n">P' + (i + 1) + "</span>"
-        + '<span class="sr">' + (p.state === "done" ? "complete"
-            : p.state === "active" ? "running now" : "not reached") + "</span>";
+        + '<span class="sr">' + (st === "done" ? "complete" : st === "active" ? "running now" : "not reached") + "</span>";
       host.appendChild(el);
-    });
-    var active = 0;
-    passes.forEach(function(p, i){ if(p.state === "active" || p.state === "done") active = i; });
-    setText("passSummary", "pass " + (active + 1) + " of " + passes.length);
+    }
+    setText("passSummary", "pass " + run.pass + " of " + run.maxPasses);
   }
 
-  function renderSpine(hostEl, marks, loops){
+  function renderSpine(hostEl, marks, run){
     buildSpine(hostEl);
-    syncSpine(marks, loops);
+    syncSpine(marks, run);
   }
 
-  /* ═══ scripted stream — shape taken from the documented event catalogue ═══ */
-  function buildEvents(totalPasses){
-    totalPasses = Math.max(1, totalPasses || 3);
-    var ev = [], toolCalls = 0;
+  /* ═══ scripted stream ═══
+     Event names and metadata keys are the engine's (graph/events.py; agents/*.py — spec §3.3),
+     in the order the graph records them per pass: planner → researcher (per topic: started,
+     tool calls, completed; then research.completed) → source_evaluator → evidence_verifier →
+     report_writer (report.written, node.completed, then graph.quality.assessed from the node
+     wrapper, nodes.py:300-313) → report_reviewer (report.reviewed, route.decided, node.completed,
+     nodes.py:819-841) → the hop the route chose, or finalize_report and session.completed.
+     Pure: no DOM, no page state — the offline key check evaluates this function by itself. */
+  function buildEvents(opts){
+    opts = opts || {};
+    var budget = Math.max(0, Math.round(Number(opts.maxExtraPasses) || 0));
+    var loop = opts.loop || null;     /* null (accepted first time) | "extra_pass" | "redraft" */
+    var sessionId = opts.sessionId || "session";
+    var ev = [];
     function push(type, source, message, metadata){
       ev.push({ type:type, source:source, message:message, metadata:metadata || {} });
     }
-    push("graph.session.started", "graph", "Session started.", { max_iterations:totalPasses, checkpointing:false });
-    for(var pass = 0; pass < totalPasses; pass++){
-      var last = pass === totalPasses - 1;
-      var first = pass === 0;
-      push("graph.node.started", "graph.planner", "Node planner started.", { node:"planner", iteration:pass });
-      push("planner.planning.started", "planner", "Planning started.", { iteration:pass, min_sub_topics:3, max_sub_topics:7 });
-      push("planner.planning.completed", "planner", "Plan validated.", { sub_topic_count: first ? 6 : 4, repair_attempted:false, stop_reason:"finished" });
-      push("graph.node.completed", "graph.planner", "Node planner completed.", { node:"planner", iteration:pass });
-
-      push("graph.node.started", "graph.researcher", "Node researcher started.", { node:"researcher", iteration:pass });
-      var topics = first ? 6 : 4;
-      for(var t = 0; t < topics; t++){
-        push("researcher.sub_topic.started", "researcher", "Sub-topic started.",
-          { sub_topic:"topic-" + (t + 1), priority: t < 2 ? 1 : 2, existing_sources: toolCalls });
-        var calls = first ? 3 : 2;
-        for(var c = 0; c < calls; c++){
-          toolCalls++;
-          push("researcher.tool_call", "researcher", "Tool call completed.",
-            { tool: c % 2 === 0 ? "web_search" : "web_scraper", iteration:c + 1, success:true });
-        }
-        push("researcher.sub_topic.completed", "researcher", "Sub-topic completed.",
-          { stop_reason:"sufficient", iterations:calls, tool_calls:calls, findings: first ? 4 : 2 });
-      }
-      push("researcher.research.completed", "researcher", "Research pass completed.",
-        { sub_topics_planned:6, sub_topics_researched:topics, findings: first ? 17 : 11 });
-      push("graph.node.completed", "graph.researcher", "Node researcher completed.", { node:"researcher", iteration:pass });
-
-      ["source_evaluator","fact_checker","synthesizer"].forEach(function(n){
-        push("graph.node.started", "graph." + n, "Node " + n + " started.", { node:n, iteration:pass });
-        if(n === "source_evaluator"){
-          push("source_evaluator.evaluation.completed", "source_evaluator", "Sources scored.",
-            { source_count: first ? 22 : 31, average_score:0.68, low_confidence_count:9 });
-        }
-        if(n === "fact_checker"){
-          push("fact_checker.claims.extracted", "fact_checker", "Claims extracted.", { claim_count:19 });
-          var verdicts = ["verified","verified","unverified","insufficient_evidence","verified"];
-          var conf = [0.9, 0.88, 0.6, 0.0, 0.92];
-          for(var k = 0; k < verdicts.length; k++){
-            push("fact_checker.claim.checked", "fact_checker", "Claim judged.", { verdict:verdicts[k], confidence:conf[k] });
-          }
-          push("fact_checker.fact_check.completed", "fact_checker", "Fact check completed.",
-            { claim_count:19, verified:12, unverified:4, contradicted:1, insufficient_evidence:2 });
-        }
-        if(n === "synthesizer"){
-          push("synthesizer.synthesis.completed", "synthesizer", "Reader report composed.",
-            { section_count:7, citation_count:80, report_chars:124880, limitations:6 });
-        }
-        push("graph.node.completed", "graph." + n, "Node " + n + " completed.", { node:n, iteration:pass });
-      });
-
-      push("graph.node.started", "graph.critic", "Node critic started.", { node:"critic", iteration:pass });
-      push("critic.critique.started", "critic", "Review started.", { iteration:pass, max_iterations:totalPasses });
-      push("critic.critique.completed", "critic",
-        last ? "Critique accepted the report." : "Critique returned a refinement request.",
-        { score: last ? 8 : 6, gap_count: last ? 0 : 6, unsupported_claim_count: last ? 0 : 4, should_continue: !last });
-      push("graph.node.completed", "graph.critic", "Node critic completed.", { node:"critic", iteration:pass });
-
-      if(last){
-        push("graph.route.decided", "graph", "Route decided: finalize.",
-          { destination:"finalize", reason:"critique_satisfied", iteration:pass, max_iterations:totalPasses });
-        push("graph.node.started", "graph.finalize_report", "Publishing artifacts.", { node:"finalize_report", iteration:pass });
-        push("graph.report.published", "graph", "Report published.",
-          { report_path:"api-output/report.md", evidence_path:"api-output/evidence-ledger.md" });
-        push("graph.node.completed", "graph.finalize_report", "Node finalize_report completed.", { node:"finalize_report", iteration:pass });
-        push("graph.session.completed", "graph", "Session completed.",
-          { status:"completed", iteration:pass, error_count:2, has_report:true });
-      } else {
-        push("graph.route.decided", "graph", "Route decided: refine.",
-          { destination:"refine", reason:"refinement_requested", iteration:pass, max_iterations:totalPasses });
-        push("graph.refinement.started", "graph", "Refinement pass started.", { iteration:pass + 1, max_iterations:totalPasses });
-      }
+    function node(name, iteration, body){
+      push("graph.node.started", "graph." + name, "Node " + name + " started.", { node:name, iteration:iteration });
+      var before = ev.length;
+      body();
+      push("graph.node.completed", "graph." + name, "Node " + name + " completed.",
+        { node:name, iteration:iteration, event_count: ev.length - before, error_count:0 });
     }
-    ev.passes = totalPasses;
+    var TOOLS = ["web_search", "web_scraper", "document_reader", "query_memory"];
+    var targets = ["T01", "T02", "T03", "T04"];
+    /* the two required targets pass 0 leaves without a verified finding — only in the extra-pass run;
+       the redraft and one-pass runs answer every target, as their routes and final coverage say */
+    var missing = loop === "extra_pass" ? ["T02", "T04"] : [];
+    var proposal = 0;
+
+    function researcher(iteration, topics, extra){
+      node("researcher", iteration, function(){
+        for(var t = 0; t < topics.length; t++){
+          push("researcher.sub_topic.started", "researcher", "Sub-topic started.",
+            { sub_topic:topics[t], priority: t < 2 ? 1 : 2, index:t, existing_sources: extra ? 14 : t * 2 });
+          var calls = extra ? 2 : 3;
+          for(var k = 0; k < calls; k++){
+            proposal++;
+            push("researcher.tool_call", "researcher", "Tool call completed.",
+              { sub_topic:topics[t], tool:TOOLS[(t + k) % TOOLS.length], proposal_id:"p" + proposal, iteration:k + 1, success:true, error_type:null });
+          }
+          push("researcher.sub_topic.completed", "researcher", "Sub-topic completed.",
+            { sub_topic:topics[t], index:t, stop_reason:"sufficient", iterations:calls, tool_calls:calls, cache_hits: extra ? 1 : 0,
+              findings: extra ? 2 : 3, sources_retained: extra ? 2 : 3, elapsed_s: extra ? 41.2 : 68.5 });
+        }
+        push("researcher.research.completed", "researcher", "Research pass completed.",
+          { sub_topics_planned:6, sub_topics_researched:topics.length, sub_topics_skipped:0, findings: extra ? 4 : 18 });
+      });
+    }
+    function evaluator(iteration, extra){
+      node("source_evaluator", iteration, function(){
+        push("source_evaluator.evaluation.started", "source_evaluator", "Source evaluation started.",
+          { finding_count: extra ? 22 : 18, source_count: extra ? 17 : 14 });
+        push("source_evaluator.evaluation.completed", "source_evaluator", "Sources scored.",
+          { source_count: extra ? 17 : 14, average_score:0.71, low_confidence_count:2, unique_source_count: extra ? 17 : 14,
+            scored_count: extra ? 17 : 14, unscored_cap_count:0, unscored_provider_count:0, unscored_missing_count:0,
+            reputation_hits:5, reputation_failures:0 });
+      });
+    }
+    function verifier(iteration, extra){
+      node("evidence_verifier", iteration, function(){
+        push("evidence_verifier.verification.completed", "evidence_verifier", "Findings verified.",
+          extra ? { verified:3, verified_corrected:0, quoted:0, dropped:1, context_unchecked:0 }
+                : { verified:12, verified_corrected:2, quoted:1, dropped:3, context_unchecked:1 });
+      });
+    }
+    function writer(iteration, draft){
+      /* draft 1: the first draft; 2: the redraft; 3: the extra pass's draft */
+      node("report_writer", iteration, function(){
+        push("report_writer.report.written", "report_writer", "Report drafted.",
+          { statements: draft === 2 ? 27 : (draft === 3 ? 31 : 26), citations: draft === 3 ? 34 : 29, refused: draft === 1 ? 2 : 1,
+            fact_rows:7, not_found: draft === 3 ? 0 : missing.length, table:"findings", parts:3, failed_parts:[] });
+      });
+      /* A missing required target the writer discloses under "What we couldn't confirm" is not
+         a quality-gate hard failure (agents/quality.py:142-144); the route buys the extra pass
+         from missing_required_target_ids (state.py:295-297). */
+      var answered = draft === 3 ? targets : targets.filter(function(t){ return missing.indexOf(t) === -1; });
+      var stillMissing = draft === 3 ? [] : missing;
+      push("graph.quality.assessed", "graph", "The report quality gates found no hard failure.",
+        { iteration:iteration, hard_failures:[], required_target_ids:targets,
+          answered_target_ids:answered, missing_required_target_ids:stillMissing, uncited_settled_points:0 });
+    }
+    function reviewer(iteration, decision){
+      /* decision: destination, reason, mean_score, material_defects, missing */
+      node("report_reviewer", iteration, function(){
+        push("graph.report.reviewed", "graph.report_reviewer", "The report was reviewed and scored.",
+          { iteration:iteration, review_status:"scored", mean_score:decision.mean_score, material_defects:decision.material_defects,
+            reviewed_statements:26, input_fingerprint:"sha256:" + sessionId + "-" + iteration + "-" + decision.destination, reused:false });
+        push("graph.route.decided", "graph", "Route decided: " + decision.destination + ".",
+          { destination:decision.destination, reason:decision.reason, iteration:iteration, max_extra_passes:budget,
+            missing_required_target_ids:decision.missing });
+      });
+    }
+    function finalize(iteration){
+      node("finalize_report", iteration, function(){
+        push("graph.report.published", "graph.finalize_report", "The final report and its evidence ledger were published.",
+          { quality_status:"accepted", report_path:"api-output/report.md", evidence_path:"api-output/report-evidence.md",
+            quality_path:"api-output/report-quality.json", document_writes:3, memory_writes:1, error_count:0 });
+      });
+      push("graph.session.completed", "graph", "Research session finished with status completed.",
+        { status:"completed", iteration:iteration, error_count:0, has_report:true });
+    }
+
+    push("graph.session.started", "graph", "Research session started.", { session_id:sessionId, max_extra_passes:budget, checkpointing:false });
+    node("planner", 0, function(){
+      push("planner.planning.completed", "planner", "Plan validated.",
+        { sub_topic_count:6, repair_attempted:false, stop_reason:"finished", iterations:1, tool_calls:1 });
+    });
+    var topics = ["grid connection", "supply chain", "queue reform", "fire codes", "market rules", "financing"];
+    researcher(0, topics, false);
+    evaluator(0, false);
+    verifier(0, false);
+    writer(0, 1);
+
+    if(loop === "extra_pass" && budget > 0){
+      /* pass 0: two required targets have no verified finding → the graph buys an extra pass
+         before acceptance is considered (state.py:295-297) */
+      reviewer(0, { destination:"extra_pass", reason:"extra_pass_requested", mean_score:0.82, material_defects:0, missing:missing });
+      push("graph.node.started", "graph.extra_pass", "Node extra_pass started.", { node:"extra_pass", iteration:0 });
+      push("graph.extra_pass.started", "graph", "Extra pass 1 started.", { iteration:1, max_extra_passes:budget, targets:missing });
+      push("graph.node.completed", "graph.extra_pass", "Node extra_pass completed.", { node:"extra_pass", iteration:1, event_count:1, error_count:0 });
+      researcher(1, ["supply chain", "financing"], true);
+      evaluator(1, true);
+      verifier(1, true);
+      writer(1, 3);
+      reviewer(1, { destination:"finalize", reason:"report_accepted", mean_score:0.86, material_defects:0, missing:[] });
+      finalize(1);
+    } else if(loop === "redraft"){
+      /* pass 0: the review names one material defect → one writer re-run, same iteration (nodes.py:1160-1216) */
+      reviewer(0, { destination:"redraft", reason:"redraft_requested", mean_score:0.77, material_defects:1, missing:[] });
+      push("graph.node.started", "graph.writer_redraft", "Node writer_redraft started.", { node:"writer_redraft", iteration:0 });
+      push("graph.report.redraft_requested", "graph", "Writer re-run 1 requested for one materially defective report.",
+        { iteration:0, redrafts:1, material_defects:1 });
+      push("graph.node.completed", "graph.writer_redraft", "Node writer_redraft completed.", { node:"writer_redraft", iteration:0, event_count:1, error_count:0 });
+      writer(0, 2);
+      reviewer(0, { destination:"finalize", reason:"report_accepted", mean_score:0.84, material_defects:0, missing:[] });
+      finalize(0);
+    } else {
+      reviewer(0, { destination:"finalize", reason:"report_accepted", mean_score:0.86, material_defects:0, missing:[] });
+      finalize(0);
+    }
     return ev;
   }
-  /* Per-stage weighting. Event density is wildly uneven — the researcher emits a
-     tool_call per tool per sub-topic while the rest emit a handful of records
-     each — so a wall-clock-proportional schedule flashes four steps past in under
-     a second and then sits on the last one. Weighting by node gives every step
-     comparable screen time, then the schedule is scaled to the session's real
-     duration so the elapsed clock still reads true. Pacing only: nothing the
-     interface states depends on it. */
+
+  /* The halted fixture (2ad900b1): a planner halt. A halting node emits graph.node.started and
+     records its error — no graph.node.completed; every later agent node emits graph.node.skipped
+     with reason "halted" (nodes.py:175-186, events.py:81-88); the reviewer's route is `end`, so
+     finalize_report never runs and no event exists for it; the orchestrator closes with
+     status "failed" (orchestrator.py:396-402). Consumed once by the failed-stage renderer,
+     never played. Pure literal — the offline key check evaluates it by itself. */
+  var HALTED_EVENTS = [
+    { type:"graph.session.started", source:"graph", message:"Research session started.", metadata:{ session_id:"2ad900b1", max_extra_passes:1, checkpointing:false } },
+    { type:"graph.node.started", source:"graph.planner", message:"Node planner started.", metadata:{ node:"planner", iteration:0 } },
+    { type:"graph.node.skipped", source:"graph.researcher", message:"Node researcher was skipped because the run had halted.", metadata:{ node:"researcher", iteration:0, reason:"halted" } },
+    { type:"graph.node.skipped", source:"graph.source_evaluator", message:"Node source_evaluator was skipped because the run had halted.", metadata:{ node:"source_evaluator", iteration:0, reason:"halted" } },
+    { type:"graph.node.skipped", source:"graph.evidence_verifier", message:"Node evidence_verifier was skipped because the run had halted.", metadata:{ node:"evidence_verifier", iteration:0, reason:"halted" } },
+    { type:"graph.node.skipped", source:"graph.report_writer", message:"Node report_writer was skipped because the run had halted.", metadata:{ node:"report_writer", iteration:0, reason:"halted" } },
+    { type:"graph.node.skipped", source:"graph.report_reviewer", message:"Node report_reviewer was skipped because the run had halted.", metadata:{ node:"report_reviewer", iteration:0, reason:"halted" } },
+    { type:"graph.session.completed", source:"graph", message:"Research session finished with status failed.", metadata:{ status:"failed", iteration:0, error_count:1, has_report:false } }
+  ];
+  /* Per-node weighting. Event density is wildly uneven — the researcher emits a tool_call per
+     tool per sub-topic while the rest emit a handful of records each — so a wall-clock-
+     proportional schedule flashes four steps past in under a second and then sits on the last
+     one. Weighting by node gives every step comparable screen time. Pacing only: nothing the
+     interface states depends on it. The node is the event's own `node` key, or the agent
+     prefix of its type (`researcher.tool_call` → researcher); graph-level events weigh 0.9. */
   function weigh(events){
     var W = {
-      planner:0.7, researcher:1.4, source_evaluator:1.1, fact_checker:1.4,
-      synthesizer:1.0, critic:0.9, finalize_report:0.8
+      planner:0.7, researcher:1.4, source_evaluator:1.1, evidence_verifier:1.2,
+      report_writer:1.0, report_reviewer:0.9, finalize_report:0.8
     };
     var totalW = 0, acc = 0;
-    events.forEach(function(e){ e.w = W[e.type] || 0.9; totalW += e.w; });
+    events.forEach(function(e){
+      var node = (e.metadata && e.metadata.node) || e.type.split(".")[0];
+      e.w = W[node] || 0.9; totalW += e.w;
+    });
     events.forEach(function(e){ acc += e.w / totalW * 760; e.at = Math.round(acc); });
     return events;
   }
 
-  /* Scripts are built per session, because how many passes a run takes is a
-     property of the run: the graph loops only while the critic recommends it,
-     and graph.max_iterations is a ceiling rather than a target. A session
-     submitted from the composer has no entry yet, so the script is built on
-     demand at its default ceiling. */
+  /* Scripts are built per session: which loop a run takes is a property of the run
+     (`session.script`), and the budget it was created with is its ceiling. */
   var SCRIPTS = {};
   function scriptFor(session){
-    if(!SCRIPTS[session.id]) SCRIPTS[session.id] = weigh(buildEvents(session.passes || 3));
+    if(!SCRIPTS[session.id]){
+      SCRIPTS[session.id] = weigh(buildEvents({ loop: session.script || null, maxExtraPasses: Math.max(0, (session.passes || 1) - 1), sessionId: session.id }));
+    }
     return SCRIPTS[session.id];
   }
   SESSIONS.forEach(function(s){ scriptFor(s); });
-  var PLAYBACK = scriptFor(SESSIONS[0]);
-  /* Watch time for a scripted run. Sized so every step holds the highlight long
-     enough to be read — a proportional 17s window left four steps on screen for
-     about a second each. */
-  var PLAY_MS = 30000;
-
-  var play = { timer:null, idx:0, elapsed:0, loops:0, marks:{}, refining:false,
-               toolCalls:0, claims:0, session:null, pass:0, maxPasses:3 };
-  /* One entry per pass, sized to the passes this run actually takes. Only the
-     state is tracked: the refinement track reads it as a dot's fill, so there is
-     no per-pass step count to maintain. */
-  var passes = [];
-  var openPass = 0;
-  function resetPasses(max){
-    play.maxPasses = Math.max(1, max || play.maxPasses || 3);
-    passes = [];
-    for(var i = 0; i < play.maxPasses; i++) passes.push({ state:"pending" });
-    passes[0].state = "active";
-    openPass = 0;
-    play.refining = false;
-    renderPassTrack();
-  }
-  var PLAY_MS = 30000;
-
   function reducedMotion(){
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
-  function applyEvent(ev, session){
-    var node = ev.metadata.node;
-    if(ev.type === "graph.node.started" && node){
-      Object.keys(play.marks).forEach(function(k){ if(play.marks[k] === "active") play.marks[k] = "done"; });
-      play.marks[node] = "active";
-      if(typeof ev.metadata.iteration === "number"){
-        session.iteration = ev.metadata.iteration;
-        /* The topbar chip carries the iteration, and the topbar is otherwise only
-           rebuilt on a stage change. Without this the chip kept whatever number it
-           was first rendered with, so it read "iteration 0 of 3" for the whole run
-           while the pipeline moved on. Rebuilt only when the number actually
-           changes, so the chip's live dot is not re-created on every event. */
-        if(play.iterationShown !== session.iteration){
-          play.iterationShown = session.iteration;
-          renderTopbar();
-        }
-      }
-      if(passes[openPass]) passes[openPass].state = "active";
-      renderPassTrack();
-    }
-    if(ev.type === "graph.node.completed" && node && play.marks[node] === "active"){
-      play.marks[node] = "done";
-    }
-    if(ev.type === "graph.session.completed" && play.marks.finalize_report) play.marks.finalize_report = "done";
-    if(ev.type === "researcher.tool_call") play.toolCalls++;
-    if(ev.type === "fact_checker.claim.checked") play.claims++;
-    /* Publishing is the one step whose fill should lag, so the report's arrival
-       reads as the last thing that happens rather than one more tick. */
-    if(ev.type === "graph.node.started" && node === "finalize_report") markFlow();
-    /* A refinement pass is a NEW pass, not a step inside the old one. The reset
-       happens as soon as the critic routes back, so the spine is already hollow
-       by the time the next pass's step 1 lights up. Leaving the old marks in
-       place was a bug: it showed the pipeline at step 1 while steps 2-7 still
-       read "finished", which looks like progress running backwards.
+  var PLAYBACK = null;
+  /* Watch time for a scripted run. Sized so every step holds the highlight long
+     enough to be read. */
+  var PLAY_MS = 30000;
+  /* One playback at a time: opening a playback session restarts its script from the
+     beginning; the other playback fixture keeps `status: "running"` until it is reopened. */
+  var play = { timer:null, idx:0, elapsed:0, session:null, run:null };
 
-       `refining` is the window between the critic routing back and the next pass
-       actually starting. During it the strip opens its active dot into a ring, so
-       the loop is visible at the moment it happens rather than only in a count. */
-    /* The handoff: the critic routes back, so the arc flows from Reviewing up to
-       Planning, the spine goes hollow, and the next pass starts at step 1. The arc
-       stays lit while that pass runs and clears when the pass ends, so a return is
-       never a silent jump. */
-    if(ev.type === "graph.route.decided" && ev.metadata.destination === "refine"){
-      play.marks = {};
-      resetFlow();
-      play.refining = true;
-      setLoopState("flowing");
-      renderPassTrack();
-    }
-    /* The run is over: nothing is in flight, and the last pass is complete. The
-       graph checks its own iteration bound before the critic's recommendation, so
-       the last pass is sealed here rather than by the critique's score. */
-    if(ev.type === "graph.session.completed"){
-      passes.forEach(function(p){ if(p.state === "active") p.state = "done"; });
-      play.refining = false;
-      setLoopState("off");
-      renderPassTrack();
-    }
-    if(ev.type === "graph.refinement.started"){
-      var next = ev.metadata.iteration || 0;
-      if(passes[openPass]) passes[openPass].state = "done";
-      openPass = next;
-      play.pass = next;
-      play.loops = next;
-      play.refining = false;
-      /* the beat has landed: the arc rests lit while this pass is the one running */
-      setLoopState("settled");
-      if(passes[next]) passes[next].state = "active";
-      renderPassTrack();
-    }
-    syncSpine(play.marks, play.loops);
+  /* ═══ one run, derived from its events and nothing else ═══
+     Every handler below is written so the state after event k depends only on events 1..k.
+     The real stream delivers a node's events as one burst when the node finishes
+     (orchestrator.py:312-346), the prototype plays them one per tick, and a late subscriber
+     replays a whole run at once; all three must paint the same screen. */
+  function emptyCounters(){
+    return { subTopicsDone:null, subTopicsResearched:null, subTopicsTotal:null, toolCalls:null,
+             findings:null, sources:null, verified:null, corrected:null, dropped:null,
+             statements:null, refused:null, reviewSeen:false, reviewScore:null };
   }
-  function currentStageIndex(){
-    var order = ["planner","researcher","source_evaluator","fact_checker","synthesizer","critic","finalize_report"];
-    var idx = 0;
-    order.forEach(function(n, i){
-      var st = play.marks[n];
-      if(st === "done" || st === "active" || st === "loop") idx = Math.max(idx, i);
+  function newRunState(passes){
+    return {
+      marks:{},                  /* node id → "done" | "loop" | "skipped"; the active row is derived */
+      active:"planner",          /* the "Now" row: the successor of the last graph.node.completed */
+      openNode:null,             /* the last graph.node.started with no graph.node.completed — the halting row */
+      pass:1, maxPasses:Math.max(1, Number(passes) || 1),
+      loop:"off", arc:null,      /* data-loop, data-arc (painted by setLoopState) */
+      loopPending:false,         /* a loop was routed; the reviewer's own completion is inert */
+      tag:null,                  /* { kind, label, text } for the header's loop tag, or null */
+      rearmed:{}, rearmedFirst:null,
+      captions:{}, blurbs:{},
+      counters:emptyCounters(), countersPass:1,
+      finalStatus:null
+    };
+  }
+  function nextRow(node){
+    var i = AGENT_ORDER.indexOf(node);
+    return (i >= 0 && i < AGENT_ORDER.length - 1) ? AGENT_ORDER[i + 1] : null;
+  }
+  /* Rows fromIndex..5 go hollow and are re-armed: their next completion reads `loop`, and the
+     first of them carries ↺. Publishing goes hollow too; the rows before fromIndex keep `done`. */
+  function rearm(run, fromIndex){
+    run.rearmed = {};
+    run.rearmedFirst = AGENT_ORDER[fromIndex];
+    for(var i = fromIndex; i <= 5; i++){
+      delete run.marks[AGENT_ORDER[i]];
+      run.rearmed[AGENT_ORDER[i]] = true;
+    }
+    delete run.marks.finalize_report;
+  }
+  function plural(n, one, many){ return n + " " + (n === 1 ? one : many); }
+
+  /* Keyed by event type; each handler reads only `md` (the event's metadata). The offline key
+     check reads `md.<key>` out of each body and checks it against a replayed run, so read keys
+     only through `md.` and only the keys spec §3.3 lists for that event. */
+  var EVENT_HANDLERS = {
+    "graph.session.started": function(run, md){
+      if(typeof md.max_extra_passes === "number") run.maxPasses = 1 + md.max_extra_passes;
+    },
+    "graph.node.started": function(run, md){
+      run.openNode = md.node;
+      /* the pass number is read here and from graph.extra_pass.started only (spec §3.2 rule 1) */
+      if(typeof md.iteration === "number") run.pass = md.iteration + 1;
+    },
+    "graph.node.completed": function(run, md){
+      var node = md.node;
+      if(run.openNode === node) run.openNode = null;
+      if(node === "extra_pass" || node === "writer_redraft") return;          /* hops never map to a row */
+      if(node === "report_reviewer" && run.loopPending){ run.loopPending = false; return; }   /* inert after a loop decision */
+      run.marks[node] = run.rearmed[node] ? "loop" : "done";
+      if(node === "report_reviewer") return;                                  /* the route decision already moved the active row */
+      run.active = nextRow(node);
+    },
+    "graph.node.skipped": function(run, md){
+      run.marks[md.node] = "skipped";
+      if(run.active === md.node) run.active = null;
+    },
+    "planner.planning.completed": function(run, md){
+      run.captions.planner = plural(md.sub_topic_count, "sub-topic", "sub-topics");
+    },
+    "researcher.sub_topic.completed": function(run){
+      run.counters.subTopicsDone = (run.counters.subTopicsDone || 0) + 1;
+    },
+    "researcher.tool_call": function(run){
+      /* counted only — its `iteration` is the ReAct step index (researcher.py:2612), never the pass */
+      run.counters.toolCalls = (run.counters.toolCalls || 0) + 1;
+    },
+    "researcher.research.completed": function(run, md){
+      var c = run.counters;
+      c.subTopicsResearched = md.sub_topics_researched;
+      c.subTopicsTotal = md.sub_topics_researched + md.sub_topics_skipped;
+      c.findings = md.findings;
+    },
+    "source_evaluator.evaluation.completed": function(run, md){
+      run.counters.sources = md.source_count;
+    },
+    "evidence_verifier.verification.completed": function(run, md){
+      var c = run.counters;
+      c.verified = md.verified; c.corrected = md.verified_corrected; c.dropped = md.dropped;
+    },
+    "report_writer.report.written": function(run, md){
+      var c = run.counters;
+      c.statements = md.statements; c.refused = md.refused;
+    },
+    "graph.report.reviewed": function(run, md){
+      var c = run.counters;
+      c.reviewSeen = true;
+      c.reviewScore = (typeof md.mean_score === "number") ? md.mean_score : null;
+    },
+    "graph.route.decided": function(run, md){
+      run.tag = null;
+      run.loopPending = false;
+      if(md.destination === "extra_pass"){
+        rearm(run, 1); run.active = "researcher";
+        run.loopPending = true; run.arc = "extra_pass"; run.loop = "flowing";
+      } else if(md.destination === "redraft"){
+        rearm(run, 4); run.active = "report_writer";
+        run.loopPending = true; run.arc = "redraft"; run.loop = "flowing";
+      } else {
+        /* finalize or end: an arc lit by an earlier loop clears here */
+        run.loop = "off"; run.arc = null;
+        run.active = md.destination === "finalize" ? "finalize_report" : null;
+      }
+    },
+    "graph.extra_pass.started": function(run, md){
+      var n = (md.targets || []).length;
+      if(typeof md.iteration === "number") run.pass = md.iteration + 1;
+      run.loop = "settled";
+      run.tag = { kind:"extra_pass", label:"extra pass", text: plural(n, "required target had no verified finding", "required targets had no verified finding") };
+      run.captions.researcher = plural(n, "missing target only", "missing targets only");
+      run.blurbs.researcher = "Researching the " + plural(n, "target", "targets") + " still missing a verified finding.";
+      /* this-pass rows reset; whole-run and current-draft rows keep their values (spec §4.1) */
+      var c = run.counters;
+      c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
+      c.verified = null; c.corrected = null; c.dropped = null;
+      run.countersPass = run.pass;
+    },
+    "graph.report.redraft_requested": function(run, md){
+      run.loop = "settled";
+      run.tag = { kind:"redraft", label:"redraft", text: "Reviewer named " + plural(md.material_defects, "material defect", "material defects") };
+      /* current-draft rows and the review score reset */
+      var c = run.counters;
+      c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
+    },
+    "graph.session.completed": function(run, md){
+      run.finalStatus = md.status;
+      run.loop = "off"; run.arc = null; run.tag = null;
+      run.active = null;
+    }
+  };
+  function applyEvent(run, ev){
+    var h = EVENT_HANDLERS[ev.type];
+    if(h) h(run, ev.metadata || {});
+  }
+  /* The marks to paint: the recorded states plus the active row, which is derived. */
+  function marksFor(run, activeId){
+    var m = {};
+    Object.keys(run.marks).forEach(function(k){ m[k] = run.marks[k]; });
+    if(activeId && !m[activeId]) m[activeId] = "active";
+    return m;
+  }
+
+  /* ═══ the counters block ═══ */
+  var COUNTER_ROWS = [
+    { key:"subTopics",  label:"sub-topics researched", scope:"this pass",
+      value:function(c){
+        if(c.subTopicsResearched !== null) return c.subTopicsResearched + " of " + c.subTopicsTotal;
+        return c.subTopicsDone === null ? null : c.subTopicsDone + " this pass";
+      } },
+    { key:"toolCalls",  label:"tool calls", scope:"whole run · researcher only",
+      value:function(c){ return c.toolCalls === null ? null : String(c.toolCalls); } },
+    { key:"findings",   label:"findings", scope:"this pass",
+      value:function(c){ return c.findings === null ? null : String(c.findings); } },
+    { key:"sources",    label:"sources scored", scope:"whole run",
+      value:function(c){ return c.sources === null ? null : String(c.sources); } },
+    { key:"verified",   label:"verified / corrected / dropped", scope:"this pass",
+      value:function(c){ return c.verified === null ? null : c.verified + " / " + c.corrected + " / " + c.dropped; } },
+    { key:"statements", label:"sentences / refused", scope:"current draft",
+      value:function(c){ return c.statements === null ? null : c.statements + " / " + c.refused; } },
+    { key:"review",     label:"review score", scope:"latest review",
+      value:function(c){
+        if(!c.reviewSeen) return null;
+        return c.reviewScore === null ? { muted:"not scored" } : c.reviewScore.toFixed(2);
+      } }
+  ];
+  /* `absentText` is `not yet` while a run is live and `not reached` after a halt; a value that
+     never arrived is text, never 0. */
+  function renderCounters(hostId, counters, absentText){
+    var host = document.getElementById(hostId);
+    if(!host) return;
+    host.textContent = "";
+    COUNTER_ROWS.forEach(function(row){
+      var dt = document.createElement("dt");
+      dt.textContent = row.label + " ";
+      var sc = document.createElement("span"); sc.className = "cap"; sc.textContent = row.scope; dt.appendChild(sc);
+      var dd = document.createElement("dd");
+      dd.setAttribute("data-counter", row.key);
+      var v = row.value(counters);
+      if(v === null){ dd.className = "avail"; dd.textContent = absentText; }
+      else if(typeof v === "object"){ dd.className = "avail"; dd.textContent = v.muted; }
+      else dd.textContent = v;
+      host.appendChild(dt); host.appendChild(dd);
     });
-    return idx;
+  }
+  function renderLoopTag(run){
+    var el = document.getElementById("runLoopTag");
+    if(!el) return;
+    if(!run.tag){ el.hidden = true; el.removeAttribute("data-kind"); return; }
+    el.hidden = false;
+    el.setAttribute("data-kind", run.tag.kind);
+    el.querySelector(".tag").textContent = run.tag.label;
+    el.querySelector(".why").textContent = run.tag.text;
+  }
+  /* Everything the running stage shows is painted from the run state, here and nowhere else. */
+  function paintRunning(session){
+    var run = play.run;
+    if(!run) return;
+    syncSpine(marksFor(run, run.active), run);
+    setLoopState(run.loop, run.arc);
+    renderLoopTag(run);
+    renderCounters("runCounters", run.counters, "not yet");
+    setText("runCountersPass", "pass " + run.countersPass);
+    renderPassTrack(run);
+    updateRunningChrome(session, run);
   }
   var BLURB = {
-    planner:"Planning the sub-topics and their search queries.",
-    researcher:"Searching, scraping and extracting findings per sub-topic.",
+    planner:"Turning the question into sub-topics and evidence targets.",
+    researcher:"Searching and reading; every finding keeps a verbatim snippet.",
     source_evaluator:"Scoring every source behind the findings.",
-    fact_checker:"Checking major claims against independent domains.",
-    synthesizer:"Composing the report from the locally rendered skeleton.",
-    critic:"Reviewing the report against the acceptance threshold.",
-    finalize_report:"Publishing the report and the evidence ledger."
+    evidence_verifier:"Checking each snippet is on its page, then each figure's context.",
+    report_writer:"Drafting from verified findings; every sentence is checked against what it cites.",
+    report_reviewer:"Scoring the report; accepted at a mean of 0.80 with no material defect.",
+    finalize_report:"Publishing the report, the evidence log and the quality record."
   };
-  function updateRunningChrome(session){
-    var idx = currentStageIndex();
-    var stage = STAGES[Math.min(idx, STAGES.length - 1)];
-    /* The stage is named once, in the pipeline's own "Now" block. A status chip
-       repeating it above the question was a second statement of the same fact. */
+  function updateRunningChrome(session, run){
+    var idx = run.active ? AGENT_ORDER.indexOf(run.active) : STAGES.length - 1;
+    if(idx < 0) idx = 0;
+    var stage = STAGES[idx];
+    /* The stage is named once, in the pipeline's own "Now" block. */
     setText("runNow", stage.label);
     setText("runProgressLabel", "stage " + (idx + 1) + " of " + STAGES.length);
-    setText("runningBlurb", BLURB[stage.id] || "Working.");
+    setText("runningBlurb", run.blurbs[stage.id] || BLURB[stage.id] || "Working.");
     setText("runElapsed", fmtElapsed(play.elapsed) + " elapsed");
-    /* The pass number comes from the pass model, not from session.iteration:
-       iteration only advances when a refinement's started event arrives, so
-       reading it here would label the handoff with the pass that just ended. */
-    var passNo = Math.min(openPass + 1, play.maxPasses);
-    setText("runPasses", "pass " + passNo + " of " + play.maxPasses);
+    setText("runPasses", "pass " + run.pass + " of " + run.maxPasses);
     var fill = document.getElementById("runTrackFill");
     if(fill) fill.style.width = Math.round(((idx + 1) / STAGES.length) * 100) + "%";
     var track = document.getElementById("runTrack");
     if(track) track.setAttribute("aria-valuenow", String(idx + 1));
+    /* The topbar chip reads the pass from the session, so the session's zero-based iteration
+       and its ceiling follow the run; the chip is rebuilt only when one of them changes. */
+    var iteration = run.pass - 1;
+    if(session.iteration !== iteration || session.passes !== run.maxPasses){
+      session.iteration = iteration;
+      session.passes = run.maxPasses;
+      renderTopbar();
+    }
+  }
+  /* One event: fold it into the run, then paint. The two `--base` pokes are the fill-wave
+     timing (DESIGN.md §3.4) and change nothing the interface states. */
+  function playEvent(ev, session){
+    if(typeof ev.at === "number") play.elapsed = ev.at;
+    applyEvent(play.run, ev);
+    var md = ev.metadata || {};
+    if(ev.type === "graph.route.decided" && (md.destination === "extra_pass" || md.destination === "redraft")) resetFlow();
+    if(ev.type === "graph.node.started" && md.node === "finalize_report") markFlow();
+    paintRunning(session);
   }
   function startPlayback(session){
-    /* this session's own script: it may take one pass or several */
     PLAYBACK = scriptFor(session);
     stopPlayback();
     play.session = session;
-    play.idx = 0; play.elapsed = 0; play.loops = 0; play.toolCalls = 0; play.claims = 0; play.marks = {};
-    play.pass = 0;
-    /* force the topbar chip to render for this session's first iteration */
-    play.iterationShown = null;
+    play.idx = 0; play.elapsed = 0;
+    play.run = newRunState(session.passes);
     session.status = "running";
     session.iteration = 0;
-    resetPasses(PLAYBACK.passes || 3);
     buildSpine(document.getElementById("spine"));
     resetFlow();
-    setLoopState("off");
-    syncSpine(play.marks, 0);
-    updateRunningChrome(session);
-    /* One frame per event on a fixed cadence, so a stage's screen time is its
-       share of the schedule rather than its share of the event count: the
-       researcher's ~70 tool calls would otherwise eat the whole run and the
-       synthesizer would flash past. Each event still carries its own virtual
-       timestamp for the elapsed clock and the timestamps shown. */
+    setLoopState("off", null);
+    paintRunning(session);
+    /* One frame per event on a fixed cadence, so a stage's screen time is its share of the
+       schedule rather than its share of the event count. */
     var stepMs = reducedMotion() ? 30 : Math.round(PLAY_MS / PLAYBACK.length);
     play.timer = setInterval(function(){
       if(play.idx >= PLAYBACK.length){ finishPlayback(session); return; }
-      var ev = PLAYBACK[play.idx++];
-      play.elapsed = ev.at;
-      applyEvent(ev, session);
-      updateRunningChrome(session);
+      playEvent(PLAYBACK[play.idx++], session);
     }, stepMs);
   }
   function stopPlayback(){
     if(play.timer){ clearInterval(play.timer); play.timer = null; }
+  }
+  /* Review hook: play the active playback session's script synchronously up to and including
+     the first event of `type`, then pause. Returns the event's index, or null when the type
+     does not occur in the rest of the script (the script is then exhausted and paused). */
+  function advanceTo(type){
+    var session = play.session;
+    if(!session || !PLAYBACK || !play.run) return null;
+    stopPlayback();
+    while(play.idx < PLAYBACK.length){
+      var ev = PLAYBACK[play.idx++];
+      playEvent(ev, session);
+      if(ev.type === type) return play.idx - 1;
+    }
+    return null;
   }
   /* ═══ running → report: the header block slides down into place ═══
      The question frame is the same object on both stages, and the run's settings chips are the
@@ -2788,15 +3232,22 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 
   function finishPlayback(session){
     stopPlayback();
+    var run = play.run;
     session.status = "completed";
-    /* The iteration a finished run reports is the number of the pass it ended on,
-       which is the last iteration its events carried — not the ceiling. Hardcoding
-       3 made a one-pass run claim it had refined twice. `play.pass` is that index;
-       fall back to the script's own pass count if it is ever unavailable. */
-    session.iteration = (typeof play.pass === "number" ? play.pass : (PLAYBACK.passes || 3) - 1) + 1;
-    session.finished = new Date().toISOString();
+    session.routeReason = "report_accepted";
+    /* zero-based, the pass the run ended on; passNumber() adds one at every display site */
+    session.iteration = run ? run.pass - 1 : 0;
+    if(run) session.passes = run.maxPasses;
+    session.durationSeconds = Math.round(play.elapsed);
+    session.finished = new Date(Date.parse(session.started) + session.durationSeconds * 1000).toISOString();
     session.reportPath = "api-output/report.md";
+    session.evidencePath = "api-output/report-evidence.md";
+    session.qualityPath = "api-output/report-quality.json";
     session.trace = "https://smith.langchain.com/o/example/r/" + session.id;
+    var fin = session.final || COMPOSER_FINAL;
+    session.review = fin.review;
+    session.coverage = fin.coverage;
+    session.evidenceCounts = fin.evidenceCounts;
     session.playback = false;
     renderList();
     enterReport(session);
@@ -2829,27 +3280,87 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     });
   }
 
-  /* ═══ report + failed population ═══ */
+  /* ═══ report population ═══ */
+  function ratio(a, b){
+    return (typeof a === "number" && typeof b === "number" && isFinite(a) && b > 0) ? a / b : null;
+  }
+  /* A meter's figure: two decimals, or muted absence text. paintMeters() reads the text back,
+     so an absent figure keeps the default grey fill (DESIGN.md §3.6). */
+  function setMeterN(id, value, absentText){
+    var el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = value === null ? absentText : value;
+    el.classList.toggle("avail", value === null);
+  }
+  function setMeterFill(id, v){
+    var el = document.getElementById(id);
+    if(el) el.style.width = v === null ? "0%" : Math.round(Math.max(0, Math.min(1, v)) * 100) + "%";
+  }
+  function renderEvidenceCounts(ec){
+    var host = document.getElementById("repEvidenceCounts");
+    var none = document.getElementById("repEvidenceNone");
+    if(!host || !none) return;
+    host.textContent = "";
+    if(!ec){ host.hidden = true; none.hidden = false; return; }
+    host.hidden = false; none.hidden = true;
+    /* eleven values in ten rows (spec §4.4 rail card 3) */
+    [["findings", ec.findings], ["verified", ec.verified_findings], ["corrected", ec.corrected_findings],
+     ["quoted", ec.quoted_findings], ["dropped", ec.dropped_findings], ["context unchecked", ec.context_unchecked_findings],
+     ["cited", ec.cited_findings], ["reads", ec.network_reads + " network · " + ec.cache_reads + " cache"],
+     ["unique works", ec.unique_works], ["publishers", ec.publishers]].forEach(function(row){
+      var dt = document.createElement("dt"); dt.textContent = row[0];
+      var dd = document.createElement("dd"); dd.textContent = String(row[1]);
+      host.appendChild(dt); host.appendChild(dd);
+    });
+  }
   function populateReport(session){
-    var dur = fmtDur(session.started, session.finished);
+    var dur = fmtSeconds(session.durationSeconds);
     setText("reportMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded")
-      + (dur ? " · " + dur : "") + " · " + session.iteration + " passes");
+      + (dur ? " · " + dur : "") + " · " + passText(session));
     setText("report-h", session.q);
-    /* The status is not repeated here. The topbar chip is the one place it lives on this
-       stage — the same call the running stage made when its own status chip went, for the
-       same reason: a badge that says what the chrome already says is one more thing to read
-       and nothing to act on. */
+    /* Review card: the meter, the 0.80 line (CSS), the status text = the chip's second clause */
+    var score = (session.review && typeof session.review.score === "number") ? session.review.score : null;
+    setMeterFill("repReviewFill", score);
+    setMeterN("repReviewN", fmtScore(score), "not scored");
+    setText("repReviewStatus", statusNote(session));
+    var ec = session.evidenceCounts || null;
+    var cited = ec ? ratio(ec.cited_assessed_sources, ec.assessed_sources) : null;
+    setMeterFill("repCitedFill", cited);
+    setMeterN("repCitedN", cited === null ? null : cited.toFixed(2), "not measured");
+    paintMeters(document.getElementById("stage-report"));
+    /* Coverage card */
+    var cov = session.coverage || null;
+    var covAnswered = document.getElementById("repCovAnswered");
+    if(covAnswered){
+      covAnswered.textContent = cov ? cov.answered_targets + " of " + cov.required_targets : "not measured";
+      covAnswered.classList.toggle("avail", !cov);
+    }
+    var covNotFound = document.getElementById("repCovNotFound");
+    if(covNotFound){
+      var ids = (cov && cov.not_found_target_ids) || [];
+      covNotFound.textContent = !cov ? "not measured" : (ids.length ? ids.join(" · ") : "none");
+      covNotFound.classList.toggle("avail", !cov || !ids.length);
+    }
+    /* Evidence card */
+    renderEvidenceCounts(ec);
+    /* Session facts */
     setText("repFactStatus", session.status);
-    setText("repFactIteration", String(session.iteration));
+    setText("repFactPass", passText(session));
     setText("repFactStarted", session.started);
     setText("repFactFinished", session.finished || "not recorded");
-    setText("repFactErrors", String((session.errors || []).length));
-
-    var path = document.getElementById("repFactPath");
-    if(path){
-      if(session.reportPath){ path.textContent = session.reportPath; path.className = ""; }
-      else { path.textContent = "Not published"; path.className = "avail"; }
+    var durEl = document.getElementById("repFactDuration");
+    if(durEl){
+      var hasDur = typeof session.durationSeconds === "number";
+      durEl.textContent = hasDur ? String(session.durationSeconds) : "not recorded";
+      durEl.className = hasDur ? "" : "avail";
     }
+    [["repFactPath", session.reportPath], ["repFactEvidence", session.evidencePath], ["repFactQuality", session.qualityPath]].forEach(function(p){
+      var el = document.getElementById(p[0]);
+      if(!el) return;
+      if(p[1]){ el.textContent = p[1]; el.className = ""; }
+      else { el.textContent = "Not published"; el.className = "avail"; }
+    });
+    setText("repFactErrors", String((session.errors || []).length));
     var dl = document.getElementById("downloadBtn");
     if(dl) dl.style.display = session.reportPath ? "" : "none";
     var trace = document.getElementById("traceBtn");
@@ -2857,16 +3368,12 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
       else trace.style.display = "none";
     }
+    /* Errors: grouped list with the API's own message beside the enumerated type */
     var errs = session.errors || [];
     var rec = errs.filter(function(x){ return x.recoverable; }).length;
     setText("repErrSummary", rec + " recoverable · " + (errs.length - rec) + " non-recoverable");
     var rl = document.getElementById("repErrList");
     if(rl){
-      /* Every error carries a curated `message` beside its enumerated type, and this list used
-         to render the type alone — so the rail reported what went wrong in enum form and threw
-         away the sentence written to explain it. Built as nodes rather than as markup because
-         the message is free text from the API, and assigning it as text cannot be talked into
-         parsing it. */
       rl.textContent = "";
       if(!errs.length){
         var none = document.createElement("span");
@@ -2892,33 +3399,331 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         });
       }
     }
-    var lim = document.getElementById("repLimitations");
-    if(lim){
-      var partial = session.status === "max_iterations" || session.status === "incomplete";
-      var lines = ["Some steps of this research pass failed; sections of this report may be incomplete.",
-                   "Some sources behind these findings were flagged low confidence.",
-                   "At least one claim was contradicted by an independent source."];
-      if(partial){
-        lines.splice(1, 0, "The refinement budget was exhausted before the critic accepted the report.");
-        lines.push("Four planned sub-topics were never attempted because the cap truncated the plan.");
+    /* the view is per session and not persisted: every open starts on Report */
+    ev.sessionId = null;
+    setView("report");
+  }
+  /* ═══ the Evidence view (Q4) ═══
+     One fixture in E1's shape (spec §4.5), for the one battery-storage report every finished
+     session reuses: at least one finding per status, one not-found target (T04) and one refused
+     sentence. F03's source scores 0.80 overall, which paints yellow on purpose (DESIGN.md §3.6). */
+  var EVIDENCE = {
+    "default": {
+      session_id:null, iteration:0,
+      findings:[
+        { label:"F01", status:"verified", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T01"],
+          content:"2,600 GW of proposed U.S. generation and storage projects were waiting for grid access at the end of 2023.",
+          snippet:"As of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more.",
+          passage:"The report notes that as of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more, and that fewer than a quarter of queued projects reach completion.",
+          source:{ url:"https://www.novoco.com/", title:"Resolving the Interconnection Queue Bottleneck", organisation:"Novogradac", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.62, recency_score:0.71, relevance_score:0.93, overall_score:0.74 },
+          figures:[{ value:"2,600 GW", kept:true, period:"end of 2023", scope:"proposed U.S. generation and storage awaiting grid access", organisation:"Lawrence Berkeley National Laboratory",
+                     attribution:"relayed", kind:"actual", release:"2024 queue study", evidence_words:"2,600 GW of proposed generation and storage projects", corrected:false, dropped_reason:null, reason:null }] },
+        { label:"F02", status:"verified_corrected", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T03"],
+          content:"China's average share of mineral supply, excluding rare earths, rose to 72 percent in 2025 from 70 percent in 2023.",
+          snippet:"Excluding rare earths, the average share of mineral supply held by China rose to 72% in 2025 from 70% in 2023.",
+          passage:null,
+          source:{ url:"https://crsreports.congress.gov/", title:"Critical Minerals and Materials for Selected Energy Technologies", organisation:"Congressional Research Service", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.91, recency_score:0.84, relevance_score:0.88, overall_score:0.89 },
+          figures:[{ value:"72%", kept:true, period:"2025", scope:"average share of mineral supply held by China, excluding rare earths", organisation:"Congressional Research Service",
+                     attribution:"own", kind:"actual", release:"R48149, 2025", evidence_words:"rose to 72% in 2025", corrected:true, dropped_reason:null, reason:"the draft read 2024; the page says 2025" }] },
+        { label:"F03", status:"quoted", dropped_reason:null, context_unchecked:false, cited:true, target_ids:["T03"],
+          content:"The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production at risk.",
+          snippet:"The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk.",
+          passage:null,
+          source:{ url:"https://www.aa.com.tr/", title:"Why the IEA says critical minerals have become a $6.5 trillion economic security risk", organisation:"Anadolu Agency", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.74, recency_score:0.90, relevance_score:0.80, overall_score:0.80 },
+          figures:[] },
+        { label:"F04", status:"dropped", dropped_reason:"snippet_not_on_page", context_unchecked:false, cited:false, target_ids:["T02"],
+          content:"The U.S. interconnection queue swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years.",
+          snippet:"a 2,600 GW backlog as of 2026 with median waits approaching five years",
+          passage:null,
+          source:{ url:"https://www.enkiai.com/", title:"Grid Interconnection Delays 2026: A Threat to US Energy", organisation:"Enki AI", evaluation_status:"scored", low_confidence:true,
+                   authority_score:0.38, recency_score:0.95, relevance_score:0.82, overall_score:0.67 },
+          figures:[] },
+        { label:"F05", status:null, dropped_reason:null, context_unchecked:false, cited:false, target_ids:["T01"],
+          content:"For every $1 billion in delayed transmission investment, consumers lose between $150 million and $370 million in net benefits per year of delay.",
+          snippet:"For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay.",
+          passage:null,
+          source:{ url:"https://www.enkiai.com/", title:"Grid Interconnection Delays 2026: A Threat to US Energy", organisation:"Enki AI", evaluation_status:"scored", low_confidence:true,
+                   authority_score:0.38, recency_score:0.95, relevance_score:0.82, overall_score:0.67 },
+          figures:[] },
+        { label:"F06", status:"verified", dropped_reason:null, context_unchecked:true, cited:true, target_ids:["T03"],
+          content:"China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024.",
+          snippet:"China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70-95% of global lithium, cobalt, phosphate and graphite.",
+          passage:null,
+          source:{ url:"https://www.iea.org/", title:"Global Critical Minerals Outlook 2025", organisation:"IEA", evaluation_status:"scored", low_confidence:false,
+                   authority_score:0.95, recency_score:0.88, relevance_score:0.92, overall_score:0.92 },
+          figures:[{ value:"70–95%", kept:true, period:"2024", scope:"share of global lithium, cobalt, phosphate and graphite processed in China", organisation:"IEA",
+                     attribution:"own", kind:"actual", release:"Global Critical Minerals Outlook 2025", evidence_words:"processing 70-95% of global lithium, cobalt, phosphate and graphite", corrected:false, dropped_reason:null, reason:null }] }
+      ],
+      not_found:[
+        { target_id:"T04", question:"How do non-U.S. grid connection regimes constrain battery deployment?",
+          queries:["EU grid connection queue battery storage 2025", "UK connections reform battery storage wait times"],
+          pages_read:["https://www.entsoe.eu/", "https://www.neso.energy/"], searched:true }
+      ],
+      refused:[
+        { where:"Critical minerals and supply-chain concentration",
+          text:"Export controls have already removed $6.5 trillion of production from world markets.",
+          reason:"The cited finding gives an estimate of production at risk under full implementation, not a realised loss.", finding_labels:["F03"] }
+      ]
+    }
+  };
+  function evidenceFor(session){ return EVIDENCE[session.id] || EVIDENCE["default"]; }
+
+  var EV_FILTERS = [
+    { id:"all",                label:"All" },
+    { id:"verified",           label:"Verified" },
+    { id:"verified_corrected", label:"Corrected" },
+    { id:"quoted",             label:"Quoted" },
+    { id:"dropped",            label:"Dropped" },
+    { id:"not_found",          label:"Not found" },
+    { id:"refused",            label:"Refused" }
+  ];
+  var PILL_TEXT = { verified:"verified", verified_corrected:"corrected", quoted:"quoted", dropped:"dropped", not_checked:"not checked", not_found:"not found", refused:"refused" };
+  /* The evidence log's verbs (report.py:1931-1935). */
+  var VERIFICATION_TEXT = { verified:"verified", verified_corrected:"verified with corrections", quoted:"quoted (snippet found on the page; not checked for context)", not_checked:"not checked" };
+  var ev = { rows:[], filter:"all", selected:0, sessionId:null };
+
+  function evidenceRows(data){
+    var rows = [];
+    data.findings.forEach(function(f){ rows.push({ kind:"finding", status: f.status || "not_checked", id:f.label, item:f }); });
+    data.not_found.forEach(function(t){ rows.push({ kind:"not_found", status:"not_found", id:t.target_id, item:t }); });
+    data.refused.forEach(function(r, i){ rows.push({ kind:"refused", status:"refused", id:"R" + String(i + 1).padStart(2, "0"), item:r }); });
+    return rows;
+  }
+  function evVisible(){
+    return ev.filter === "all" ? ev.rows : ev.rows.filter(function(r){ return r.status === ev.filter; });
+  }
+  function firstSentence(s){
+    var m = /^(.*?[.!?])(\s|$)/.exec(s || "");
+    return m ? m[1] : (s || "");
+  }
+  function el(tag, cls, textContent){
+    var e = document.createElement(tag);
+    if(cls) e.className = cls;
+    if(textContent !== undefined && textContent !== null) e.textContent = textContent;
+    return e;
+  }
+  function pill(status){
+    var p = el("span", "pill", PILL_TEXT[status] || status);
+    p.setAttribute("data-status", status);
+    return p;
+  }
+  function renderChips(){
+    var host = document.getElementById("evChips");
+    if(!host) return;
+    host.textContent = "";
+    EV_FILTERS.forEach(function(f){
+      var count = f.id === "all" ? ev.rows.length : ev.rows.filter(function(r){ return r.status === f.id; }).length;
+      var b = el("button", "chip-filter");
+      b.type = "button";
+      b.setAttribute("data-filter", f.id);
+      b.setAttribute("aria-pressed", String(ev.filter === f.id));
+      b.appendChild(document.createTextNode(f.label + " "));
+      b.appendChild(el("span", "n", String(count)));
+      b.addEventListener("click", function(){ ev.filter = f.id; ev.selected = 0; renderChips(); renderEvList(); });
+      host.appendChild(b);
+    });
+  }
+  function renderEvList(){
+    var host = document.getElementById("evList");
+    var empty = document.getElementById("evEmpty");
+    if(!host) return;
+    host.textContent = "";
+    var rows = evVisible();
+    if(empty) empty.hidden = rows.length > 0;
+    rows.forEach(function(r, i){
+      var li = el("li", "ev-row");
+      li.setAttribute("role", "option");
+      li.setAttribute("data-kind", r.kind);
+      li.setAttribute("data-status", r.status);
+      li.setAttribute("data-id", r.id);
+      li.setAttribute("aria-selected", String(i === ev.selected));
+      li.appendChild(pill(r.status));
+      li.appendChild(el("span", "lbl", r.id));
+      var tags = el("span", "tags");
+      if(r.kind === "finding"){
+        li.appendChild(el("span", "txt", firstSentence(r.item.snippet)));
+        (r.item.target_ids || []).forEach(function(t){ tags.appendChild(el("span", "tag", t)); });
+        if(r.item.context_unchecked) tags.appendChild(el("span", "tag soft", "context unchecked"));
+      } else if(r.kind === "not_found"){
+        li.appendChild(el("span", "txt", r.item.question));
+        tags.appendChild(el("span", "tag soft", r.item.searched
+          ? r.item.queries.length + " queries · " + r.item.pages_read.length + " pages read"
+          : "not searched in this run"));
+      } else {
+        li.appendChild(el("span", "txt", r.item.text));
+        tags.appendChild(el("span", "tag soft", r.item.finding_labels.length ? "cited " + r.item.finding_labels.join(", ") : "cited nothing"));
       }
-      lim.innerHTML = lines.map(function(t){ return "<li>" + t + "</li>"; }).join("");
+      li.appendChild(tags);
+      li.addEventListener("click", function(){ evSelect(i); });
+      host.appendChild(li);
+    });
+    renderEvDetail(rows[ev.selected] || null);
+  }
+  function evSelect(index){
+    var rows = evVisible();
+    if(!rows.length) return;
+    ev.selected = Math.max(0, Math.min(rows.length - 1, index));
+    Array.prototype.forEach.call(document.querySelectorAll("#evList .ev-row"), function(li, i){
+      li.setAttribute("aria-selected", String(i === ev.selected));
+    });
+    renderEvDetail(rows[ev.selected]);
+  }
+  function evSelectById(id){
+    ev.filter = "all";
+    renderChips();
+    var idx = ev.rows.findIndex(function(r){ return r.id === id; });
+    ev.selected = idx < 0 ? 0 : idx;
+    renderEvList();
+  }
+  function kvRow(dl, k, v){
+    dl.appendChild(el("dt", null, k));
+    dl.appendChild(el("dd", "plain", v));
+  }
+  function meterRow(label, value){
+    var row = el("div", "bar-row");
+    row.appendChild(el("span", null, label));
+    var bar = el("span", "bar");
+    var fill = el("span");
+    fill.style.width = (typeof value === "number") ? Math.round(value * 100) + "%" : "0%";
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    var n = el("span", "n", fmtScore(value) === null ? "not scored" : fmtScore(value));
+    if(fmtScore(value) === null) n.classList.add("avail");
+    row.appendChild(n);
+    return row;
+  }
+  function renderEvDetail(row){
+    var host = document.getElementById("evDetail");
+    if(!host) return;
+    host.textContent = "";
+    if(!row){ host.appendChild(el("p", "avail", "Nothing to show under this filter.")); return; }
+    var it = row.item;
+    if(row.kind === "finding"){
+      host.appendChild(el("h2", "ev-title", it.label + " — " + (it.source && it.source.title ? it.source.title : "untitled source")));
+      var verb = it.status === "dropped" ? "dropped (" + it.dropped_reason + ")" : (VERIFICATION_TEXT[it.status || "not_checked"]);
+      host.appendChild(el("p", "ev-status", verb + (it.context_unchecked ? "; context unchecked" : "")));
+      var q = el("div", "stack-2");
+      q.appendChild(el("span", "cap", "Snippet"));
+      q.appendChild(el("blockquote", null, it.snippet));
+      if(it.passage){ q.appendChild(el("span", "cap", "Passage")); q.appendChild(el("blockquote", null, it.passage)); }
+      host.appendChild(q);
+      if(it.source && it.source.url){
+        var a = el("a", "tlink", it.source.title || it.source.url);
+        a.href = it.source.url; a.target = "_blank"; a.rel = "noopener";
+        var src = el("p", "sm"); src.appendChild(document.createTextNode("Source: ")); src.appendChild(a);
+        host.appendChild(src);
+      }
+      /* The Context Check runs only on figure-bearing findings (evidence_verifier.py:903-917): no figures → it never ran;
+         flagged → a batch could not be judged; otherwise the kept figure's confirmed organisation, kind and release. */
+      var kept = (it.figures || []).filter(function(f){ return f.kept && f.organisation; })[0];
+      host.appendChild(el("p", "sm", "Context check: " + (!(it.figures || []).length ? "not run (no figures)" : it.context_unchecked || !kept
+        ? "context unchecked" : [kept.organisation, kept.kind, kept.release].filter(Boolean).join(" · "))));
+      var bars = el("div", "bars");
+      [["authority", it.source && it.source.authority_score], ["recency", it.source && it.source.recency_score],
+       ["relevance", it.source && it.source.relevance_score], ["overall", it.source && it.source.overall_score]].forEach(function(m){
+        bars.appendChild(meterRow(m[0], typeof m[1] === "number" ? m[1] : null));
+      });
+      host.appendChild(bars);
+      paintMeters(host);
+      if((it.figures || []).length){
+        var ul = el("ul", "ev-figures");
+        it.figures.forEach(function(f){
+          ul.appendChild(el("li", null, f.kept
+            ? f.value + ": kept · period " + (f.period || "not stated") + " · scope " + (f.scope || "not stated") + (f.corrected ? " · corrected" : "")
+            : f.value + ": dropped (" + f.dropped_reason + ") " + (f.reason || "")));
+        });
+        host.appendChild(el("span", "cap", "Figures"));
+        host.appendChild(ul);
+      }
+    } else if(row.kind === "not_found"){
+      host.appendChild(el("h2", "ev-title", it.target_id + " — not found"));
+      host.appendChild(el("p", "ev-status", it.question));
+      if(!it.searched){ host.appendChild(el("p", "avail", "not searched in this run")); return; }
+      host.appendChild(el("span", "cap", "Searched"));
+      var ql = el("ul", "ev-queries");
+      it.queries.forEach(function(qq){ ql.appendChild(el("li", null, qq)); });
+      host.appendChild(ql);
+      host.appendChild(el("span", "cap", "Pages read"));
+      var pl = el("ul", "ev-pages");
+      it.pages_read.forEach(function(u){
+        var li = el("li"); var a = el("a", "tlink", u); a.href = u; a.target = "_blank"; a.rel = "noopener"; li.appendChild(a); pl.appendChild(li);
+      });
+      host.appendChild(pl);
+    } else {
+      host.appendChild(el("h2", "ev-title", row.id + " — refused sentence"));
+      host.appendChild(el("blockquote", null, it.text));
+      var cited = el("p", "ev-cited sm");
+      cited.appendChild(document.createTextNode(it.finding_labels.length ? "cited " : "cited nothing"));
+      it.finding_labels.forEach(function(lbl){
+        var b = el("button", null, lbl); b.type = "button";
+        b.addEventListener("click", function(){ evSelectById(lbl); });
+        cited.appendChild(b);
+      });
+      host.appendChild(cited);
+      var dl = el("dl", "kv");
+      kvRow(dl, "reason", it.reason);
+      kvRow(dl, "where", it.where);
+      host.appendChild(dl);
     }
   }
+  function renderEvidence(session){
+    ev.rows = evidenceRows(evidenceFor(session));
+    ev.filter = "all";
+    ev.selected = 0;
+    ev.sessionId = session.id;
+    renderChips();
+    renderEvList();
+  }
+  function currentView(){
+    return stages.report.getAttribute("data-view") || "report";
+  }
+  function setView(name){
+    name = name === "evidence" ? "evidence" : "report";
+    stages.report.setAttribute("data-view", name);
+    Array.prototype.forEach.call(document.querySelectorAll("#segView button"), function(b){
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-view") === name));
+    });
+    var s = activeSession();
+    if(name === "evidence" && s && ev.sessionId !== s.id) renderEvidence(s);
+  }
+  (function wireEvidence(){
+    var seg = document.getElementById("segView");
+    if(seg) seg.addEventListener("click", function(e){
+      var b = e.target.closest("button[data-view]"); if(!b) return;
+      setView(b.getAttribute("data-view"));
+    });
+    var list = document.getElementById("evList");
+    if(list) list.addEventListener("keydown", function(e){
+      if(e.key === "ArrowDown"){ e.preventDefault(); evSelect(ev.selected + 1); }
+      if(e.key === "ArrowUp"){ e.preventDefault(); evSelect(ev.selected - 1); }
+    });
+  })();
+  /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts.
+     The last two are not graph halts: `sessions.py:262-276,297-315` can mark a session `failed`
+     from the API layer alone, with no `graph.session.completed` and no graph error record, so
+     `populateFailed`'s fallback `hard` carries one of these two API types instead. */
+  var HALT_HEADLINES = {
+    graph_planning_failed:                 "Planning failed",
+    graph_provider_configuration_error:    "Model provider misconfigured",
+    graph_agent_configuration_error:       "Agent misconfigured",
+    graph_invalid_agent_state:             "Invalid agent state",
+    graph_invalid_route:                   "Invalid route",
+    graph_request_attempt_limit_exceeded:  "Request attempt limit reached",
+    "api.research.configuration_error":    "Service configuration error",
+    "api.research.failed":                 "Research run failed"
+  };
   function populateFailed(session){
     var hard = (session.errors || []).filter(function(x){ return !x.recoverable; })[0]
             || { type:"api.research.failed", source:"api" };
     setText("failedMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded"));
     setText("failed-h", session.q);
-    setText("failedType", hard.type);
-    /* The API serves a curated, per-error-type sentence in `ResearchError.message`, and
-       `graph/errors.py` is explicit that it is never `str(exception)` — the message is part of
-       the enumeration. This panel used to show a fixed sentence instead, so the one piece of
-       human-readable text the API goes out of its way to produce was the one thing the screen
-       for explaining the failure did not display. The static copy survives as the fallback for
-       an error record that carries no message at all. */
-    setText("failedMessage", hard.message
-      || "The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.");
+    setText("failedType", HALT_HEADLINES[hard.type] || hard.type);
+    /* `ResearchError.message` is curated per enumerated type and never str(exception)
+       (graph/errors.py); the static sentence is only the fallback for a record without one. */
+    setText("failedMessage", hard.message || "The run stopped on a non-recoverable error.");
     setText("failFactType", hard.type);
     setText("failFactSource", hard.source || "graph");
     setText("failFactRecoverable", String(!!hard.recoverable));
@@ -2927,8 +3732,22 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
       else trace.style.display = "none";
     }
-    /* halted in the planner: the node started, nothing after it ran */
-    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, 0);
+    /* The halted run's events go through the same handlers as a live run. The halting row is
+       the last graph.node.started with no graph.node.completed; every graph.node.skipped row is
+       `skipped`; Publishing is `skipped` by the client rule status == "failed" — never
+       has_report, which can be true after a first-pass writer (report_writer.py:3262) — because
+       the graph never runs finalize_report after a halt and no event exists for it (spec §3.1).
+       An API-level failure (sessions.py:262-276,297-315) never emits `graph.session.completed`
+       at all, leaving `run.finalStatus` null; falling back to the session's own `status` marks
+       Publishing skipped there too, instead of leaving the row looking merely unreached. */
+    var run = newRunState(session.passes);
+    HALTED_EVENTS.forEach(function(ev){ applyEvent(run, ev); });
+    var marks = marksFor(run, run.openNode);
+    if((run.finalStatus || session.status) === "failed") marks.finalize_report = "skipped";
+    renderSpine(document.getElementById("spineFailed"), marks, run);
+    var haltIndex = AGENT_ORDER.indexOf(run.openNode);
+    setText("failedHaltedAt", haltIndex >= 0 ? "halted at stage " + (haltIndex + 1) : "halted before the first stage");
+    renderCounters("failedCounters", run.counters, "not reached");
   }
 
   /* ═══ open a session ═══ */
@@ -2936,15 +3755,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(session.settings){
       settings.model = session.settings.model;
       settings.thinking = session.settings.thinking;
-      settings.effort = session.settings.effort;
       settings.outputDir = session.settings.outputDir;
-      /* the budget this session actually ran with, so reopening it shows its own
-         number rather than whatever the composer was last left on */
-      if(typeof session.settings.refinements === "number"){
-        settings.refinements = clampRefinements(session.settings.refinements);
-      } else if(typeof session.passes === "number"){
-        settings.refinements = clampRefinements(session.passes);
-      }
+      /* the budget this session ran with, so reopening it shows its own number */
+      if(typeof session.settings.extraPasses === "number") settings.extraPasses = clampExtra(session.settings.extraPasses);
+      else if(typeof session.passes === "number") settings.extraPasses = clampExtra(session.passes - 1);
     }
     /* the composer only exists while idle, so only sync it there */
     if(state.stage === "idle") syncSettingsUI();
@@ -2968,12 +3782,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(isDrawer()) setSidebar("collapsed");
 
     if(session.playback && session.status === "running"){
-      /* Rewind before the first paint. showStage() renders the topbar, so a
-         session that is about to replay from the start must not briefly show the
-         iteration the previous session finished on — the chip carried "iteration
-         3 of 3" for one frame when switching between sessions. */
+      /* Rewind before the first paint: showStage() renders the topbar chip from the session, so
+         a session about to replay from the start must not briefly show the pass it last finished
+         on. */
       session.iteration = 0;
-      play.iterationShown = null;
       if(opts.hold){
         /* the "question locked in" beat: page 1 drains to the box, the box travels
            up to where the locked question sits, and page 2 assembles behind it.
@@ -3020,10 +3832,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     syncSettingsUI();
     renderStarters();
     renderList();
-    /* The quality meters are static fixtures transcribed from the published report, so they are
-       painted once here rather than per session. If they ever become session data, this call
-       belongs in `populateReport()` instead. */
-    paintMeters();
 
     var savedSidebar = "expanded";
     try { savedSidebar = localStorage.getItem(LS_SIDEBAR) || "expanded"; } catch(e){}
@@ -3057,7 +3865,20 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
          removes the journey entirely, so it is worth being able to ask for. */
       motion: function(){ return reducedMotion() ? "reduced" : "full"; },
       submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
-      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); }
+      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); },
+      /* 2026-09-26 additions (spec §4.6), including arc() and loop() */
+      advanceTo: advanceTo,
+      arc: function(){
+        var wrap = document.getElementById("spineWrap");
+        if(!wrap || wrap.getAttribute("data-loop") === "off") return null;
+        return wrap.getAttribute("data-arc") || null;
+      },
+      loop: function(){
+        var wrap = document.getElementById("spineWrap");
+        return wrap ? wrap.getAttribute("data-loop") : null;
+      },
+      view: function(name){ if(name) setView(name); return currentView(); },
+      evidence: function(id){ openSession(id); setView("evidence"); }
     }
   });
 })();

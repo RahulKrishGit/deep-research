@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Render reference screenshots of the Open Design prototype at its designed
- * 1252x853 viewport, driving all five stages through the page's own
- * window.drConsole review hook.
+ * 1252x853 viewport, driving all five stages, the Evidence view and the
+ * extra-pass arc through the page's own window.drConsole review hook.
  *
  * Every capture asserts the stage it actually landed on, so a screenshot can
  * never silently depict the wrong screen.
@@ -136,14 +136,19 @@ async function waitForStage(stage, timeoutMs = 15000) {
 }
 
 const results = [];
-async function shot(name, expectedStage) {
+async function shot(name, expectedStage, extra) {
   const actual = await evaluate('window.drConsole.stage()').catch(() => '?');
   const png = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
   const file = path.join(OUT_DIR, `${name}.png`);
   await writeFile(file, Buffer.from(png.data, 'base64'));
-  const ok = expectedStage === null || actual === expectedStage;
-  results.push({ name, expected: expectedStage, actual, ok, file });
-  console.log(`${ok ? 'OK  ' : 'FAIL'}  ${name.padEnd(14)} stage=${String(actual).padEnd(10)} expected=${expectedStage ?? '-'}`);
+  let ok = expectedStage === null || actual === expectedStage;
+  let note = '';
+  if (ok && extra) {
+    const verdict = await extra().catch((e) => String(e.message || e));
+    if (verdict !== true) { ok = false; note = ` ${verdict}`; }
+  }
+  results.push({ name, expected: expectedStage, actual: `${actual}${note}`, ok, file });
+  console.log(`${ok ? 'OK  ' : 'FAIL'}  ${name.padEnd(22)} stage=${String(actual).padEnd(10)} expected=${expectedStage ?? '-'}${note}`);
 }
 
 async function save(name) {
@@ -166,7 +171,14 @@ await evaluate(`window.drConsole.submit(${JSON.stringify(QUESTION)})`);
 if (await waitForStage('submitted')) { await sleep(450); await shot('02-submitted', 'submitted'); }
 else console.log('FAIL  02-submitted   never reached "submitted" (beat is ~2.2s; it may have passed)');
 
-if (await waitForStage('running')) { await sleep(1800); await shot('03-running', 'running'); }
+if (await waitForStage('running')) {
+  // 2026-09-27 fix: the fixed 1.8s wait landed on Planning (sleep-timed schedule); the reference
+  // showed Researching before F9. advanceTo the planner's own completion event instead, so the
+  // capture is driven by the event that actually starts Researching, not by watch-clock timing.
+  await evaluate('window.drConsole.advanceTo("graph.node.completed")');
+  await sleep(500);
+  await shot('03-running', 'running');
+}
 else console.log('FAIL  03-running     never reached "running"');
 
 const finished = await evaluate('(function(){ try{ window.drConsole.finish(); return true }catch(e){ return String(e) } })()');
@@ -184,6 +196,35 @@ if (failedId) {
   console.log('FAIL  05-failed      no seeded session with status "failed"');
 }
 
+// the Evidence view of a finished session (spec §4.6: 08-evidence)
+await loadClean('index.html');
+await evaluate('window.drConsole.open("b41e77aa")');
+if (await waitForStage('report')) {
+  await evaluate('window.drConsole.view("evidence")');
+  await sleep(900);
+  await shot('08-evidence', 'report', async () => {
+    const view = await evaluate('window.drConsole.view()');
+    return view === 'evidence' ? true : `view()=${view}, expected evidence`;
+  });
+} else console.log('FAIL  08-evidence            never reached "report"');
+
+// the extra-pass arc, settled, with the loop tag in the header (spec §4.6: 09-running-extra-pass)
+await loadClean('index.html');
+await evaluate('window.drConsole.open("8f2c1d90")');
+if (await waitForStage('running')) {
+  await evaluate('window.drConsole.advanceTo("graph.extra_pass.started")');
+  await sleep(600);
+  // taller than the standard 853 so the capture shows rows 1-7 (incl. Reviewing,
+  // the arc's source), the full amber arc and the counters block below the spine
+  await setViewport(W, 1300);
+  await sleep(200);
+  await shot('09-running-extra-pass', 'running', async () => {
+    const [arc, loop] = await evaluate('[window.drConsole.arc(), window.drConsole.loop()]');
+    return arc === 'extra_pass' && loop === 'settled' ? true : `arc()=${arc} loop()=${loop}, expected extra_pass/settled`;
+  });
+  await setViewport(W, H);
+} else console.log('FAIL  09-running-extra-pass  never reached "running"');
+
 // states.html is a static fixture: capture it whole
 await setViewport(W, H);
 await send('Page.navigate', { url: `${origin}/states.html` });
@@ -197,7 +238,7 @@ await setViewport(W, Math.min(Math.max(fullH, H), 12000));
 await sleep(400);
 await save('06-states');
 results.push({ name: '06-states', expected: null, actual: `${W}x${fullH}`, ok: true, file: '06-states.png' });
-console.log(`OK    06-states      full page ${W}x${fullH}`);
+console.log(`OK    ${'06-states'.padEnd(22)} full page ${W}x${fullH}`);
 
 // phone width, to document the drawer breakpoint
 await setViewport(PHONE_W, PHONE_H);
@@ -207,7 +248,7 @@ await shot('07-idle-phone', 'idle');
 
 /* ------------------------------------------------------------- teardown --- */
 console.log('\n--- summary ---');
-for (const r of results) console.log(`${r.ok ? 'OK  ' : 'FAIL'}  ${r.name.padEnd(14)} ${r.actual}`);
+for (const r of results) console.log(`${r.ok ? 'OK  ' : 'FAIL'}  ${r.name.padEnd(22)} ${r.actual}`);
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} captures verified`);
 if (bad.length) console.log('MISMATCHED: ' + bad.map((b) => b.name).join(', '));
