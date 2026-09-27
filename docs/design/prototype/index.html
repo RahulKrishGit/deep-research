@@ -1447,76 +1447,140 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return isNaN(n) ? fallback : n;
   }
 
-  /* ═══ the client's own session ledger ═══ */
+  /* ═══ the client's own session ledger ═══
+     Shapes follow ResearchSessionResponse (api/models.py:114-164): `iteration` is the API's
+     zero-based value, `passes` is 1 + max_extra_passes, `review` is semantic_review_status +
+     semantic_review_score, `coverage` and `evidenceCounts` are the response blocks of the same
+     names and are null while a run is live (or, for evidence_counts, when a halt left neither a
+     composition nor a quality snapshot — runtime/outcome.py:525). Playback sessions carry the
+     outcome they end on under `final`, applied when their script finishes. */
+  var BATTERY_COUNTS = { read_records:31, network_reads:24, cache_reads:7, unique_works:14, publishers:9,
+                         source_urls:17, findings:18, assessed_sources:14, cited_assessed_sources:12,
+                         verified_findings:12, corrected_findings:2, quoted_findings:1, dropped_findings:3,
+                         context_unchecked_findings:1, cited_findings:11 };
+  /* what a run submitted from the composer ends on: one pass, accepted at 0.86 (spec §4.3) */
+  var COMPOSER_FINAL = {
+    review:{ status:"scored", score:0.86 },
+    coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
+    evidenceCounts:BATTERY_COUNTS
+  };
+  var STATEMENT_CHECK_ERROR = { type:"report_writer_statement_check_failed", recoverable:true, source:"report_writer",
+    message:"The statement check could not judge one batch of sentences; they were kept unchecked and marked in the evidence log." };
+  var CONTEXT_CHECK_ERROR = { type:"evidence_verifier_context_check_failed", recoverable:true, source:"evidence_verifier",
+    message:"The context check could not judge one batch of figures; they were kept and marked context unchecked." };
   var SESSIONS = [
     { id:"8f2c1d90", q:"What are the current constraints on grid-scale battery storage deployment?",
-      status:"running", iteration:0, passes:3, started:"2026-09-16T14:02:11Z", finished:null,
-      reportPath:null, trace:null, group:"Today", playback:true,
-      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher",
-               message:"A high-priority sub-topic produced no findings; the report will be incomplete for it."},
-              {type:"source_evaluator_reputation_unavailable", recoverable:true, source:"source_evaluator",
-               message:"Remembered source reputations could not be read; sources were scored directly instead."}] },
-    { id:"b41e77aa", q:"How mature is quantum error correction?",
-      status:"completed", iteration:3, passes:3, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
-      errors:[{type:"researcher_sub_topic_without_findings", recoverable:true, source:"researcher",
-               message:"A high-priority sub-topic produced no findings; the report will be incomplete for it."}] },
+      status:"running", routeReason:null, iteration:0, passes:2, started:"2026-09-16T14:02:11Z", finished:null, durationSeconds:null,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:null, group:"Today", playback:true, script:"extra_pass",
+      review:null, coverage:null, evidenceCounts:null,
+      final:{ review:{ status:"scored", score:0.86 },
+              coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
+              evidenceCounts:BATTERY_COUNTS },
+      errors:[STATEMENT_CHECK_ERROR, CONTEXT_CHECK_ERROR] },
+    { id:"c3d7e5f1", q:"How do lithium iron phosphate and NMC cells compare for grid-scale storage?",
+      status:"running", routeReason:null, iteration:0, passes:2, started:"2026-09-16T13:21:40Z", finished:null, durationSeconds:null,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:null, group:"Today", playback:true, script:"redraft",
+      review:null, coverage:null, evidenceCounts:null,
+      final:{ review:{ status:"scored", score:0.84 },
+              coverage:{ required_targets:3, answered_targets:3, missing_required_target_ids:[], not_found_target_ids:[] },
+              evidenceCounts:BATTERY_COUNTS },
+      errors:[] },
+    { id:"b41e77aa", q:"What is the levelised cost of grid-scale battery storage in 2025?",
+      status:"completed", routeReason:"report_accepted", iteration:1, passes:2, started:"2026-09-16T11:48:03Z", finished:"2026-09-16T11:57:15Z", durationSeconds:552,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/b41e77aa", group:"Today",
+      review:{ status:"scored", score:0.86 },
+      coverage:{ required_targets:4, answered_targets:3, missing_required_target_ids:["T04"], not_found_target_ids:["T04"] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[STATEMENT_CHECK_ERROR] },
     { id:"7c0d13ff", q:"What limits solid-state electrolyte scale-up for EV cells?",
-      status:"max_iterations", iteration:3, passes:3, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
-      errors:[{type:"synthesizer_invalid_draft", recoverable:true, source:"synthesizer",
-               message:"Some drafted report content was malformed, or rested on a claim or source that is not in the checked evidence; it is listed in the evidence ledger instead of the reader report.",
-               details:{rejected:["claim_4f21","claim_9c03"]}}] },
+      status:"max_iterations", routeReason:"extra_passes_exhausted", iteration:1, passes:2, started:"2026-09-16T09:15:40Z", finished:"2026-09-16T09:29:42Z", durationSeconds:842,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/7c0d13ff", group:"Today",
+      review:{ status:"scored", score:0.74 },
+      coverage:{ required_targets:4, answered_targets:3, missing_required_target_ids:["T04"], not_found_target_ids:["T04"] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[CONTEXT_CHECK_ERROR] },
     { id:"5ff1ab07", q:"Which fire-code standards govern BESS siting in the U.S.?",
-      status:"incomplete", iteration:1, passes:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z",
-      reportPath:"api-output/report.md", trace:null, group:"Yesterday", errors:[] },
+      status:"incomplete", routeReason:"report_not_accepted", iteration:0, passes:1, started:"2026-09-15T13:40:02Z", finished:"2026-09-15T13:47:00Z", durationSeconds:418,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:null, group:"Yesterday",
+      review:{ status:"scored", score:0.71 },
+      coverage:{ required_targets:3, answered_targets:3, missing_required_target_ids:[], not_found_target_ids:[] },
+      evidenceCounts:BATTERY_COUNTS,
+      errors:[] },
     { id:"9ea4c220", q:"What is the measured cost of interconnection queue delay?",
-      status:"completed", iteration:2, passes:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z",
-      reportPath:"api-output/report.md", trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday", errors:[] },
+      status:"incomplete", routeReason:"review_unavailable", iteration:0, passes:2, started:"2026-09-15T15:04:10Z", finished:"2026-09-15T15:15:40Z", durationSeconds:690,
+      reportPath:"api-output/report.md", evidencePath:"api-output/report-evidence.md", qualityPath:"api-output/report-quality.json",
+      trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday",
+      review:{ status:"provider_failed", score:null },
+      coverage:{ required_targets:2, answered_targets:2, missing_required_target_ids:[], not_found_target_ids:[] },
+      /* 4 of 5 = 0.80: paints yellow on purpose (spec §4.4, DESIGN.md §3.6) */
+      evidenceCounts:Object.assign({}, BATTERY_COUNTS, { assessed_sources:5, cited_assessed_sources:4 }),
+      errors:[] },
     { id:"2ad900b1", q:"Compare EU and UK grid connection reform outcomes.",
-      status:"failed", iteration:0, passes:1, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z",
-      reportPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      status:"failed", routeReason:"halted", iteration:0, passes:2, started:"2026-09-15T17:22:27Z", finished:"2026-09-15T17:22:31Z", durationSeconds:4,
+      reportPath:null, evidencePath:null, qualityPath:null, trace:"https://smith.langchain.com/o/example/r/2ad900b1", group:"Yesterday",
+      review:null, coverage:null, evidenceCounts:null,
       errors:[{type:"graph_provider_configuration_error", recoverable:false, source:"graph",
                message:"The model provider is not configured, so the research run stopped.",
                details:{exception_type:"ValidationError"}}] }
   ];
 
+  /* Label and dot per API status (api/models.py:13-19). The second clause is not a constant:
+     it is built from the session's own review, coverage and pass fields — see statusNote(). */
   var STATUS = {
-    running:        { label:"Running",             dot:"dot-live",   note:"iteration {i} of {n}" },
-    completed:      { label:"Completed",           dot:"dot-ok",     note:"quality gates accepted" },
-    max_iterations: { label:"Partially completed", dot:"dot-warn",   note:"budget exhausted" },
-    incomplete:     { label:"Partially completed", dot:"dot-warn",   note:"no critique recorded" },
-    failed:         { label:"Failed",              dot:"dot-danger", note:"halted" }
+    running:        { label:"Running",             dot:"dot-live"   },
+    completed:      { label:"Completed",           dot:"dot-ok"     },
+    max_iterations: { label:"Partially completed", dot:"dot-warn"   },
+    incomplete:     { label:"Partially completed", dot:"dot-warn"   },
+    failed:         { label:"Failed",              dot:"dot-danger" }
   };
   /* `session.iteration` is the API value and is zero-based: the first pass carries
-     `iteration: 0`, and the router halts at `iteration >= max_iterations`. The
-     interface counts passes the way an operator does, from 1, so the display adds
-     one here rather than changing the stored value - the number on screen is a pass
-     number, the number in the session is an index. */
+     `iteration: 0`. The interface counts passes the way an operator does, from 1, so the
+     display adds one here rather than changing the stored value — the number on screen is a
+     pass number, the number in the session is an index. This is the only place the offset lives. */
   function passNumber(iteration){
     var n = Number(iteration);
     return (isFinite(n) ? n : 0) + 1;
   }
-  /* The chip's second clause is built from the session, not from a constant.
-
-     It used to read "iteration {i} of 3" with the 3 written into this table, so the chip
-     announced a ceiling of three for every run — including a run created with one
-     refinement, which said "of 3" for its whole life. The number was the client's default
-     standing in for a value the session already knew: `session.passes` is set from the
-     Refinements control when the session is created, and it is what the pipeline and the
-     `pass n of m` counters already read. The chip was the last surface still guessing.
-
-     A session that carries no pass count drops the clause rather than inventing one —
-     "iteration 1" is honest, "iteration 1 of 3" is a claim about the server's ceiling that
-     the client cannot support. */
+  /* The ceiling: 1 + max_extra_passes, carried by the session as `passes`. A session that has
+     none drops the "of P" clause rather than inventing a ceiling the server never confirmed. */
+  function passTotal(s){
+    var n = Number(s && s.passes);
+    return (isFinite(n) && n > 0) ? n : null;
+  }
+  function passText(s){
+    var total = passTotal(s);
+    return "pass " + passNumber(s.iteration) + (total === null ? "" : " of " + total);
+  }
+  /* Scores print with two decimals; null is "no score", never 0 (models.py: semantic_review_score). */
+  function fmtScore(v){
+    return (typeof v === "number" && isFinite(v)) ? v.toFixed(2) : null;
+  }
+  /* coverage.not_found_target_ids → " · 1 target not found" / " · n targets not found" / "" (spec §4.2) */
+  function notFoundClause(s){
+    var ids = (s && s.coverage && s.coverage.not_found_target_ids) || [];
+    if(!ids.length) return "";
+    return " · " + ids.length + (ids.length === 1 ? " target not found" : " targets not found");
+  }
+  /* The chip's second clause, one rule per API status (spec §4.2):
+       running         pass p of P                       (from the stream while live)
+       completed       review accepted · {score}         + not-found clause   (completed ⇔ report_accepted)
+       max_iterations  extra passes used                 + not-found clause
+       incomplete      not accepted · {score}            when the review was scored (R3: a gate can
+                                                         block acceptance while the review passed)
+                       review unavailable                otherwise (incomplete / provider_failed / null)
+       failed          halted */
   function statusNote(s){
-    var m = STATUS[s.status] || STATUS.running;
-    var n = Number(s.passes);
-    var total = (isFinite(n) && n > 0) ? n : null;
-    return m.note
-      .replace("{i}", passNumber(s.iteration))
-      .replace(" of {n}", total === null ? "" : " of " + total)
-      .replace("{n}", "");
+    var score = fmtScore(s.review && s.review.score);
+    switch(s.status){
+      case "completed":      return "review accepted" + (score === null ? "" : " · " + score) + notFoundClause(s);
+      case "max_iterations": return "extra passes used" + notFoundClause(s);
+      case "incomplete":     return (s.review && s.review.status === "scored" && score !== null) ? "not accepted · " + score : "review unavailable";
+      case "failed":         return "halted";
+      default:               return passText(s);
+    }
   }
   /* One chip, in the topbar, and therefore no `large` variant: the report head used to draw
      a second copy at 15px, and the parameter existed only for it. */
@@ -1574,8 +1638,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     for(var i = 0; i < SESSIONS.length; i++) if(SESSIONS[i].id === state.activeId) return SESSIONS[i];
     return null;
   }
-  /* Settings actually used by a session. A session keeps its own copy because
-     the API echoes neither the query nor the overrides back. */
+  /* Settings actually used by a session: { model, thinking, outputDir, extraPasses }. A session
+     keeps its own copy because the API echoes neither the query nor the overrides back (api-gaps 1.3). */
   function sessionSettings(session){
     return (session && session.settings) || settings;
   }
