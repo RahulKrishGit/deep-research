@@ -715,7 +715,7 @@ h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;
 .plus:hover{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
 .plus[aria-expanded="true"]{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
 .plus svg{width:15px;height:15px}
-/* Refinement stepper. A bounded numeric control rather than a segmented row: the
+/* Extra-passes stepper. A bounded numeric control rather than a segmented row: the
    value has a minimum and a maximum, and the buttons disable at those bounds, so
    the limit is visible instead of being enforced silently by a clamp. */
 .stepper{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;width:fit-content}
@@ -1108,7 +1108,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                     <div class="pop-row">
                       <span class="lbl" id="lblModel">Model</span>
                       <div class="seg" role="group" aria-labelledby="lblModel" id="segModel">
-                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="true">v4-flash</button>
+                        <button type="button" data-model="deepseek-flash" aria-pressed="true">flash</button>
+                        <button type="button" data-model="deepseek-v4-flash" aria-pressed="false">v4-flash</button>
                         <button type="button" data-model="deepseek-v4-pro" aria-pressed="false">v4-pro</button>
                       </div>
                     </div>
@@ -1118,35 +1119,32 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                         <button type="button" data-thinking="enabled" aria-pressed="true">enabled</button>
                         <button type="button" data-thinking="disabled" aria-pressed="false">disabled</button>
                       </div>
-                    </div>
-                    <div class="pop-row">
-                      <span class="lbl" id="lblEffort">Reasoning effort</span>
-                      <div class="seg" role="group" aria-labelledby="lblEffort" id="segEffort">
-                        <button type="button" data-effort="high" aria-pressed="true">high</button>
-                        <button type="button" data-effort="max" aria-pressed="false">max</button>
-                      </div>
-                      <p class="pop-note" id="effortNote"></p>
+                      <!-- Effort is not a control. Every role has its own configured effort
+                           (config.yaml:32-63) and a global override would be shadowed by them; the
+                           line states what is in force and nothing else (DESIGN.md §3.2). -->
+                      <p class="pop-note" id="effortLine" aria-live="polite">effort per agent: planner max · reviewer max · others high</p>
                     </div>
                     <div class="pop-row">
                       <span class="lbl" for="outputDir">Output directory</span>
                       <input class="input mono-in" id="outputDir" value="output/">
                     </div>
                     <div class="pop-row">
-                      <span class="lbl" id="lblRefine">Refinements</span>
-                      <div class="stepper" role="group" aria-labelledby="lblRefine">
-                        <button type="button" id="refineMinus" aria-label="Fewer refinements">
+                      <span class="lbl" id="lblExtra">Extra passes</span>
+                      <div class="stepper" role="group" aria-labelledby="lblExtra" id="stepExtra">
+                        <button type="button" id="extraMinus" aria-label="Fewer extra passes">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M5 12h14"></path></svg>
                         </button>
-                        <span class="stepper-v mono" id="refineValue" role="status" aria-live="polite">3</span>
-                        <button type="button" id="refinePlus" aria-label="More refinements">
+                        <span class="stepper-v mono" id="extraValue" role="status" aria-live="polite">1</span>
+                        <button type="button" id="extraPlus" aria-label="More extra passes">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
                         </button>
                       </div>
                     </div>
                   </div>
                 </span>
-                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">v4-flash</span></span>
-                <span class="setting-pill" id="pillEffort"><span class="k">effort</span><span class="v" id="pillEffortV">high</span></span>
+                <span class="setting-pill" id="pillModel"><span class="v" id="pillModelV">flash</span></span>
+                <span class="setting-pill" id="pillThinking"><span class="k">thinking</span><span class="v" id="pillThinkingV">enabled</span></span>
+                <span class="setting-pill" id="pillExtra"><span class="k">extra passes</span><span class="v" id="pillExtraV">1</span></span>
                 <span class="spacer"></span>
                 <button class="send" id="sendBtn" type="submit" data-od-id="cta-send">
                   <span class="sr">Start research</span>
@@ -1419,15 +1417,15 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     failed:    document.getElementById("stage-failed")
   };
 
-  /* ═══ model capability registry, mirrored from providers/capabilities.py ═══
-     deepseek: ^deepseek-v4-(flash|pro)$ — thinking enabled|disabled,
-     enabled efforts high,max, disabled_effort None. */
+  /* ═══ model capability registry, mirrored from providers/capabilities.py:71-77 ═══
+     deepseek: ^deepseek-(flash|v4-flash|v4-pro)$ — thinking enabled|disabled; efforts are
+     configured per role (config.yaml:32-63) and are not a request-time control here. */
   var MODELS = {
-    "deepseek-v4-flash": { label:"v4-flash", efforts:["high","max"] },
-    "deepseek-v4-pro":   { label:"v4-pro",   efforts:["high","max"] }
+    "deepseek-flash":    { label:"flash"    },
+    "deepseek-v4-flash": { label:"v4-flash" },
+    "deepseek-v4-pro":   { label:"v4-pro"   }
   };
-  var settings = { model:"deepseek-v4-flash", thinking:"enabled", effort:"high",
-                   outputDir:"output/", refinements:3 };
+  var settings = { model:"deepseek-flash", thinking:"enabled", outputDir:"output/", extraPasses:1 };
   var state = { stage:"idle", activeId:null };
   /* How long the "question locked in" beat is held before the pipeline takes the
      screen. Under reduced motion there is no journey to sit through, so the whole
@@ -1643,14 +1641,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   function sessionSettings(session){
     return (session && session.settings) || settings;
   }
+  /* The settings strip: five mono chips, in this order, exactly as submitted (there is no
+     server echo — api-gaps 1.3). `out` is shown only when a directory was sent. */
   function optionsHTML(session){
     var s = sessionSettings(session);
-    var cap = MODELS[s.model];
-    var out = '<span class="opt"><span class="k">model</span>' + (cap ? cap.label : s.model) + "</span>"
-            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>";
-    out += s.thinking === "disabled"
-      ? '<span class="opt"><span class="k">effort</span>not sent</span>'
-      : '<span class="opt"><span class="k">effort</span>' + s.effort + "</span>";
+    var out = '<span class="opt"><span class="k">model</span>' + s.model + "</span>"
+            + '<span class="opt"><span class="k">thinking</span>' + s.thinking + "</span>"
+            + (s.thinking === "disabled"
+                ? '<span class="opt"><span class="k">effort</span>not sent</span>'
+                : '<span class="opt"><span class="k">effort</span>per agent</span>')
+            + '<span class="opt"><span class="k">extra passes</span>' + s.extraPasses + "</span>";
     if(s.outputDir) out += '<span class="opt"><span class="k">out</span>' + s.outputDir + "</span>";
     return out;
   }
@@ -2014,7 +2014,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     pop.setAttribute("data-open", "true");
     placePop();
     btn.setAttribute("aria-expanded", "true");
-    syncEffort();
+    syncEffortLine();
   }
   function syncSeg(id, attr, val){
     var seg = document.getElementById(id);
@@ -2023,74 +2023,69 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       b.setAttribute("aria-pressed", String(b.getAttribute(attr) === val));
     });
   }
-  function syncEffort(){
-    var segE = document.getElementById("segEffort");
-    var note = document.getElementById("effortNote");
-    if(!segE) return;
+  /* The one sentence in the panel. Effort is fixed per role (planner max, report_reviewer max,
+     the other four high — config.yaml:32-63), so there is nothing to choose; with thinking off
+     the resolver sends no effort at all (capabilities.py:77). */
+  function syncEffortLine(){
+    var line = document.getElementById("effortLine");
+    if(!line) return;
     var off = settings.thinking === "disabled";
-    Array.prototype.forEach.call(segE.querySelectorAll("button"), function(b){ b.disabled = off; });
-    segE.style.opacity = off ? "0.5" : "1";
-    /* Only the unavailable state needs a sentence: the buttons are greyed out and
-       the operator should not have to infer why. The enabled state says nothing,
-       because the options already are what they are. No API field names here. */
-    if(note){
-      note.classList.toggle("warn", off);
-      note.textContent = off ? "Not available while thinking is disabled." : "";
-    }
+    line.classList.toggle("warn", off);
+    line.textContent = off ? "effort: not sent (thinking disabled)" : "effort per agent: planner max · reviewer max · others high";
   }
   function syncPills(){
     var cap = MODELS[settings.model];
     setText("pillModelV", cap ? cap.label : settings.model);
-    setText("pillEffortV", settings.thinking === "disabled" ? "thinking off" : settings.effort);
+    setText("pillThinkingV", settings.thinking);
+    setText("pillExtraV", String(settings.extraPasses));
   }
-  /* Refinement budget bounds. `graph.max_iterations` accepts any integer >= 1, so
-     the floor is the schema's own. The ceiling is a UI decision: a refinement costs
-     a whole research pass, and the prototype's scripted run is a fixed length, so 5
-     is the largest budget it can present honestly. */
-  var REFINE_MIN = 1;
-  var REFINE_MAX = 5;
-  var REFINE_DEFAULT = 3;   /* matches graph.max_iterations in config.yaml */
+  /* Extra-pass budget bounds. The request field is `max_iterations`, validated `ge=0`
+     (api/models.py:48) and passed to the graph as max_extra_passes (api/app.py:183); the
+     server default is 1 (config.yaml:211). Zero is a real budget: no extra pass, ever. The
+     ceiling is this console's: each extra pass can add a large share of a 70–110 minute run. */
+  var EXTRA_MIN = 0;
+  var EXTRA_MAX = 2;
+  var EXTRA_DEFAULT = 1;   /* matches graph.max_extra_passes in config.yaml */
 
-  function clampRefinements(n){
+  function clampExtra(n){
     n = Math.round(Number(n));
-    if(!isFinite(n)) n = REFINE_DEFAULT;
-    return Math.max(REFINE_MIN, Math.min(REFINE_MAX, n));
+    if(!isFinite(n)) n = EXTRA_DEFAULT;
+    return Math.max(EXTRA_MIN, Math.min(EXTRA_MAX, n));
   }
   /* The stepper is a bounded control: the buttons disable at the ends so the limit
      is visible rather than silently enforced by a clamp. */
-  function syncRefineUI(){
-    var v = document.getElementById("refineValue");
-    var minus = document.getElementById("refineMinus");
-    var plus = document.getElementById("refinePlus");
-    settings.refinements = clampRefinements(settings.refinements);
-    if(v) v.textContent = String(settings.refinements);
-    /* The bounds are shown by the buttons disabling at each end, so they are not
-       also written out as a range in a note. */
-    if(minus) minus.disabled = settings.refinements <= REFINE_MIN;
-    if(plus) plus.disabled = settings.refinements >= REFINE_MAX;
+  function syncExtraUI(){
+    var v = document.getElementById("extraValue");
+    var minus = document.getElementById("extraMinus");
+    var plus = document.getElementById("extraPlus");
+    settings.extraPasses = clampExtra(settings.extraPasses);
+    if(v) v.textContent = String(settings.extraPasses);
+    if(minus) minus.disabled = settings.extraPasses <= EXTRA_MIN;
+    if(plus) plus.disabled = settings.extraPasses >= EXTRA_MAX;
   }
-  function stepRefinements(delta){
-    settings.refinements = clampRefinements((settings.refinements || REFINE_DEFAULT) + delta);
-    syncRefineUI();
+  function stepExtra(delta){
+    settings.extraPasses = clampExtra(settings.extraPasses + delta);
+    syncExtraUI();
   }
 
   function syncSettingsUI(){
     syncSeg("segModel", "data-model", settings.model);
     syncSeg("segThinking", "data-thinking", settings.thinking);
-    syncSeg("segEffort", "data-effort", settings.effort);
     var dir = document.getElementById("outputDir");
     if(dir && settings.outputDir) dir.value = settings.outputDir;
-    syncEffort();
+    syncEffortLine();
     syncPills();
-    syncRefineUI();
+    syncExtraUI();
   }
-  function buildOverrides(){
+  /* The request body, exactly as POST /research would receive it (spec §4.3). No
+     reasoning_effort: a global value is shadowed by every role's own (utils/config.py:85-107).
+     `max_iterations` is always present — 0 is a budget, not an absence. */
+  function buildRequest(q){
     var dirEl = document.getElementById("outputDir");
-    var o = { llm: { model: settings.model, thinking_mode: settings.thinking } };
-    if(settings.thinking !== "disabled") o.llm.reasoning_effort = settings.effort;
     var dir = dirEl && dirEl.value ? dirEl.value.trim() : "";
-    if(dir) o.output = { directory: dir };
-    return o;
+    var overrides = { llm: { model: settings.model, thinking_mode: settings.thinking } };
+    if(dir) overrides.output = { directory: dir };
+    return { query: q, max_iterations: clampExtra(settings.extraPasses), output_format: "markdown", config_overrides: overrides };
   }
   /* Real questions, taken from this project's own evaluation cases and its
      published run — not invented example copy, and not questions chosen to make
@@ -2176,15 +2171,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       var b = e.target.closest("button[data-thinking]"); if(!b || b.disabled) return;
       settings.thinking = b.getAttribute("data-thinking"); syncSettingsUI();
     });
-    form.querySelector("#segEffort").addEventListener("click", function(e){
-      var b = e.target.closest("button[data-effort]"); if(!b || b.disabled) return;
-      settings.effort = b.getAttribute("data-effort"); syncSettingsUI();
-    });
     form.querySelector("#outputDir").addEventListener("input", function(e){
       settings.outputDir = e.target.value;
     });
-    form.querySelector("#refineMinus").addEventListener("click", function(){ stepRefinements(-1); });
-    form.querySelector("#refinePlus").addEventListener("click", function(){ stepRefinements(1); });
+    form.querySelector("#extraMinus").addEventListener("click", function(){ stepExtra(-1); });
+    form.querySelector("#extraPlus").addEventListener("click", function(){ stepExtra(1); });
     form.addEventListener("submit", function(e){ e.preventDefault(); submitResearch(); });
     /* The send button carries its own handler rather than relying on form submission.
        A preview pane is almost always a sandboxed iframe, and without `allow-forms`
@@ -2228,17 +2219,18 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       return;
     }
     closePop();
-    var budget = clampRefinements(settings.refinements);
+    var budget = clampExtra(settings.extraPasses);
+    var request = buildRequest(q);
     var session = {
-      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", iteration: 0,
-      /* the configured refinement budget becomes this run's pass ceiling, and the
-         scripted pipeline is built to that ceiling */
-      passes: budget,
-      started: new Date().toISOString(), finished: null, reportPath: null, trace: null,
-      errors: [], group: "Today", playback: true,
-      settings: { model: settings.model, thinking: settings.thinking, effort: settings.effort,
-                  outputDir: settings.outputDir, refinements: budget },
-      overrides: buildOverrides()
+      id: Math.random().toString(16).slice(2, 10), q: q, status: "running", routeReason: null, iteration: 0,
+      /* P = 1 + the extra-pass budget; the scripted run is one accepted pass whatever the budget (§4.3) */
+      passes: 1 + budget,
+      started: new Date().toISOString(), finished: null, durationSeconds: null,
+      reportPath: null, evidencePath: null, qualityPath: null, trace: null,
+      review: null, coverage: null, evidenceCounts: null,
+      errors: [], group: "Today", playback: true, script: null, final: COMPOSER_FINAL,
+      settings: { model: settings.model, thinking: settings.thinking, outputDir: settings.outputDir, extraPasses: budget },
+      request: request
     };
     SESSIONS.unshift(session);
     renderList();
@@ -3000,15 +2992,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(session.settings){
       settings.model = session.settings.model;
       settings.thinking = session.settings.thinking;
-      settings.effort = session.settings.effort;
       settings.outputDir = session.settings.outputDir;
-      /* the budget this session actually ran with, so reopening it shows its own
-         number rather than whatever the composer was last left on */
-      if(typeof session.settings.refinements === "number"){
-        settings.refinements = clampRefinements(session.settings.refinements);
-      } else if(typeof session.passes === "number"){
-        settings.refinements = clampRefinements(session.passes);
-      }
+      /* the budget this session ran with, so reopening it shows its own number */
+      if(typeof session.settings.extraPasses === "number") settings.extraPasses = clampExtra(session.settings.extraPasses);
+      else if(typeof session.passes === "number") settings.extraPasses = clampExtra(session.passes - 1);
     }
     /* the composer only exists while idle, so only sync it there */
     if(state.stage === "idle") syncSettingsUI();
