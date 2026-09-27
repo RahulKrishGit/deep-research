@@ -150,7 +150,7 @@ chosen by the operator.
 | # | Stage | Server state that selects it | What it shows | Transition out |
 |---|---|---|---|---|
 | 1 | **Idle** | no active session | Composer only | Operator submits → `202` → stage 2 |
-| 2 | **Submitted** | `status == "running"`, first beat | The question read back, the model and effort in use — and nothing else | Held ~2.2s → stage 3 |
+| 2 | **Submitted** | `status == "running"`, first beat | The question read back and the five-chip settings strip (`model · thinking · effort · extra passes · out`) — and nothing else | Held ~2.2s → stage 3 |
 | 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it | Server status leaves `running` → stage 4 or 5 |
 | 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
@@ -807,6 +807,9 @@ tag clears on the next `graph.route.decided` or on `graph.session.completed`. A
 redraft does not change `iteration` (`nodes.py:1204`), so the chip stays
 `pass 1 of 2` while the grey tag shows; an extra pass advances it
 (`nodes.py:1141-1146`).
+Both templates pluralise honestly: singular at n = 1 (`1 required target had no
+verified finding`, `Reviewer named 1 material defect`) — the one recorded
+departure from the spec's copy, which is written for n ≥ 2.
 
 The **pass track was removed from the running stage.** It was a second
 representation of the same fact the arc already carries — how many passes the
