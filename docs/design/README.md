@@ -10,6 +10,11 @@ Exported from the **Open Design** desktop app, project
 2026-09-16 (last source edit 19:14:37 local). `open-design/` below is a
 complete copy of that project; nothing from it is omitted.
 
+*Updated 2026-09-26 to the Evidence Verifier pipeline (f27ac7e); the 2026-09-16
+design is otherwise unchanged.* `open-design/` is the 2026-09-16 history and is
+now older than the prototype: where it disagrees with the authoritative
+artifacts, they win.
+
 ## Authoritative artifacts
 
 These are the current, correct versions. Read these.
@@ -18,7 +23,7 @@ These are the current, correct versions. Read these.
 |---|---|
 | `DESIGN.md` | Screen inventory, status mapping, motion spec, and the decisions the design system does not answer |
 | `api-gaps.md` | What each stage needs that the FastAPI surface does not serve |
-| `prototype/index.html` | The reference prototype. Self-contained: 3,067 lines, one `<style>` block, one `<script>` block, zero external references. The only literal colour values live in the `:root` token block (lines 12–45), which is where the Perplexity AI design system is captured |
+| `prototype/index.html` | The reference prototype. Self-contained: 3,859 lines, one `<style>` block, one `<script>` block, zero external references. The only literal colour values live in the `:root` token block (lines 11–55), which is where the Perplexity AI design system is captured |
 | `prototype/states.html` | Static fixture of the edge states |
 | `reference/*.png` | Reference renders, regenerated from the frozen prototype and asserted against the stage they claim to show |
 
@@ -26,8 +31,9 @@ The design was built against a **1252 × 853** viewport (`DESIGN.md` §7).
 
 ## `open-design/` — the complete original project
 
-Everything here is a faithful copy for provenance. Where it disagrees with
-the table above, the table wins.
+Everything here is a faithful copy for provenance: the 2026-09-16 design as it
+was exported, now older than the prototype. Where it disagrees with the table
+above, the table wins.
 
 | Path | What it is | Status |
 |---|---|---|
@@ -60,12 +66,3 @@ It drives the prototype over the Chrome DevTools Protocol using the page's own
 `window.drConsole` review hook, and asserts the stage each capture landed on
 before saving — so a render cannot silently depict the wrong screen. No npm
 dependencies; it needs Google Chrome and Node 18+.
-
-## Known defect in this package
-
-`api-gaps.md` says the console has **four** stages (idle, running, report,
-failed). `DESIGN.md` §3 says **five** (idle, submitted, running, report,
-failed), and §7 confirms the prototype implements five. `api-gaps.md` is the
-stale document, and its stage numbering is consequently off by one from
-stage 2 onward: its "Stage 2 — Running" is DESIGN.md's stage 3. Re-key the
-gaps to `DESIGN.md` §3 when implementing the API work.
