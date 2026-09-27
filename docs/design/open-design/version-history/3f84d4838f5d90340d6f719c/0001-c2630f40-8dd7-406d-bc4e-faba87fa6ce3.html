@@ -1,0 +1,1127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Deep Research — investigation console prototype</title>
+<style>
+/* ═══════════════════════════════════════════════════════════════════════
+   TOKENS — Perplexity AI design system, copied from tokens.css.
+   The only literal colour values in this file live in this :root block.
+   ═══════════════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#0f0f10;
+  --surface:#19191a;
+  --surface-warm:var(--surface);
+  --fg:#f0f0f0;
+  --fg-2:var(--fg);
+  --muted:#9b9b9b;
+  --meta:#5c5c5e;
+  --border:#2e2e30;
+  --border-soft:#232325;
+  --accent:#a855f7;
+  --accent-on:#ffffff;
+  --accent-hover:#c084fc;
+  --accent-active:#9333ea;
+  --success:#22c55e;
+  --warn:#f59e0b;
+  --danger:#ef4444;
+  --font-display:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-body:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Menlo,Monaco,Consolas,monospace;
+  --text-xs:11px;
+  --text-sm:13px;
+  --text-base:15px;
+  --text-lg:16px;
+  --text-xl:18px;
+  --text-2xl:22px;
+  --text-3xl:28px;
+  --text-4xl:32px;
+  --leading-body:1.65;
+  --leading-tight:1.2;
+  --tracking-display:-0.01em;
+  --space-1:4px;
+  --space-2:8px;
+  --space-3:12px;
+  --space-4:16px;
+  --space-5:20px;
+  --space-6:24px;
+  --space-8:32px;
+  --space-12:48px;
+  --section-y-desktop:64px;
+  --radius-sm:4px;
+  --radius-md:8px;
+  --radius-lg:12px;
+  --radius-pill:9999px;
+  --elev-flat:none;
+  --elev-ring:0 0 0 1px var(--border);
+  --focus-ring:0 0 0 2px var(--accent);
+  --motion-fast:120ms;
+  --motion-base:200ms;
+  --ease-standard:cubic-bezier(0.2,0,0,1);
+  --container-max:1100px;
+  --container-gutter-desktop:24px;
+  --container-gutter-tablet:16px;
+  --container-gutter-phone:16px;
+
+  /* Derived for this product. See docs/design/DESIGN.md §5. */
+  --status-ok:oklch(72% 0.19 145);
+  --status-warn:oklch(74% 0.17 72);
+  --status-danger:oklch(71% 0.17 22);
+  --shell-max:1100px;
+  --reading-max:720px;
+  --rail:280px;
+  --spine:56px;
+}
+
+/* ═══ reset / base ═══ */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);
+  line-height:var(--leading-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+img,svg{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+p{margin:0;text-wrap:pretty}
+h1,h2,h3{text-wrap:balance}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+::selection{background:color-mix(in oklch,var(--accent) 32%,transparent);color:var(--fg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ═══ shell ═══ */
+.shell{max-width:var(--shell-max);margin-inline:auto;padding-inline:var(--container-gutter-desktop)}
+.topnav{position:sticky;top:0;z-index:30;background:var(--bg);border-bottom:1px solid var(--border)}
+.topnav-in{display:flex;align-items:center;gap:var(--space-6);min-height:56px;flex-wrap:wrap;padding-block:var(--space-2)}
+.wordmark{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:var(--tracking-display);display:flex;align-items:center;gap:var(--space-2)}
+.wordmark .mark{width:14px;height:14px;border:1.5px solid var(--muted);border-radius:2px;position:relative;flex:none}
+.wordmark .mark::after{content:"";position:absolute;inset:3px;background:var(--muted);border-radius:1px}
+.navlinks{display:flex;gap:var(--space-5);margin-left:auto;flex-wrap:wrap}
+.navlinks a{font-size:var(--text-sm);color:var(--muted);padding-block:var(--space-1);border-bottom:2px solid transparent}
+.navlinks a:hover{color:var(--fg)}
+.navlinks a[aria-current="page"]{color:var(--fg);border-bottom-color:var(--accent)}
+.localnote{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+
+/* state switcher — prototype chrome, not product chrome */
+.switcher{background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:56px;z-index:29}
+.switcher-in{display:flex;align-items:center;gap:var(--space-3);padding-block:var(--space-2);flex-wrap:wrap}
+.switcher .sw-label{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.seg{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;flex-wrap:wrap}
+.seg button{
+  padding:6px 12px;border-radius:var(--radius-sm);font-size:var(--text-sm);color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+  min-height:32px;
+}
+.seg button:hover{background:var(--border-soft);color:var(--fg)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.switcher .sw-context{font-size:var(--text-sm);color:var(--muted);margin-left:auto}
+
+main{display:block;padding-block:var(--space-8) var(--space-12);min-height:60vh}
+.screen{display:none}
+.screen.is-on{display:block}
+
+/* ═══ typography ═══ */
+.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1.display{font-family:var(--font-display);font-size:var(--text-4xl);font-weight:600;line-height:var(--leading-tight);letter-spacing:var(--tracking-display);margin:0}
+h2.sect{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;margin:0}
+h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.4;margin:0}
+.card-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;line-height:1.4;margin:0}
+.lead{font-size:var(--text-lg);color:var(--muted);max-width:62ch}
+.sm{font-size:var(--text-sm);color:var(--muted)}
+.cap{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.prose{max-width:var(--reading-max)}
+.prose p{margin-bottom:var(--space-4);line-height:var(--leading-body)}
+.prose h2{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;margin:var(--space-8) 0 var(--space-4);line-height:1.3}
+.prose h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:var(--space-6) 0 var(--space-3);line-height:1.4}
+.prose ul{margin:0 0 var(--space-4);padding-left:var(--space-5);max-width:var(--reading-max)}
+.prose li{margin-bottom:var(--space-2);line-height:var(--leading-body)}
+.prose strong{font-weight:600}
+.cite{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
+.cite:hover{color:var(--fg)}
+
+/* ═══ surfaces ═══ */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5)}
+.card.flat{background:transparent}
+.card.raised{background:var(--border-soft)}
+.stack{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-2{display:flex;flex-direction:column;gap:var(--space-2)}
+.row{display:flex;align-items:center;gap:var(--space-3)}
+.row-between{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.wrap{flex-wrap:wrap}
+.divider{height:1px;background:var(--border);border:0;margin:var(--space-5) 0}
+.section-block{padding-block:var(--section-y-desktop);border-top:1px solid var(--border)}
+.section-block:first-child{border-top:0;padding-top:0}
+
+/* ═══ buttons ═══ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  height:36px;padding:0 var(--space-5);border-radius:var(--radius-md);
+  border:1px solid transparent;font-size:var(--text-base);font-weight:500;white-space:nowrap;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.btn-primary{background:var(--accent);color:var(--accent-on);font-weight:600}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-primary:active{background:var(--accent-active)}
+.btn-ghost{border-color:var(--border);color:var(--fg)}
+.btn-ghost:hover{background:var(--border-soft);border-color:var(--muted)}
+.btn-ghost:active{background:var(--surface)}
+.btn-quiet{color:var(--muted);padding-inline:var(--space-3)}
+.btn-quiet:hover{color:var(--fg);background:var(--border-soft)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+.btn-sm{height:30px;font-size:var(--text-sm);padding:0 var(--space-4)}
+.btn-block{width:100%}
+
+/* ═══ fields ═══ */
+.field{display:flex;flex-direction:column;gap:var(--space-2)}
+.field label{font-size:var(--text-sm);color:var(--muted)}
+.input,.textarea{
+  width:100%;background:var(--surface);border:1px solid var(--border);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);border-radius:var(--radius-md);
+  padding:10px var(--space-4);min-height:44px;
+  transition:border-color var(--motion-fast) var(--ease-standard);
+}
+.input::placeholder,.textarea::placeholder{color:var(--meta)}
+.input:hover,.textarea:hover{border-color:var(--muted)}
+.input:focus,.textarea:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+.input.is-error,.textarea.is-error{border-color:var(--status-danger)}
+.textarea{min-height:88px;line-height:var(--leading-body);resize:vertical}
+.searchbar{display:flex;gap:var(--space-3);align-items:stretch}
+.searchbar .input{flex:1;border-radius:var(--radius-lg)}
+.help{font-size:var(--text-sm);color:var(--muted)}
+.help.err{color:var(--status-danger)}
+.fieldset{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-4)}
+.hint{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+
+/* ═══ status chips ═══ */
+.chip{
+  display:inline-flex;align-items:center;gap:6px;
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:4px 9px;font-size:var(--text-sm);color:var(--fg);line-height:1.35;
+}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.chip .dot-ok{background:var(--status-ok)}
+.chip .dot-warn{background:var(--status-warn)}
+.chip .dot-danger{background:var(--status-danger)}
+.chip .dot-live{background:var(--status-ok);animation:pulse 1.6s var(--ease-standard) infinite}
+.chip .kind{color:var(--muted)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
+.chip-lg{font-size:var(--text-base);padding:6px 12px}
+.chip-bare{background:transparent;border-color:transparent;padding-inline:0}
+
+/* ═══ unavailable value — text, never a zero or a control ═══ */
+.avail{color:var(--muted);font-size:var(--text-sm)}
+.avail-mono{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+
+/* ═══ key/value rows ═══ */
+.kv{display:grid;grid-template-columns:auto 1fr;gap:var(--space-2) var(--space-4);font-size:var(--text-sm);align-items:baseline}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kv dd.plain{font-family:var(--font-body);text-align:right}
+
+/* ═══ stage spine ═══ */
+.spine{display:flex;flex-direction:column}
+.spine li{display:grid;grid-template-columns:22px 1fr;gap:var(--space-3);position:relative;padding-bottom:var(--space-4);list-style:none}
+.spine li:last-child{padding-bottom:0}
+.spine li::before{content:"";position:absolute;left:10px;top:16px;bottom:0;width:1px;background:var(--border)}
+.spine li:last-child::before{display:none}
+.spine .bullet{
+  width:21px;height:21px;border-radius:50%;border:1px solid var(--border);
+  display:grid;place-items:center;font-family:var(--font-mono);font-size:10px;color:var(--meta);
+  background:var(--surface);z-index:1;
+}
+.spine li[data-state="done"] .bullet{border-color:var(--border);color:var(--fg);background:var(--border-soft)}
+.spine li[data-state="active"] .bullet{border-color:var(--status-ok);color:var(--status-ok);animation:pulse 1.6s var(--ease-standard) infinite}
+.spine li[data-state="loop"] .bullet{border-color:var(--status-ok);color:var(--status-ok)}
+.spine li[data-state="pending"] .bullet{color:var(--meta)}
+.spine li[data-state="skipped"] .bullet{color:var(--meta)}
+.spine .stage-name{font-size:var(--text-sm);color:var(--muted)}
+.spine li[data-state="done"] .stage-name,.spine li[data-state="active"] .stage-name,.spine li[data-state="loop"] .stage-name{color:var(--fg)}
+.spine .stage-meta{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);display:block;margin-top:2px}
+
+/* ═══ event log ═══ */
+.log{list-style:none;margin:0;padding:0;font-family:var(--font-mono);font-size:var(--text-xs);line-height:1.6}
+.log li{display:grid;grid-template-columns:52px 1fr;gap:var(--space-3);padding:5px 0;border-bottom:1px solid var(--border-soft)}
+.log li:last-child{border-bottom:0}
+.log .t{color:var(--muted);font-variant-numeric:tabular-nums}
+.log .body{min-width:0}
+.log .etype{color:var(--fg);overflow-wrap:anywhere}
+.log .emsg{color:var(--muted);overflow-wrap:anywhere}
+.log li.is-new{animation:slide var(--motion-base) var(--ease-standard) 1}
+@keyframes slide{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+.logbox{max-height:280px;overflow-y:auto;scrollbar-width:thin}
+.logbox::-webkit-scrollbar{width:8px}
+.logbox::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--radius-pill)}
+.lognote{display:flex;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding-top:var(--space-3)}
+
+/* ═══ counts / metrics ═══ */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:var(--space-4)}
+.metric .val{font-family:var(--font-mono);font-size:var(--text-2xl);font-variant-numeric:tabular-nums;line-height:1.1}
+.metric .val.avail{font-family:var(--font-body);font-size:var(--text-sm)}
+.metric .lbl{font-size:var(--text-sm);color:var(--muted);margin-top:2px}
+.bars{display:flex;flex-direction:column;gap:var(--space-3)}
+.bar-row{display:grid;grid-template-columns:128px 1fr 52px;gap:var(--space-3);align-items:center;font-size:var(--text-sm)}
+.bar{height:6px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
+.bar span.ok{background:var(--status-ok)}
+.bar-row .num{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ═══ tables ═══ */
+.tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{color:var(--muted);font-weight:500;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase}
+.tbl tbody tr:hover{background:var(--border-soft)}
+.tbl .n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;width:1%}
+.tbl td.wrapcell{overflow-wrap:anywhere}
+.tbl .title-link{color:var(--fg)}
+.tbl .title-link:hover{color:var(--accent)}
+.tbl-foot{font-size:var(--text-sm);color:var(--muted);padding-top:var(--space-3)}
+
+/* ═══ history rows ═══ */
+.hrow{display:grid;grid-template-columns:112px 1fr 150px 92px;gap:var(--space-5);align-items:start;padding:var(--space-4) 0;border-top:1px solid var(--border);width:100%;text-align:left}
+.hrow:hover{background:var(--border-soft)}
+.hrow .q{font-size:var(--text-base);line-height:1.45}
+.hrow .q .sub{display:block;color:var(--muted);font-size:var(--text-sm);margin-top:3px;overflow-wrap:anywhere}
+.hrow .date{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);font-variant-numeric:tabular-nums}
+.hrow .right{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+
+/* ═══ layout grids ═══ */
+.investigate{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start}
+.compose{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start}
+.rail{display:flex;flex-direction:column;gap:var(--space-5);position:sticky;top:112px}
+.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--space-5)}
+.grid-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-5)}
+@media (max-width:1080px){
+  .investigate,.compose{grid-template-columns:minmax(0,1fr)}
+  .rail{position:static;top:auto}
+  .hrow{grid-template-columns:100px 1fr;gap:var(--space-3)}
+  .hrow .right{text-align:left;grid-column:2}
+}
+@media (max-width:900px){
+  .shell{padding-inline:var(--container-gutter-phone)}
+  .fieldset,.grid-2,.grid-3{grid-template-columns:minmax(0,1fr)}
+  .metrics{grid-template-columns:repeat(auto-fit,minmax(104px,1fr))}
+  .topnav-in{gap:var(--space-3)}
+  .switcher{position:static}
+  .bar-row{grid-template-columns:96px 1fr 44px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:0ms !important;animation-iteration-count:1 !important;transition-duration:0ms !important}
+}
+
+/* ═══ toggles ═══ */
+.toggle{display:inline-flex;align-items:center;gap:var(--space-2);font-size:var(--text-sm);color:var(--muted);min-height:32px}
+.toggle input{appearance:none;width:34px;height:20px;border-radius:var(--radius-pill);background:var(--border);position:relative;transition:background var(--motion-fast) var(--ease-standard);flex:none;cursor:pointer}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--fg);transition:transform var(--motion-fast) var(--ease-standard)}
+.toggle input:checked{background:var(--accent)}
+.toggle input:checked::after{transform:translateX(14px)}
+.toggle input:hover{background:var(--border-soft)}
+.toggle input:checked:hover{background:var(--accent-hover)}
+
+/* ═══ callouts (ledger-style, no left colour bar) ═══ */
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)}
+.note .note-head{display:flex;gap:var(--space-2);align-items:center;font-size:var(--text-sm);color:var(--fg);margin-bottom:var(--space-2)}
+.note .note-head .mk{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px}
+.note p{font-size:var(--text-sm);color:var(--muted);line-height:1.6}
+.note.attn{border-color:color-mix(in oklch,var(--status-warn) 40%,var(--border))}
+.note.attn .note-head{color:var(--status-warn)}
+.note.bad{border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))}
+.note.bad .note-head{color:var(--status-danger)}
+
+/* ═══ empty states ═══ */
+.empty{border:1px dashed var(--border);border-radius:var(--radius-lg);padding:var(--space-8);text-align:center}
+.empty .glyph{font-family:var(--font-mono);font-size:var(--text-2xl);color:var(--meta);margin-bottom:var(--space-3)}
+.empty p{color:var(--muted);max-width:52ch;margin:0 auto var(--space-5);font-size:var(--text-sm);line-height:1.6}
+
+/* ═══ report footer / provenance ═══ */
+.provenance{border-top:1px solid var(--border);margin-top:var(--space-8);padding-top:var(--space-5)}
+.steps{display:flex;gap:var(--space-2);align-items:center;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);flex-wrap:wrap}
+.steps .on{color:var(--fg)}
+.steps .sep{color:var(--meta)}
+details.disc{border-top:1px solid var(--border-soft)}
+details.disc:first-of-type{border-top:0}
+details.disc summary{cursor:pointer;padding:var(--space-3) 0;font-size:var(--text-sm);color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:var(--space-3);align-items:center;min-height:40px}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::after{content:"+";font-family:var(--font-mono);color:var(--muted)}
+details.disc[open] summary::after{content:"–"}
+details.disc summary:hover{color:var(--fg)}
+details.disc summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details.disc .disc-body{padding-bottom:var(--space-4)}
+</style>
+</head>
+<body>
+
+<header class="topnav" data-od-id="topnav">
+  <div class="shell topnav-in">
+    <span class="wordmark" data-od-id="wordmark"><span class="mark" aria-hidden="true"></span>Deep Research</span>
+    <span class="localnote">localhost:8000 · single operator · no auth</span>
+    <nav class="navlinks" aria-label="Primary">
+      <a href="#" data-nav="compose" aria-current="page">New research</a>
+      <a href="#" data-nav="history">History</a>
+      <a href="states.html">States</a>
+    </nav>
+  </div>
+</header>
+
+<div class="switcher" data-od-id="state-switcher">
+  <div class="shell switcher-in">
+    <span class="sw-label">Session state</span>
+    <div class="seg" role="group" aria-label="Switch session state">
+      <button type="button" data-state="compose" aria-pressed="true">New research</button>
+      <button type="button" data-state="running" aria-pressed="false">Running · live</button>
+      <button type="button" data-state="complete" aria-pressed="false">Completed report</button>
+      <button type="button" data-state="history" aria-pressed="false">History</button>
+    </div>
+    <span class="sw-context" id="swContext">No active session</span>
+  </div>
+</div>
+
+<main id="content">
+<div class="shell">
+
+  <!-- ══════════════════ 1 · NEW RESEARCH ══════════════════ -->
+  <section class="screen is-on" id="screen-compose" data-od-id="screen-new-research" aria-labelledby="compose-h">
+    <div class="stack" style="gap:var(--space-8)">
+      <div class="prose">
+        <p class="eyebrow">Step 1 of 1 · configuration is validated before the run starts</p>
+        <h1 class="display" id="compose-h">Ask one question. Get one cited report.</h1>
+        <p class="lead" style="margin-top:var(--space-3)">A run takes minutes to tens of minutes. You can close this tab; the session keeps running while the process is alive, and the stream replays from its first event when you come back.</p>
+      </div>
+
+      <div class="compose">
+        <form class="card stack" data-od-id="new-research-form" onsubmit="return false">
+          <div class="field">
+            <label for="q">Research question</label>
+            <textarea class="textarea" id="q" name="query" rows="3" placeholder="How mature is quantum error correction?">What are the current constraints on grid-scale battery storage deployment?</textarea>
+            <p class="hint">Minimum 1 character. Trimmed before validation. The API does not echo this back — see the session list note below.</p>
+          </div>
+
+          <div class="fieldset">
+            <div class="field">
+              <label for="iters">Max iterations</label>
+              <input class="input mono" id="iters" name="max_iterations" type="number" min="1" step="1" value="3" />
+              <p class="hint">Macro refinement passes the Critic may request. Bound is checked by the graph, not the model.</p>
+            </div>
+            <div class="field">
+              <label for="fmt">Output format</label>
+              <select class="input" id="fmt" name="output_format">
+                <option value="markdown" selected>markdown</option>
+              </select>
+              <p class="hint">Only <span class="mono">markdown</span> is supported in this build.</p>
+            </div>
+            <div class="field">
+              <label for="outdir">Output directory</label>
+              <input class="input mono" id="outdir" name="config_overrides.output.directory" value="api-output/" />
+              <p class="hint">Sent as <span class="mono">config_overrides.output.directory</span>.</p>
+            </div>
+          </div>
+
+          <details class="disc" data-od-id="advanced-overrides">
+            <summary>Advanced overrides · <span class="mono">config_overrides</span></summary>
+            <div class="disc-body stack">
+              <div class="field">
+                <label for="critic-model">Critic model override</label>
+                <input class="input mono" id="critic-model" value="deepseek-v4-pro" />
+                <p class="hint">Path <span class="mono">llm.model_overrides.critic</span>. Unknown paths are rejected with 422 before the session is registered.</p>
+              </div>
+              <div class="field">
+                <label for="effort">Reasoning effort</label>
+                <select class="input" id="effort">
+                  <option>medium</option><option selected>high</option><option>max</option>
+                </select>
+                <p class="hint">Path <span class="mono">llm.reasoning_effort</span>. The provider registry rejects unsupported pairs.</p>
+              </div>
+            </div>
+          </details>
+
+          <hr />
+          <div class="row-between">
+            <div class="stack-2">
+              <span class="avail-mono">POST /research → 202 ResearchSessionResponse</span>
+              <span class="avail">A rejected override returns 422 with field locations and types only — never the value you sent.</span>
+            </div>
+            <button class="btn btn-primary" type="submit" data-od-id="cta-start-research">Start research</button>
+          </div>
+        </form>
+
+        <aside class="rail" data-od-id="compose-rail" aria-label="Session facts">
+          <div class="card stack-2">
+            <h2 class="card-title">What the session returns</h2>
+            <p class="sm">Eight fields. Everything this console renders is derived from them plus the event stream.</p>
+            <dl class="kv">
+              <dt>session_id</dt><dd>8f2c1d90</dd>
+              <dt>status</dt><dd>running</dd>
+              <dt>current_agent</dt><dd>planner</dd>
+              <dt>iteration</dt><dd>0</dd>
+              <dt>started_at</dt><dd>14:02:11Z</dd>
+              <dt>finished_at</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+              <dt>report_path</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+              <dt>trace_url</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+              <dt>errors</dt><dd>0</dd>
+            </dl>
+          </div>
+          <div class="card stack-2">
+            <h2 class="card-title">Recent sessions</h2>
+            <p class="sm">Process-local. Sessions live in memory only, so this list is the operator's own record and resets when the API restarts.</p>
+            <div class="stack-2">
+              <a class="row-between" href="#" style="gap:var(--space-3)">
+                <span class="sm" style="color:var(--fg)">Grid-scale battery storage</span>
+                <span class="cap">12m 40s</span>
+              </a>
+              <a class="row-between" href="#" style="gap:var(--space-3)">
+                <span class="sm" style="color:var(--fg)">Quantum error correction maturity</span>
+                <span class="cap">3 passes</span>
+              </a>
+              <a class="row-between" href="#" style="gap:var(--space-3)">
+                <span class="sm" style="color:var(--fg)">Solid-state electrolyte scale-up</span>
+                <span class="cap">failed</span>
+              </a>
+            </div>
+            <a class="btn btn-ghost btn-sm btn-block" href="#" data-nav="history" style="margin-top:var(--space-2)">All sessions</a>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ 2 · RUNNING ══════════════════ -->
+  <section class="screen" id="screen-running" data-od-id="screen-running" aria-labelledby="running-h">
+    <div class="stack" style="gap:var(--space-6)">
+      <div class="row-between">
+        <div class="stack-2">
+          <p class="eyebrow">Session 8f2c1d90 · started 14:02:11Z</p>
+          <h1 class="display" id="running-h" style="font-size:var(--text-3xl)">What are the current constraints on grid-scale battery storage deployment?</h1>
+        </div>
+        <div class="row wrap">
+          <span class="chip chip-lg" data-od-id="status-running"><span class="dot dot-live" aria-hidden="true"></span>Running <span class="kind">· iteration <span class="mono" id="liveIter">1</span> of 3</span></span>
+          <button class="btn btn-ghost btn-sm" type="button" id="pauseStream">Pause stream</button>
+        </div>
+      </div>
+
+      <div class="investigate">
+        <div class="stack" style="gap:var(--space-6)">
+          <div class="card" data-od-id="live-progress">
+            <div class="row-between" style="margin-bottom:var(--space-4)">
+              <h2 class="card-title">Live progress</h2>
+              <span class="avail-mono" id="streamState" role="status" aria-live="polite">GET /research/8f2c1d90/stream · event id 47</span>
+            </div>
+            <div class="metrics" style="margin-bottom:var(--space-5)">
+              <div class="metric"><div class="val" id="mEvents">47</div><div class="lbl">events received</div></div>
+              <div class="metric"><div class="val" id="mNodes">3</div><div class="lbl">nodes completed</div></div>
+              <div class="metric"><div class="val" id="mSubtopics">4</div><div class="lbl">sub-topics researched</div></div>
+              <div class="metric"><div class="val" id="mElapsed">12:15</div><div class="lbl">elapsed</div></div>
+            </div>
+            <hr />
+            <div style="padding-top:var(--space-4)">
+              <div class="row-between" style="margin-bottom:var(--space-3)">
+                <span class="sm">Event tail</span>
+                <span class="avail-mono">replayed from id 1, then followed live</span>
+              </div>
+              <ul class="log" id="logSide" aria-label="Event stream, primary column"></ul>
+              <div class="lognote">
+                <span class="avail-mono" id="logCountSide">showing the last 40</span>
+                <a href="#" class="sm" data-nav="history">Open session in history</a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card flat" data-od-id="running-next">
+            <div class="row-between">
+              <div class="stack-2">
+                <h2 class="card-title">Nothing to read yet</h2>
+                <p class="sm">The report endpoint returns <span class="mono">409 session_not_complete</span> until the session produces an outcome. This screen switches to the report view on its own when <span class="mono">status</span> leaves <span class="mono">running</span>.</p>
+              </div>
+              <span class="avail-mono">GET /report → 409</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="rail" data-od-id="running-rail" aria-label="Run details">
+          <div class="card stack" style="gap:var(--space-4)">
+            <h2 class="card-title">Pipeline</h2>
+            <ol class="spine" id="spine" aria-label="Pipeline stages"></ol>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Session facts</h2>
+            <dl class="kv">
+              <dt>status</dt><dd>running</dd>
+              <dt>current_agent</dt><dd id="kCurrentAgent">fact_checker</dd>
+              <dt>iteration</dt><dd id="kIteration">1</dd>
+              <dt>started_at</dt><dd>14:02:11Z</dd>
+              <dt>finished_at</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+              <dt>report_path</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+              <dt>trace_url</dt><dd class="avail" style="font-family:var(--font-body)">Not available while running</dd>
+            </dl>
+            <p class="avail">The trace link is published with the session outcome. While a run is live it is simply absent, and it is shown as text rather than as a disabled control.</p>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Cost and usage</h2>
+            <dl class="kv">
+              <dt>tool calls</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+              <dt>input tokens</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+              <dt>output tokens</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+            </dl>
+            <p class="avail">Not served by the API. A run whose providers report nothing sums to zero, and zero is not a fact about this run — so the fields stay absent.</p>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Event log</h2>
+            <div class="logbox" id="logboxRail">
+              <ul class="log" id="logRail" aria-label="Event stream"></ul>
+            </div>
+            <p class="avail-mono" id="logCountRail">showing the last 40 of 47</p>
+          </div>
+
+          <div class="card stack-2" data-od-id="running-errors">
+            <div class="row-between">
+              <h2 class="card-title">Recoverable errors</h2>
+              <span class="chip chip-bare mono" style="font-size:var(--text-sm)">2</span>
+            </div>
+            <p class="sm">Recoverable errors do not end a run and are disclosed in the report's Limitations section. They are counted here and never raised as a banner.</p>
+            <div class="stack-2">
+              <span class="avail-mono">researcher_sub_topic_without_findings · researcher</span>
+              <span class="avail-mono">source_evaluator_reputation_unavailable · source_evaluator</span>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ 3 · COMPLETED REPORT ══════════════════ -->
+  <section class="screen" id="screen-complete" data-od-id="screen-completed-report" aria-labelledby="complete-h">
+    <div class="stack" style="gap:var(--space-6)">
+      <div class="row-between">
+        <div class="stack-2">
+          <p class="eyebrow">Session 8f2c1d90 · finished 14:14:51Z · 12m 40s · 3 passes</p>
+          <h1 class="display" id="complete-h" style="font-size:var(--text-3xl)">What are the current constraints on grid-scale battery storage deployment?</h1>
+        </div>
+        <div class="row wrap">
+          <span class="chip chip-lg" data-od-id="status-completed"><span class="dot dot-ok" aria-hidden="true"></span>Completed <span class="kind">· quality gates accepted</span></span>
+        </div>
+      </div>
+
+      <div class="investigate">
+        <div class="stack" style="gap:var(--space-6)">
+          <div class="card" data-od-id="report-actions">
+            <div class="row-between">
+              <div class="stack-2">
+                <h2 class="card-title">Reader report</h2>
+                <span class="avail-mono">GET /research/8f2c1d90/report · text/markdown · 127,872 bytes on disk</span>
+              </div>
+              <div class="row wrap">
+                <a class="btn btn-primary" href="#" data-od-id="cta-download-report">Download report.md</a>
+                <a class="btn btn-ghost" href="#" data-od-id="cta-open-trace">Open LangSmith trace <span aria-hidden="true">↗</span></a>
+              </div>
+            </div>
+          </div>
+
+          <div class="card stack" style="gap:var(--space-5)" data-od-id="report-body">
+            <div class="prose">
+              <h2 style="margin-top:0">Executive summary</h2>
+              <p>The constraints best supported by this pass's evidence are grid connection, documented almost entirely through U.S. data, and the concentration of battery supply chains in China. In the United States, 2,600 GW of proposed generation and storage projects were waiting for grid access at the end of 2023, typical waits stretch to five years or more, fewer than a quarter of queued projects are expected to reach completion at current rates, and delay carries quantified costs to consumers. <a class="cite" href="#citations">[8][10][13]</a></p>
+              <p>On the supply side, the IEA reports that China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024, is projected to remain dominant through 2035, and estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk. <a class="cite" href="#citations">[1][2][4]</a></p>
+              <p>FERC's Order 2023 and Order 2023-A introduced queue reform, including stronger financial and site-control requirements and improved storage modeling, and U.S. queue capacity fell for the first time in 2024, but the evidence does not show the bottleneck resolved. <a class="cite" href="#citations">[13]</a></p>
+              <p>Several constraint families raised in review remain unevidenced in this pass: tariffs and trade barriers, siting, permitting and fire-code compliance, wholesale market eligibility and accreditation rules, non-U.S. connection regimes, equipment lead times, and financing conditions.</p>
+
+              <h3>Grid connection as the binding timing constraint</h3>
+              <p>Grid connection is the most fully evidenced constraint on grid-scale battery deployment in this pass, although the grid-side evidence is confined to the United States. As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. Research cited from Lawrence Berkeley National Laboratory puts the average wait in U.S. interconnection queues at five years and indicates that, at current rates, less than a quarter of the energy projects entering those queues will make it to completion. <a class="cite" href="#citations">[13]</a></p>
+              <p>Aggregated reporting across U.S. ISOs and RTOs places over 2,000 GW in queues, with delays stretching from three to seven years in some markets. The delay is not limited to generators, as Google has reported potential transmission grid connection delays of up to 12 years for new data centers. <a class="cite" href="#citations">[11]</a></p>
+
+              <h3>Critical minerals and supply-chain concentration</h3>
+              <p>Battery deployment also depends on a supply chain whose midstream is heavily concentrated in one country. The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70 to 95 percent of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#citations">[2]</a></p>
+              <p>The trend in the evidence runs toward more exposure, not less: excluding rare earths, the average share of mineral supply held by China rose to 72 percent in 2025 from 70 percent in 2023, and the number of mineral tariff categories covered by China's export controls has tripled since 2023. <a class="cite" href="#citations">[4][6]</a></p>
+
+              <h2>Verified claims</h2>
+              <ul>
+                <li>As of the end of 2023, 2,600 GW of proposed U.S. generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more. <a class="cite" href="#citations">[13]</a> <span class="cap">confidence 0.90</span></li>
+                <li>The IEA reports that China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70–95% of global lithium, cobalt, phosphate and graphite. <a class="cite" href="#citations">[2]</a> <span class="cap">confidence 0.88</span></li>
+                <li>FERC's Order 2023 mandated U.S. interconnection queue reform and included stronger financial and site control requirements to discourage speculative projects, plus improved storage modeling, with Order 2023-A reaffirming most of it. <a class="cite" href="#citations">[13]</a> <span class="cap">confidence 0.92</span></li>
+                <li>For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay. <a class="cite" href="#citations">[11]</a> <span class="cap">confidence 0.90</span></li>
+              </ul>
+
+              <h2>Uncertainty and conflicting evidence</h2>
+              <p>Several things should temper confidence in the picture above. The grid-side evidence is U.S.-only: non-U.S. connection regimes were sought in this pass but produced no verified claim or retrieved finding. One claim was contradicted: an assertion that the U.S. queue had swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years was rejected, while a verified claim places 2,600 GW in the queue as of the end of 2023. Queue magnitude estimates also conflict, and several central numbers rest on sources this pass flagged low confidence.</p>
+
+              <h2>Limitations</h2>
+              <ul>
+                <li>Some steps of this research pass failed; sections of this report may be incomplete.</li>
+                <li>The refinement budget was exhausted before the critic accepted the report.</li>
+                <li>Some sources behind these findings were flagged low confidence.</li>
+                <li>At least one claim was contradicted by an independent source.</li>
+                <li>Six constraint families named in review remain unsupported by any verified claim.</li>
+                <li>Grid-side evidence is confined to the United States.</li>
+              </ul>
+
+              <h2 id="citations">Citations</h2>
+              <p class="sm" style="max-width:var(--reading-max)">Numbered locally: evaluated sources first, then any claim source not already numbered. The full 80-row appendix is in the evidence ledger, which this interface cannot fetch — see the note below.</p>
+            </div>
+
+            <div data-od-id="citations-table">
+              <table class="tbl">
+                <thead>
+                  <tr><th class="n">#</th><th>Source</th><th class="n">Score</th><th>Band</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td class="n">1</td><td class="wrapcell"><a class="title-link" href="#">Resource Nationalism and the Resilience of Critical Mineral Supply Chains</a><br /><span class="cap">rff.org</span></td><td class="n">0.76</td><td>normal</td></tr>
+                  <tr><td class="n">2</td><td class="wrapcell"><a class="title-link" href="#">Global Critical Minerals Outlook 2025</a><br /><span class="cap">iea.blob.core.windows.net</span></td><td class="n">0.91</td><td>normal</td></tr>
+                  <tr><td class="n">4</td><td class="wrapcell"><a class="title-link" href="#">Why the IEA says critical minerals have become a $6.5 trillion economic security risk</a><br /><span class="cap">aa.com.tr</span></td><td class="n">0.74</td><td>normal</td></tr>
+                  <tr><td class="n">6</td><td class="wrapcell"><a class="title-link" href="#">Critical Minerals and Materials for Selected Energy Technologies</a><br /><span class="cap">congress.gov · CRS R48149</span></td><td class="n">0.78</td><td>normal</td></tr>
+                  <tr><td class="n">11</td><td class="wrapcell"><a class="title-link" href="#">Grid Interconnection Delays 2026: A Threat to US Energy</a><br /><span class="cap">enkiai.com · contradicted one claim</span></td><td class="n">0.67</td><td>normal</td></tr>
+                  <tr><td class="n">12</td><td class="wrapcell"><a class="title-link" href="#">Interconnection Queues: The Obstacle in Renewable Projects</a><br /><span class="cap">zeroemissiongrid.com</span></td><td class="n">0.75</td><td>normal</td></tr>
+                  <tr><td class="n">13</td><td class="wrapcell"><a class="title-link" href="#">Resolving the Interconnection Queue Bottleneck</a><br /><span class="cap">novoco.com</span></td><td class="n">0.20</td><td>low confidence</td></tr>
+                </tbody>
+              </table>
+              <p class="tbl-foot">Seven of the report's 80 citations. Rows 13, 14 and 15 were cited for verified claims and still scored 0.20 — flagged low confidence, past this run's scoring cap.</p>
+            </div>
+
+            <div class="note" data-od-id="ledger-note">
+              <div class="note-head"><span class="mk">gap</span>Evidence ledger not reachable from the API</div>
+              <p>The runner produces two artifacts per pass — the reader report and the full evidence ledger — and <span class="mono">ResearchOutcome</span> carries both paths. The session snapshot returns only <span class="mono">report_path</span>, so this console cannot link the ledger. Shown as text here rather than as a disabled button.</p>
+            </div>
+          </div>
+
+          <div class="card" data-od-id="report-provenance">
+            <h2 class="card-title" style="margin-bottom:var(--space-4)">How this report was produced</h2>
+            <div class="steps" aria-label="Route decisions taken">
+              <span>planner</span><span class="sep">→</span><span>researcher</span><span class="sep">→</span><span>source_evaluator</span><span class="sep">→</span><span>fact_checker</span><span class="sep">→</span><span>synthesizer</span><span class="sep">→</span><span>critic</span><span class="sep">→</span><span class="on">refine</span><span class="sep">×3</span><span class="sep">→</span><span>finalize_report</span>
+            </div>
+            <hr style="margin:var(--space-4) 0" />
+            <div class="grid-2">
+              <div class="stack-2">
+                <span class="sm">Terminal status</span>
+                <span class="mono" style="font-size:var(--text-sm)">completed · critique_satisfied</span>
+              </div>
+              <div class="stack-2">
+                <span class="sm">Quality status</span>
+                <span class="mono" style="font-size:var(--text-sm)">accepted</span>
+              </div>
+              <div class="stack-2">
+                <span class="sm">Recoverable errors</span>
+                <span class="mono" style="font-size:var(--text-sm)">2 · both disclosed in Limitations</span>
+              </div>
+              <div class="stack-2">
+                <span class="sm">Non-recoverable errors</span>
+                <span class="mono" style="font-size:var(--text-sm)">0</span>
+              </div>
+            </div>
+            <p class="avail" style="margin-top:var(--space-4)">Route decisions, the terminal status and the quality status all read the same pure function on the server, so they cannot disagree. The front end must not infer acceptance from <span class="mono">status == "completed"</span> alone.</p>
+          </div>
+        </div>
+
+        <aside class="rail" data-od-id="report-rail" aria-label="Report details">
+          <div class="card stack-2">
+            <h2 class="card-title">On this page</h2>
+            <nav class="stack-2" aria-label="Report contents">
+              <a class="sm" href="#" style="color:var(--fg)">Executive summary</a>
+              <a class="sm" href="#" style="color:var(--fg)">Verified claims</a>
+              <a class="sm" href="#" style="color:var(--fg)">Uncertainty and conflicting evidence</a>
+              <a class="sm" href="#" style="color:var(--fg)">Limitations</a>
+              <a class="sm" href="#" style="color:var(--fg)">Citations</a>
+            </nav>
+            <p class="avail">Headings are read from the Markdown body. The API serves no structured report, so every item here is derived from parsing text.</p>
+          </div>
+
+          <div class="card stack" style="gap:var(--space-4)" data-od-id="report-quality">
+            <div>
+              <h2 class="card-title">Quality snapshot</h2>
+              <p class="avail" style="margin-top:var(--space-2)">Not served by the API. Values below are transcribed from the published report's own evidence table, not fetched.</p>
+            </div>
+            <div class="bars">
+              <div class="bar-row"><span class="sm" style="color:var(--fg)">Claim confidence</span><span class="bar"><span class="ok" style="width:90%"></span></span><span class="num">0.90</span></div>
+              <div class="bar-row"><span class="sm" style="color:var(--fg)">Source authority</span><span class="bar"><span style="width:91%"></span></span><span class="num">0.91</span></div>
+              <div class="bar-row"><span class="sm" style="color:var(--fg)">Corroboration</span><span class="bar"><span style="width:100%"></span></span><span class="num">1.00</span></div>
+              <div class="bar-row"><span class="sm" style="color:var(--fg)">Scored sources cited</span><span class="bar"><span style="width:20%"></span></span><span class="num">0.20</span></div>
+            </div>
+            <hr />
+            <div class="metrics" style="grid-template-columns:1fr 1fr">
+              <div class="metric"><div class="val">80</div><div class="lbl">sources evaluated</div></div>
+              <div class="metric"><div class="val">19</div><div class="lbl">claims checked</div></div>
+              <div class="metric"><div class="val">1</div><div class="lbl">contradicted claim</div></div>
+              <div class="metric"><div class="val">6</div><div class="lbl">unsupported families</div></div>
+            </div>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Cost and usage</h2>
+            <dl class="kv">
+              <dt>tool calls</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+              <dt>input tokens</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+              <dt>output tokens</dt><dd class="avail" style="font-family:var(--font-body)">Not recorded</dd>
+            </dl>
+            <p class="avail">The runner holds token totals and per-tool call counts, but the session response carries neither. Nothing is rendered as <span class="mono">0</span>.</p>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Artifacts</h2>
+            <dl class="kv">
+              <dt>report_path</dt><dd class="plain">output/report.md</dd>
+              <dt>evidence_path</dt><dd class="avail" style="font-family:var(--font-body)">Not in response</dd>
+              <dt>trace_url</dt><dd class="plain"><a href="#" style="color:var(--accent)">smith.langchain.com ↗</a></dd>
+            </dl>
+            <p class="avail">Paths are server-local filesystem paths. Only the report body is fetchable over HTTP.</p>
+          </div>
+
+          <div class="card stack-2">
+            <h2 class="card-title">Recoverable errors</h2>
+            <details class="disc">
+              <summary>2 recorded during the run</summary>
+              <div class="disc-body stack-2">
+                <span class="avail-mono">researcher_sub_topic_without_findings</span>
+                <span class="avail-mono">source_evaluator_reputation_unavailable</span>
+                <p class="avail">Both are recoverable: research continued with short-term state, and both appear in Limitations.</p>
+              </div>
+            </details>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════ 4 · HISTORY ══════════════════ -->
+  <section class="screen" id="screen-history" data-od-id="screen-session-history" aria-labelledby="history-h">
+    <div class="stack" style="gap:var(--space-6)">
+      <div class="row-between">
+        <div class="stack-2">
+          <p class="eyebrow">Process-local sessions · cleared when the API restarts</p>
+          <h1 class="display" id="history-h" style="font-size:var(--text-3xl)">Session history</h1>
+        </div>
+        <div class="row wrap">
+          <span class="avail-mono">no GET /research — list assembled from this client's own starts</span>
+          <a class="btn btn-ghost btn-sm" href="#" data-nav="compose">New research</a>
+        </div>
+      </div>
+
+      <div class="card flat" data-od-id="history-filters">
+        <div class="row-between">
+          <div class="seg" role="group" aria-label="Filter by status">
+            <button type="button" aria-pressed="true">All <span class="cap">6</span></button>
+            <button type="button" aria-pressed="false">Running <span class="cap">1</span></button>
+            <button type="button" aria-pressed="false">Completed <span class="cap">3</span></button>
+            <button type="button" aria-pressed="false">Partial <span class="cap">1</span></button>
+            <button type="button" aria-pressed="false">Failed <span class="cap">1</span></button>
+          </div>
+          <label class="toggle"><input type="checkbox" checked /> Auto-refresh running rows</label>
+        </div>
+      </div>
+
+      <div data-od-id="history-list">
+        <div class="hrow" style="border-top:0;padding-top:0">
+          <span class="cap">Started</span><span class="cap">Question</span><span class="cap">Status</span><span class="cap right">Duration</span>
+        </div>
+
+        <a class="hrow" href="#" data-od-id="history-row-running">
+          <span class="date">14:02:11Z</span>
+          <span class="q">What are the current constraints on grid-scale battery storage deployment?<span class="sub">8f2c1d90 · iteration 1 of 3 · fact_checker</span></span>
+          <span><span class="chip"><span class="dot dot-live" aria-hidden="true"></span>Running</span></span>
+          <span class="right">12m 15s</span>
+        </a>
+
+        <a class="hrow" href="#" data-od-id="history-row-completed">
+          <span class="date">11:48:03Z</span>
+          <span class="q">How mature is quantum error correction?<span class="sub">b41e77aa · accepted · 41 sources · 12 claims</span></span>
+          <span><span class="chip"><span class="dot dot-ok" aria-hidden="true"></span>Completed</span></span>
+          <span class="right">9m 12s</span>
+        </a>
+
+        <a class="hrow" href="#" data-od-id="history-row-partial">
+          <span class="date">09:15:40Z</span>
+          <span class="q">What limits solid-state electrolyte scale-up for EV cells?<span class="sub">7c0d13ff · max_iterations · refinement budget exhausted before the critic accepted</span></span>
+          <span><span class="chip"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed</span></span>
+          <span class="right">14m 02s</span>
+        </a>
+
+        <a class="hrow" href="#" data-od-id="history-row-failed">
+          <span class="date">Yesterday 17:22Z</span>
+          <span class="q">Compare EU and UK grid connection reform outcomes.<span class="sub">2ad900b1 · graph_provider_configuration_error · no artifact published</span></span>
+          <span><span class="chip"><span class="dot dot-danger" aria-hidden="true"></span>Failed</span></span>
+          <span class="right">0m 04s</span>
+        </a>
+
+        <a class="hrow" href="#" data-od-id="history-row-completed-2">
+          <span class="date">Yesterday 15:04Z</span>
+          <span class="q">What is the measured cost of interconnection queue delay?<span class="sub">9ea4c220 · accepted · refinement requested once</span></span>
+          <span><span class="chip"><span class="dot dot-ok" aria-hidden="true"></span>Completed</span></span>
+          <span class="right">11m 30s</span>
+        </a>
+
+        <a class="hrow" href="#" data-od-id="history-row-incomplete">
+          <span class="date">Yesterday 13:40Z</span>
+          <span class="q">Which fire-code standards govern BESS siting in the U.S.?<span class="sub">5ff1ab07 · incomplete · no critique recorded, so no refinement was justified</span></span>
+          <span><span class="chip"><span class="dot dot-warn" aria-hidden="true"></span>Partially completed</span></span>
+          <span class="right">6m 58s</span>
+        </a>
+
+        <p class="tbl-foot">Two of these rows report <span class="mono">incomplete</span> and <span class="mono">max_iterations</span> — different server reasons, one interface status. The sub-line carries the distinction so the two are never read as the same outcome.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="note attn" data-od-id="history-gap-note">
+          <div class="note-head"><span class="mk">gap</span>This list is client-side</div>
+          <p>The API exposes no collection route and no persisted store: sessions are process-local memory. This screen can only show sessions this browser started, and it forgets them when the API restarts or the browser storage is cleared.</p>
+        </div>
+        <div class="note" data-od-id="history-unavailable-note">
+          <div class="note-head"><span class="mk">note</span>Unavailable values in this table</div>
+          <p>A session with no finished_at has no duration, so the row reads <span class="mono">Running</span> rather than a timer that would have to guess. A session with no report_path has no artifact column to fill. Neither becomes a dash.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</main>
+
+<script>
+(function(){
+  "use strict";
+  var KEY = "dr.prototype.state";
+  var screens = {compose:1, running:1, complete:1, history:1};
+  var context = {
+    compose: "No active session",
+    running: "Session 8f2c1d90 · live",
+    complete: "Session 8f2c1d90 · finished",
+    history: "6 sessions in this process"
+  };
+  var nav = {compose:"compose", running:"compose", complete:"compose", history:"history"};
+
+  function setState(name, persist){
+    if(!screens[name]) name = "compose";
+    Object.keys(screens).forEach(function(k){
+      var el = document.getElementById("screen-" + k);
+      if(el) el.classList.toggle("is-on", k === name);
+    });
+    document.querySelectorAll(".seg [data-state]").forEach(function(b){
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-state") === name));
+    });
+    var ctx = document.getElementById("swContext");
+    if(ctx) ctx.textContent = context[name];
+    document.querySelectorAll(".navlinks a[data-nav]").forEach(function(a){
+      if(a.getAttribute("data-nav") === nav[name]) a.setAttribute("aria-current","page");
+      else a.removeAttribute("aria-current");
+    });
+    if(persist){ try { localStorage.setItem(KEY, name); } catch(e){} }
+    if(name === "running") startStream(); else stopStream();
+    if(name === "complete" || name === "history") stopStream();
+  }
+
+  document.querySelectorAll(".seg [data-state]").forEach(function(btn){
+    btn.addEventListener("click", function(){ setState(btn.getAttribute("data-state"), true); });
+  });
+  document.querySelectorAll("[data-nav]").forEach(function(a){
+    a.addEventListener("click", function(ev){
+      ev.preventDefault();
+      var target = a.getAttribute("data-nav");
+      setState(target === "states" ? "compose" : target, true);
+    });
+  });
+  document.querySelectorAll('[data-od-id="history-filters"] .seg button').forEach(function(b){
+    b.addEventListener("click", function(){
+      b.parentNode.querySelectorAll("button").forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      b.setAttribute("aria-pressed","true");
+    });
+  });
+
+  /* ── pipeline spine ── */
+  var STAGES = [
+    {id:"planner", label:"Planning", meta:"3–7 sub-topics, schema-validated"},
+    {id:"researcher", label:"Researching", meta:"web_search · web_scraper · document_reader"},
+    {id:"source_evaluator", label:"Evaluating sources", meta:"authority · recency · relevance · corroboration"},
+    {id:"fact_checker", label:"Checking claims", meta:"one bounded loop per major claim"},
+    {id:"synthesizer", label:"Writing report", meta:"one structured call, skeleton rendered locally"},
+    {id:"critic", label:"Reviewing", meta:"score against acceptance threshold"},
+    {id:"refine", label:"Refinement pass", meta:"returns to researching"},
+    {id:"finalize_report", label:"Publishing", meta:"reader report + evidence ledger"}
+  ];
+  var spineDone = {planner:"done", researcher:"loop", source_evaluator:"done", fact_checker:"active"};
+
+  function renderSpine(){
+    var ol = document.getElementById("spine");
+    if(!ol) return;
+    ol.innerHTML = "";
+    STAGES.forEach(function(s, i){
+      var state = spineDone[s.id] || "pending";
+      var li = document.createElement("li");
+      li.setAttribute("data-state", state);
+      var mark = state === "done" ? "✓" : (state === "active" ? "●" : (state === "loop" ? "↺" : String(i+1)));
+      li.innerHTML = '<span class="bullet" aria-hidden="true">' + mark + '</span>' +
+        '<span><span class="stage-name">' + s.label + '</span>' +
+        '<span class="stage-meta">' + s.meta + '</span></span>';
+      ol.appendChild(li);
+    });
+  }
+
+  /* ── event stream ── */
+  var EVENTS = [
+    ["graph.session.started","graph","Session started.",{"session_id":"8f2c1d90","max_iterations":3,"checkpointing":true}],
+    ["graph.node.started","graph.planner","Node planner started.",{"node":"planner","iteration":0}],
+    ["planner.planning.started","planner","Planning started.",{"iteration":0,"min_sub_topics":3,"max_sub_topics":7}],
+    ["planner.memory.recalled","planner","Prior findings recalled.",{"recalled_findings":4,"suggested_strategies":2}],
+    ["planner.planning.completed","planner","Plan validated.",{"sub_topic_count":6,"repair_attempted":false,"stop_reason":"finished"}],
+    ["graph.node.completed","graph.planner","Node planner completed.",{"node":"planner","iteration":0,"event_count":5,"error_count":0}],
+    ["graph.node.started","graph.researcher","Node researcher started.",{"node":"researcher","iteration":0}],
+    ["researcher.sub_topic.started","researcher","Sub-topic 1 started.",{"sub_topic":"Grid interconnection queue backlog","priority":1,"existing_sources":0}],
+    ["researcher.tool_call","researcher","Tool web_search returned 5 results.",{"tool":"web_search","iteration":1,"success":true}],
+    ["researcher.tool_call","researcher","Tool web_scraper retrieved 18.4k characters.",{"tool":"web_scraper","iteration":1,"success":true}],
+    ["researcher.sub_topic.completed","researcher","Sub-topic 1 completed with 4 findings.",{"stop_reason":"sufficient","iterations":2,"tool_calls":3,"findings":4}],
+    ["researcher.sub_topic.started","researcher","Sub-topic 2 started.",{"sub_topic":"Critical mineral processing concentration","priority":1,"existing_sources":2}],
+    ["researcher.tool_call","researcher","Tool web_search returned 5 results.",{"tool":"web_search","iteration":1,"success":true}],
+    ["researcher.tool_call","researcher","Tool query_memory returned 3 prior findings.",{"tool":"query_memory","iteration":2,"success":true}],
+    ["researcher.sub_topic.started","researcher","Sub-topic 3 started.",{"sub_topic":"Transmission build-out lead times","priority":2,"existing_sources":1}],
+    ["researcher.tool_call","researcher","Tool web_search timed out.",{"tool":"web_search","iteration":1,"success":false,"error_type":"tool_timeout"}],
+    ["researcher.tool_call","researcher","Tool document_reader retrieved 6.2k characters.",{"tool":"document_reader","iteration":2,"success":true}],
+    ["researcher.sub_topic.started","researcher","Sub-topic 4 started.",{"sub_topic":"Interconnection cost allocation","priority":2,"existing_sources":0}],
+    ["researcher.sub_topic.completed","researcher","Sub-topic 4 completed with 2 findings.",{"stop_reason":"max_iterations","iterations":3,"tool_calls":4,"findings":2}],
+    ["researcher.research.completed","researcher","Research pass completed.",{"sub_topics_planned":6,"sub_topics_researched":4,"sub_topics_skipped":2,"findings":17}],
+    ["graph.node.completed","graph.researcher","Node researcher completed.",{"node":"researcher","iteration":0,"event_count":13,"error_count":1}],
+    ["graph.node.started","graph.source_evaluator","Node source_evaluator started.",{"node":"source_evaluator","iteration":0}],
+    ["source_evaluator.evaluation.started","source_evaluator","Source evaluation started.",{"finding_count":17,"source_count":22}],
+    ["source_evaluator.evaluation.completed","source_evaluator","Sources scored.",{"source_count":22,"average_score":0.68,"low_confidence_count":9,"reputation_hits":3,"reputation_failures":0}],
+    ["graph.node.completed","graph.source_evaluator","Node source_evaluator completed.",{"node":"source_evaluator","iteration":0,"event_count":3,"error_count":0}],
+    ["graph.node.started","graph.fact_checker","Node fact_checker started.",{"node":"fact_checker","iteration":0}],
+    ["fact_checker.claims.extracted","fact_checker","Claims extracted.",{"claim_count":19,"findings_considered":17,"sources_considered":22}],
+    ["fact_checker.claim.checked","fact_checker","Claim verified.",{"claim":"2,600 GW of U.S. generation and storage projects waited for grid access","verdict":"verified","confidence":0.9,"contradictions":0,"independent_sources":2,"tool_calls":2}],
+    ["fact_checker.claim.checked","fact_checker","Claim contradicted by an independent source.",{"claim":"U.S. queue has swelled to a 2,600 GW backlog as of 2026","verdict":"contradicted","confidence":0.4,"contradictions":2,"independent_sources":1,"tool_calls":3}],
+    ["fact_checker.claim.checked","fact_checker","Evidence insufficient to judge.",{"claim":"Median wait time is approaching five years","verdict":"insufficient_evidence","confidence":0.0,"contradictions":0,"independent_sources":0,"tool_calls":2,"reason":"no_independent_domain"}],
+    ["fact_checker.fact_check.completed","fact_checker","Fact check completed.",{"claim_count":19,"verified":12,"unverified":4,"contradicted":1,"insufficient_evidence":2,"contradiction_count":2,"tool_calls":31}],
+    ["graph.node.completed","graph.fact_checker","Node fact_checker completed.",{"node":"fact_checker","iteration":0,"event_count":5,"error_count":0}],
+    ["graph.node.started","graph.synthesizer","Node synthesizer started.",{"node":"synthesizer","iteration":0}],
+    ["synthesizer.synthesis.started","synthesizer","Composition started.",{"claim_count":19,"source_count":22,"finding_count":17,"limitation_count":6}],
+    ["synthesizer.synthesis.completed","synthesizer","Reader report composed.",{"section_count":7,"citation_count":80,"source_appendix_count":80,"output_path":"api-output/report.md","saved_findings":10,"report_chars":124880,"limitations":6}],
+    ["graph.node.completed","graph.synthesizer","Node synthesizer completed.",{"node":"synthesizer","iteration":0,"event_count":3,"error_count":0}],
+    ["graph.node.started","graph.critic","Node critic started.",{"node":"critic","iteration":0}],
+    ["critic.critique.started","critic","Review started.",{"iteration":0,"max_iterations":3,"claim_count":19,"has_report":true}],
+    ["critic.critique.completed","critic","Critique returned a refinement request.",{"score":6,"gap_count":6,"unsupported_claim_count":4,"recommended_query_count":8,"should_continue":true,"reason":"unsupported_constraint_families","tool_calls":2}],
+    ["graph.route.decided","graph","Route decided: refine.",{"destination":"refine","reason":"refinement_requested","iteration":0,"max_iterations":3,"should_continue":true}],
+    ["graph.refinement.started","graph","Refinement pass 1 started.",{"iteration":1,"max_iterations":3}],
+    ["graph.node.completed","graph.critic","Node critic completed.",{"node":"critic","iteration":0,"event_count":3,"error_count":0}],
+    ["graph.node.started","graph.researcher","Node researcher started.",{"node":"researcher","iteration":1}],
+    ["researcher.sub_topic.started","researcher","Sub-topic started: targeting critic gaps.",{"sub_topic":"Wholesale market rules and co-location","priority":1,"existing_sources":4}],
+    ["researcher.tool_call","researcher","Tool save_to_memory stored 10 verified findings.",{"tool":"save_to_memory","iteration":1,"success":true}],
+    ["researcher.sub_topic.completed","researcher","Sub-topic completed with 1 finding.",{"stop_reason":"sufficient","iterations":2,"tool_calls":2,"findings":1}]
+  ];
+  var ts = 0;
+  var items = EVENTS.map(function(e, i){
+    ts += 8 + (i * 7) % 31;
+    return {id:i+1, type:e[0], source:e[1], message:e[2], metadata:e[3], at:ts};
+  });
+  /* Rescale so the last frame lands on the session's real duration: this
+     session ran 12m 40s (760s), started 14:02:11Z, finished 14:14:51Z. */
+  var RUN_SECONDS = 760;
+  var rawTotal = items[items.length - 1].at;
+  items.forEach(function(e){ e.at = Math.round(e.at * RUN_SECONDS / rawTotal); });
+
+  var shown = 0, timer = null, playing = true, elapsed = 0;
+
+  function fmt(sec){
+    var m = Math.floor(sec/60), s = sec % 60;
+    return (m<10?"0":"") + m + ":" + (s<10?"0":"") + s;
+  }
+  function clock(sec){
+    var base = 14*3600 + 2*60 + 11 + sec;
+    var h = Math.floor(base/3600) % 24, m = Math.floor((base%3600)/60), s = base%60;
+    function p(n){ return (n<10?"0":"") + n; }
+    return p(h) + ":" + p(m) + ":" + p(s) + "Z";
+  }
+  function row(ev, isNew){
+    var li = document.createElement("li");
+    if(isNew) li.className = "is-new";
+    li.innerHTML = '<span class="t">' + clock(ev.at) + '</span><span class="body">' +
+      '<span class="etype">' + ev.type + '</span> ' +
+      '<span class="emsg">' + ev.message + '</span></span>';
+    return li;
+  }
+  function reduceMotion(){
+    return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+  function paint(){
+    var side = document.getElementById("logSide");
+    var rail = document.getElementById("logRail");
+    var box = document.getElementById("logboxRail");
+    var window40 = items.slice(Math.max(0, shown - 40), shown);
+    if(side){
+      side.innerHTML = "";
+      window40.slice(-8).forEach(function(e){ side.appendChild(row(e, false)); });
+    }
+    if(rail){
+      rail.innerHTML = "";
+      window40.forEach(function(e){ rail.appendChild(row(e, false)); });
+      if(box && !reduceMotion()) box.scrollTo({top: box.scrollHeight});
+    }
+    var count = "showing the last " + Math.min(40, shown) + " of " + shown + " events";
+    var cs = document.getElementById("logCountSide"); if(cs) cs.textContent = count;
+    var cr = document.getElementById("logCountRail"); if(cr) cr.textContent = count;
+    var me = document.getElementById("mEvents"); if(me) me.textContent = String(shown);
+    var st = document.getElementById("streamState");
+    if(st) st.textContent = playing
+      ? "GET /research/8f2c1d90/stream · event id " + shown
+      : "stream paused by operator · " + shown + " events held";
+  }
+  function tick(){
+    if(shown >= items.length){ stopStream(); return; }
+    shown += 1;
+    var ev = items[shown-1];
+    var m = document.getElementById("mElapsed");
+    if(m) m.textContent = fmt(ev.at);
+    if(ev.metadata && ev.metadata.node){
+      var node = ev.metadata.node;
+      if(ev.type === "graph.node.started"){
+        Object.keys(spineDone).forEach(function(k){ if(spineDone[k] === "active" || spineDone[k] === "loop") spineDone[k] = "done"; });
+        spineDone[node] = "active";
+        var ca = document.getElementById("kCurrentAgent"); if(ca) ca.textContent = node;
+      }
+      if(ev.type === "graph.node.completed" && spineDone[node] === "active"){ spineDone[node] = "done"; }
+      renderSpine();
+      var done = Object.keys(spineDone).filter(function(k){ return spineDone[k] === "done"; }).length;
+      var mn = document.getElementById("mNodes"); if(mn) mn.textContent = String(done);
+    }
+    if(ev.type === "graph.refinement.started" && ev.metadata.iteration != null){
+      var it = document.getElementById("liveIter"); if(it) it.textContent = String(ev.metadata.iteration + 1);
+      var ki = document.getElementById("kIteration"); if(ki) ki.textContent = String(ev.metadata.iteration + 1);
+    }
+    if(ev.type === "researcher.sub_topic.started"){
+      var ms = document.getElementById("mSubtopics");
+      if(ms && ev.metadata.priority === 1){
+        ms.textContent = String(Number(ms.textContent || 0) + 1);
+      }
+    }
+    paint();
+  }
+  function startStream(){
+    if(timer || !playing) return;
+    if(shown >= items.length){ shown = 0; }
+    timer = setInterval(tick, reduceMotion() ? 420 : 900);
+  }
+  function stopStream(){
+    if(timer){ clearInterval(timer); timer = null; }
+  }
+  var pause = document.getElementById("pauseStream");
+  if(pause){
+    pause.addEventListener("click", function(){
+      playing = !playing;
+      pause.textContent = playing ? "Pause stream" : "Resume stream";
+      pause.setAttribute("aria-pressed", String(!playing));
+      if(playing) startStream(); else stopStream();
+      paint();
+    });
+  }
+
+  /* ── boot ── */
+  renderSpine();
+  var start = "compose";
+  try { start = localStorage.getItem(KEY) || "compose"; } catch(e){}
+  setState(start, false);
+  /* 47 frames already received — the API replays from event id 1, so a late
+     subscriber sees exactly this backlog. Live tailing continues from here. */
+  shown = 47;
+  paint();
+  if(start === "running") startStream();
+})();
+</script>
+</body>
+</html>

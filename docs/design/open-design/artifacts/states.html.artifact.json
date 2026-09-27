@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "kind": "html",
+  "title": "docs/design/prototype/states.html",
+  "entry": "docs/design/prototype/states.html",
+  "renderer": "html",
+  "status": "complete",
+  "exports": [
+    "html",
+    "pdf",
+    "zip"
+  ],
+  "createdAt": "2026-09-16T17:38:56.270Z",
+  "updatedAt": "2026-09-16T17:38:56.270Z",
+  "metadata": {
+    "inferred": true,
+    "reconciled": true
+  }
+}
