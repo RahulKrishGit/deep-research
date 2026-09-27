@@ -1077,6 +1077,17 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 /* The 0.80 acceptance line on the review meter (types.py:1131). */
 .bar-row .bar{position:relative}
 .bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
+/* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since Task 1's
+   not-found clause) overflowed the topbar and pushed the whole page into horizontal scroll —
+   `.chip{white-space:nowrap}` plus no shrink budget anywhere in the topbar's flex chain. The
+   chip never wraps (the topbar's height must stay `--topbar`); instead its variable note
+   ellipsizes while the fixed status label and dot stay fully visible. `min-width:0` has to
+   apply at every flex-item link in the chain — `.topbar-right` inside `.topbar-in`, then
+   `.chip` inside `.topbar-right` — because a flex item's default min-width is its content's
+   width, which is exactly the nowrap text this rule needs to be allowed to shrink past. */
+.topbar-right{min-width:0}
+.chip{max-width:100%;min-width:0}
+.chip .kind{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 </style>
 </head>
 <body>
