@@ -431,17 +431,18 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
   overflow-wrap:anywhere;
 }
 
-/* ═══ the refinement loop ═══
-   When the critic sends the report back, the flow leaves Reviewing and returns to
-   Planning. That jump was the confusing part: a linear list cannot show a jump
-   backwards, and a reset pipeline on its own looks like progress was lost. So the
-   jump is drawn — a curved path down the left gutter from the Reviewing node back
-   up to the Planning node, with a dashed overlay that travels along it.
+/* ═══ the two return arcs ═══
+   When the reviewer routes a loop, the flow leaves Reviewing and returns to
+   Researching (an extra pass) or to Writing (a redraft). That jump was the confusing
+   part: a linear list cannot show a jump backwards, and a reset pipeline on its own
+   looks like progress was lost. So the jump is drawn — a path down the left gutter
+   from the Reviewing node back up to the destination node, with a dashed overlay that
+   travels along it, stroked amber for an extra pass and grey for a redraft.
 
    The overlay animates only during the handoff (`data-loop="flowing"`), then rests
-   filled while the new pass runs and disappears when that pass ends. The arc is
-   measured from the real node positions on every layout pass, so it stays attached
-   to the nodes rather than to a guessed geometry. */
+   lit while the re-armed rows run and clears when the next route is decided or the
+   run ends. The arc is measured from the real node positions on every layout pass,
+   so it stays attached to the nodes rather than to a guessed geometry. */
 .spine-wrap{position:relative}
 .loop-layer{
   position:absolute;left:0;top:0;pointer-events:none;overflow:visible;
@@ -1041,6 +1042,23 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 @media (max-width:900px){ .kv-2{grid-template-columns:auto minmax(0,1fr)} }
 /* An author `display` rule beats the browser's [hidden] rule, so the ↺ span says so itself. */
 .spine-lg .loops[hidden]{display:none}
+/* ═══ 2026-09-26: two arcs and the loop tag ═══ */
+/* The arc's stroke is the loop's kind: amber `--warn` for an extra pass, grey `--meta` for a
+   redraft (spec §4.1). `--meta` is a stroke here and never text. */
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-base,
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-flow{stroke:var(--warn)}
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-head{fill:var(--warn)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-base,
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-flow{stroke:var(--meta)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-head{fill:var(--meta)}
+/* The loop tag: a small bordered word plus the reason. Text amber is the text-safe
+   `--status-warn` (the same `.pop-note.warn` uses), never `--warn`. An author `display`
+   rule beats the browser's [hidden] rule, so the tag says so itself. */
+.loop-tag{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;font-size:var(--text-sm);color:var(--muted);margin-top:var(--space-2)}
+.loop-tag[hidden]{display:none}
+.loop-tag .tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg)}
+.loop-tag[data-kind="extra_pass"] .tag{color:var(--status-warn);border-color:var(--status-warn)}
+.loop-tag[data-kind="redraft"] .tag{color:var(--muted);border-color:var(--meta)}
 </style>
 </head>
 <body>
@@ -1208,6 +1226,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                 <span class="cap">Now</span>
                 <div class="now-stage" id="runNow">Planning</div>
                 <p class="sm" id="runningBlurb">Turning the question into sub-topics and evidence targets.</p>
+                <!-- The loop's reason, shown while a loop is taken (Q3). Hidden when none. -->
+                <p class="loop-tag" id="runLoopTag" hidden><span class="tag"></span><span class="why"></span></p>
               </div>
               <div class="row-between">
                 <span class="avail-mono" id="runProgressLabel">stage 1 of 7</span>
@@ -2308,7 +2328,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
      `--base` is a shared offset applied to every connector, and `--delay` is a
      per-number offset inside the bullet. Both exist so the fill reads as a wave
      travelling down the list rather than seven simultaneous state changes. */
-  var SPINE = { host:null, wrap:null, svg:null, rows:[], layout:{w:0,h:0} };
+  var SPINE = { host:null, wrap:null, svg:null, rows:[], layout:{w:0,h:0}, arc:null };
 
   /* The SVG uses the container's pixel geometry as its own coordinate system, so
      no viewBox is needed and nothing scales or letterboxes. */
@@ -2325,30 +2345,30 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return svg;
   }
 
-  /* The loop leaves Reviewing and returns to Planning, because `graph_route` runs
-     after the critic: the refinement decision is the critic's, and the next pass
-     restarts the chain. Publishing is not part of the loop at all — it happens
-     once, after the last pass's critic accepts — so the arc must not be anchored
-     to the last row. Anchoring to `rows[length - 1]` drew a Publishing → Planning
-     arc, which read as "publishing finished, now refining".
-
-     Endpoints are measured from the real nodes, so the arc stays attached to the
-     list through resizes, wrapping and font changes rather than to a guess. */
-  function loopRows(){
-    var from = null, to = null;
-    for(var i = 0; i < SPINE.rows.length; i++){
-      var id = SPINE.rows[i].el.getAttribute("data-stage");
-      if(id === "critic") from = SPINE.rows[i];
-      if(id === "planner") to = SPINE.rows[i];
-    }
-    /* fall back to first/last only if the list is ever built without stage ids */
-    if(!from) from = SPINE.rows[SPINE.rows.length - 1];
-    if(!to) to = SPINE.rows[0];
-    return { from: from, to: to };
+  /* Two arcs, both leaving Reviewing (the route decision is the reviewer's, nodes.py:819-841):
+     the extra pass returns to Researching (extra_pass → researcher, orchestrator.py:206) and
+     the redraft returns to Writing (writer_redraft → report_writer, :210). Publishing is in
+     neither loop. Endpoints are resolved from each row's data-stage, never from list position. */
+  var ARCS = {
+    extra_pass: { from:"report_reviewer", to:"researcher"    },
+    redraft:    { from:"report_reviewer", to:"report_writer" }
+  };
+  function loopRows(from, to){
+    var pair = { from:null, to:null };
+    SPINE.rows.forEach(function(row){
+      var id = row.el.getAttribute("data-stage");
+      if(id === from) pair.from = row;
+      if(id === to) pair.to = row;
+    });
+    return (pair.from && pair.to) ? pair : null;
   }
 
   function drawLoop(){
     if(!SPINE.wrap || !SPINE.svg || SPINE.rows.length < 2) return;
+    var arc = ARCS[SPINE.arc];
+    if(!arc) return;
+    var pair = loopRows(arc.from, arc.to);
+    if(!pair) return;
     var hostRect = SPINE.wrap.getBoundingClientRect();
     var w = Math.round(hostRect.width), h = Math.round(hostRect.height);
     if(!w || !h) return;
@@ -2357,35 +2377,39 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       SPINE.svg.setAttribute("width", w);
       SPINE.svg.setAttribute("height", h);
     }
-    var pair = loopRows();
-    var review = pair.from.bullet.getBoundingClientRect();   /* where the loop leaves */
-    var plan   = pair.to.bullet.getBoundingClientRect();     /* where it returns */
-    var x1 = plan.left   - hostRect.left + plan.width / 2;
-    var y1 = plan.top    - hostRect.top  + plan.height / 2;
-    var x2 = review.left - hostRect.left + review.width / 2;
-    var y2 = review.top  - hostRect.top  + review.height / 2;
+    var leave = pair.from.bullet.getBoundingClientRect();   /* where the loop leaves */
+    var enter = pair.to.bullet.getBoundingClientRect();     /* where it returns */
+    var x1 = enter.left - hostRect.left + enter.width / 2;
+    var y1 = enter.top  - hostRect.top  + enter.height / 2;
+    var x2 = leave.left - hostRect.left + leave.width / 2;
+    var y2 = leave.top  - hostRect.top  + leave.height / 2;
     /* the vertical runs in the container's padding, left of every row, so rows
        stay fully clickable and the arc never crosses a label */
-    var r = Math.max(2, x1 - plan.width / 2 - 8);
+    var r = Math.max(2, x1 - enter.width / 2 - 8);
     var d = "M " + x2 + " " + y2 + " H " + r + " V " + y1 + " H " + (x1 + 10);
     var base = SPINE.svg.querySelector(".loop-base");
     var flow = SPINE.svg.querySelector(".loop-flow");
     var head = SPINE.svg.querySelector(".loop-head");
     if(base) base.setAttribute("d", d);
     if(flow) flow.setAttribute("d", d);
-    /* arrowhead pointing into Planning */
+    /* arrowhead pointing into the destination row */
     if(head) head.setAttribute("d", "M " + (x1 + 3) + " " + (y1 - 4)
       + " L " + (x1 + 11) + " " + y1
       + " L " + (x1 + 3) + " " + (y1 + 4) + " Z");
   }
 
-  /* Three states for the return arc: off while a run has not looped, flowing
-     during the handoff (dashes travel from Reviewing to Planning), and settled
-     while the refined pass runs. */
-  function setLoopState(v){
+  /* Three states for an arc: off while a run has not looped, flowing during the handoff
+     (dashes travel from Reviewing to the destination), settled while the re-armed rows run.
+     `data-arc` names which of the two arcs is lit; at most one ever is. */
+  function setLoopState(v, arc){
     var wrap = document.getElementById("spineWrap");
     if(!wrap) return;
     if(wrap.getAttribute("data-loop") !== v) wrap.setAttribute("data-loop", v);
+    var a = arc || "";
+    if((wrap.getAttribute("data-arc") || "") !== a){
+      if(a) wrap.setAttribute("data-arc", a); else wrap.removeAttribute("data-arc");
+    }
+    SPINE.arc = arc || null;
     if(v !== "off") drawLoop();
   }
 
@@ -2898,12 +2922,22 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       host.appendChild(dt); host.appendChild(dd);
     });
   }
-  /* Everything the running stage shows is painted from the run state, here and nowhere else.
-     (Task 5 adds the arc and the loop tag to this function.) */
+  function renderLoopTag(run){
+    var el = document.getElementById("runLoopTag");
+    if(!el) return;
+    if(!run.tag){ el.hidden = true; el.removeAttribute("data-kind"); return; }
+    el.hidden = false;
+    el.setAttribute("data-kind", run.tag.kind);
+    el.querySelector(".tag").textContent = run.tag.label;
+    el.querySelector(".why").textContent = run.tag.text;
+  }
+  /* Everything the running stage shows is painted from the run state, here and nowhere else. */
   function paintRunning(session){
     var run = play.run;
     if(!run) return;
     syncSpine(marksFor(run, run.active), run);
+    setLoopState(run.loop, run.arc);
+    renderLoopTag(run);
     renderCounters("runCounters", run.counters, "not yet");
     setText("runCountersPass", "pass " + run.countersPass);
     renderPassTrack(run);
@@ -2961,7 +2995,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     session.iteration = 0;
     buildSpine(document.getElementById("spine"));
     resetFlow();
-    setLoopState("off");
+    setLoopState("off", null);
     paintRunning(session);
     /* One frame per event on a fixed cadence, so a stage's screen time is its share of the
        schedule rather than its share of the event count. */
@@ -3320,7 +3354,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
       finish: function(){ var s = activeSession(); if(s) finishPlayback(s); },
       /* 2026-09-26 additions (spec §4.6); Task 5 adds arc() and loop() */
-      advanceTo: advanceTo
+      advanceTo: advanceTo,
+      arc: function(){
+        var wrap = document.getElementById("spineWrap");
+        if(!wrap || wrap.getAttribute("data-loop") === "off") return null;
+        return wrap.getAttribute("data-arc") || null;
+      },
+      loop: function(){
+        var wrap = document.getElementById("spineWrap");
+        return wrap ? wrap.getAttribute("data-loop") : null;
+      }
     }
   });
 })();
