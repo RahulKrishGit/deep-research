@@ -900,48 +900,64 @@ own threshold, and the status text beside the meter says which outcome the run h
 
 ## 4. Status mapping
 
-The API's `SessionStatus` is a five-value literal. The interface shows five
-statuses. This table is the contract between them, and it is exhaustive: no
-status may be invented and none may be dropped.
+The API's `SessionStatus` is a five-value literal (`api/models.py:13-19`). The
+interface shows five statuses. This table is the contract between them, and it is
+exhaustive: no status may be invented and none may be dropped.
 
-| Interface status | API `status` | Source of truth | Token role | Copy shown to the operator |
+| Interface status | API `status` | Also read | Token role | Copy shown to the operator |
 |---|---|---|---|---|
-| **Running** | `running` | `ResearchSessionResponse.status` | `--fg` label, `--success` live dot (the one non-text use) | `Running` + current stage |
-| **Completed** | `completed` | `…status` **and** `outcome.quality_status == "accepted"` | `--fg` label, `--success` dot | `Completed` |
-| **Partially completed** | `max_iterations`, `incomplete` | `…status`; `completed` also lands here when the quality gates did not accept the report | `--fg` label, `--warn` dot | `Partially completed` + the report's own reason |
-| **Failed** | `failed` | `…status` | `--fg` label, `--danger` dot | `Failed` + the enumerated error type |
-| **Unavailable** | *not a status* | any `null` field | `--muted` text, no chip, no icon, no control | `Not recorded`, `Not available while running` |
+| **Running** | `running` | the pass from the stream (§3.5) | `--fg` label, `--success` live dot (the one non-text use) | `Running · pass p of P` |
+| **Completed** | `completed` | `semantic_review_score`, `coverage.not_found_target_ids` | `--fg` label, `--success` dot | `Completed · review accepted · {score}` + the not-found clause |
+| **Partially completed** | `max_iterations` | `coverage` | `--fg` label, `--warn` dot | `Partially completed · extra passes used` + the not-found clause |
+| **Partially completed** | `incomplete` with `semantic_review_status == "scored"` | `semantic_review_score` | `--fg` label, `--warn` dot | `Partially completed · not accepted · {score}` |
+| **Partially completed** | `incomplete` with any other `semantic_review_status` | — | `--fg` label, `--warn` dot | `Partially completed · review unavailable` |
+| **Failed** | `failed` | `errors` | `--fg` label, `--danger` dot | `Failed · halted`; the failed stage headlines the halting type |
+| **Unavailable** | *not a status* | any `null` field | `--muted` text, no chip, no icon, no control | `not measured`, `not scored`, `Not recorded`, `Not available while running` |
 
 Rules that follow from the table:
 
-1. **`failed` is not the same as "no report".** `_record_failure` sets
-   `status="failed"` and appends a non-recoverable `ResearchError`, but
-   `GET /report` then answers `409 report_unavailable`, not 404. The failed
-   screen states the failure and then states, separately, that no artifact was
-   published.
-2. **`completed` is not automatically "accepted".** `graph_quality_status`
-   returns `partial` whenever `state.quality` is `None` or the route was not
-   `critique_satisfied`. A `completed` session with no quality snapshot renders
-   as *Partially completed* with the reason `not yet quality-gated`. The front end
-   must not infer acceptance from `status == "completed"`.
+1. **`failed` is not the same as "no report".** A halt sets `status="failed"` and
+   records a non-recoverable `ResearchError`, but `GET /report` then answers
+   `409 report_unavailable`, not 404. The failed screen states the failure and
+   then states, separately, that nothing was published.
+2. **`completed` is exactly `report_accepted`.** That route reason is the only one
+   that yields `completed` (`graph/state.py:116`, `:322-337`), so the chip infers
+   acceptance from the status alone and reads the score from
+   `semantic_review_score`, printed with two decimals. There is no
+   `quality_status` on the response and none is needed.
 3. **`max_iterations` and `incomplete` are not degraded states.** They render with
    the same visual weight as `completed` — a different dot colour and an accurate
-   label, never a warning banner, never an apology. The report is present and
-   authoritative.
+   clause, never a warning banner, never an apology. The clause is counted, never
+   assumed: `n = coverage.not_found_target_ids.length` is omitted at 0, reads
+   `· 1 target not found` at 1 and `· {n} targets not found` above 1
+   (`max_iterations` can end with an empty list when only the review's own
+   coverage defect remained, `state.py:312-313`). `not accepted · {score}` covers
+   a passed review too: acceptance needs a scored review with a mean of at least
+   0.80 and no material defect, complete coverage, and no quality-gate hard
+   failure (`agents/report_reviewer.py:416-443`, `state.py:306-314`), so a gate
+   can block acceptance while the review itself passed, and the clause says the
+   report was not accepted rather than that the review failed. The report is
+   present and authoritative, and it says itself what it could not confirm.
 4. **`unavailable` never becomes a value.** `trace_url: null` is
    `Not available while running` in `--muted`; `report_path: null` is
    `Not published`; token usage is `Not recorded` (its source —
    `total_token_usage` — documents that zero means "no provider reported usage",
-   so a summed `0` is not a fact about the run); a request-budget snapshot that is
-   absent is `Not recorded` and its ceiling stays absent rather than becoming a
-   limit of zero. No `0`, `—`, `null`, empty chip, or greyed-out button stands in
-   for a missing value. **A missing value is text, and it is always visible text.**
+   so a summed `0` is not a fact about the run); `evidence_counts: null` is
+   `not measured`; `semantic_review_score: null` is `not scored`. No `0`, `—`,
+   `null`, empty chip, or greyed-out button stands in for a missing value.
+   **A missing value is text, and it is always visible text.**
 5. **Status is never carried by colour alone.** Every status has a text label at
    `--text-sm` minimum; the dot is redundant reinforcement, and a duplicated
-   colour-vision simulation of the four chips is in `states.html`.
+   colour-vision simulation of the chips is in `states.html`.
 6. **`waiting` does not exist.** Before the first frame, or between
    `POST /research` and the first event, the screen is *Running* with stage
    `starting`. There is no sixth status.
+7. **The chip can shrink on a narrow viewport; its note cannot wrap.** Below the
+   width the full clause needs, the topbar chip's note truncates with an
+   ellipsis instead of wrapping or overflowing — the topbar's own height never
+   changes — while the fixed status label and its dot stay exactly as visible as
+   they are at full width. The clause the ellipsis hides is not lost: the report
+   stage's rail states it in full.
 
 ### Derived stage display
 
@@ -950,59 +966,64 @@ completion, and is `null` from the first `graph.node.completed` of the terminal
 node until the response arrives. The stage spine therefore derives its state from
 the event stream, not from `current_agent`:
 
-| Node | Label | Predecessor order |
+| Node | Label | Row |
 |---|---|---|
 | `planner` | Planning | 1 |
 | `researcher` | Researching | 2 |
 | `source_evaluator` | Evaluating sources | 3 |
-| `fact_checker` | Checking claims | 4 |
-| `synthesizer` | Writing report | 5 |
-| `critic` | Reviewing | 6 |
-| `refine` | Refinement pass | loops back to 2 |
+| `evidence_verifier` | Verifying evidence | 4 |
+| `report_writer` | Writing report | 5 |
+| `report_reviewer` | Reviewing | 6 |
+| `extra_pass` | — | a hop, not a row: the graph returns to 2 |
+| `writer_redraft` | — | a hop, not a row: the graph returns to 5 |
 | `finalize_report` | Publishing | 7 |
 
-`current_agent` is used only as a fallback when the log is empty. A node's state
-comes from `graph.node.started` / `graph.node.completed` / `graph.node.skipped`
-for that node name. Refinement is a loop, so the whole list resets when the critic
-routes back (§3.5) — `graph.route.decided` with `destination: refine` is the signal,
-not `graph.refinement.started`.
+`current_agent` is used only as a fallback when the log is empty. A row is `done`
+on its own `graph.node.completed` — except Reviewing, whose completion is inert
+after a loop decision (§3.5) — and `skipped` on its `graph.node.skipped`; the
+active row is the successor of the last completion, with the loop keyed on
+`graph.route.decided`. Publishing is marked `skipped` on a halted run by the
+client rule `graph.session.completed.status == "failed"` — never by
+`has_report`, which can be true when the halt came after a first-pass writer
+(`agents/report_writer.py:3262`) — because the graph never runs
+`finalize_report` after a halt and no event exists for it.
 
 ### `iteration` in two places, and it must agree in both
 
-The session's iteration shows up in the topbar chip and the report header. Two
-rules, both learned from bugs:
+The session's pass shows up in the topbar chip, the running header and the report
+header. Three rules, all learned from bugs:
 
-- **It is read from the event stream, not the snapshot.** The API reports
-  `iteration` on the session, but while a run is live it is the events that move it:
-  every node event carries the iteration it belongs to. The chip is therefore
-  updated as events arrive. The topbar is otherwise only rebuilt on a stage
-  change, and an earlier build rendered it once — so the chip read
-  `iteration 0 of 3` for an entire run while the pipeline moved through three
-  passes.
-- **A finished run's iteration is the pass it ended on, not the ceiling.** It is
-  `last iteration carried by an event + 1`, so a one-pass run reports 1. Hardcoding
-  the configured maximum made a single-pass run claim it had refined twice, which
-  is the kind of number an operator would reasonably trust.
-- **The ceiling beside it comes from the run, not from a constant.** The chip read
-  `iteration {i} of 3` with the `3` written into the `STATUS` table, so a session created
-  with one refinement announced "of 3" for its whole life — the same class of error as the
-  one above, in the denominator rather than the numerator. It now reads `session.passes`,
-  the refinement budget the session was created with, which is the same figure the pipeline
-  and the `pass n of m` counters already use; the chip was the last surface still guessing.
-  A session carrying no pass count drops the clause and shows `iteration 1` alone, because a
-  wrong ceiling is worse than an absent one — it is a claim about the server's configuration
-  that the client has nothing to support.
+- **It is read from the event stream, not the snapshot — and only from the
+  graph's own events.** While a run is live the pass number is `iteration + 1`
+  from `graph.node.started` and `graph.extra_pass.started`, and from nothing
+  else: `researcher.tool_call` also carries an `iteration`, but that is the ReAct
+  step index (`agents/researcher.py:2612`), and a consumer that copied
+  `iteration` from every event would show the pass jumping mid-research.
+  `/status.iteration` is read only after the stream has closed. The topbar is
+  otherwise only rebuilt on a stage change, and an earlier build rendered it once
+  — so the chip read the first pass for an entire run while the pipeline moved
+  on.
+- **A finished run's pass is the pass it ended on, not the ceiling.** It is
+  `last iteration carried by a graph event + 1`, so a one-pass run reports
+  `pass 1 of 2`. Hardcoding the configured maximum made a single-pass run claim
+  it had looped.
+- **The ceiling beside it comes from the run, not from a constant.**
+  `P = 1 + max_extra_passes`, read from `graph.session.started` while the stream
+  is open and from the budget the session was created with otherwise; it is the
+  same figure the pipeline's `pass p of P` reads, so the two cannot drift. A
+  session carrying no ceiling drops the clause and shows `pass 1` alone, because
+  a wrong ceiling is worse than an absent one.
 
-Internal iteration is zero-based — the first pass is `iteration: 0`, and the router
-halts when `state.iteration >= state.max_iterations`, so a three-pass run carries
-0, 1, 2. **The interface never shows that value.** Every site that displays it adds
-one, through a single `passNumber()` helper, so the operator sees the pass they are
-on rather than a zero-based index:
+Internal iteration is zero-based — the first pass is `iteration: 0`; an extra
+pass advances it and a redraft does not. **The interface never shows that
+value.** Every site that displays it adds one, through a single `passNumber()`
+helper, so the operator sees the pass they are on rather than a zero-based index:
 
 | Shows | Value | Notes |
 |---|---|---|
-| Topbar chip | `passNumber(iteration)` over the run's own ceiling | `iteration 1 of 2` for a run created with two refinements |
-| Report header | the pass it ended on | already 1-based, set at publish time |
+| Topbar chip | `passNumber(iteration)` over the run's own ceiling | `pass 2 of 2` during the extra pass of a run created with one |
+| Running header | the same, from the run state | stays `pass 1 of 2` while a redraft runs |
+| Report header and Session facts | the pass it ended on | `pass 2 of 2` for `b41e77aa`, which spent its extra pass |
 
 The stored session keeps the API's zero-based value. Converting at the display
 boundary rather than in the data keeps the prototype's model faithful to the
@@ -1013,41 +1034,54 @@ in the first place.
 ### Error rendering
 
 `ResearchError` carries `error_type`, `source`, `message`, `recoverable`,
-`timestamp`, `details`. Two levels only:
+`timestamp`, `details` (`utils/types.py:1345-1351`). Two levels only:
 
 - `recoverable: true` — **not surfaced while a run is in progress.** A recoverable
-  error is the normal case: it never stops the run, and the report already
-  enumerates it in its own Limitations section. A live counter was therefore a
+  error — a statement-check batch the writer could not judge
+  (`report_writer_statement_check_failed`), a context-check batch the verifier
+  could not judge (`evidence_verifier_context_check_failed`), a section the
+  writer could not draft — is the normal case: it never stops the run, and the
+  evidence log records what it left unchecked. A live counter was therefore a
   number that asked to be read and told the operator nothing actionable, and the
   card that held it was removed before the rail itself was.
-- `recoverable: false` — promoted into the failure panel, with the enumerated
-  `error_type` as the headline, the API's own `message` as the sentence beneath it, and
-  `source`, `recoverable` and `report_path` as labelled rows. This is the one
-  place an error is a headline, because it is the reason the run ended.
+- `recoverable: false` — promoted into the failure panel, with the halting type
+  **in plain words** as the headline, the API's own `message` as the sentence
+  beneath it, and the enumerated `error_type`, `source`, `recoverable` and
+  `report_path` as labelled rows. This is the one place an error is a headline,
+  because it is the reason the run ended.
 
 **`message` was being discarded, and that is now fixed.** `graph/errors.py` is explicit that
 an error's `message` is curated per enumerated type and is never `str(exception)`. The failed
 panel nonetheless carried a fixed sentence, and the rail's Errors card rendered `error_type`
 alone — so on both surfaces where errors appear, the one field written as a sentence for a
-human to read was the one field not shown. Both now render it, falling back to the old static
-copy when an error record carries no message. The fixture data was corrected at the same time:
-it had been carrying `synthesizer_report_not_written`, a type the API does not define — the
-synthesizer emits `synthesizer_report_provider_error`, `synthesizer_invalid_draft` and
-`synthesizer_no_evidence` — and no `message` on any error at all.
+human to read was the one field not shown. Both now render it, falling back to a static
+sentence when an error record carries no message. The fixture data was corrected at the same
+time: it had been carrying error types the API does not define, and no `message` on any error.
+The fixtures now carry only real types — `report_writer_statement_check_failed`
+(`agents/report_writer.py:2023`), `evidence_verifier_context_check_failed`
+(`agents/evidence_verifier.py:1106`) and the halting `graph_provider_configuration_error` —
+each with its curated message.
 
 **`timestamp` and `details` are still served and still not rendered**, and this section used to
 claim otherwise about `details`. It is a flat dict whose shape changes with the error type —
-`{"exception_type": …}` for a provider failure, `{"sub_topic", "priority", "stop_reason"}` for a
-coverage gap, `{"rejected": […]}` for a refused draft — so rendering it means deciding how to
-present arbitrary structured data: how many array items before truncating, what to do with a
-nested object, whether an empty dict shows nothing or a dash. That is a presentation decision
-rather than an oversight, which is why it is written down here instead of guessed at. `message`
-was the same class of gap with an obvious answer, which is why it was fixed and this was not.
+`{"exception_type": …}` for a provider failure, a batch index for a failed check, a part title
+for a failed section — so rendering it means deciding how to present arbitrary structured data:
+how many array items before truncating, what to do with a nested object, whether an empty dict
+shows nothing or a dash. That is a presentation decision rather than an oversight, which is why
+it is written down here instead of guessed at. `message` was the same class of gap with an
+obvious answer, which is why it was fixed and this was not.
 
-Halting types (`graph_planning_failed`, `graph_provider_configuration_error`,
-`graph_agent_configuration_error`, `graph_invalid_agent_state`,
-`graph_invalid_route`, `graph_request_attempt_limit_exceeded`) end the run;
-everything else is recoverable and does not.
+Halting types (`graph/state.py:141-150`) end the run; everything else is
+recoverable and does not. The failed stage headlines each in plain words:
+
+| `error_type` | Headline |
+|---|---|
+| `graph_planning_failed` | Planning failed |
+| `graph_provider_configuration_error` | Model provider misconfigured |
+| `graph_agent_configuration_error` | Agent misconfigured |
+| `graph_invalid_agent_state` | Invalid agent state |
+| `graph_invalid_route` | Invalid route |
+| `graph_request_attempt_limit_exceeded` | Request attempt limit reached |
 
 The report stage still carries an errors panel with a count and a disclosure, since
 that is a finished run being reviewed rather than a live one being watched, and the
@@ -1203,7 +1237,9 @@ accent budget.
 These are declared once in the prototype's `:root` and referenced everywhere else, so the
 layout carries no repeated magic numbers. There is no `--shell-max` and no `--spine`: the shell
 is a two-column grid sized by `--sidebar` and whatever remains, and the running stage's spine is
-a grid track rather than a named width.
+a grid track rather than a named width. The Evidence view reuses the same `--rail`
+track for its detail pane, and the running stage has no rail at all — its counters
+sit inside the pipeline card — so this revision added no custom property.
 
 `--reading-max` is the design system's answer-column figure, and §3.3 records that at 15px it
 runs to about 96 characters — past the system's 55–70 guidance. That trade was made
@@ -1458,49 +1494,94 @@ reading time and the two fade beats are not.
 
 ### 5.7 Event stream is not a surface
 
-The stream is consumed, not rendered. The running stage shows four things derived
+The stream is consumed, not rendered. The running stage shows what it derives
 from it — the active pipeline node (with its one-line explanation), the stage
-position, the pass number, and the progress bar — and nothing else. The tool-call
-and claim counts were among those derived values until the cost card that displayed
-them was removed; the counters are still accumulated, but nothing reads them. A raw
-log is deliberately absent from the main region.
+position, `pass p of P`, the progress bar, the two arcs and the loop tag, and the
+counters block — and nothing else. A raw log is deliberately absent from the main
+region.
+
+What each surface derives, and from which events (`graph/events.py`,
+`agents/*.py`): the active row from `graph.node.completed` and
+`graph.route.decided`; the pass from `graph.node.started` and
+`graph.extra_pass.started`; the ceiling from `graph.session.started`; the arcs
+and the loop tag from `graph.route.decided`, `graph.extra_pass.started` and
+`graph.report.redraft_requested`; the counters from `planner.planning.completed`,
+`researcher.sub_topic.completed`, `researcher.tool_call`,
+`researcher.research.completed`, `source_evaluator.evaluation.completed`,
+`evidence_verifier.verification.completed`, `report_writer.report.written` and
+`graph.report.reviewed`; the failed stage's skipped rows from
+`graph.node.skipped` and its Publishing row from `graph.session.completed`.
+
+**Delivery is once per node step.** The orchestrator publishes each
+`stream_mode="values"` snapshot's new events together
+(`graph/orchestrator.py:312-346`), so a node's `graph.node.started`, everything
+it emitted and its `graph.node.completed` arrive at once, when the node finishes.
+The screen therefore moves once per node — and during the researcher, the longest
+stage, the research counters read `not yet` for its whole duration. Every
+derivation above is written so the state after event *k* depends only on events
+1..*k*: a 100-event replay, a per-node burst and a one-per-tick playback paint
+the same screen. Live per-event delivery is an API gap (api-gaps 3.7), listed for
+the API work.
 
 This is a product judgement, stated so it can be overruled: a run emits well over
-200 events, the operator's question is "is it progressing and what is it costing",
-and a tail answers neither better than a stage spine does. The event stream stays
-the source of truth for the derived values, and the running screen reads them from
-it live, so nothing is lost that a future log view could not reintroduce.
+100 events, the operator's question is "is it progressing and what has it found",
+and a tail answers neither better than a stage spine with counters does. The
+event stream stays the source of truth for the derived values, so nothing is lost
+that a future log view could not reintroduce.
 
-### 5.8 Cost and usage, honestly
+### 5.8 Counted from the event stream
 
-The running stage no longer carries a "Cost and usage" card. It was removed along
-with the session-facts rail beside it: while a run is live the card could only
-show elapsed time, because token totals are **not** in
+The running stage carries a compact counters block inside the pipeline card,
+below its spine in a footer section, with the eyebrow `counted from the event
+stream` — a departure from spec R1's "under its header" placement, made because
+under the header the block pushed the spine roughly 250px down at 1252×853,
+putting both arcs below the fold and the whole spine off-screen on phone (§3).
+Its rows, each with its scope:
+
+| Row | Scope | From |
+|---|---|---|
+| sub-topics researched | this pass | `{count} this pass` while only `researcher.sub_topic.completed` events have arrived; then `{researched} of {researched + skipped}` from `researcher.research.completed` |
+| tool calls | whole run · researcher only | the number of `researcher.tool_call` events |
+| findings | this pass | `researcher.research.completed.findings` |
+| sources scored | whole run | `source_evaluator.evaluation.completed.source_count` |
+| verified / corrected / dropped | this pass | `evidence_verifier.verification.completed` |
+| sentences / refused | current draft | `report_writer.report.written.statements` / `.refused` |
+| review score | latest review | `graph.report.reviewed.mean_score`, two decimals; muted `not scored` when null |
+
+Rules: a counter whose event has not arrived reads muted `not yet`, never `0`;
+counters update once per node step, because that is how the stream delivers
+events (§5.7); on `graph.extra_pass.started` the this-pass rows reset to
+`not yet` and the block's caption reads `pass p`; on
+`graph.report.redraft_requested` the current-draft rows and the review score
+reset. The failed stage freezes the same rows at the halt, and a row whose node
+never ran reads `not reached`.
+
+The block is honest now where the earlier cost card was not: real values arrive
+during the run, one node at a time, and each row names the pass or draft it
+counts. Token usage is still `Not recorded`: totals are **not** in
 `ResearchSessionResponse` — they live in `ResearchOutcome.token_usage`, computed
-from tracker metrics at the end of the run — and the runner's own tool-call and
-claim counters were never returned at all. A card whose values read `Not yet` for
-the whole run, beside a pipeline that was already showing the same progress, was
-carrying no information the operator could act on.
-
-The report stage keeps its own "Cost and usage" card, where the honest statement
-is `Not recorded`. Nothing is ever rendered as `0`: `total_token_usage` already
-documents that a zero total means "no provider reported usage", so a rendered `0`
-would assert something the API never said.
+at the end of the run — and the report stage's "Cost and usage" card says so.
+Nothing is ever rendered as `0`: `total_token_usage` already documents that a
+zero total means "no provider reported usage", so a rendered `0` would assert
+something the API never said, and the stream-derived, researcher-only tool-call
+count is not copied into that card.
 
 ---
 
 ## 6. What each stage needs that the API does not serve
 
 Full detail, with the request shape each gap implies, is in
-[`api-gaps.md`](./api-gaps.md). Summary:
+[`api-gaps.md`](./api-gaps.md). Summary, keyed to the five stages of §3:
 
 | Stage | Blocked by |
 |---|---|
-| Idle | the session's own `query` is never returned; no endpoint lists sessions; no preflight/health route |
-| Running | no token or tool-call counts in the snapshot; no `max_iterations`; no terminal frame on the stream; no `quality_status` |
-| Report | no `evidence_path` in the snapshot; no report structure (sections, citations, claims, sources) — Markdown only |
-| Failed | configuration failures are only reachable by attempting a run |
-| Sidebar | no `GET /research`; no persisted store; SSE event history is not addressable after the fact |
+| Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
+| Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
+| Submitted | nothing beyond Idle |
+| Running | events arrive once per node step, not live per event; `max_extra_passes` is on the stream but not on `/status`; no token usage; no terminal frame; no event identity for reconnects; the halting vocabulary is a client copy; shutdown leaves `running` |
+| Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
+| Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
+| Sidebar | no `GET /research`; no result summary per row; no durable store |
 
 Every one of these is worked around in the prototype rather than faked: the gaps
 document names the workaround and, where there is no honest workaround, the
@@ -1531,18 +1612,56 @@ have to be kept in step by hand. The hold before the pipeline is the journey's o
 return value, not a constant: change a beat and the handoff follows it.
 
 For review, `window.drConsole` exposes `submit(question)`, `open(sessionId)`,
-`finish()`, `stage()` and the `sessions` ledger, so any stage can be reached
-directly without replaying a run. Jumping to a stage through that hook uses the
-plain stage transition rather than a handoff, which is the correct behaviour and
-also the quickest way to see the two side by side: toggle
-`prefers-reduced-motion` and repeat either handoff to confirm that no state
-information lives in the motion.
+`finish()`, `stage()`, `motion()` and the `sessions` ledger, plus — since
+2026-09-26 — `view(name?)` (switches or reports the `Report | Evidence` toggle),
+`evidence(sessionId)` (opens a session on its Evidence view),
+`advanceTo(eventType)` (plays the active playback session's script synchronously
+up to and including the first event of that type, then pauses), `arc()`
+(`"extra_pass"`, `"redraft"` or `null`) and `loop()` (`"off"`, `"flowing"` or
+`"settled"`). Any stage and either arc can be reached directly without watching a
+run. Jumping to a stage through the hook uses the plain stage transition rather
+than a handoff, which is the correct behaviour and also the quickest way to see
+the two side by side: toggle `prefers-reduced-motion` and repeat either handoff
+to confirm that no state information lives in the motion.
+
+**The fixture sessions** are shaped like `ResearchSessionResponse`, ids reused
+from the 2026-09-16 package and every question from the battery-storage set:
+`8f2c1d90` (playback; a pass-0 review names two missing targets → extra pass →
+accepted at 0.86 on pass 1), `c3d7e5f1` (playback; a pass-0 review names one
+material defect → redraft → re-review accepts at 0.84), `b41e77aa` (`completed`
+after its extra pass was spent, one target not found — the shape of the replay
+case `extra-pass-finds-nothing`), `7c0d13ff` (`max_iterations`, one target not
+found), `5ff1ab07` (`incomplete`, not accepted at 0.71, budget 0), `9ea4c220`
+(`incomplete`, review unavailable; its `Scored sources cited` is 4 of 5 = 0.80,
+painted yellow) and `2ad900b1` (`failed`, `graph_provider_configuration_error` in
+the planner). The halted fixture carries a static `HALTED_EVENTS` list —
+`graph.session.started`, `graph.node.started` for the planner, five
+`graph.node.skipped`, `graph.session.completed` with `status: "failed"` —
+consumed once by the failed-stage renderer through the same event handlers the
+running stage uses, never played. The two playback fixtures share one `play`
+state: opening one restarts its script from the beginning, and the other keeps
+`status: "running"` until it is reopened. Finishing a playback run, whether via
+`finish()` or by letting its script play to the end, sets its duration from the
+simulated run clock rather than wall time: `finishPlayback` rounds
+`play.elapsed` — the same figure the running header shows as elapsed — into
+`durationSeconds`, and derives `finished` by adding that duration to `started`.
+
+**The Evidence fixture** (`EVIDENCE.default`) is one set in the shape api-gaps
+E1 proposes, for the one battery-storage report: six findings covering every
+status (including one with no verification, shown only under `All`), one
+not-found target (`T04`) with its queries and pages read, and one refused
+sentence citing `F03`. Every value is one the engine can produce — figure
+attribution `own`/`relayed`, kind `actual`, no figures on a quoted or dropped
+finding, and the `context unchecked` flag on a verified finding with a kept figure
+(`F06`). `F03`'s source scores 0.80 overall, so its `overall` meter paints yellow
+(§3.6).
 
 `prototype/states.html` is the review companion from the previous pass. It stays
 useful as the rendering contract for the states the console reaches only in
-unusual circumstances — empty, configuration error, session failed, partial
-report — and it carries the status-mapping table rendered as live chips, so §4 can
-be read against the actual pixels. It is not part of the app.
+unusual circumstances — empty, configuration error, session failed, the three
+partial outcomes, an options table wide enough to scroll — and it carries the
+status-mapping table rendered as live chips, so §4 can be read against the
+actual pixels. It is not part of the app.
 
 Both files are self-contained: no build step, no external scripts, no network
 fetches, no web fonts. All colour, type, space, radius and motion values resolve
@@ -1552,10 +1671,18 @@ and the last-opened session persist to `localStorage`
 (`dr.console.sidebar`, `dr.console.active`), and the page uses `window.scrollTo`
 rather than `scrollIntoView`.
 
+The nine reference renders in `docs/design/reference/` are captured by
+`scripts/render_design_reference.mjs`, desktop at 1252×853 and phone at
+390×844, except `09-running-extra-pass.png`: that one is captured at
+1252×1300, taller than the rest, so the whole pipeline card — Reviewing, the
+full settled arc and the counters block — sits inside the frame instead of
+running off the bottom.
+
 **Three working behaviours are scripted rather than wired, and the UI no longer says so about
-all three.** The run is driven by an event sequence whose shape is taken from the documented
-event catalogue rather than a live `EventSource`; the sidebar is a client ledger because there is
-no collection route (§3.1); and the report body is one real published Markdown document reused
+all three.** The run is driven by an event sequence whose names and metadata keys are the
+engine's own (checked offline against two replayed runs, spec §4.6) rather than a live
+`EventSource`; the sidebar is a client ledger because there is no collection route (§3.1); and the
+report body is one real published Markdown document, rendered into the consumer format, reused
 for every completed session.
 
 That last one used to be labelled inside the report card — a note explaining that the body is a
@@ -1565,4 +1692,3 @@ report stage shows is the same document for every session, and nothing on screen
 remains recorded here and in `api-gaps.md`, and it is the one thing in this file that should
 probably be disclosed on screen again — briefly — wherever the prototype is shown to someone who
 did not build it.
-
