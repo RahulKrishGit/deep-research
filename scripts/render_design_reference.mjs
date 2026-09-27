@@ -207,10 +207,15 @@ await evaluate('window.drConsole.open("8f2c1d90")');
 if (await waitForStage('running')) {
   await evaluate('window.drConsole.advanceTo("graph.extra_pass.started")');
   await sleep(600);
+  // taller than the standard 853 so the capture shows rows 1-7 (incl. Reviewing,
+  // the arc's source), the full amber arc and the counters block below the spine
+  await setViewport(W, 1300);
+  await sleep(200);
   await shot('09-running-extra-pass', 'running', async () => {
     const [arc, loop] = await evaluate('[window.drConsole.arc(), window.drConsole.loop()]');
     return arc === 'extra_pass' && loop === 'settled' ? true : `arc()=${arc} loop()=${loop}, expected extra_pass/settled`;
   });
+  await setViewport(W, H);
 } else console.log('FAIL  09-running-extra-pass  never reached "running"');
 
 // states.html is a static fixture: capture it whole
