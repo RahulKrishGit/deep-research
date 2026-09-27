@@ -23,9 +23,9 @@ These are the current, correct versions. Read these.
 |---|---|
 | `DESIGN.md` | Screen inventory, status mapping, motion spec, and the decisions the design system does not answer |
 | `api-gaps.md` | What each stage needs that the FastAPI surface does not serve |
-| `prototype/index.html` | The reference prototype. Self-contained: 3,859 lines, one `<style>` block, one `<script>` block, zero external references. The only literal colour values live in the `:root` token block (lines 11–55), which is where the Perplexity AI design system is captured |
+| `prototype/index.html` | The reference prototype. Self-contained: 3,888 lines, one `<style>` block, one `<script>` block, zero external references. The only literal colour values live in the `:root` token block (lines 11–55), which is where the Perplexity AI design system is captured |
 | `prototype/states.html` | Static fixture of the edge states |
-| `reference/*.png` | Reference renders, regenerated from the frozen prototype and asserted against the stage they claim to show |
+| `reference/*.png` | Reference renders, regenerated from the 2026-09-16 prototype and asserted against the stage they claim to show |
 
 The design was built against a **1252 × 853** viewport (`DESIGN.md` §7).
 
@@ -50,9 +50,9 @@ so none of them show the current design. They are kept because they record
 the design's evolution and may cover states `reference/` does not.
 
 **Why `version-history/` is history only.** It is Open Design's own autosave
-trail. Snapshot `0068` is byte-identical in size to `prototype/index.html`
-(174,839 B), confirming the copied prototype is the newest version. Git now
-supersedes this trail.
+trail. Snapshot `0068` is byte-identical in size to the 2026-09-16
+`prototype/index.html` (174,839 B), confirming the copied prototype was the
+newest version at export. Git now supersedes this trail.
 
 ## Regenerating the reference renders
 

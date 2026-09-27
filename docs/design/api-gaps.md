@@ -152,7 +152,7 @@ scores and bands) and the coverage id → question need. Ground truth:
 | # | Needed | Why | Where it exists today | Honest workaround | Suggested shape |
 |---|---|---|---|---|---|
 | 5.1 | **What survived the halt** [4.1] | The stage shows the running stage's counters frozen at the halt. None of those counts are on the response — `evidence_counts` is `null` after a halt before the writer — so a reload has nothing to show. | `ResearchState` (findings, sources, verifications) at the halt | The stream counters, re-derived from the replay; a counter whose node never ran reads `not reached` | A `collected` summary block on the response, or `evidence_counts` computed from state even without a composition |
-| 5.2 | **Reachable states** [4.2/4.3] | The two partial outcomes are now reproducible for free through the offline replay cases `review-unavailable` and `empty-but-clean`; the halted and configuration-error states still need a genuinely misconfigured service or a real failure. | The replay harness (`e2e_evaluation/replay.py`) for the partial states; nothing for a halt | Documented in `states.html` with the exact response body and the eight-frame event tail | A test-only seeded session, or the `GET /health` from 1.5 |
+| 5.2 | **Reachable states** [4.2/4.3] | Two of the three partial outcomes are now reproducible for free through the offline replay cases `review-unavailable` and `empty-but-clean`; the halted and configuration-error states still need a genuinely misconfigured service or a real failure. | The replay harness (`e2e_evaluation/replay.py`) for the partial states; nothing for a halt | Documented in `states.html` with the exact response body and the eight-frame event tail | A test-only seeded session, or the `GET /health` from 1.5 |
 
 ---
 

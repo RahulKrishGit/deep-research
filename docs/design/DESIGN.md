@@ -104,8 +104,11 @@ A flat list of every finding the run kept or dropped, filtered by status —
 verified, corrected, quoted, dropped, not found, refused — with the required
 target it serves as a tag on each row, and a detail pane beside it for the
 selected row: the snippet and passage, the source's authority, recency,
-relevance and overall scores, the Context Check's organisation, kind and
-release, and each figure kept or dropped with its reason. A not-found target
+relevance and overall scores, and the Context Check line — the kept figure's
+organisation, kind and release when one was judged, `context unchecked` when a
+figure exists but none was confirmed kept, or `not run (no figures)` on a
+finding that carries no figures at all (every quoted or dropped finding) —
+and each figure kept or dropped with its reason. A not-found target
 shows the queries searched and the pages read; a refused sentence shows why it
 was kept out of the report.
 
@@ -1083,6 +1086,16 @@ recoverable and does not. The failed stage headlines each in plain words:
 | `graph_invalid_route` | Invalid route |
 | `graph_request_attempt_limit_exceeded` | Request attempt limit reached |
 
+Two more headlines cover a failure the graph never sees: `sessions.py:262-276,297-315`
+can mark a session `failed` from the API layer alone — no graph error record, no
+`graph.session.completed` — and the client falls back to the session's own `status` to
+mark Publishing `skipped` in that case, the same as a graph halt:
+
+| `error_type` | Headline |
+|---|---|
+| `api.research.configuration_error` | Service configuration error |
+| `api.research.failed` | Research run failed |
+
 The report stage still carries an errors panel with a count and a disclosure, since
 that is a finished run being reviewed rather than a live one being watched, and the
 count there is answerable against the report it belongs to.
@@ -1505,9 +1518,10 @@ What each surface derives, and from which events (`graph/events.py`,
 `graph.route.decided`; the pass from `graph.node.started` and
 `graph.extra_pass.started`; the ceiling from `graph.session.started`; the arcs
 and the loop tag from `graph.route.decided`, `graph.extra_pass.started` and
-`graph.report.redraft_requested`; the counters from `planner.planning.completed`,
-`researcher.sub_topic.completed`, `researcher.tool_call`,
-`researcher.research.completed`, `source_evaluator.evaluation.completed`,
+`graph.report.redraft_requested`; the Planning row's own caption from
+`planner.planning.completed`; the counters from `researcher.sub_topic.completed`,
+`researcher.tool_call`, `researcher.research.completed`,
+`source_evaluator.evaluation.completed`,
 `evidence_verifier.verification.completed`, `report_writer.report.written` and
 `graph.report.reviewed`; the failed stage's skipped rows from
 `graph.node.skipped` and its Publishing row from `graph.session.completed`.
@@ -1651,8 +1665,11 @@ E1 proposes, for the one battery-storage report: six findings covering every
 status (including one with no verification, shown only under `All`), one
 not-found target (`T04`) with its queries and pages read, and one refused
 sentence citing `F03`. Every value is one the engine can produce — figure
-attribution `own`/`relayed`, kind `actual`, no figures on a quoted or dropped
-finding, and the `context unchecked` flag on a verified finding with a kept figure
+attribution `own`/`relayed`, kind `actual`; here the quoted finding (`F03`) and
+the dropped one (`F04`) both carry no figures because `F04`'s drop is
+`snippet_not_on_page`, before the Context Check runs — not a blanket rule (an
+`all_figures_dropped` finding carries every figure instead, api-gaps E1) — and
+the `context unchecked` flag on a verified finding with a kept figure
 (`F06`). `F03`'s source scores 0.80 overall, so its `overall` meter paints yellow
 (§3.6).
 
@@ -1678,19 +1695,20 @@ and `09-running-extra-pass.png`: that one is captured at 1252×1300, taller
 than the rest, so the whole pipeline card — Reviewing, the full settled arc and
 the counters block — sits inside the frame instead of running off the bottom.
 
-Two layout facts differ from the 2026-09-16 renders by design: at ≤ 900px the
+One layout fact differs from the 2026-09-16 renders by design: at ≤ 900px the
 composer bar hides its `thinking` pill (`#pillThinking`) and holds `model` and
 `extra passes` on one row as before, thinking staying visible in the settings
-panel and the settings strip; and on the report stage the `Report | Evidence`
-toggle takes the right end of the head bar, so `Download Report` and the trace
-link wrap to a second row at 1252px and the question block starts about 53px
-lower.
+panel and the settings strip. On the report stage the `Report | Evidence`
+toggle takes the right end of the head bar; `#reportMeta` is the element that
+shrinks and wraps to make room (`flex:1 1 240px;min-width:0`), so the toggle
+and the two action buttons stay on the bar's one row and the question block
+starts within a few pixels of its 2026-09-16 position.
 
 **Three working behaviours are scripted rather than wired, and the UI no longer says so about
 all three.** The run is driven by an event sequence whose names and metadata keys are the
 engine's own (checked offline against two replayed runs, spec §4.6) rather than a live
 `EventSource`; the sidebar is a client ledger because there is no collection route (§3.1); and the
-report body is one real published Markdown document, rendered into the consumer format, reused
+report body is a hand re-composition in the consumer format, reused
 for every completed session.
 
 That last one used to be labelled inside the report card — a note explaining that the body is a
