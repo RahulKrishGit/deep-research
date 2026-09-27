@@ -33,7 +33,7 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 `semantic_review_status`, `semantic_review_score`, `duration_seconds`,
 `coverage` (`required_targets`, `answered_targets`,
 `missing_required_target_ids`, `not_found_target_ids`) and `evidence_counts`
-(fifteen counts; `null` when the run left neither a composition nor a quality
+(fifteen counts; `null` unless the run left both a composition and a quality
 snapshot, `runtime/outcome.py:525`). `status` is one of `running`, `completed`,
 `max_iterations`, `incomplete`, `failed`. Not on the response: `quality_status`,
 `query`, `max_iterations`/`max_extra_passes`, token usage, tool-call totals, any
@@ -62,7 +62,7 @@ Kept as a record, one line each.
 | 3.2 | quality snapshot | `coverage`, `evidence_counts`, `semantic_review_status`, `semantic_review_score` are on the response (`api/sessions.py:73-128`) |
 | 3.3 | `evidence_path` | the path is served; the content moves to E1 |
 | 3.5 | claim verdicts and confidence | obsolete: the pipeline has no claims; findings carry a verification status instead (E1) |
-| 2.2 | tool-call counts | mostly closed: the verifier, writer and reviewer make no tool calls; `researcher.tool_call` misses only the planner's single budgeted call (`config.yaml:159`; `agents/planner.py:2999`), whose count is on `planner.planning.completed.tool_calls` |
+| 2.2 | tool-call counts | partly closed: the verifier, writer and reviewer make no tool calls; `researcher.tool_call` misses the planner's single budgeted call and `finalize_report`'s `write_document` and `save_to_memory` calls (`config.yaml:159`; `agents/planner.py:2999`; `agents/report_writer.py:3286-3293`; `graph/nodes.py:586`); the planner's count is recoverable from `planner.planning.completed.tool_calls`, but `finalize_report`'s calls carry no event-stream count at all — only `ResearchOutcome.tool_calls` (`tools/base.py:107-113`) sees them |
 
 ---
 
@@ -94,10 +94,10 @@ scores and bands) and the coverage id → question need. Ground truth:
 
 | Field group | Source type |
 |---|---|
-| finding `label`, `status`, `dropped_reason`, `context_unchecked` | `composition.finding_labels` (`types.py:1658`); `FindingVerification` (`types.py:413-419`) |
+| finding `label`, `status`, `dropped_reason`, `context_unchecked` | `composition.finding_labels` (`types.py:1658`); `FindingVerification` (`types.py:413-419`); `status` is `null` when the finding was never verified (the evidence log's `not checked`) |
 | `passage` | `composition.statement_passages` (`agents/report.py:1940`) |
 | `source` scores and statuses | `ScoredSource` (`types.py:625-640`); `organisation` = the Context Check's organisation or the page owner |
-| `figures[]` | `FigureResult` + `FigureContext` (`types.py:368-400`): `attribution` ∈ own \| relayed \| unattributed, `kind` ∈ actual \| forecast; `release` as the evidence log prints it (`report.py:1961-1962`); a quoted or dropped finding carries none |
+| `figures[]` | `FigureResult` + `FigureContext` (`types.py:368-400`): `attribution` ∈ own \| relayed \| unattributed, `kind` ∈ actual \| forecast; `release` as the evidence log prints it (`report.py:1961-1962`); a quoted finding, or one dropped before the Context Check (`read_not_found`, `snippet_not_on_page`), carries none; an `all_figures_dropped` finding carries every figure, each with its `dropped_reason` |
 | `not_found[]` | `NotFoundTarget` (`types.py:1521-1532`) |
 | `refused[]` | `RejectedDraftPoint` (`types.py:1476-1486`) |
 | `cited` | what the response's `evidence_counts.cited_findings` sums |
