@@ -580,13 +580,13 @@ hr{border:0;border-top:1px solid var(--border);margin:0}
 .starter .arw{font-family:var(--font-mono);color:var(--meta);flex:none}
 .starter:hover .arw{color:var(--fg)}
 
-/* ═══ refinements ═══
-   No prose. A pass is one full run of the seven steps, and the critic can send the
-   report back, so the pipeline legitimately begins at step 1 again. That is shown
-   rather than described: a dot track says how many refinements the run has taken,
-   a connector between the dots says whether one is happening right now, and the
-   pipeline resetting under it is the loop itself. Nothing here explains the loop;
-   it is the loop. */
+/* ═══ passes ═══
+   No prose. A pass is one full run of the seven steps, and the reviewer's route can
+   send the run back — to Researching for an extra pass, to Writing for a redraft — so
+   the pipeline legitimately re-arms rows. That is shown rather than described: the
+   hidden pass track counts the passes the run may take, the arcs on the pipeline say
+   which return is happening right now, and the rows going hollow under them is the
+   loop itself. Nothing here explains the loop; it is the loop. */
 /* Even spacing, not stretched items. Each pass is only as wide as its dot plus
    its label, and the connectors take all the slack between them, so the labels
    land at equal intervals. Before this, each pass was `flex:1` while its own
@@ -1031,6 +1031,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .loop-layer .loop-flow{animation:none !important;stroke-dasharray:none;opacity:1}
   .spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
 }
+/* ═══ 2026-09-26: the counters block ═══ */
+/* A compact two-column key/value list; one column at phone width. */
+.counters{padding-bottom:var(--space-5);border-bottom:1px solid var(--border)}
+.counters .kv{margin-top:var(--space-3)}
+.counters .kv dt{white-space:normal}
+.counters .kv dt .cap{display:block;color:var(--meta)}
+.kv-2{grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr)}
+@media (max-width:900px){ .kv-2{grid-template-columns:auto minmax(0,1fr)} }
+/* An author `display` rule beats the browser's [hidden] rule, so the ↺ span says so itself. */
+.spine-lg .loops[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -1197,29 +1207,39 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
               <div>
                 <span class="cap">Now</span>
                 <div class="now-stage" id="runNow">Planning</div>
-                <p class="sm" id="runningBlurb">Planning the sub-topics.</p>
+                <p class="sm" id="runningBlurb">Turning the question into sub-topics and evidence targets.</p>
               </div>
               <div class="row-between">
                 <span class="avail-mono" id="runProgressLabel">stage 1 of 7</span>
-                <span class="avail-mono" id="runPasses">pass 1 of 3</span>
+                <span class="avail-mono" id="runPasses">pass 1 of 2</span>
               </div>
               <span class="track" id="runTrack" role="progressbar" aria-label="Pipeline progress" aria-valuemin="1" aria-valuemax="7" aria-valuenow="1"><span id="runTrackFill"></span></span>
+            </div>
+            <!-- Counters (R1): inside the pipeline card, under its header. They update once per
+                 node step, because that is how the stream delivers events (orchestrator.py:312-346);
+                 a counter whose event has not arrived reads `not yet`, never 0. -->
+            <div class="counters" data-od-id="running-counters">
+              <div class="row-between">
+                <p class="eyebrow" style="margin:0">counted from the event stream</p>
+                <span class="avail-mono" id="runCountersPass">pass 1</span>
+              </div>
+              <dl class="kv kv-2" id="runCounters"></dl>
             </div>
             <div class="spine-wrap" id="spineWrap" data-loop="off">
               <ol class="spine-lg" id="spine" data-od-id="running-spine"></ol>
             </div>
           </div>
 
-          <!-- The refinement track was removed from the interface: the running
-               stage now shows the loop only through the return arc on the
-               pipeline, and the pass count was a number nobody needed twice.
-               These two nodes stay in the document because the runtime writes
-               to them — keeping them here is what would let the track come back
-               without rewiring the event handling. Hidden with the existing
-               visually-hidden utility rather than a display rule, so nothing a
-               stylesheet says later can bring it back on screen by accident. -->
+          <!-- The pass track was removed from the interface: the running stage shows
+               a loop only through the return arcs on the pipeline and its reason in
+               the header, and `pass p of P` is the one counter. These two nodes stay
+               in the document because the runtime writes to them — keeping them here
+               is what would let the track come back without rewiring the event
+               handling. Hidden with the existing visually-hidden utility rather than
+               a display rule, so nothing a stylesheet says later can bring it back on
+               screen by accident. -->
           <div class="sr" aria-hidden="true">
-            <span id="passSummary">pass 1 of 3</span>
+            <span id="passSummary">pass 1 of 2</span>
             <ol class="passtrack" id="passTrack"></ol>
           </div>
 
@@ -2376,41 +2396,31 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     STAGES.forEach(function(s, i){
       var li = document.createElement("li");
       li.setAttribute("data-state", "pending");
-      /* the stage id is what the return arc uses to find its two endpoints, so it
-         is bound to the node rather than to its position in the list */
+      /* the stage id is what the arcs use to find their endpoints, so it is bound to the
+         node rather than to its position in the list */
       li.setAttribute("data-stage", s.id);
       li.style.setProperty("--delay", String(i * 60));
-      /* No "P1"…"P7" prefix any more. The bullet already numbers the step, and "P"
-         reads as *pass* — which this interface has a separate and real concept for
-         ("pass 1 of 3", and the refinement that re-runs the whole chain). Seven "P"
-         numbers down a list that restarts on every pass was the misleading part. */
-      var meta = s.meta;
+      /* No "P1"…"P7" prefix. The bullet already numbers the step, and "P" reads as *pass* —
+         which this interface has a separate and real concept for ("pass 1 of 2"). */
       li.innerHTML = '<span class="bullet" aria-hidden="true">' + (i + 1) + "</span>"
         + '<span><span class="stage-name">' + s.label
         + '<span class="sr"></span></span>'
-        + '<span class="stage-meta">' + meta + "</span>"
+        + '<span class="stage-meta">' + s.meta + "</span>"
         + '<span class="stage-meta loops" hidden></span></span>';
       hostEl.appendChild(li);
       rows.push({
         el: li,
         bullet: li.querySelector(".bullet"),
         name: li.querySelector(".stage-name .sr"),
+        meta: li.querySelectorAll(".stage-meta")[0],
         loops: li.querySelector(".loops"),
         state: "pending",
         fed: null
       });
     });
-    /* The arc layer belongs to the list it annotates, so it is resolved from the
-       host rather than from a global id. `buildSpine` also builds the halted-run
-       spine, which has no wrapper at all; looking that up by id dropped a second
-       arc layer into the *running* stage's wrapper and pointed the live arc's
-       endpoints at a hidden list.
-
-       Exactly one layer, always. The stylesheet reveals every `.loop-layer` under
-       the wrapper whenever `data-loop` is set, so the layer left behind by the
-       previous build kept its old path and reappeared next to the live one —
-       which is what made a single return read as two different lines to
-       Planning. Nothing may be inserted until the previous layer is gone. */
+    /* The arc layer belongs to the list it annotates, so it is resolved from the host rather
+       than from a global id (the halted-run spine has no wrapper and gets no layer). Exactly one
+       layer, always: the previous build's layer is removed before a new one is inserted. */
     var wrap = hostEl.closest ? hostEl.closest(".spine-wrap") : null;
     if(wrap){
       Array.prototype.forEach.call(wrap.querySelectorAll(".loop-layer"), function(old){
@@ -2420,7 +2430,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       wrap.insertBefore(svg, hostEl);
       SPINE.svg = svg;
     } else {
-      /* no wrapper means no return arc to draw (the halted-run spine) */
       SPINE.svg = null;
     }
     SPINE.host = hostEl;
@@ -2430,7 +2439,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     drawLoop();
   }
 
-  /* One pointer for the whole list; reset the instant the run starts. */
+  /* One pointer for the whole list; reset the instant a loop re-arms rows. */
   function resetFlow(){
     if(SPINE.host) SPINE.host.style.setProperty("--base", "0");
   }
@@ -2438,11 +2447,14 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(SPINE.host) SPINE.host.style.setProperty("--base", "170");
   }
 
-  function syncSpine(marks, loops){
+  /* Paint the rows from a marks map (node id → state). `run` supplies the dynamic captions
+     and which row carries ↺: the first re-armed row, once it has completed again (§4.1). */
+  function syncSpine(marks, run){
     if(!SPINE.rows.length) return;
-    var done = function(state){ return state === "done" || state === "loop"; };
+    var done = function(st){ return st === "done" || st === "loop"; };
     SPINE.rows.forEach(function(row, i){
-      var st = (marks && marks[STAGES[i].id]) || "pending";
+      var id = STAGES[i].id;
+      var st = (marks && marks[id]) || "pending";
       if(st !== row.state){
         row.el.setAttribute("data-state", st);
         row.state = st;
@@ -2454,51 +2466,40 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         row.fed = fed;
       }
       if(row.name) row.name.textContent = st === "active" ? " (in progress)" : "";
-      /* A step re-armed by a refinement says so with a small loop mark rather
-         than a sentence. The count lives in the refinement strip. */
+      if(row.meta) row.meta.textContent = (run && run.captions[id]) || STAGES[i].meta;
       if(row.loops){
-        var show = STAGES[i].id === "researcher" && loops > 0;
+        var show = !!(run && run.rearmedFirst === id && st === "loop");
         row.loops.hidden = !show;
-        if(show) row.loops.textContent = "↺";
+        row.loops.textContent = show ? "↺" : "";
       }
     });
   }
 
-  /* Kept for the halted-run spine, which is static and never re-renders. */
-
-  /* The refinement strip. One dot per pass the run may take: hollow before it
-     runs, filled with a halo while it runs, filled and quiet once it is done, and
-     the connectors between them fill as the run moves forward. A pass in flight
-     opens its dot into a ring, which is the moment the refinement is happening.
-     There is no prose — the count is the header label, and the track carries the
-     rest. */
-  function renderPassTrack(){
+  /* The pass track stays a visually-hidden host (DESIGN.md §3.5): one dot per pass the run may
+     take, filled up to the pass in flight, opening into a ring while a loop is flowing. */
+  function renderPassTrack(run){
     var host = document.getElementById("passTrack");
-    if(!host) return;
-    if(!passes.length){ resetPasses(); return; }
-    host.setAttribute("data-refining", play.refining ? "1" : "0");
+    if(!host || !run) return;
+    host.setAttribute("data-refining", run.loop === "flowing" ? "1" : "0");
     host.innerHTML = "";
-    passes.forEach(function(p, i){
+    for(var i = 0; i < run.maxPasses; i++){
       var el = document.createElement("li");
       el.className = "pass";
-      el.setAttribute("data-state", p.state);
-      /* a connector is traversed once the run has moved past the pass before it */
-      if(i < openPass || (i === openPass && p.state === "active" && !play.refining)) el.setAttribute("data-traversed", "1");
+      var st = i < run.pass - 1 ? "done" : (i === run.pass - 1 ? "active" : "pending");
+      el.setAttribute("data-state", st);
+      if(i < run.pass - 1 || (i === run.pass - 1 && run.loop !== "flowing")) el.setAttribute("data-traversed", "1");
       el.style.setProperty("--delay", String(i * 60));
       el.innerHTML = '<span class="dot" aria-hidden="true"></span>'
         + '<span class="pass-n">P' + (i + 1) + "</span>"
-        + '<span class="sr">' + (p.state === "done" ? "complete"
-            : p.state === "active" ? "running now" : "not reached") + "</span>";
+        + '<span class="sr">' + (st === "done" ? "complete" : st === "active" ? "running now" : "not reached") + "</span>";
       host.appendChild(el);
-    });
-    var active = 0;
-    passes.forEach(function(p, i){ if(p.state === "active" || p.state === "done") active = i; });
-    setText("passSummary", "pass " + (active + 1) + " of " + passes.length);
+    }
+    setText("passSummary", "pass " + run.pass + " of " + run.maxPasses);
   }
 
-  function renderSpine(hostEl, marks, loops){
+  function renderSpine(hostEl, marks, run){
     buildSpine(hostEl);
-    syncSpine(marks, loops);
+    syncSpine(marks, run);
   }
 
   /* ═══ scripted stream ═══
@@ -2692,113 +2693,221 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     return SCRIPTS[session.id];
   }
   SESSIONS.forEach(function(s){ scriptFor(s); });
-  var PLAYBACK = scriptFor(SESSIONS[0]);
-  /* Watch time for a scripted run. Sized so every step holds the highlight long
-     enough to be read — a proportional 17s window left four steps on screen for
-     about a second each. */
-  var PLAY_MS = 30000;
-
-  var play = { timer:null, idx:0, elapsed:0, loops:0, marks:{}, refining:false,
-               toolCalls:0, claims:0, session:null, pass:0, maxPasses:3 };
-  /* One entry per pass, sized to the passes this run actually takes. Only the
-     state is tracked: the refinement track reads it as a dot's fill, so there is
-     no per-pass step count to maintain. */
-  var passes = [];
-  var openPass = 0;
-  function resetPasses(max){
-    play.maxPasses = Math.max(1, max || play.maxPasses || 3);
-    passes = [];
-    for(var i = 0; i < play.maxPasses; i++) passes.push({ state:"pending" });
-    passes[0].state = "active";
-    openPass = 0;
-    play.refining = false;
-    renderPassTrack();
-  }
-  var PLAY_MS = 30000;
-
   function reducedMotion(){
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
-  function applyEvent(ev, session){
-    var node = ev.metadata.node;
-    if(ev.type === "graph.node.started" && node){
-      Object.keys(play.marks).forEach(function(k){ if(play.marks[k] === "active") play.marks[k] = "done"; });
-      play.marks[node] = "active";
-      if(typeof ev.metadata.iteration === "number"){
-        session.iteration = ev.metadata.iteration;
-        /* The topbar chip carries the iteration, and the topbar is otherwise only
-           rebuilt on a stage change. Without this the chip kept whatever number it
-           was first rendered with, so it read "iteration 0 of 3" for the whole run
-           while the pipeline moved on. Rebuilt only when the number actually
-           changes, so the chip's live dot is not re-created on every event. */
-        if(play.iterationShown !== session.iteration){
-          play.iterationShown = session.iteration;
-          renderTopbar();
-        }
-      }
-      if(passes[openPass]) passes[openPass].state = "active";
-      renderPassTrack();
-    }
-    if(ev.type === "graph.node.completed" && node && play.marks[node] === "active"){
-      play.marks[node] = "done";
-    }
-    if(ev.type === "graph.session.completed" && play.marks.finalize_report) play.marks.finalize_report = "done";
-    if(ev.type === "researcher.tool_call") play.toolCalls++;
-    if(ev.type === "fact_checker.claim.checked") play.claims++;
-    /* Publishing is the one step whose fill should lag, so the report's arrival
-       reads as the last thing that happens rather than one more tick. */
-    if(ev.type === "graph.node.started" && node === "finalize_report") markFlow();
-    /* A refinement pass is a NEW pass, not a step inside the old one. The reset
-       happens as soon as the critic routes back, so the spine is already hollow
-       by the time the next pass's step 1 lights up. Leaving the old marks in
-       place was a bug: it showed the pipeline at step 1 while steps 2-7 still
-       read "finished", which looks like progress running backwards.
+  var PLAYBACK = null;
+  /* Watch time for a scripted run. Sized so every step holds the highlight long
+     enough to be read. */
+  var PLAY_MS = 30000;
+  /* One playback at a time: opening a playback session restarts its script from the
+     beginning; the other playback fixture keeps `status: "running"` until it is reopened. */
+  var play = { timer:null, idx:0, elapsed:0, session:null, run:null };
 
-       `refining` is the window between the critic routing back and the next pass
-       actually starting. During it the strip opens its active dot into a ring, so
-       the loop is visible at the moment it happens rather than only in a count. */
-    /* The handoff: the critic routes back, so the arc flows from Reviewing up to
-       Planning, the spine goes hollow, and the next pass starts at step 1. The arc
-       stays lit while that pass runs and clears when the pass ends, so a return is
-       never a silent jump. */
-    if(ev.type === "graph.route.decided" && ev.metadata.destination === "refine"){
-      play.marks = {};
-      resetFlow();
-      play.refining = true;
-      setLoopState("flowing");
-      renderPassTrack();
-    }
-    /* The run is over: nothing is in flight, and the last pass is complete. The
-       graph checks its own iteration bound before the critic's recommendation, so
-       the last pass is sealed here rather than by the critique's score. */
-    if(ev.type === "graph.session.completed"){
-      passes.forEach(function(p){ if(p.state === "active") p.state = "done"; });
-      play.refining = false;
-      setLoopState("off");
-      renderPassTrack();
-    }
-    if(ev.type === "graph.refinement.started"){
-      var next = ev.metadata.iteration || 0;
-      if(passes[openPass]) passes[openPass].state = "done";
-      openPass = next;
-      play.pass = next;
-      play.loops = next;
-      play.refining = false;
-      /* the beat has landed: the arc rests lit while this pass is the one running */
-      setLoopState("settled");
-      if(passes[next]) passes[next].state = "active";
-      renderPassTrack();
-    }
-    syncSpine(play.marks, play.loops);
+  /* ═══ one run, derived from its events and nothing else ═══
+     Every handler below is written so the state after event k depends only on events 1..k.
+     The real stream delivers a node's events as one burst when the node finishes
+     (orchestrator.py:312-346), the prototype plays them one per tick, and a late subscriber
+     replays a whole run at once; all three must paint the same screen. */
+  function emptyCounters(){
+    return { subTopicsDone:null, subTopicsResearched:null, subTopicsTotal:null, toolCalls:null,
+             findings:null, sources:null, verified:null, corrected:null, dropped:null,
+             statements:null, refused:null, reviewSeen:false, reviewScore:null };
   }
-  function currentStageIndex(){
-    var order = AGENT_ORDER;
-    var idx = 0;
-    order.forEach(function(n, i){
-      var st = play.marks[n];
-      if(st === "done" || st === "active" || st === "loop") idx = Math.max(idx, i);
+  function newRunState(passes){
+    return {
+      marks:{},                  /* node id → "done" | "loop" | "skipped"; the active row is derived */
+      active:"planner",          /* the "Now" row: the successor of the last graph.node.completed */
+      openNode:null,             /* the last graph.node.started with no graph.node.completed — the halting row */
+      pass:1, maxPasses:Math.max(1, Number(passes) || 1),
+      loop:"off", arc:null,      /* data-loop, data-arc (painted by Task 5's setLoopState) */
+      loopPending:false,         /* a loop was routed; the reviewer's own completion is inert */
+      tag:null,                  /* { kind, label, text } for the header's loop tag, or null */
+      rearmed:{}, rearmedFirst:null,
+      captions:{}, blurbs:{},
+      counters:emptyCounters(), countersPass:1,
+      finalStatus:null
+    };
+  }
+  function nextRow(node){
+    var i = AGENT_ORDER.indexOf(node);
+    return (i >= 0 && i < AGENT_ORDER.length - 1) ? AGENT_ORDER[i + 1] : null;
+  }
+  /* Rows fromIndex..5 go hollow and are re-armed: their next completion reads `loop`, and the
+     first of them carries ↺. Publishing goes hollow too; the rows before fromIndex keep `done`. */
+  function rearm(run, fromIndex){
+    run.rearmed = {};
+    run.rearmedFirst = AGENT_ORDER[fromIndex];
+    for(var i = fromIndex; i <= 5; i++){
+      delete run.marks[AGENT_ORDER[i]];
+      run.rearmed[AGENT_ORDER[i]] = true;
+    }
+    delete run.marks.finalize_report;
+  }
+  function plural(n, one, many){ return n + " " + (n === 1 ? one : many); }
+
+  /* Keyed by event type; each handler reads only `md` (the event's metadata). The offline key
+     check reads `md.<key>` out of each body and checks it against a replayed run, so read keys
+     only through `md.` and only the keys spec §3.3 lists for that event. */
+  var EVENT_HANDLERS = {
+    "graph.session.started": function(run, md){
+      if(typeof md.max_extra_passes === "number") run.maxPasses = 1 + md.max_extra_passes;
+    },
+    "graph.node.started": function(run, md){
+      run.openNode = md.node;
+      /* the pass number is read here and from graph.extra_pass.started only (spec §3.2 rule 1) */
+      if(typeof md.iteration === "number") run.pass = md.iteration + 1;
+    },
+    "graph.node.completed": function(run, md){
+      var node = md.node;
+      if(run.openNode === node) run.openNode = null;
+      if(node === "extra_pass" || node === "writer_redraft") return;          /* hops never map to a row */
+      if(node === "report_reviewer" && run.loopPending){ run.loopPending = false; return; }   /* inert after a loop decision */
+      run.marks[node] = run.rearmed[node] ? "loop" : "done";
+      if(node === "report_reviewer") return;                                  /* the route decision already moved the active row */
+      run.active = nextRow(node);
+    },
+    "graph.node.skipped": function(run, md){
+      run.marks[md.node] = "skipped";
+      if(run.active === md.node) run.active = null;
+    },
+    "planner.planning.completed": function(run, md){
+      run.captions.planner = plural(md.sub_topic_count, "sub-topic", "sub-topics");
+    },
+    "researcher.sub_topic.completed": function(run){
+      run.counters.subTopicsDone = (run.counters.subTopicsDone || 0) + 1;
+    },
+    "researcher.tool_call": function(run){
+      /* counted only — its `iteration` is the ReAct step index (researcher.py:2612), never the pass */
+      run.counters.toolCalls = (run.counters.toolCalls || 0) + 1;
+    },
+    "researcher.research.completed": function(run, md){
+      var c = run.counters;
+      c.subTopicsResearched = md.sub_topics_researched;
+      c.subTopicsTotal = md.sub_topics_researched + md.sub_topics_skipped;
+      c.findings = md.findings;
+    },
+    "source_evaluator.evaluation.completed": function(run, md){
+      run.counters.sources = md.source_count;
+    },
+    "evidence_verifier.verification.completed": function(run, md){
+      var c = run.counters;
+      c.verified = md.verified; c.corrected = md.verified_corrected; c.dropped = md.dropped;
+    },
+    "report_writer.report.written": function(run, md){
+      var c = run.counters;
+      c.statements = md.statements; c.refused = md.refused;
+    },
+    "graph.report.reviewed": function(run, md){
+      var c = run.counters;
+      c.reviewSeen = true;
+      c.reviewScore = (typeof md.mean_score === "number") ? md.mean_score : null;
+    },
+    "graph.route.decided": function(run, md){
+      run.tag = null;
+      run.loopPending = false;
+      if(md.destination === "extra_pass"){
+        rearm(run, 1); run.active = "researcher";
+        run.loopPending = true; run.arc = "extra_pass"; run.loop = "flowing";
+      } else if(md.destination === "redraft"){
+        rearm(run, 4); run.active = "report_writer";
+        run.loopPending = true; run.arc = "redraft"; run.loop = "flowing";
+      } else {
+        /* finalize or end: an arc lit by an earlier loop clears here */
+        run.loop = "off"; run.arc = null;
+        run.active = md.destination === "finalize" ? "finalize_report" : null;
+      }
+    },
+    "graph.extra_pass.started": function(run, md){
+      var n = (md.targets || []).length;
+      if(typeof md.iteration === "number") run.pass = md.iteration + 1;
+      run.loop = "settled";
+      run.tag = { kind:"extra_pass", label:"extra pass", text: plural(n, "required target had no verified finding", "required targets had no verified finding") };
+      run.captions.researcher = plural(n, "missing target only", "missing targets only");
+      run.blurbs.researcher = "Researching the " + plural(n, "target", "targets") + " still missing a verified finding.";
+      /* this-pass rows reset; whole-run and current-draft rows keep their values (spec §4.1) */
+      var c = run.counters;
+      c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
+      c.verified = null; c.corrected = null; c.dropped = null;
+      run.countersPass = run.pass;
+    },
+    "graph.report.redraft_requested": function(run, md){
+      run.loop = "settled";
+      run.tag = { kind:"redraft", label:"redraft", text: "Reviewer named " + plural(md.material_defects, "material defect", "material defects") };
+      /* current-draft rows and the review score reset */
+      var c = run.counters;
+      c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
+    },
+    "graph.session.completed": function(run, md){
+      run.finalStatus = md.status;
+      run.loop = "off"; run.arc = null; run.tag = null;
+      run.active = null;
+    }
+  };
+  function applyEvent(run, ev){
+    var h = EVENT_HANDLERS[ev.type];
+    if(h) h(run, ev.metadata || {});
+  }
+  /* The marks to paint: the recorded states plus the active row, which is derived. */
+  function marksFor(run, activeId){
+    var m = {};
+    Object.keys(run.marks).forEach(function(k){ m[k] = run.marks[k]; });
+    if(activeId && !m[activeId]) m[activeId] = "active";
+    return m;
+  }
+
+  /* ═══ the counters block ═══ */
+  var COUNTER_ROWS = [
+    { key:"subTopics",  label:"sub-topics researched", scope:"this pass",
+      value:function(c){
+        if(c.subTopicsResearched !== null) return c.subTopicsResearched + " of " + c.subTopicsTotal;
+        return c.subTopicsDone === null ? null : c.subTopicsDone + " this pass";
+      } },
+    { key:"toolCalls",  label:"tool calls", scope:"whole run · researcher only",
+      value:function(c){ return c.toolCalls === null ? null : String(c.toolCalls); } },
+    { key:"findings",   label:"findings", scope:"this pass",
+      value:function(c){ return c.findings === null ? null : String(c.findings); } },
+    { key:"sources",    label:"sources scored", scope:"whole run",
+      value:function(c){ return c.sources === null ? null : String(c.sources); } },
+    { key:"verified",   label:"verified / corrected / dropped", scope:"this pass",
+      value:function(c){ return c.verified === null ? null : c.verified + " / " + c.corrected + " / " + c.dropped; } },
+    { key:"statements", label:"sentences / refused", scope:"current draft",
+      value:function(c){ return c.statements === null ? null : c.statements + " / " + c.refused; } },
+    { key:"review",     label:"review score", scope:"latest review",
+      value:function(c){
+        if(!c.reviewSeen) return null;
+        return c.reviewScore === null ? { muted:"not scored" } : c.reviewScore.toFixed(2);
+      } }
+  ];
+  /* `absentText` is `not yet` while a run is live and `not reached` after a halt; a value that
+     never arrived is text, never 0. */
+  function renderCounters(hostId, counters, absentText){
+    var host = document.getElementById(hostId);
+    if(!host) return;
+    host.textContent = "";
+    COUNTER_ROWS.forEach(function(row){
+      var dt = document.createElement("dt");
+      dt.textContent = row.label + " ";
+      var sc = document.createElement("span"); sc.className = "cap"; sc.textContent = row.scope; dt.appendChild(sc);
+      var dd = document.createElement("dd");
+      dd.setAttribute("data-counter", row.key);
+      var v = row.value(counters);
+      if(v === null){ dd.className = "avail"; dd.textContent = absentText; }
+      else if(typeof v === "object"){ dd.className = "avail"; dd.textContent = v.muted; }
+      else dd.textContent = v;
+      host.appendChild(dt); host.appendChild(dd);
     });
-    return idx;
+  }
+  /* Everything the running stage shows is painted from the run state, here and nowhere else.
+     (Task 5 adds the arc and the loop tag to this function.) */
+  function paintRunning(session){
+    var run = play.run;
+    if(!run) return;
+    syncSpine(marksFor(run, run.active), run);
+    renderCounters("runCounters", run.counters, "not yet");
+    setText("runCountersPass", "pass " + run.countersPass);
+    renderPassTrack(run);
+    updateRunningChrome(session, run);
   }
   var BLURB = {
     planner:"Turning the question into sub-topics and evidence targets.",
@@ -2809,58 +2918,75 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     report_reviewer:"Scoring the report; accepted at a mean of 0.80 with no material defect.",
     finalize_report:"Publishing the report, the evidence log and the quality record."
   };
-  function updateRunningChrome(session){
-    var idx = currentStageIndex();
-    var stage = STAGES[Math.min(idx, STAGES.length - 1)];
-    /* The stage is named once, in the pipeline's own "Now" block. A status chip
-       repeating it above the question was a second statement of the same fact. */
+  function updateRunningChrome(session, run){
+    var idx = run.active ? AGENT_ORDER.indexOf(run.active) : STAGES.length - 1;
+    if(idx < 0) idx = 0;
+    var stage = STAGES[idx];
+    /* The stage is named once, in the pipeline's own "Now" block. */
     setText("runNow", stage.label);
     setText("runProgressLabel", "stage " + (idx + 1) + " of " + STAGES.length);
-    setText("runningBlurb", BLURB[stage.id] || "Working.");
+    setText("runningBlurb", run.blurbs[stage.id] || BLURB[stage.id] || "Working.");
     setText("runElapsed", fmtElapsed(play.elapsed) + " elapsed");
-    /* The pass number comes from the pass model, not from session.iteration:
-       iteration only advances when a refinement's started event arrives, so
-       reading it here would label the handoff with the pass that just ended. */
-    var passNo = Math.min(openPass + 1, play.maxPasses);
-    setText("runPasses", "pass " + passNo + " of " + play.maxPasses);
+    setText("runPasses", "pass " + run.pass + " of " + run.maxPasses);
     var fill = document.getElementById("runTrackFill");
     if(fill) fill.style.width = Math.round(((idx + 1) / STAGES.length) * 100) + "%";
     var track = document.getElementById("runTrack");
     if(track) track.setAttribute("aria-valuenow", String(idx + 1));
+    /* The topbar chip reads the pass from the session, so the session's zero-based iteration
+       and its ceiling follow the run; the chip is rebuilt only when one of them changes. */
+    var iteration = run.pass - 1;
+    if(session.iteration !== iteration || session.passes !== run.maxPasses){
+      session.iteration = iteration;
+      session.passes = run.maxPasses;
+      renderTopbar();
+    }
+  }
+  /* One event: fold it into the run, then paint. The two `--base` pokes are the fill-wave
+     timing (DESIGN.md §3.4) and change nothing the interface states. */
+  function playEvent(ev, session){
+    if(typeof ev.at === "number") play.elapsed = ev.at;
+    applyEvent(play.run, ev);
+    var md = ev.metadata || {};
+    if(ev.type === "graph.route.decided" && (md.destination === "extra_pass" || md.destination === "redraft")) resetFlow();
+    if(ev.type === "graph.node.started" && md.node === "finalize_report") markFlow();
+    paintRunning(session);
   }
   function startPlayback(session){
-    /* this session's own script: it may take one pass or several */
     PLAYBACK = scriptFor(session);
     stopPlayback();
     play.session = session;
-    play.idx = 0; play.elapsed = 0; play.loops = 0; play.toolCalls = 0; play.claims = 0; play.marks = {};
-    play.pass = 0;
-    /* force the topbar chip to render for this session's first iteration */
-    play.iterationShown = null;
+    play.idx = 0; play.elapsed = 0;
+    play.run = newRunState(session.passes);
     session.status = "running";
     session.iteration = 0;
-    resetPasses(PLAYBACK.passes || 3);
     buildSpine(document.getElementById("spine"));
     resetFlow();
     setLoopState("off");
-    syncSpine(play.marks, 0);
-    updateRunningChrome(session);
-    /* One frame per event on a fixed cadence, so a stage's screen time is its
-       share of the schedule rather than its share of the event count: the
-       researcher's ~70 tool calls would otherwise eat the whole run and the
-       synthesizer would flash past. Each event still carries its own virtual
-       timestamp for the elapsed clock and the timestamps shown. */
+    paintRunning(session);
+    /* One frame per event on a fixed cadence, so a stage's screen time is its share of the
+       schedule rather than its share of the event count. */
     var stepMs = reducedMotion() ? 30 : Math.round(PLAY_MS / PLAYBACK.length);
     play.timer = setInterval(function(){
       if(play.idx >= PLAYBACK.length){ finishPlayback(session); return; }
-      var ev = PLAYBACK[play.idx++];
-      play.elapsed = ev.at;
-      applyEvent(ev, session);
-      updateRunningChrome(session);
+      playEvent(PLAYBACK[play.idx++], session);
     }, stepMs);
   }
   function stopPlayback(){
     if(play.timer){ clearInterval(play.timer); play.timer = null; }
+  }
+  /* Review hook: play the active playback session's script synchronously up to and including
+     the first event of `type`, then pause. Returns the event's index, or null when the type
+     does not occur in the rest of the script (the script is then exhausted and paused). */
+  function advanceTo(type){
+    var session = play.session;
+    if(!session || !PLAYBACK || !play.run) return null;
+    stopPlayback();
+    while(play.idx < PLAYBACK.length){
+      var ev = PLAYBACK[play.idx++];
+      playEvent(ev, session);
+      if(ev.type === type) return play.idx - 1;
+    }
+    return null;
   }
   /* ═══ running → report: the header block slides down into place ═══
      The question frame is the same object on both stages, and the run's settings chips are the
@@ -2923,15 +3049,22 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 
   function finishPlayback(session){
     stopPlayback();
+    var run = play.run;
     session.status = "completed";
-    /* The iteration a finished run reports is the number of the pass it ended on,
-       which is the last iteration its events carried — not the ceiling. Hardcoding
-       3 made a one-pass run claim it had refined twice. `play.pass` is that index;
-       fall back to the script's own pass count if it is ever unavailable. */
-    session.iteration = (typeof play.pass === "number" ? play.pass : (PLAYBACK.passes || 3) - 1) + 1;
+    session.routeReason = "report_accepted";
+    /* zero-based, the pass the run ended on; passNumber() adds one at every display site */
+    session.iteration = run ? run.pass - 1 : 0;
+    if(run) session.passes = run.maxPasses;
     session.finished = new Date().toISOString();
+    session.durationSeconds = Math.max(0, Math.round((new Date(session.finished) - new Date(session.started)) / 1000));
     session.reportPath = "api-output/report.md";
+    session.evidencePath = "api-output/report-evidence.md";
+    session.qualityPath = "api-output/report-quality.json";
     session.trace = "https://smith.langchain.com/o/example/r/" + session.id;
+    var fin = session.final || COMPOSER_FINAL;
+    session.review = fin.review;
+    session.coverage = fin.coverage;
+    session.evidenceCounts = fin.evidenceCounts;
     session.playback = false;
     renderList();
     enterReport(session);
@@ -3063,7 +3196,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       else trace.style.display = "none";
     }
     /* halted in the planner: the node started, nothing after it ran */
-    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, 0);
+    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, null);
   }
 
   /* ═══ open a session ═══ */
@@ -3098,12 +3231,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     if(isDrawer()) setSidebar("collapsed");
 
     if(session.playback && session.status === "running"){
-      /* Rewind before the first paint. showStage() renders the topbar, so a
-         session that is about to replay from the start must not briefly show the
-         iteration the previous session finished on — the chip carried "iteration
-         3 of 3" for one frame when switching between sessions. */
+      /* Rewind before the first paint: showStage() renders the topbar chip from the session, so
+         a session about to replay from the start must not briefly show the pass it last finished
+         on. */
       session.iteration = 0;
-      play.iterationShown = null;
       if(opts.hold){
         /* the "question locked in" beat: page 1 drains to the box, the box travels
            up to where the locked question sits, and page 2 assembles behind it.
@@ -3187,7 +3318,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
          removes the journey entirely, so it is worth being able to ask for. */
       motion: function(){ return reducedMotion() ? "reduced" : "full"; },
       submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
-      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); }
+      finish: function(){ var s = activeSession(); if(s) finishPlayback(s); },
+      /* 2026-09-26 additions (spec §4.6); Task 5 adds arc() and loop() */
+      advanceTo: advanceTo
     }
   });
 })();
