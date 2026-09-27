@@ -146,6 +146,10 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
 .bar-row .track span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
 .bar-row .track span.ok{background:var(--status-ok)}
 .bar-row .track span.bad{background:var(--status-danger)}
+.bar-row .track span.warn{background:var(--status-warn)}
+/* The 0.80 acceptance line on the review meter (types.py:1131), matching index.html's .bar-gate. */
+.bar-row .track{position:relative}
+.bar-row .track.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
 .bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
 @media (max-width:900px){.bar-row{grid-template-columns:118px 1fr 36px}}
 /* ═══ 2026-09-26: tables in a scrolling frame; the options table pins its first column ═══ */
@@ -557,7 +561,7 @@ pre.wire .nostr{color:var(--muted);font-style:italic}
           <div class="bars">
             <div class="bar-row">
               <span style="color:var(--fg)">Review score</span>
-              <span class="track"><span style="width:74%"></span></span>
+              <span class="track bar-gate"><span class="warn" style="width:74%"></span></span>
               <span class="n">0.74</span>
             </div>
             <div class="bar-row">
