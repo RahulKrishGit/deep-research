@@ -2273,9 +2273,12 @@ class CallAttemptTelemetry(ContractModel):
 
     ``first_event_seconds`` and ``first_token_seconds`` are set only for a
     streaming attempt (Phase 2): the first chunk or event, and the first
-    content or reasoning delta, both relative to the attempt's own start.
-    Absent for a non-streaming attempt, which reports no bytes until the
-    whole response arrives, so there is nothing earlier to time.
+    content or reasoning delta, both relative to the attempt's own start --
+    taken before the request is even sent, so time spent queued before the
+    response headers arrive is included, not just time since the request
+    call returned. Absent for a non-streaming attempt, which reports no
+    bytes until the whole response arrives, so there is nothing earlier to
+    time.
     """
 
     model_config = ConfigDict(

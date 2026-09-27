@@ -4792,3 +4792,782 @@ async def test_deepseek_judge_responses_confirms_streaming_by_default() -> None:
 
     assert result == JudgeVerdict.model_validate(verdict_payload)
     assert responses.calls[0]["stream"] is True
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_on_transport_failure(
+    monkeypatch,
+) -> None:
+    """A failed call must not report spend that never happened."""
+    slept = _recorded_sleeps(monkeypatch)
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+    )
+    tracker = local_tracker()
+    provider = _budgeted_provider(
+        tracker,
+        completions,
+        budget,
+        retry_count=1,
+        retry_initial_delay=1.0,
+        retry_max_delay=4.0,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert len(completions.calls) == 2
+    assert slept == [1.0]
+    assert snapshot.attempts == 2
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_request_budget_records_no_tokens_when_usage_is_malformed() -> None:
+    budget = _deepseek_budget()
+    completions = RecordingCompletions(chat_response(prompt_tokens="4"))
+    tracker = local_tracker()
+    provider = _budgeted_provider(tracker, completions, budget)
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="malformed usage"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+    snapshot = budget.snapshot("deepseek")
+    assert snapshot.attempts == 1
+    assert snapshot.input_tokens == 0
+    assert snapshot.output_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_a_repaired_reply_exposes_its_bounded_diagnostics() -> None:
+    """A successful repair must not erase what was wrong with the first reply.
+
+    The provider survives a malformed reply by repairing it once and returning
+    the repaired parse, so the categories and field paths that describe the
+    rejection were previously unreachable — and the historical trace's normal
+    ``stop`` finish reason identified neither. The additive hook records them,
+    bounded, with no rejected text.
+    """
+    extra_key = "undeclared_responses_property"
+    marker = "RESPONSES_REPAIR_MARKER_4C1D"
+    first_payload = _judge_payload(rationale="valid judge rationale")
+    del first_payload["rationale"]
+    first_payload[extra_key] = marker
+    second_payload = _judge_payload(rationale="repaired judge rationale")
+    responses = RecordingResponses(
+        responses_response(output_text=json.dumps(first_payload)),
+        responses_response(output_text=json.dumps(second_payload)),
+    )
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(),
+        CapturingTracker(),
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with CapturingTracker().session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert result == JudgeVerdict.model_validate(second_payload)
+    records = provider.drain_structured_repairs()
+    assert len(records) == 1
+    record = records[0]
+    assert record.schema_name == JudgeVerdict.__name__
+    assert "rationale" in {
+        path for item in record.diagnostics for path in item.field_paths
+    }
+    assert {item.category for item in record.diagnostics} == {"missing"}
+    # Bounded and provider-output free: no rejected text, no marker.
+    assert marker not in record.model_dump_json()
+    # Drained, not accumulated without limit.
+    assert provider.drain_structured_repairs() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_clean_reply_records_no_repair() -> None:
+    """The positive control: a first-attempt success is not a repair."""
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps(_judge_payload(rationale="clean rationale"))
+        )
+    )
+    provider = deepseek_module.DeepSeekJudgeProvider(
+        deepseek_config(),
+        CapturingTracker(),
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with CapturingTracker().session_span("session-1", "judge input"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")],
+            JudgeVerdict,
+            agent_name="judge",
+        )
+
+    assert provider.drain_structured_repairs() == ()
+
+
+def test_the_schema_instruction_follows_the_role_prompt() -> None:
+    schema = ChatMessage(role="system", content="SCHEMA")
+    with_role = deepseek_module._with_schema_instruction(
+        [{"role": "system", "content": "role"}, {"role": "user", "content": "body"}], schema
+    )
+    without_role = deepseek_module._with_schema_instruction(
+        [{"role": "user", "content": "body"}], schema
+    )
+    assert [message["content"] for message in with_role] == ["role", "SCHEMA", "body"]
+    assert [message["content"] for message in without_role] == ["SCHEMA", "body"]
+
+
+def test_cached_input_tokens_are_read_from_both_usage_shapes() -> None:
+    chat = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=10, completion_tokens=2, prompt_cache_hit_tokens=6))
+    responses = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens=10, output_tokens=2,
+        input_tokens_details=SimpleNamespace(cached_tokens=4)))
+    malformed = SimpleNamespace(usage=SimpleNamespace(
+        input_tokens_details=SimpleNamespace(cached_tokens="4")))
+    assert deepseek_module._chat_cached_input_tokens(chat) == 6
+    assert deepseek_module._responses_cached_input_tokens(responses) == 4
+    assert deepseek_module._chat_cached_input_tokens(SimpleNamespace(usage=None)) == 0
+    assert deepseek_module._responses_cached_input_tokens(malformed) == 0
+
+
+# ---------------------------------------------------------------------------
+# Per-attempt records and reasoning tokens (stall-fix-brief.md P1-B).
+#
+# ``started_at`` used to be taken once, outside ``with_retries``, so a call's
+# ``seconds`` could not be split into what each transport attempt actually
+# cost. Each attempt is now timed and its outcome recorded, on the LLM span's
+# outputs (where the trace fetch sees them) and in the run collector (where
+# the Telemetry line's "slowest call" reads them).
+# ---------------------------------------------------------------------------
+
+
+def test_usage_from_response_maps_reasoning_tokens_when_present() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=8,
+            completion_tokens=100,
+            total_tokens=108,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=64),
+        )
+    )
+    usage = deepseek_module._usage_from_response(response)
+    assert usage.reasoning_tokens == 64
+    assert usage.output_tokens == 100
+    assert usage.total_tokens == 108
+
+
+def test_usage_from_response_reasoning_tokens_absent_is_fine() -> None:
+    response = SimpleNamespace(
+        usage=SimpleNamespace(prompt_tokens=8, completion_tokens=3, total_tokens=11)
+    )
+    usage = deepseek_module._usage_from_response(response)
+    assert usage.reasoning_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_captures_reasoning_tokens_on_span_and_collector() -> (
+    None
+):
+    completions = RecordingCompletions(
+        chat_response(
+            text="answer", prompt_tokens=8, completion_tokens=100,
+            reasoning_tokens=64,
+        )
+    )
+    tracker = CapturingTracker()
+    collector = RunTelemetryCollector()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")], agent_name="researcher",
+        )
+
+    assert result.usage.reasoning_tokens == 64
+    assert tracker.llm_outputs[-1]["usage"]["reasoning_tokens"] == 64
+    assert collector.snapshot().reasoning_tokens == 64
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_records_a_timeout_then_ok_attempt(monkeypatch) -> (
+    None
+):
+    """Two attempts recorded as timeout then ok, with plausible timing, on the
+    span's outputs and in the run collector."""
+    _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text="answer", prompt_tokens=8, completion_tokens=3),
+    )
+    tracker = CapturingTracker()
+    collector = RunTelemetryCollector()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")], agent_name="researcher"
+        )
+
+    assert result.text == "answer"
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+    for record in attempts:
+        assert record["start_offset"] >= 0.0
+        assert record["seconds"] >= 0.0
+    assert attempts[1]["start_offset"] >= attempts[0]["start_offset"]
+
+    [stage] = collector.snapshot().stages
+    assert [record.outcome for record in stage.slowest_call_attempts] == [
+        "timeout",
+        "ok",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_structured_chat_mode_records_attempts(
+    monkeypatch,
+) -> None:
+    """The chat-JSON-mode structured path (``_structured_attempt``) records
+    attempts the same way as plain ``complete``."""
+    _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(text='{"answer": "yes", "confidence": 9}'),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")], TinyAnswer
+        )
+
+    assert result == TinyAnswer(answer="yes", confidence=9)
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_records_a_connection_error_then_ok_attempt(
+    monkeypatch,
+) -> None:
+    slept = _recorded_sleeps(monkeypatch)
+    completions = RecordingCompletions(
+        APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL)),
+        chat_response(
+            text=None,
+            finish_reason="tool_calls",
+            tool_calls=[native_call("web_search", '{"query":"qec"}')],
+        ),
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        turn = await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert turn.tool_calls == (
+        NativeToolCall(tool_name="web_search", arguments_json='{"query":"qec"}'),
+    )
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "connection error"),
+        (2, "ok"),
+    ]
+    assert slept == [1.0]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_judge_responses_schema_records_attempts(monkeypatch) -> None:
+    """The Responses-API structured path (``_responses_structured_attempt``)
+    records attempts too, not only the Chat Completions paths."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    verdict_payload = _judge_payload(rationale="Grounded judge rationale.")
+    responses = RecordingResponses(
+        sdk_error, responses_response(output_text=json.dumps(verdict_payload))
+    )
+    tracker = CapturingTracker()
+    provider = DeepSeekJudgeProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "judge input"):
+        result = await provider.complete_structured(
+            [ChatMessage(role="user", content="judge input")], JudgeVerdict,
+        )
+
+    assert result == JudgeVerdict.model_validate(verdict_payload)
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "ok"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_keeps_attempts_on_the_span_when_every_attempt_fails(
+    monkeypatch,
+) -> None:
+    """The call the stall investigation most needs recorded: every attempt
+    timed out, and the span must still carry what happened (RevTelemetry P3).
+    """
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=2, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderTimeoutError):
+            await provider.complete(
+                [ChatMessage(role="user", content="question")]
+            )
+
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "timeout"),
+        (2, "timeout"),
+        (3, "timeout"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_keeps_attempts_on_the_span_when_every_attempt_fails(
+    monkeypatch,
+) -> None:
+    """The same holds for the native ReAct transport, whose exhausted-retry
+    path clears its locals through a different route than ``complete``."""
+    _recorded_sleeps(monkeypatch)
+    sdk_error = APIConnectionError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
+    completions = RecordingCompletions(sdk_error, sdk_error)
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=1.0, retry_max_delay=4.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError):
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert [(record["attempt"], record["outcome"]) for record in attempts] == [
+        (1, "connection error"),
+        (2, "connection error"),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# RevStreaming review round: malformed chat deltas must fail typed and not
+# leak a chunk (P2), a chat stream with no finish reason must retry (P2),
+# failed attempts must still report first_event/first_token (P2), and those
+# marks must be measured from the attempt's own start, not from after the
+# response headers arrive (P3).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_streaming_rejects_non_string_content() -> None:
+    """A malformed ``content`` delta (not a string) fails as the same typed
+    ``ProviderResponseError`` the non-streaming path raises, not a raw
+    ``TypeError`` (RevStreaming P2)."""
+    chunks = [
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=42, reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="deepseek-response",
+            model="deepseek-v4-flash",
+            choices=[],
+            usage=SimpleNamespace(
+                prompt_tokens=8, completion_tokens=4, total_tokens=12
+            ),
+        ),
+    ]
+
+    async def _create(**kwargs: object) -> _FakeAsyncStream:
+        completions.calls.append(kwargs)
+        return _FakeAsyncStream(chunks)
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        with pytest.raises(ProviderResponseError, match="malformed content"):
+            await provider.complete([ChatMessage(role="user", content="question")])
+
+
+@pytest.mark.asyncio
+async def test_deepseek_native_react_streaming_rejects_non_string_tool_arguments() -> (
+    None
+):
+    """A malformed tool-call ``arguments`` delta (not a string) fails as the
+    same typed error the non-streaming path raises, not a raw ``TypeError``
+    (RevStreaming P2)."""
+    chunks = [
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content=None,
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_abc",
+                                type="function",
+                                function=SimpleNamespace(
+                                    name="web_search", arguments={"bad": True}
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None, reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="deepseek-response",
+            model="deepseek-v4-flash",
+            choices=[],
+            usage=SimpleNamespace(
+                prompt_tokens=8, completion_tokens=4, total_tokens=12
+            ),
+        ),
+    ]
+
+    async def _create(**kwargs: object) -> _FakeAsyncStream:
+        completions.calls.append(kwargs)
+        return _FakeAsyncStream(chunks)
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        with pytest.raises(ProviderResponseError, match="malformed arguments"):
+            await provider.complete_react(
+                [ChatMessage(role="user", content="review")],
+                [WEB_SEARCH_DEFINITION],
+            )
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_streaming_retries_a_clean_stream_with_no_finish_reason() -> (
+    None
+):
+    """A chat stream that ends cleanly -- no ``[DONE]``, no ``finish_reason``
+    ever set -- must retry as the same retryable transport error the
+    Responses path raises for a stream with no terminal event, not fail
+    non-retryably as though it had stopped cleanly (RevStreaming P2)."""
+    incomplete_chunks = [
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="partial", reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    ok_chunks = _chat_stream_chunks(
+        chat_response(text="answer", prompt_tokens=8, completion_tokens=3)
+    )
+    call_count = 0
+
+    async def _create(**kwargs: object) -> _FakeAsyncStream:
+        nonlocal call_count
+        call_count += 1
+        completions.calls.append(kwargs)
+        if call_count == 1:
+            return _FakeAsyncStream(incomplete_chunks)
+        return _FakeAsyncStream(ok_chunks)
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=0.0, retry_max_delay=0.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_streaming_records_marks_when_the_attempt_times_out() -> (
+    None
+):
+    """Silence after two reasoning chunks must still record ``first_event``
+    and ``first_token`` on the timed-out attempt: they must survive an
+    exception, not only a clean finish (RevStreaming P2)."""
+
+    class _SilentAfterTwo:
+        def __init__(self, chunks: list[object]) -> None:
+            self._chunks = list(chunks)
+
+        async def __aenter__(self) -> "_SilentAfterTwo":
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
+
+        async def __aiter__(self):
+            for chunk in self._chunks:
+                yield chunk
+            raise APITimeoutError(
+                request=httpx.Request("POST", DEEPSEEK_BASE_URL)
+            )
+
+    two_reasoning_chunks = [
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning_content="thinking",
+                        tool_calls=None,
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None, reasoning_content=" more", tool_calls=None
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+    ]
+    ok_chunks = _chat_stream_chunks(
+        chat_response(text="answer", prompt_tokens=8, completion_tokens=3)
+    )
+    call_count = 0
+
+    async def _create(**kwargs: object) -> object:
+        nonlocal call_count
+        call_count += 1
+        completions.calls.append(kwargs)
+        if call_count == 1:
+            return _SilentAfterTwo(two_reasoning_chunks)
+        return _FakeAsyncStream(ok_chunks)
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(retry_count=1, retry_initial_delay=0.0, retry_max_delay=0.0),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert attempts[0]["outcome"] == "timeout"
+    assert attempts[0]["first_event_seconds"] is not None
+    assert attempts[0]["first_token_seconds"] is not None
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_streaming_first_event_seconds_includes_time_before_headers() -> (
+    None
+):
+    """``first_event_seconds`` must include time spent queued before the
+    response headers arrive, not only time since ``create()`` returned
+    (RevStreaming P3)."""
+    import asyncio as _asyncio_module
+
+    async def _create(**kwargs: object) -> _FakeAsyncStream:
+        completions.calls.append(kwargs)
+        await _asyncio_module.sleep(0.2)
+        return _FakeAsyncStream(
+            _chat_stream_chunks(
+                chat_response(text="answer", prompt_tokens=8, completion_tokens=3)
+            )
+        )
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = CapturingTracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete([ChatMessage(role="user", content="question")])
+
+    attempts = tracker.llm_outputs[-1]["attempts"]
+    assert attempts[0]["first_event_seconds"] >= 0.15
+
+
+@pytest.mark.asyncio
+async def test_deepseek_complete_streaming_completes_on_finish_reason_alone_when_usage_chunk_is_missing() -> (
+    None
+):
+    """A chat stream that sets a real ``finish_reason`` but never delivers a
+    separate usage chunk (DeepSeek ignoring ``include_usage`` for some model
+    or mode) must complete on one attempt -- usage maps to zero tokens, as
+    it already does for a non-streaming reply with no usage -- not be
+    retried forever as though it never told us it finished (RevStreaming P2
+    hardening)."""
+    chunks = [
+        SimpleNamespace(
+            id="deepseek-response",
+            model=None,
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content="answer", reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        ),
+        SimpleNamespace(
+            id="deepseek-response",
+            model="deepseek-v4-flash",
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None, reasoning_content=None, tool_calls=None
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        ),
+    ]
+
+    async def _create(**kwargs: object) -> _FakeAsyncStream:
+        completions.calls.append(kwargs)
+        return _FakeAsyncStream(chunks)
+
+    completions = RecordingCompletions()
+    completions.create = _create
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(), tracker, client=FakeDeepSeekClient(completions)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        result = await provider.complete(
+            [ChatMessage(role="user", content="question")]
+        )
+
+    assert result.text == "answer"
+    assert result.usage.model_dump() == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+    assert len(completions.calls) == 1

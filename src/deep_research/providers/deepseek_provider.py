@@ -745,56 +745,104 @@ class _ChatStreamAccumulator:
     ``choices[0].finish_reason``, ``usage`` and ``model`` -- so
     ``_choice_text``, ``_native_outcome``, ``_usage_from_response`` and
     ``_chat_cached_input_tokens`` run unchanged on it. ``usage`` is the real
-    ``CompletionUsage`` object DeepSeek sends on the final, choice-less chunk
-    (``stream_options={"include_usage": True}``), never reconstructed.
+    ``CompletionUsage`` object DeepSeek sends, never reconstructed.
+
+    A non-string ``content``/``reasoning_content`` or tool-call ``name``/
+    ``arguments`` delta is kept as-is -- never joined or concatenated -- so
+    the existing ``_choice_text``/``_native_outcome`` type guards reject it
+    exactly as they reject a malformed non-streaming reply: a raw
+    ``TypeError`` must never escape with a chunk reachable from its
+    traceback (RevStreaming P2). A stream that ends before ever telling us
+    it completed -- a dedicated, choice-less final chunk (OpenAI's
+    documented ``stream_options={"include_usage": True}`` behaviour), a
+    chunk that instead attaches usage to the same chunk as the finish
+    reason, or a chunk with a non-empty ``finish_reason`` string on its own
+    (DeepSeek may ignore ``include_usage`` for some model or mode; the model
+    itself declaring the response finished is enough, with no separate
+    usage chunk required) -- raises the same retryable transport error the
+    Responses path raises for a stream with no terminal event, rather than
+    being accepted as a clean, non-retryable response; a malformed-but-
+    *present* ``finish_reason`` (``None``, ``42``, garbage text, ...) on an
+    otherwise complete stream is an existing, separately handled "other"
+    category, not an incomplete stream (RevStreaming P2).
+
+    ``marks`` is written to directly, during ``absorb()``, so a failed
+    attempt (a timeout or disconnect mid-stream) still reports whatever
+    ``first_event_seconds``/``first_token_seconds`` it saw before failing
+    (RevStreaming P2); both are measured from ``started_at``, the attempt's
+    own start taken before the request was even sent, so time spent queued
+    before the response headers arrive is included (RevStreaming P3).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, marks: SimpleNamespace, started_at: float) -> None:
         self._content_parts: list[str] = []
+        self._content_malformed: object = None
         self._reasoning_parts: list[str] = []
+        self._reasoning_malformed: object = None
         self._tool_calls: dict[int, SimpleNamespace] = {}
         self._finish_reason: str | None = None
+        self._saw_terminal_chunk = False
         self._usage: Any = None
         self._model: str | None = None
         self._id: str | None = None
-        self._started_at = perf_counter()
-        self.first_event_seconds: float | None = None
-        self.first_token_seconds: float | None = None
+        self._marks = marks
+        self._started_at = started_at
 
     def absorb(self, chunk: Any) -> None:
         """Fold one streamed chunk's delta into the accumulated response."""
         now = perf_counter()
-        if self.first_event_seconds is None:
-            self.first_event_seconds = now - self._started_at
+        if self._marks.first_event_seconds is None:
+            self._marks.first_event_seconds = now - self._started_at
         self._model = getattr(chunk, "model", None) or self._model
         self._id = getattr(chunk, "id", None) or self._id
         usage = getattr(chunk, "usage", None)
         if usage is not None:
             self._usage = usage
         choices = getattr(chunk, "choices", None)
+        if choices == [] or usage is not None:
+            # DeepSeek's real terminal signal for a request that always asks
+            # for ``stream_options={"include_usage": True}``: OpenAI's
+            # documented wire behaviour is a dedicated, choice-less final
+            # chunk carrying usage, but some wires (or test doubles) attach
+            # usage directly to the same chunk as the finish reason instead.
+            # Either shape means the stream told us it completed.
+            self._saw_terminal_chunk = True
         if not choices:
-            # The final usage-only chunk carries an empty ``choices`` list.
             return
         choice = choices[0]
         finish_reason = getattr(choice, "finish_reason", None)
         if finish_reason is not None:
             self._finish_reason = finish_reason
+        if isinstance(finish_reason, str) and finish_reason:
+            # A real (even if malformed-but-non-empty) finish reason means
+            # the model itself declared the response finished, independent
+            # of whether DeepSeek also delivers a usage chunk for this
+            # model/mode (RevStreaming P2 hardening).
+            self._saw_terminal_chunk = True
         delta = getattr(choice, "delta", None)
         if delta is None:
             return
         content = getattr(delta, "content", None)
-        if content:
-            if self.first_token_seconds is None:
-                self.first_token_seconds = now - self._started_at
-            self._content_parts.append(content)
+        if content is not None:
+            if isinstance(content, str):
+                if content and self._content_malformed is None:
+                    if self._marks.first_token_seconds is None:
+                        self._marks.first_token_seconds = now - self._started_at
+                    self._content_parts.append(content)
+            elif self._content_malformed is None:
+                self._content_malformed = content
         # DeepSeek's extra delta field, exposed by the SDK's ``extra="allow"``
         # chunk models via plain attribute access (verified against openai
         # 2.53.0's ``ChoiceDelta``).
         reasoning_content = getattr(delta, "reasoning_content", None)
-        if reasoning_content:
-            if self.first_token_seconds is None:
-                self.first_token_seconds = now - self._started_at
-            self._reasoning_parts.append(reasoning_content)
+        if reasoning_content is not None:
+            if isinstance(reasoning_content, str):
+                if reasoning_content and self._reasoning_malformed is None:
+                    if self._marks.first_token_seconds is None:
+                        self._marks.first_token_seconds = now - self._started_at
+                    self._reasoning_parts.append(reasoning_content)
+            elif self._reasoning_malformed is None:
+                self._reasoning_malformed = reasoning_content
         for tool_call_delta in getattr(delta, "tool_calls", None) or ():
             index = getattr(tool_call_delta, "index", 0)
             entry = self._tool_calls.get(index)
@@ -802,24 +850,71 @@ class _ChatStreamAccumulator:
                 entry = SimpleNamespace(
                     id=getattr(tool_call_delta, "id", None),
                     type=getattr(tool_call_delta, "type", None) or "function",
-                    function=SimpleNamespace(name=None, arguments=""),
+                    function=SimpleNamespace(
+                        name=None,
+                        arguments="",
+                        _name_malformed=False,
+                        _arguments_malformed=False,
+                    ),
                 )
                 self._tool_calls[index] = entry
             function_delta = getattr(tool_call_delta, "function", None)
             if function_delta is not None:
                 name = getattr(function_delta, "name", None)
-                if name:
-                    entry.function.name = name
+                if name is not None:
+                    if isinstance(name, str):
+                        if name and not entry.function._name_malformed:
+                            entry.function.name = name
+                    else:
+                        entry.function.name = name
+                        entry.function._name_malformed = True
                 arguments = getattr(function_delta, "arguments", None)
-                if arguments:
-                    entry.function.arguments += arguments
+                if arguments is not None:
+                    if isinstance(arguments, str):
+                        if arguments and not entry.function._arguments_malformed:
+                            entry.function.arguments += arguments
+                    else:
+                        entry.function.arguments = arguments
+                        entry.function._arguments_malformed = True
 
     def finalize(self) -> Any:
-        """Return the pseudo-response the existing parsing reads."""
+        """Return the pseudo-response the existing parsing reads.
+
+        Every chat request asks for ``stream_options={"include_usage": True}``,
+        so DeepSeek always closes a completed stream with real usage --
+        either on a dedicated, choice-less final chunk (OpenAI's documented
+        behaviour) or on the same chunk as the finish reason; either shape
+        is the actual completion signal, not the ``finish_reason`` value
+        itself -- a malformed-but-present ``finish_reason`` (``None``,
+        ``42``, garbage text, ...) on an otherwise complete stream is an
+        existing, separately-handled "other" category, not an incomplete
+        stream. When neither shape ever arrives, the stream ended
+        prematurely (a clean EOF with no ``[DONE]``, indistinguishable from
+        real content otherwise) and must retry the same way the Responses
+        path retries a stream with no terminal event, rather than being
+        accepted as a completed, non-retryable response (RevStreaming P2).
+        """
+        if not self._saw_terminal_chunk:
+            raise ProviderResponseError(
+                "DeepSeek chat stream ended before its terminal chunk arrived",
+                failure_origin="sdk",
+                retryable=True,
+                failure_category="transport",
+            )
         tool_calls = [self._tool_calls[index] for index in sorted(self._tool_calls)]
+        content_value = (
+            self._content_malformed
+            if self._content_malformed is not None
+            else "".join(self._content_parts)
+        )
+        reasoning_value = (
+            self._reasoning_malformed
+            if self._reasoning_malformed is not None
+            else ("".join(self._reasoning_parts) or None)
+        )
         message = SimpleNamespace(
-            content="".join(self._content_parts),
-            reasoning_content="".join(self._reasoning_parts) or None,
+            content=content_value,
+            reasoning_content=reasoning_value,
             tool_calls=tool_calls or None,
         )
         choice = SimpleNamespace(finish_reason=self._finish_reason, message=message)
@@ -842,7 +937,9 @@ _RESPONSES_TOKEN_EVENT_TYPES = frozenset(
 )
 
 
-async def _consume_responses_stream(stream: Any, marks: SimpleNamespace) -> Any:
+async def _consume_responses_stream(
+    stream: Any, marks: SimpleNamespace, started_at: float
+) -> Any:
     """Consume a Responses API SSE stream to its terminal response (Phase 2).
 
     All three terminal events resolve the same way: ``event.response`` is
@@ -851,8 +948,11 @@ async def _consume_responses_stream(stream: Any, marks: SimpleNamespace) -> Any:
     and failed apart. A stream that ends with no terminal event never told us
     what happened, so it is a retryable connection error, not a silent
     success.
+
+    ``started_at`` is the attempt's own start, taken before the request was
+    even sent, so ``first_event_seconds``/``first_token_seconds`` include any
+    time spent queued before the response headers arrive (RevStreaming P3).
     """
-    started_at = perf_counter()
     async with stream:
         async for event in stream:
             now = perf_counter()
@@ -1192,6 +1292,7 @@ class DeepSeekChatProvider:
 
                 async def _request() -> Any:
                     nonlocal request_attempt
+                    attempt_started_at = perf_counter()
                     self._reserve_attempt(agent_name)
                     request_attempt += 1
                     marks.first_event_seconds = None
@@ -1224,16 +1325,12 @@ class DeepSeekChatProvider:
                                     "timeout": _stream_timeout(idle_timeout),
                                 }
                             )
-                            accumulator = _ChatStreamAccumulator()
+                            accumulator = _ChatStreamAccumulator(
+                                marks, attempt_started_at
+                            )
                             async with chat_stream:
                                 async for chunk in chat_stream:
                                     accumulator.absorb(chunk)
-                            marks.first_event_seconds = (
-                                accumulator.first_event_seconds
-                            )
-                            marks.first_token_seconds = (
-                                accumulator.first_token_seconds
-                            )
                             return accumulator.finalize()
                     except TimeoutError:
                         raise ProviderTimeoutError(
@@ -1340,6 +1437,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                attempt_started_at = perf_counter()
                 self._reserve_attempt(agent_name)
                 request_attempt += 1
                 marks.first_event_seconds = None
@@ -1377,12 +1475,12 @@ class DeepSeekChatProvider:
                                 "timeout": _stream_timeout(idle_timeout),
                             }
                         )
-                        accumulator = _ChatStreamAccumulator()
+                        accumulator = _ChatStreamAccumulator(
+                            marks, attempt_started_at
+                        )
                         async with chat_stream:
                             async for chunk in chat_stream:
                                 accumulator.absorb(chunk)
-                        marks.first_event_seconds = accumulator.first_event_seconds
-                        marks.first_token_seconds = accumulator.first_token_seconds
                         return accumulator.finalize()
                 except TimeoutError:
                     raise ProviderTimeoutError(
@@ -1615,6 +1713,7 @@ class DeepSeekChatProvider:
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                attempt_started_at = perf_counter()
                 self._reserve_attempt(agent_name)
                 request_attempt += 1
                 marks.first_event_seconds = None
@@ -1654,12 +1753,12 @@ class DeepSeekChatProvider:
                                 "timeout": _stream_timeout(idle_timeout),
                             }
                         )
-                        accumulator = _ChatStreamAccumulator()
+                        accumulator = _ChatStreamAccumulator(
+                            marks, attempt_started_at
+                        )
                         async with chat_stream:
                             async for chunk in chat_stream:
                                 accumulator.absorb(chunk)
-                        marks.first_event_seconds = accumulator.first_event_seconds
-                        marks.first_token_seconds = accumulator.first_token_seconds
                         return accumulator.finalize()
                 except TimeoutError:
                     raise ProviderTimeoutError(
@@ -1869,6 +1968,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
 
             async def _request() -> Any:
                 nonlocal request_attempt
+                attempt_started_at = perf_counter()
                 self._reserve_attempt(agent_name)
                 request_attempt += 1
                 marks.first_event_seconds = None
@@ -1900,7 +2000,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                             }
                         )
                         return await _consume_responses_stream(
-                            responses_stream, marks
+                            responses_stream, marks, attempt_started_at
                         )
                 except TimeoutError:
                     raise ProviderTimeoutError(
