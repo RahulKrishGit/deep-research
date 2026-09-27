@@ -1400,12 +1400,15 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         <div class="with-rail">
           <div class="stack" style="gap:var(--space-5)">
             <div class="note bad" data-od-id="failed-panel">
+              <!-- The headline is the halting type in plain words (spec §4.2); the enumerated
+                   error_type stays in the facts list and the API's own message is the sentence. -->
               <div class="note-head"><span class="mk">halt</span><span id="failedType">—</span></div>
-              <p id="failedMessage">The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.</p>
+              <p id="failedMessage">The run stopped on a non-recoverable error.</p>
             </div>
 
             <div class="card stack" style="gap:var(--space-4)" data-od-id="failed-facts">
-              <h2 class="card-title">Why there is no report</h2>
+              <h2 class="card-title">Why nothing was published</h2>
+              <p class="sm">A halted run skips publication: no report, evidence log or quality record was written.</p>
               <dl class="kv">
                 <dt>error_type</dt><dd id="failFactType">—</dd>
                 <dt>source</dt><dd id="failFactSource">—</dd>
@@ -1413,26 +1416,23 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                 <dt>report_path</dt><dd class="avail">Not published</dd>
                 <dt>GET /report</dt><dd>409 report_unavailable</dd>
               </dl>
-              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> — distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns.</p>
+              <p class="avail">A finished session with no artifact answers <span class="mono">409 report_unavailable</span> — distinct from the <span class="mono">409 session_not_complete</span> a running session returns, and from the <span class="mono">404</span> an unknown id returns. There is no download control here, disabled or otherwise.</p>
             </div>
           </div>
 
           <aside class="rail" data-od-id="failed-rail" aria-label="Run details">
             <div class="card stack" style="gap:var(--space-4)">
               <div class="row-between">
-                <h2 class="card-title">Pipeline</h2>
-                <span class="avail-mono">halted at stage 1</span>
+                <h2 class="card-title">Where it stopped</h2>
+                <span class="avail-mono" id="failedHaltedAt">halted at stage 1</span>
               </div>
               <ol class="spine-lg" id="spineFailed"></ol>
             </div>
-            <div class="card stack-2">
+            <div class="card stack-2" data-od-id="failed-survived">
               <h2 class="card-title">What survived the halt</h2>
-              <dl class="kv">
-                <dt>findings</dt><dd>0</dd>
-                <dt>sources evaluated</dt><dd>0</dd>
-                <dt>claims checked</dt><dd>0</dd>
-              </dl>
-              <p class="avail">Real counts read from state, not absences. An absent value reads <span class="mono">Not recorded</span> — the two look different on purpose.</p>
+              <p class="eyebrow" style="margin:0">counted from the event stream</p>
+              <dl class="kv" id="failedCounters"></dl>
+              <p class="avail">The same counters the running stage keeps, frozen at the halt. A counter whose node never ran reads <span class="mono">not reached</span>: a value never measured, not a zero.</p>
             </div>
           </aside>
         </div>
@@ -3213,20 +3213,24 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       lim.innerHTML = lines.map(function(t){ return "<li>" + t + "</li>"; }).join("");
     }
   }
+  /* Halting types (graph/state.py:141-150) in plain words; the enumerated type stays in the facts. */
+  var HALT_HEADLINES = {
+    graph_planning_failed:                 "Planning failed",
+    graph_provider_configuration_error:    "Model provider misconfigured",
+    graph_agent_configuration_error:       "Agent misconfigured",
+    graph_invalid_agent_state:             "Invalid agent state",
+    graph_invalid_route:                   "Invalid route",
+    graph_request_attempt_limit_exceeded:  "Request attempt limit reached"
+  };
   function populateFailed(session){
     var hard = (session.errors || []).filter(function(x){ return !x.recoverable; })[0]
             || { type:"api.research.failed", source:"api" };
     setText("failedMeta", "session " + session.id + " · finished " + (fmtClock(session.finished) || "not recorded"));
     setText("failed-h", session.q);
-    setText("failedType", hard.type);
-    /* The API serves a curated, per-error-type sentence in `ResearchError.message`, and
-       `graph/errors.py` is explicit that it is never `str(exception)` — the message is part of
-       the enumeration. This panel used to show a fixed sentence instead, so the one piece of
-       human-readable text the API goes out of its way to produce was the one thing the screen
-       for explaining the failure did not display. The static copy survives as the fallback for
-       an error record that carries no message at all. */
-    setText("failedMessage", hard.message
-      || "The run stopped on a non-recoverable error. Everything collected before the halt survives in the session, but a halted run publishes no artifact.");
+    setText("failedType", HALT_HEADLINES[hard.type] || hard.type);
+    /* `ResearchError.message` is curated per enumerated type and never str(exception)
+       (graph/errors.py); the static sentence is only the fallback for a record without one. */
+    setText("failedMessage", hard.message || "The run stopped on a non-recoverable error.");
     setText("failFactType", hard.type);
     setText("failFactSource", hard.source || "graph");
     setText("failFactRecoverable", String(!!hard.recoverable));
@@ -3235,8 +3239,19 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       if(session.trace){ trace.style.display = ""; trace.href = session.trace; }
       else trace.style.display = "none";
     }
-    /* halted in the planner: the node started, nothing after it ran */
-    renderSpine(document.getElementById("spineFailed"), { planner:"active" }, null);
+    /* The halted run's events go through the same handlers as a live run. The halting row is
+       the last graph.node.started with no graph.node.completed; every graph.node.skipped row is
+       `skipped`; Publishing is `skipped` by the client rule status == "failed" — never
+       has_report, which can be true after a first-pass writer (report_writer.py:3262) — because
+       the graph never runs finalize_report after a halt and no event exists for it (spec §3.1). */
+    var run = newRunState(session.passes);
+    HALTED_EVENTS.forEach(function(ev){ applyEvent(run, ev); });
+    var marks = marksFor(run, run.openNode);
+    if(run.finalStatus === "failed") marks.finalize_report = "skipped";
+    renderSpine(document.getElementById("spineFailed"), marks, run);
+    var haltIndex = AGENT_ORDER.indexOf(run.openNode);
+    setText("failedHaltedAt", haltIndex >= 0 ? "halted at stage " + (haltIndex + 1) : "halted before the first stage");
+    renderCounters("failedCounters", run.counters, "not reached");
   }
 
   /* ═══ open a session ═══ */
