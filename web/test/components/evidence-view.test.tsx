@@ -35,3 +35,22 @@ describe("EvidenceView", () => {
     expect(container.querySelector(".ev-title")!.textContent).toBe("R01 — refused sentence");
   });
 });
+
+describe("evidenceRows ordering (controller ruling, fix round 1)", () => {
+  it("sorts findings F-labels numerically first, then X-labels numerically, ahead of not-found and refused rows", () => {
+    const data: EvidenceResponse = {
+      session_id: "s", iteration: 0,
+      findings: [
+        { label: "F02", status: "verified", dropped_reason: null, context_unchecked: false, cited: true, target_ids: [], content: "", snippet: null, passage: null,
+          source: { url: "", title: "", organisation: "", evaluation_status: null, low_confidence: false, authority_score: null, recency_score: null, relevance_score: null, overall_score: null }, figures: [] },
+        { label: "F01", status: "verified", dropped_reason: null, context_unchecked: false, cited: true, target_ids: [], content: "", snippet: null, passage: null,
+          source: { url: "", title: "", organisation: "", evaluation_status: null, low_confidence: false, authority_score: null, recency_score: null, relevance_score: null, overall_score: null }, figures: [] },
+        { label: "X01", status: "dropped", dropped_reason: "snippet_not_on_page", context_unchecked: false, cited: false, target_ids: [], content: "", snippet: null, passage: null,
+          source: { url: "", title: "", organisation: "", evaluation_status: null, low_confidence: false, authority_score: null, recency_score: null, relevance_score: null, overall_score: null }, figures: [] },
+      ],
+      not_found: [{ target_id: "topic-01-target-01", question: "q", queries: [], pages_read: [], searched: true }],
+      refused: [{ where: "w", text: "t", reason: "r", finding_labels: [] }],
+    };
+    expect(evidenceRows(data).map((r) => r.id)).toEqual(["F01", "F02", "X01", "topic-01-target-01", "R01"]);
+  });
+});

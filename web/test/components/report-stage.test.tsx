@@ -53,6 +53,48 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     expect(mockConsole.clearUnreachable).toHaveBeenCalled();
   });
 
+  it("I1: a single Retry recovers every read still pending when both fetches are unreachable at once", async () => {
+    let reportCalls = 0;
+    let evidenceCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const unreachable = json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
+      if (url.includes("/report")) {
+        reportCalls++;
+        return reportCalls === 1 ? unreachable : md("# Q\n\nBody text.\n");
+      }
+      evidenceCalls++;
+      return evidenceCalls === 1 ? unreachable : json(200, { session_id: "s1", iteration: 0, findings: [], not_found: [], refused: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    await waitFor(() => expect(reportCalls).toBe(1));
+    await waitFor(() => expect(evidenceCalls).toBe(1));
+    await waitFor(() => expect(mockConsole.noteUnreachable.mock.calls.length).toBeGreaterThanOrEqual(1));
+    expect(mockConsole.clearUnreachable).not.toHaveBeenCalled();
+    // ConsoleProvider keeps a single { target, retry } pair (setUnreachable, not a queue) — whichever
+    // fetch failed last wins the slot, so the *same* retry must repeat every read still pending, not
+    // just the one that happened to fail last.
+    const retry = mockConsole.noteUnreachable.mock.calls.at(-1)![1] as () => void;
+    await act(async () => { retry(); });
+    await waitFor(() => expect(reportCalls).toBe(2));
+    await waitFor(() => expect(evidenceCalls).toBe(2));
+    await waitFor(() => expect(document.querySelector(".prose")).toBeTruthy());
+    expect(mockConsole.clearUnreachable).toHaveBeenCalled();
+  });
+
+  it("minor 4: any other ApiError (neither 409 nor unreachable) also shows Not published, never an endless loading state", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/report")) return json(500, { error: { code: "internal_error", message: "boom", reason: null, issues: [] } });
+      return json(404, { error: { code: "session_not_found", message: "not found", reason: null, issues: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    await waitFor(() => expect(document.querySelector("article.card p.avail")!.textContent).toBe("Not published"));
+    expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
+  });
+
   it("a 409 on the report fetch shows the muted 'Not published' line, never an endless loading state", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

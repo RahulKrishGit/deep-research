@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getEvidence, getReport, reportUrl, type EvidenceResponse, type ResearchSessionResponse } from "@/lib/api";
+import { ApiUnreachableError, evidenceMarkdownUrl, getEvidence, getReport, reportUrl, type EvidenceResponse, type ResearchSessionResponse } from "@/lib/api";
 import { fmtClock, fmtSeconds, passText, qFitClass, toSessionView } from "@/lib/format";
 import { useConsole } from "./ConsoleProvider";
 import { EvidenceView } from "./EvidenceView";
@@ -8,6 +8,7 @@ import { ReportBody } from "./ReportBody";
 import { ReportRail } from "./ReportRail";
 
 type Loaded<T> = { kind: "loading" } | { kind: "ready"; value: T } | { kind: "unavailable" };
+type Read = "report" | "evidence";
 
 export function ReportStage({ sessionId, status, strip, passes }: { sessionId: string; status: ResearchSessionResponse; strip: ReactNode; passes: number | null }) {
   const { noteUnreachable, clearUnreachable } = useConsole();
@@ -16,26 +17,39 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
   const [evidence, setEvidence] = useState<Loaded<EvidenceResponse>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
-    const unavailable = (e: unknown) => e instanceof ApiError && e.status === 409;
-    // K14: an unreachable service raises the console's banner (spec §4.4 "API unreachable") with
-    // a Retry that repeats this same read, instead of leaving the card stuck on "loading report".
+    // I1 (fix round 1): ConsoleProvider keeps a single { target, retry } pair (setUnreachable, not a
+    // queue) — the usual outage has both reads unreachable at mount, so two independent per-read
+    // retries would let whichever failure lands last silently drop the other read forever. `pending`
+    // tracks every read still owed a successful attempt; one shared `retryAll` repeats all of them,
+    // and the banner clears only once nothing is left pending.
+    const pending = new Set<Read>();
+    const settle = (key: Read) => {
+      pending.delete(key);
+      if (pending.size === 0) clearUnreachable();
+    };
     const fetchReport = () => {
       getReport(sessionId)
-        .then((r) => { if (!live) return; setReport({ kind: "ready", value: r.data }); clearUnreachable(); })
+        .then((r) => { if (!live) return; setReport({ kind: "ready", value: r.data }); settle("report"); })
         .catch((e) => {
           if (!live) return;
-          if (unavailable(e)) setReport({ kind: "unavailable" });
-          else if (e instanceof ApiUnreachableError) noteUnreachable(e.target, fetchReport);
+          if (e instanceof ApiUnreachableError) { pending.add("report"); noteUnreachable(e.target, retryAll); return; }
+          setReport({ kind: "unavailable" }); // minor 4: any other ApiError (409 or otherwise) → "Not published", never endless loading
+          settle("report");
         });
     };
     const fetchEvidence = () => {
       getEvidence(sessionId)
-        .then((r) => { if (!live) return; setEvidence({ kind: "ready", value: r.data }); clearUnreachable(); })
+        .then((r) => { if (!live) return; setEvidence({ kind: "ready", value: r.data }); settle("evidence"); })
         .catch((e) => {
           if (!live) return;
-          if (unavailable(e)) setEvidence({ kind: "unavailable" });
-          else if (e instanceof ApiUnreachableError) noteUnreachable(e.target, fetchEvidence);
+          if (e instanceof ApiUnreachableError) { pending.add("evidence"); noteUnreachable(e.target, retryAll); return; }
+          setEvidence({ kind: "unavailable" });
+          settle("evidence");
         });
+    };
+    const retryAll = () => {
+      if (pending.has("report")) fetchReport();
+      if (pending.has("evidence")) fetchEvidence();
     };
     fetchReport();
     fetchEvidence();
