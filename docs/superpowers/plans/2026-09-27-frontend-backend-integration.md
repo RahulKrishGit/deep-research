@@ -3848,17 +3848,19 @@ if (action === "start") {
 } else if (action === "stop") {
   if (!name || !port) { console.error("usage: launch.mjs stop <name> <port>"); process.exit(2); }
   const pid = existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim() : null;
+  let killed = false;
   if (pid === null) console.error(`no ${pidFile}: nothing to kill by PID; checking the port`);
-  else { try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" }); } catch { console.error(`taskkill /PID ${pid} /T /F failed — the recorded process is already gone; checking the port`); } }
+  else { try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: "ignore" }); killed = true; } catch { console.error(`taskkill /PID ${pid} /T /F failed — the recorded process is already gone; checking the port`); } }
   for (let i = 0; i < 20; i++) {
     if ((await answers("/")) === null) {
       if (pid !== null) unlinkSync(pidFile);
-      console.log(`stopped: port ${port} refuses connections${pid === null ? "" : ` (pid ${pid} and its tree)`}`);
+      console.log(`stopped: port ${port} refuses connections${pid === null ? "" : killed ? ` (pid ${pid} and its tree)` : ` (pid ${pid} was already gone)`}`);
       process.exit(0);
     }
     await sleep(500);
   }
-  console.error(`FAILED: port ${port} still answers after 10 s${pid === null ? " and there was no PID file" : ` although pid ${pid} was killed`} — a server is still running; find its owner: powershell "Get-NetTCPConnection -LocalPort ${port} -State Listen | Select OwningProcess" then taskkill /PID <owner> /T /F`);
+  const why = pid === null ? " and there was no PID file" : killed ? ` although pid ${pid} was killed` : ` and pid ${pid} was already gone`;
+  console.error(`FAILED: port ${port} still answers after 10 s${why} — a server is still running; find its owner: powershell "Get-NetTCPConnection -LocalPort ${port} -State Listen | Select OwningProcess" then taskkill /PID <owner> /T /F`);
   process.exit(1);
 } else { console.error('usage: launch.mjs start <name> <port> <ready-path> "<command>" | stop <name> <port>'); process.exit(2); }
 ```
@@ -6031,17 +6033,17 @@ Report: the current UTC time, the window it falls in, the expected end time (sta
 
 - [ ] **Step 3: Start the two processes in live mode**
 
-The worktree has no `.env` (spec §4.5 "Secrets", the human's ruling): the main checkout's `.env` is **copied as a file** into the worktree root immediately before the API starts — a `copyFileSync`, so nobody reads, prints or greps its contents; `.env` is gitignored (`.gitignore:151`). The live API then starts **from the worktree root** with this branch's `config.yaml` (`load_dotenv` reads `.env` from the config file's own directory, `utils/config.py:728`; the main checkout's `config.yaml` is never used — it belongs to an older `main` and this branch's loader rejects it). A pre-flight strict load proves the keys are in place before anything is spent. Both processes go through the launcher of Task 14 so they outlive this call and are stopped verifiably in step 5:
+The worktree has no `.env` (spec §4.5 "Secrets", the human's ruling): the main checkout's `.env` is **copied as a file** into the worktree root immediately before the API starts — a `copyFileSync`, so nobody reads, prints or greps its contents; `.env` is gitignored (`.gitignore:151`). The live API then starts **from the worktree root** with this branch's `config.yaml` (`load_dotenv` reads `.env` from the config file's own directory, `utils/config.py:728`; the main checkout's `config.yaml` is never used — it belongs to an older `main` and this branch's loader rejects it). The agent harness's own environment already carries key variables, and `load_dotenv(override=False)` never replaces a variable that is set — so the `env -u …` prefix (Git's `env.exe`) removes `DEEPSEEK_API_KEY`, `TAVILY_API_KEY`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT` and `OPENAI_API_KEY` from both the pre-flight and the API's environment, and the copied `.env` is the only key source (the reviewer verified: with the prefix the pre-flight reports `config ok` with the copy and `missing_secrets` without it). A pre-flight strict load under that prefix proves the copied keys are in place before anything is spent. Both processes go through the launcher of Task 14 so they outlive this call and are stopped verifiably in step 5:
 
 ```bash
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 MAIN="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research"
 node -e "require('fs').copyFileSync(process.argv[1], '.env'); console.log('.env copied (not read)')" "$MAIN/.env"
-PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -c "from deep_research.main import load_settings; s = load_settings('config.yaml'); print('config ok:', s.llm.provider, s.llm.model, 'max_extra_passes', s.graph.max_extra_passes)"
-PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 node web/scripts/launch.mjs start api 8000 /research "\"$PY\" -m deep_research.api --mode live --port 8000"
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 env -u DEEPSEEK_API_KEY -u TAVILY_API_KEY -u LANGSMITH_API_KEY -u LANGSMITH_PROJECT -u OPENAI_API_KEY "$PY" -c "from deep_research.main import load_settings; s = load_settings('config.yaml'); print('config ok:', s.llm.provider, s.llm.model, 'max_extra_passes', s.graph.max_extra_passes)"
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 env -u DEEPSEEK_API_KEY -u TAVILY_API_KEY -u LANGSMITH_API_KEY -u LANGSMITH_PROJECT -u OPENAI_API_KEY node web/scripts/launch.mjs start api 8000 /research "\"$PY\" -m deep_research.api --mode live --port 8000"
 cd web && npm run -s build >/dev/null && DEEP_RESEARCH_API_URL=http://127.0.0.1:8000 node scripts/launch.mjs start app 3000 / "npm run -s start -- --port 3000"
 ```
-Expected: `.env copied (not read)`; `config ok: deepseek deepseek-flash max_extra_passes 1` (the strict load succeeded with the copied keys; a `ResearchConfigurationError` here means the copy or the config is wrong — fix it before starting anything); two `up:` lines. Then confirm `node -e "fetch('http://127.0.0.1:3000/').then(r=>console.log(r.status))"` → `200`, and that the topbar shows **no** `replay mode` chip (open http://127.0.0.1:3000 in Chrome). The run's `output/` and `memory/` land under the worktree, where both are gitignored (`.gitignore:221-222`).
+Expected: `.env copied (not read)`; `config ok: deepseek deepseek-flash max_extra_passes 1` — with the harness's keys removed by `env -u`, this line can only come from the copied `.env`, so it proves the copy holds the keys strict mode needs; a `ResearchConfigurationError` (`missing_secrets` or `config_invalid`) here means the copy or the config is wrong — fix it before starting anything; two `up:` lines. Then confirm `node -e "fetch('http://127.0.0.1:3000/').then(r=>console.log(r.status))"` → `200`, and that the topbar shows **no** `replay mode` chip (open http://127.0.0.1:3000 in Chrome). The run's `output/` and `memory/` land under the worktree, where both are gitignored (`.gitignore:221-222`).
 
 - [ ] **Step 4: Submit one question through the composer and watch it**
 
