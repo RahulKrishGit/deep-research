@@ -8,6 +8,7 @@ import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/s
 import { backoffDelaysMs, readStream } from "@/lib/stream";
 import { useConsole } from "./ConsoleProvider";
 import { Counters } from "./Counters";
+import { ReportStage } from "./ReportStage";
 import { RunningPipeline } from "./RunningPipeline";
 import { SessionNotFound } from "./SessionNotFound";
 import { SettingsStrip } from "./SettingsStrip";
@@ -110,7 +111,8 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     if (beat) return <SubmittedStage question={status.query} strip={strip} />;
     return <RunningPipeline run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
   }
-  return <FinishedHeader status={status} run={run.current} strip={strip} />;
+  if (status.status === "failed") return <FinishedHeader status={status} run={run.current} strip={strip} />; // Task 18: FailedStage
+  return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;
 }
 
 /* S4: the service stopped while the run was in progress (running + finished_at). K7: the pipeline

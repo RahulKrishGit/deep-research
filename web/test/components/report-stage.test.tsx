@@ -1,0 +1,85 @@
+import { act, render, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ResearchSessionResponse } from "../../lib/api";
+
+// K14: ReportStage must not swallow ApiUnreachableError into an endless "loading report" — it has
+// to hand the failure to the console's own banner (spec §4.4 "API unreachable"), with a Retry that
+// repeats the same read. useConsole() is mocked so this test proves ReportStage's own wiring
+// without depending on ConsoleProvider's unrelated session-list poll (a real race: both mount at
+// once and either could resolve first).
+const mockConsole = vi.hoisted(() => ({ noteUnreachable: vi.fn(), clearUnreachable: vi.fn() }));
+vi.mock("../../components/ConsoleProvider", () => ({ useConsole: () => mockConsole }));
+
+import { ReportStage } from "../../components/ReportStage";
+
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const md = (text: string) => new Response(text, { status: 200, headers: { "content-type": "text/markdown" } });
+
+const STATUS: ResearchSessionResponse = {
+  session_id: "s1", query: "Q", status: "completed", current_agent: null, iteration: 1,
+  started_at: "2026-09-27T00:00:00+00:00", finished_at: "2026-09-27T00:05:00+00:00",
+  report_path: "api-output/report.md", trace_url: null, errors: [],
+  evidence_path: "api-output/report-evidence.md", quality_path: null, quality_contract_version: null,
+  semantic_review_status: "scored", semantic_review_score: 0.9, duration_seconds: 12,
+  coverage: null, evidence_counts: null,
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  mockConsole.noteUnreachable.mockClear();
+  mockConsole.clearUnreachable.mockClear();
+});
+
+describe("ReportStage — K14: ApiUnreachableError on the report fetch raises the console banner", () => {
+  it("calls noteUnreachable with the failed request's target; its own retry re-fetches and then clears the banner", async () => {
+    let reportCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/report")) {
+        reportCalls++;
+        if (reportCalls === 1) return json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
+        return md("# Q\n\nBody text.\n");
+      }
+      return json(409, { error: { code: "evidence_unavailable", message: "no evidence", reason: null, issues: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("http://127.0.0.1:8010", expect.any(Function)));
+    expect(mockConsole.clearUnreachable).not.toHaveBeenCalled();
+    expect(document.querySelector("article.card p.avail")!.textContent).toBe("loading report"); // not stuck silently — the banner also fired above
+    const retry = mockConsole.noteUnreachable.mock.calls[0][1] as () => void;
+    await act(async () => { retry(); });
+    await waitFor(() => expect(document.querySelector(".prose")).toBeTruthy());
+    expect(mockConsole.clearUnreachable).toHaveBeenCalled();
+  });
+
+  it("a 409 on the report fetch shows the muted 'Not published' line, never an endless loading state", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/report")) return json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } });
+      return json(409, { error: { code: "evidence_unavailable", message: "no evidence", reason: null, issues: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    await waitFor(() => expect(document.querySelector("article.card p.avail")!.textContent).toBe("Not published"));
+    expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReportStage — q-center (controller ruling 1)", () => {
+  it("centres #report-h for a question at or under 80 characters, following the report-q + qFitClass pattern", async () => {
+    const fetchMock = vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: "Short question" }} strip={null} passes={2} />);
+    const h1 = document.getElementById("report-h")!;
+    expect(h1.className).toBe("report-q q-center");
+    expect(h1.className).not.toContain("ask-q");
+  });
+  it("does not centre #report-h past 80 characters", async () => {
+    const fetchMock = vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const long = "A".repeat(81);
+    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: long }} strip={null} passes={2} />);
+    expect(document.getElementById("report-h")!.className).toBe("report-q");
+  });
+});

@@ -34,5 +34,15 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await shoot(page, `09-running-extra-pass${suffix}`);
       await waitTerminal(request, id);
     });
+
+    test(`04-report${suffix}, 08-evidence${suffix}`, async ({ page, request }) => {
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await waitTerminal(request, id);
+      await expect(page.locator("#stage-report .prose h2").first()).toBeVisible({ timeout: 20_000 });
+      await shoot(page, `04-report${suffix}`);
+      await page.locator("#segView button[data-view='evidence']").click();
+      await expect(page.locator(".ev-row").first()).toBeVisible();
+      await shoot(page, `08-evidence${suffix}`);
+    });
   });
 }

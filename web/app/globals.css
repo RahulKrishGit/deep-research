@@ -1137,3 +1137,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    scrim for one frame. AppShell marks the shell `data-ready` once mounted; until then, force the
    drawer shut with no transition so the snap-closed never paints. */
 @media (max-width:1080px){.app:not([data-ready]) .sidebar{transform:translateX(-100%);transition:none}.app:not([data-ready]) .scrim{display:none}}
+
+/* The options table pins its Option column over the sideways scroll (states.html:157-159). */
+.tbl-frame[data-pinned] .tbl{min-width:760px}
+.tbl-frame[data-pinned] th:first-child,.tbl-frame[data-pinned] td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
+/* The evidence-log link in the report is a button styled as text: it switches the view instead of navigating. */
+.prose .link{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer}
