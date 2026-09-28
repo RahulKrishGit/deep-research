@@ -113,6 +113,22 @@ describe("the proxy", () => {
     const second = await reader.read();
     expect(second.done).toBe(true);
   });
+  it("NB5: a non-SSE body (e.g. /report) that errors mid-send rejects instead of ending cleanly, so a truncated body never renders as a complete response", async () => {
+    process.env.DEEP_RESEARCH_API_URL = await upstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/markdown" });
+      res.write("# Partial report\n\nSome content that never finishes");
+      // Real delay, not a fake timer: see the I1 test above for why (drives a real socket
+      // destroy(), needs to fire after the first real chunk lands on the wire).
+      setTimeout(() => res.destroy(), 50);
+    });
+    const response = await GET(new NextRequest("http://localhost:3000/api/research/s1/report"), ctx("research", "s1", "report"));
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("Partial report");
+    // Unlike the SSE case (I1), a cut /report must surface as an error, never as a clean 200 the
+    // browser would render as a complete, correct report.
+    await expect(reader.read()).rejects.toBeTruthy();
+  });
   it("M6: strips a trailing slash from DEEP_RESEARCH_API_URL so the target path never doubles up", async () => {
     const seen: { url?: string } = {};
     const base = await upstream((req, res) => {
