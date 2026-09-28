@@ -241,3 +241,14 @@ scratch/
 # Local DeepSeek/Claude routing helper; never commit credentials or tooling.
 /.local-deepseek/
 .transport-probe-path.txt
+
+# web/ (Next.js console)
+web/node_modules/
+web/.next/
+web/next-env.d.ts
+web/test-results/
+web/playwright-report/
+web/visual/
+web/.e2e-tmp/
+web/tsconfig.tsbuildinfo
+.launch-*.pid

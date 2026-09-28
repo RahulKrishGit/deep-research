@@ -1,0 +1,1131 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   TOKENS — Perplexity AI design system. The only literal colour values in
+   this file live in this :root block; everything below reads var().
+   ═══════════════════════════════════════════════════════════════════════ */
+:root{
+  --bg:#0f0f10; --surface:#19191a; --surface-warm:var(--surface);
+  --fg:#f0f0f0; --fg-2:var(--fg); --muted:#9b9b9b; --meta:#5c5c5e;
+  --border:#2e2e30; --border-soft:#232325;
+  --accent:#a855f7; --accent-on:#ffffff; --accent-hover:#c084fc; --accent-active:#9333ea;
+  --success:#22c55e; --warn:#f59e0b; --danger:#ef4444;
+  --font-display:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-body:"Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,"Cascadia Code",Menlo,Monaco,Consolas,monospace;
+  --text-xs:11px; --text-sm:13px; --text-base:15px; --text-lg:16px;
+  --text-xl:18px; --text-2xl:22px; --text-3xl:28px; --text-4xl:32px;
+  --leading-body:1.65; --leading-tight:1.2; --tracking-display:-0.01em;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px;
+  --space-5:20px; --space-6:24px; --space-8:32px; --space-12:48px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px; --radius-pill:9999px;
+  --elev-ring:0 0 0 1px var(--border);
+  --focus-ring:0 0 0 2px var(--accent);
+  --motion-fast:120ms; --motion-base:200ms; --ease-standard:cubic-bezier(0.2,0,0,1);
+  /* Pipeline motion. Longer than the design system's UI durations on purpose:
+     this is a progress indicator, not a control response, and it is watched for
+     minutes rather than glanced at. The easing is a long settle rather than an
+     ease-out, so a filled step arrives instead of stopping. */
+  --motion-halo:2200ms;
+  --fill-solid:700ms;
+  --fill-line:620ms;
+  --motion-fluid:420ms;
+  /* The two beats of the page 1 → 2 journey (DESIGN.md §5.6). The lift is longer
+     than anything else in the product because it is the one move the operator is
+     meant to watch rather than merely not notice. */
+  --motion-lift:900ms;
+  --motion-clear:320ms;
+  --motion-dissolve:200ms;
+  --ease-entrance:cubic-bezier(0.32,0.72,0,1);
+  --container-gutter-desktop:24px; --container-gutter-phone:16px;
+
+  /* Derived for this product — docs/design/DESIGN.md §5. */
+  --status-ok:oklch(72% 0.19 145);
+  --status-warn:oklch(74% 0.17 72);
+  --status-danger:oklch(71% 0.17 22);
+  --reading-max:720px;
+  --rail:300px;
+  --sidebar:296px;
+  --sidebar-collapsed:64px;
+  --topbar:56px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);
+  line-height:var(--leading-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+}
+body.is-locked{overflow:hidden}
+img,svg{display:block;max-width:100%}
+a{color:inherit;text-decoration:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+p{margin:0;text-wrap:pretty}
+h1,h2,h3{text-wrap:balance}
+hr{border:0;border-top:1px solid var(--border);margin:0}
+::selection{background:color-mix(in oklch,var(--accent) 30%,transparent);color:var(--fg)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:var(--radius-sm)}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+/* ═══ app frame ═══ */
+.app{
+  display:grid;grid-template-columns:var(--sidebar) minmax(0,1fr);min-height:100vh;
+  transition:grid-template-columns var(--motion-base) var(--ease-standard);
+}
+.app[data-sidebar="collapsed"]{grid-template-columns:var(--sidebar-collapsed) minmax(0,1fr)}
+
+/* ═══ sidebar ═══ */
+.sidebar{
+  background:var(--surface);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;min-width:0;
+  position:sticky;top:0;height:100vh;overflow:hidden;
+}
+.sb-head{display:flex;align-items:center;gap:var(--space-2);padding:var(--space-3);min-height:var(--topbar)}
+.mark{width:15px;height:15px;border:1.5px solid var(--muted);border-radius:2px;position:relative;flex:none}
+.mark::after{content:"";position:absolute;inset:3px;background:var(--muted);border-radius:1px}
+.sb-wordmark{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;letter-spacing:var(--tracking-display);white-space:nowrap}
+.sb-new{margin:0 var(--space-3) var(--space-3);justify-content:flex-start}
+.sb-label{
+  font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;
+  color:var(--muted);padding:0 var(--space-3) var(--space-2);
+  display:flex;justify-content:space-between;align-items:center;gap:var(--space-2);white-space:nowrap;
+}
+.sb-list{list-style:none;margin:0;padding:0 var(--space-2) var(--space-4);overflow-y:auto;flex:1;scrollbar-width:thin}
+.sb-list::-webkit-scrollbar{width:8px}
+.sb-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--radius-pill)}
+/* Rows are separated by a hairline rule rather than by panels, so the list reads
+   as one continuous index of questions. Active is a solid hairline and full
+   foreground; hover is a soft background with no rule, which keeps a hovered row
+   from looking selected. */
+.sb-list{display:flex;flex-direction:column;gap:0}
+/* Sentence case, taken from the data. This used to be forced lowercase here *and* again in
+   the script, which is why "Today" and "Yesterday" rendered as lowercase fragments rather
+   than as the section headers they are — the only headers in the product whose first letter
+   was not capital. The design system asks for sentence case on section labels; this is it. */
+.sb-group{
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta);
+  padding:var(--space-4) var(--space-3) var(--space-2);letter-spacing:.06em;
+}
+.sb-group:first-child{padding-top:var(--space-2)}
+.sb-item{
+  position:relative;display:flex;align-items:flex-start;gap:var(--space-2);
+  width:100%;text-align:left;padding:var(--space-4) var(--space-3) var(--space-4) var(--space-4);
+  border:0;border-top:1px solid var(--border-soft);border-radius:var(--radius-sm);
+  background:transparent;cursor:pointer;
+  transition:background var(--motion-fast) var(--ease-standard);
+}
+.sb-item:hover{background:var(--border-soft)}
+.sb-item[aria-current="true"]{border-top-color:var(--border)}
+.sb-item[aria-current="true"]::before{
+  content:"";position:absolute;left:0;top:var(--space-4);bottom:var(--space-4);width:2px;
+  border-radius:var(--radius-pill);background:var(--fg);
+}
+/* the question is the row. Line height and wrapping do the readability work — up to a
+   limit, and then the row ends in an ellipsis.
+
+   A row is a label, not the question. With no clamp a pasted summary set a single row
+   1677px tall, eighty-odd lines of it, which pushed every other session out of the list
+   and made the sidebar useless for the thing it is for. Two lines is what the sidebar
+   already gives an ordinary question, so a long one simply ends in an ellipsis where a
+   short one ends in a full stop.
+
+   `max-height` is the guarantee and `-webkit-line-clamp` is the refinement, the same
+   pairing the ask head uses: the clamp supplies the ellipsis, and where it does not take
+   effect the box still ends at exactly two lines rather than slicing the third through
+   its glyphs. */
+.sb-item .q{
+  flex:1;min-width:0;font-size:var(--text-sm);color:var(--muted);line-height:1.5;
+  overflow-wrap:anywhere;transition:color var(--motion-fast) var(--ease-standard);
+  max-height:calc(2 * 1.5em);
+  overflow:hidden;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;
+}
+.sb-item:hover .q{color:var(--fg)}
+.sb-item[aria-current="true"] .q{color:var(--fg)}
+.sb-foot{border-top:1px solid var(--border);padding:var(--space-3)}
+.sb-foot p{font-size:var(--text-xs);color:var(--muted);line-height:1.5}
+.app[data-sidebar="collapsed"] .sb-wordmark,
+.app[data-sidebar="collapsed"] .sb-label span,
+.app[data-sidebar="collapsed"] .sb-list,
+.app[data-sidebar="collapsed"] .sb-foot,
+.app[data-sidebar="collapsed"] .sb-new span{display:none}
+.app[data-sidebar="collapsed"] .sb-new{padding-inline:0;justify-content:center;width:36px;margin-inline:auto}
+.app[data-sidebar="collapsed"] .sb-head{justify-content:center;padding-inline:0}
+
+/* The only per-row indicator: a live mark on a session that is still running.
+   No row carries status text — a row's outcome is readable once it is opened, so
+   the index stays quiet.
+   The span is in every row and reserved at 9px, so the question's text width does
+   not change when a run settles. What marks the running row is the colour and the
+   spin, not the presence of the mark: a settled row has the same ring in `--border`.
+   Without animation the ring still sets the running row apart, because it is
+   `--status-ok` and its question is emphasised. */
+.sb-live{width:9px;height:9px;margin-top:5px;flex:none;border-radius:50%;border:1.5px solid var(--border)}
+.sb-item[data-run="1"] .sb-live{border-color:var(--status-ok)}
+.sb-item[data-run="1"] .sb-live{border-top-color:transparent;animation:spin .9s linear infinite}
+.sb-item[data-run="1"] .q{color:var(--fg)}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ═══ main ═══ */
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--border)}
+.topbar-in{display:flex;align-items:center;gap:var(--space-4);padding:var(--space-2) var(--container-gutter-desktop);min-height:var(--topbar)}
+.icon-btn{
+  width:36px;height:36px;border-radius:var(--radius-md);border:1px solid transparent;
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.icon-btn:hover{background:var(--border-soft);color:var(--fg);border-color:var(--border)}
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:flex-end}
+
+/* ═══ status chip ═══ */
+.chip{
+  display:inline-flex;align-items:center;gap:6px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:4px 9px;font-size:var(--text-sm);color:var(--fg);line-height:1.35;white-space:nowrap;
+}
+.chip .dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--muted)}
+.chip .dot-ok{background:var(--status-ok)}
+.chip .dot-warn{background:var(--status-warn)}
+.chip .dot-danger{background:var(--status-danger)}
+.chip .dot-live{background:var(--status-ok);animation:halo var(--motion-halo) var(--ease-entrance) infinite}
+.chip .kind{color:var(--muted)}
+.chip-lg{font-size:var(--text-base);padding:6px 12px}
+
+/* ═══ staged body ═══ */
+/* A stage change used to be a hard cut: the outgoing stage was set to display:none
+   in the same frame the incoming one appeared, so nothing was ever on screen at the
+   same time and the two could not be joined. The viewport is now a positioning
+   context, which lets a leaving stage stay in the layout as an overlay while the
+   incoming one takes the flow — so the pair cross-fade instead of cutting.
+
+   The overlay is why pages 2 and 3 can share a header: their headers sit in the same
+   place and cross-fading identical content at identical coordinates is invisible, so
+   only the parts that actually differ appear to change. */
+.viewport{padding:var(--space-8) var(--container-gutter-desktop) var(--space-12);flex:1;position:relative}
+.stage{display:none}
+.stage.is-on{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+.stage.is-on.no-enter{animation:none}
+.stage.is-leaving{
+  display:block;position:absolute;top:0;left:0;width:100%;pointer-events:none;
+  animation:leave var(--motion-base) var(--ease-standard) both;
+}
+@keyframes enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes leave{from{opacity:1;transform:none}to{opacity:0;transform:none}}
+
+/* Page 2 arrives around a box that is still travelling: the header is held back
+   until the box lands, then it and the rest of the page come in behind it. */
+.stage.is-preparing .ask-head > *,
+.stage.is-preparing .card{opacity:0}
+.stage.is-revealing .ask-head > *,
+.stage.is-revealing .card{animation:arrive var(--motion-base) var(--ease-entrance) both}
+.stage.is-revealing .ask-head > *:nth-child(3){animation-delay:70ms}
+.stage.is-revealing .card{animation-delay:150ms}
+@keyframes arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+/* Page 3 takes over from page 2 with the header already in place, so only the body
+   below it should move. */
+.stage.is-arriving .card{animation:arrive var(--motion-base) var(--ease-entrance) both;animation-delay:60ms}
+
+/* The box that carries the question from the composer to the record. It starts as a
+   pixel-for-pixel copy of the composer's frame and ends as the locked question, so
+   the operator sees one box that survives the page change and travels — never a box
+   that is replaced by a different box.
+
+   That only works because the text inset is 16px/20px at BOTH ends: the composer's
+   12px padding plus the textarea's own 4px/8px on top, and the locked block's
+   --space-4/--space-5. So the text sits in the same place relative to the frame at
+   every point of the journey, and neither the padding nor the wrap point has to move
+   — the frame travels and the type hands over, which is the split the rules below
+   implement.
+
+   This is also why the flight box is measured from the composer's frame and not from
+   the textarea: measuring the textarea would start the box 12px small and 12px off
+   its own text. */
+.q-flight{
+  position:fixed;z-index:60;pointer-events:none;box-sizing:border-box;
+  margin:0;padding:var(--space-4) var(--space-5);
+  font-family:var(--font-body);font-size:var(--text-base);line-height:var(--leading-body);
+  color:var(--fg);background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--radius-lg);
+  overflow:hidden;
+  /* Geometry only, and every property here interpolates cleanly. The type is
+     deliberately not transitioned — the rule below is where that is explained — and
+     neither is `width`. The frame keeps the composer's width for the whole flight so
+     the wrap point cannot move while the question is still legible: the record's box
+     is 36px narrower, and a question that happened to measure inside that band would
+     re-flow mid-journey, which is the exact artefact this is built to avoid. The
+     36px resolves in the landing dissolve, where nothing is being read. */
+  transition:left var(--motion-lift) var(--ease-entrance),top var(--motion-lift) var(--ease-entrance),
+             height var(--motion-lift) var(--ease-entrance),
+             border-radius var(--motion-lift) var(--ease-entrance),
+             background var(--motion-lift) var(--ease-entrance);
+}
+/* The question inside the travelling frame. It keeps the composer's typography — the
+   record is set at the same size now, so nothing about the text changes on arrival — and
+   when the frame is wider than the text, it slides across to the middle of it on the way.
+
+   It used to fade out over the second half of the journey and let the record fade in
+   underneath. That is a dissolve, and a dissolve is not a move: the operator read it as
+   the text disappearing and reappearing. It now stays visible for the whole flight and
+   arrives already where the record is, so the landing swaps two identical-looking texts
+   and cannot be seen at all.
+
+   `inline-block` is doing two jobs. It is what makes the slide measurable in the first
+   place, and it is what makes the slide conditional: a short question is narrower than
+   the frame and has an offset to travel, while one that fills the frame measures the same
+   either way and computes an offset of zero, so it does not move. That is the "only when
+   there is width to do so" rule, and it needs no separate test. */
+.q-flight-t{
+  display:inline-block;
+  transition:transform var(--motion-lift) var(--ease-entrance);
+}
+/* The destination's frame, radius and fill only. The dashed edge belongs to the record
+   and arrives with it under the dissolve: `border-style` cannot interpolate, and
+   snapping it at the top of the lift would pop underneath the operator's own cursor. */
+.q-flight.is-locked{
+  border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+}
+.q-flight.is-gone{opacity:0;transition:opacity var(--motion-dissolve) linear}
+
+/* ── page 1 → 2, beat one: everything but the box goes ──────────────────────────
+   The box is the one thing that survives the page change, so it must not fade out
+   with the page it is leaving. The outgoing stage is held at full opacity and only
+   its content fades, leaving the composer alone on screen for one beat before it
+   starts to move. `animation:none` cancels the generic leave, which would otherwise
+   take the box down with everything else. That cancel works by source order rather
+   than specificity — both rules are two-class selectors — so this block has to stay
+   below `.stage.is-leaving`, or the box fades out with the page again. */
+.stage.is-clearing{animation:none}
+.stage.is-clearing .stack > *:not(.composer-wrap),
+.stage.is-clearing .composer-bar,
+.stage.is-clearing .composer-hint{
+  opacity:0;
+  transition:opacity var(--motion-clear) var(--ease-standard);
+}
+/* The real composer is hidden only once the flight box is standing on exactly the
+   same pixels, in the same frame, so there is never a moment with two boxes or
+   none. Opacity rather than display: the box must keep its geometry while it is
+   being shadowed. */
+.composer.is-handing-off{opacity:0}
+.stage:focus{outline:none}
+.with-rail{display:grid;grid-template-columns:minmax(0,1fr) var(--rail);gap:var(--space-8);align-items:start}
+/* The rail travels with the report.
+   It annotates the report, so the two have to be readable at once — and they are 948px against
+   roughly 2,100px of report. Left static, the rail runs out two thirds of the way down and the
+   last third is annotated by nothing. It sticks below the topbar, which is sticky itself.
+
+   The rail is shorter than the report but taller than a laptop viewport, so sticking it without
+   a height cap would park its bottom cards off-screen with no way to reach them. `max-height`
+   plus its own scroll is what makes the sticky safe; `scrollbar-width` matches `.sb-list` so the
+   two scrolling columns in the product read as the same control. */
+.rail{
+  display:flex;flex-direction:column;gap:var(--space-5);
+  position:sticky;top:calc(var(--topbar) + var(--space-4));
+  max-height:calc(100vh - var(--topbar) - var(--space-8));
+  max-height:calc(100dvh - var(--topbar) - var(--space-8));
+  overflow-y:auto;scrollbar-width:thin;
+}
+.rail::-webkit-scrollbar{width:8px}
+.rail::-webkit-scrollbar-thumb{background:var(--border);border-radius:var(--radius-pill)}
+@media (max-width:1120px){
+  .with-rail{grid-template-columns:minmax(0,1fr)}
+  /* One column: the rail follows the report rather than sitting beside it, and a box that
+     sticks on its own below the whole report would chase the reader down the page. */
+  .rail{position:static;max-height:none;overflow:visible}
+}
+/* The rail and the report column start level, and nothing compensates for anything.
+
+   The rail's first card used to carry a 52px offset to clear the settings chips that led
+   the report column — 28px of chip plus the stack's 24px gap. Those chips moved up into the
+   report head, so the column now opens with the report card itself, and the offset was
+   pushing the rail 52px *below* the report it annotates. `align-items: start` on
+   `.with-rail` already puts both columns at the row top, which is all this needs. */
+
+/* ═══ run stage — the pipeline leads ═══ */
+.run-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%;display:flex;flex-direction:column;gap:var(--space-6)}
+.ask-head{display:flex;flex-direction:column;gap:var(--space-3);text-align:center;align-items:center}
+/* ═══ the question, on every stage ═══
+   One size, and it is the size the question was typed at.
+
+   It used to step through three sizes by length, which meant a short question arrived
+   from the composer *bigger* than it left — 15px in the box, 28px in the record — and
+   that reads as a different piece of text rather than the same one coming back. The
+   flight box carries the composer's type for the whole journey, so matching it on arrival
+   is also what turns the landing into a hand-over rather than a swap.
+
+   What a short question gets instead of a bigger size is the middle of the frame. The
+   frame is the width of the input box, so a single line leaves space on both sides and
+   centring uses it; a question that fills the width gets nothing, because centring it
+   would only make both edges ragged. `.q-center` is set by the script — see Q_CENTER_MAX
+   for why that is a character count rather than a measurement. */
+.ask-q{font-family:var(--font-display);font-size:var(--text-base);font-weight:400;line-height:var(--leading-body);margin:0}
+.ask-locked{text-align:start}
+.ask-locked.q-center,
+.report-q.q-center{text-align:center}
+/* Nothing clips the question, on any stage.
+
+   It was clamped to four lines in the ask head for a while, to stop a pasted paragraph
+   pushing the pipeline off the running stage, and the clamp was wrong three separate ways
+   — every one of them found by the operator rather than by the tests:
+
+     1. four lines hid most of a long question, and a `Show full question` control that
+        exists to reveal it is not the same thing as showing it;
+     2. the cap was measured against the border box, because `box-sizing: border-box` is
+        global, so "four lines" was really two and a half with the third sliced through;
+     3. it then relied on `-webkit-line-clamp`, which truncates the *rendered content* and
+        leaves the element with nothing to scroll — so `scrollHeight` came back equal to
+        `clientHeight` and the overflow test that reveals the control could never fire.
+        The text was hidden and the control meant to un-hide it was hidden with it.
+
+   A question is not a summary of itself. It is shown in full — one size, the size it was
+   typed at, the page scrolling — and nothing about it changes between the stages. */
+.ask-meta{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;justify-content:center}
+.opts{display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;justify-content:center}
+.opt{
+  display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);white-space:nowrap;
+}
+.opt .k{color:var(--muted)}
+/* The question after submission is a record, not a field: same type, but set
+   in a bordered block so it reads as fixed. Nothing here accepts focus or
+   typing, and no disabled input stands in for one. */
+.ask-locked{
+  /* As wide as the box the question was typed into, and no wider.
+
+     This used to be a `ch` measure, and `ch` was the wrong tool twice over. It is
+     relative to the font size, so the frame came out *narrower* the longer the question
+     got: 44ch is ~684px at the display size and only ~366px at the passage size, and the
+     long tier's 60ch was the 485px the operator was looking at. They type into a 720px
+     box on the first page and then watch the same words re-set into a 485px frame with
+     dead space either side — the record was narrower than the thing it was recording.
+
+     `--reading-max` is that 720px. The frame on page 2 is now the frame the question was
+     typed into, which also means the travelling box no longer changes width at all: for a
+     long question `from` and `to` are the same 720px. */
+  max-width:min(100%, var(--reading-max));
+  /* The frame is that width whether or not the text fills it, so a short question has
+     somewhere to sit rather than the border hugging the words. Without this the box is
+     shrink-to-fit and there is no space inside it for the text to move into. */
+  width:100%;
+  padding:var(--space-4) var(--space-5);
+  border:1px dashed var(--border);border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+  /* Nothing here needs a height or an overflow rule either: the frame is capped against
+     the reading measure and the question then grows downward, one line at a time, with
+     nothing to clip it. */
+  /* A single unbroken token is the one thing that would not fit. At the passage size the
+     frame is ~96 characters of content, so a pasted URL, a DOI or a long compound word ran
+     past the border and, on a narrow window, took the page with it. `anywhere` rather than
+     `break-word` because this is a centred flex item sized by its content: `anywhere`
+     lowers the min-content width too, so the box can shrink to the container instead of
+     being forced wider by the word it cannot break. */
+  overflow-wrap:anywhere;
+}
+
+/* ═══ the two return arcs ═══
+   When the reviewer routes a loop, the flow leaves Reviewing and returns to
+   Researching (an extra pass) or to Writing (a redraft). That jump was the confusing
+   part: a linear list cannot show a jump backwards, and a reset pipeline on its own
+   looks like progress was lost. So the jump is drawn — a path down the left gutter
+   from the Reviewing node back up to the destination node, with a dashed overlay that
+   travels along it, stroked amber for an extra pass and grey for a redraft.
+
+   The overlay animates only during the handoff (`data-loop="flowing"`), then rests
+   lit while the re-armed rows run and clears when the next route is decided or the
+   run ends. The arc is measured from the real node positions on every layout pass,
+   so it stays attached to the nodes rather than to a guessed geometry. */
+.spine-wrap{position:relative}
+.loop-layer{
+  position:absolute;left:0;top:0;pointer-events:none;overflow:visible;
+  opacity:0;transition:opacity var(--fill-solid) var(--ease-entrance);z-index:0;
+}
+.loop-layer .loop-base{fill:none;stroke:var(--status-ok);stroke-width:1.5;stroke-linecap:round;opacity:.28}
+.loop-layer .loop-flow{
+  fill:none;stroke:var(--status-ok);stroke-width:2;stroke-linecap:round;
+  stroke-dasharray:8 10;stroke-dashoffset:0;
+}
+.loop-layer .loop-head{fill:var(--status-ok)}
+.spine-wrap[data-loop="hot"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="flowing"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="flowing"] .loop-flow{animation:loopflow 1.1s linear infinite}
+.spine-wrap[data-loop="settled"] .loop-layer{opacity:.6}
+.spine-wrap[data-loop="settled"] .loop-flow{opacity:.35}
+@keyframes loopflow{to{stroke-dashoffset:-18}}
+
+/* ═══ the pipeline ═══
+   Progress is carried by the step number and the connector line; the row surface
+   stays nearly neutral so the colour that means something is not competing with
+   a tint that means nothing.
+
+   The active step does not blink. A blink is the wrong tool here: it changes the
+   one thing the eye is tracking, it competes with the fills travelling past it,
+   and it has a low-contrast half of its cycle. Instead the current step is a
+   distinct, steady state that reads in a single frame, and the motion lives in
+   one slow halo that travels down the list — the same top-to-bottom direction as
+   the fills, so the two reinforce each other instead of fighting. */
+.spine-lg{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.spine-lg li{
+  display:grid;grid-template-columns:34px minmax(0,1fr);gap:var(--space-4);position:relative;
+  align-items:center;
+  padding:var(--space-3);border-radius:var(--radius-md);border:1px solid transparent;
+  transition:background var(--motion-fluid) var(--ease-entrance);
+}
+/* The connector runs the whole distance between two number nodes, not just the gap
+   between their rows. Sized to the gap it was 12px long across a 42.75px span — 21px
+   of nothing above the dash and 10px below — so it read as a stray tick floating
+   between the steps instead of a joint, and it sat 3px off the nodes' axis.
+
+   It is anchored to the row's padding box, whose midpoint is exactly the node's
+   centre once the row centres its items: `-50% - gap` to `50%` therefore lands on the
+   two node centres with no magic numbers and no dependence on how tall a label is.
+   Both nodes are opaque and sit above the line (z-index 1), so the overlap at each
+   end is hidden and what shows is a hairline joining them — and the rail still starts
+   at the first node and stops at the last, with no overhang to clip. */
+.spine-lg li + li::before{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);top:calc(-50% - var(--space-2));height:calc(100% + var(--space-2));
+  width:1px;background:var(--border);
+}
+.spine-lg li + li::after{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);top:calc(-50% - var(--space-2));height:0;
+  width:1px;background:var(--status-ok);
+  transition:height var(--fill-line) var(--ease-entrance) calc(var(--base, 0) * 1ms);
+}
+.spine-lg li[data-fed="1"]::after{height:calc(100% + var(--space-2))}
+.spine-lg .bullet{
+  width:33px;height:33px;border-radius:50%;border:1px solid var(--border);background:var(--surface);
+  display:grid;place-items:center;font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);
+  position:relative;z-index:1;flex:none;
+  transition:background var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             border-color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             box-shadow var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms);
+}
+.spine-lg .stage-name{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;color:var(--muted);display:block;line-height:1.35;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .stage-meta{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);display:block;margin-top:2px;transition:color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms)}
+.spine-lg .loops{color:var(--status-ok)}
+
+/* pending — a hollow ring */
+
+/* in progress — solid fill and a soft halo. The halo is what separates
+   "running now" from "already finished" at a glance; no animation is required
+   to read it, and the slow halo ease is only a presence cue on top of that. */
+.spine-lg li[data-state="active"]{background:color-mix(in oklch,var(--status-ok) 6%,transparent)}
+.spine-lg li[data-state="active"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent);
+  animation:halo var(--motion-halo) var(--ease-entrance) infinite;
+}
+.spine-lg li[data-state="active"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="active"] .stage-meta{color:var(--status-ok)}
+
+/* done — the fill settles, and a quiet ring keeps it in the same family as
+   "running" without competing with it */
+.spine-lg li[data-state="done"] .bullet,
+.spine-lg li[data-state="loop"] .bullet{
+  background:var(--status-ok);border-color:var(--status-ok);color:var(--bg);
+  box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 9%,transparent);
+}
+.spine-lg li[data-state="done"] .stage-name,
+.spine-lg li[data-state="loop"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="loop"] .stage-meta{color:var(--status-ok)}
+
+/* halted before this step ever ran */
+.spine-lg li[data-state="skipped"]{background:color-mix(in oklch,var(--status-danger) 9%,transparent)}
+.spine-lg li[data-state="skipped"] .bullet{border-color:var(--status-danger);color:var(--status-danger)}
+.spine-lg li[data-state="skipped"] .stage-name{color:var(--fg)}
+.spine-lg li[data-state="skipped"] .stage-meta{color:var(--status-danger)}
+
+/* One loop on this screen, and it is a ring rather than a shape: the halo eases
+   between two radii on the same node. A travelling blob was tried here and
+   removed — a blurred radial-gradient moving down the row has no clean edge, so
+   it read as a smear against the hairline connectors instead of as progress.
+   The halo never changes the contrast of anything the operator has to read. */
+@keyframes halo{
+  0%,100%{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent)}
+  50%{box-shadow:0 0 0 7px color-mix(in oklch,var(--status-ok) 20%,transparent)}
+}
+.pipe-now{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-5);border-bottom:1px solid var(--border);margin-bottom:var(--space-5)}
+.pipe-now .now-stage{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.35}
+.details{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-5);align-items:start}
+@media (max-width:900px){ .details{grid-template-columns:minmax(0,1fr)} }
+
+/* ═══ question starters ═══
+   What the first page offers under the composer is a set of questions to run,
+   not an explanation of how the console works. The questions are the ones this
+   project already uses in its own evaluation cases and published run, so a
+   starter is a query the engine is known to handle rather than invented copy. */
+.starters{display:flex;flex-direction:column;gap:var(--space-3)}
+.starters .cap{color:var(--meta)}
+.starter-list{display:flex;flex-wrap:wrap;gap:var(--space-2)}
+.starter{
+  display:inline-flex;align-items:flex-start;gap:var(--space-2);
+  max-width:100%;text-align:left;
+  padding:8px var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);
+  background:var(--surface);color:var(--muted);
+  /* The composer's own type, so a starter flies in the shape it was read in. At `--text-sm`
+     (13px) the box that carried it to the next page was set at 15px, and the question
+     visibly grew as it left the chip — which is the clunk this removes. */
+  font-family:var(--font-body);font-size:var(--text-base);line-height:var(--leading-body);
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.starter:hover{background:var(--border-soft);border-color:var(--muted);color:var(--fg)}
+.starter .arw{font-family:var(--font-mono);color:var(--meta);flex:none}
+.starter:hover .arw{color:var(--fg)}
+
+/* ═══ passes ═══
+   No prose. A pass is one full run of the seven steps, and the reviewer's route can
+   send the run back — to Researching for an extra pass, to Writing for a redraft — so
+   the pipeline legitimately re-arms rows. That is shown rather than described: the
+   hidden pass track counts the passes the run may take, the arcs on the pipeline say
+   which return is happening right now, and the rows going hollow under them is the
+   loop itself. Nothing here explains the loop; it is the loop. */
+/* Even spacing, not stretched items. Each pass is only as wide as its dot plus
+   its label, and the connectors take all the slack between them, so the labels
+   land at equal intervals. Before this, each pass was `flex:1` while its own
+   connector also grew, so the gap after each label varied with the text width and
+   P1/P2/P3 sat at visibly uneven distances. */
+.passtrack{list-style:none;margin:0;padding:0;display:flex;align-items:center;gap:var(--space-3);min-height:22px}
+.pass{
+  flex:0 0 auto;display:flex;align-items:center;gap:6px;min-width:0;
+  font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);
+}
+/* the connector between two passes: hairline when not yet traversed, filled once
+   the run has moved past it. It is the only flexible item, so the dots land at
+   equal intervals across the full width regardless of how wide the labels render.
+   No max-width: a cap would leave the row short at the end and make the last gap
+   look different from the others. */
+.pass + .pass::before{
+  content:"";flex:1 1 auto;width:var(--loop-span,40px);min-width:18px;height:1px;
+  margin-left:calc(-1 * var(--space-3));
+  background:var(--border);
+  transition:background var(--fill-line) var(--ease-entrance);
+}
+.pass[data-state="done"] + .pass::before,
+.pass[data-traversed="1"]::before{background:var(--status-ok)}
+.pass .dot{
+  width:9px;height:9px;border-radius:50%;flex:none;
+  border:1px solid var(--border);background:var(--surface);
+  transition:background var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             border-color var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms),
+             box-shadow var(--fill-solid) var(--ease-entrance) calc(var(--delay, 0) * 1ms);
+}
+.pass .pass-n{white-space:nowrap}
+.pass[data-state="done"] .dot{background:var(--status-ok);border-color:var(--status-ok);box-shadow:0 0 0 3px color-mix(in oklch,var(--status-ok) 9%,transparent)}
+.pass[data-state="done"] .pass-n{color:var(--fg)}
+/* the pass running now: solid with a halo, exactly as an active pipeline step */
+.pass[data-state="active"] .dot{
+  background:var(--status-ok);border-color:var(--status-ok);
+  box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 16%,transparent);
+  animation:halo var(--motion-halo) var(--ease-entrance) infinite;
+}
+.pass[data-state="active"] .pass-n{color:var(--fg)}
+/* a loop in flight: the dot opens into a ring so the extra pass or redraft is visible at the
+   moment it happens, not only in a count afterwards */
+.passtrack[data-refining="1"] .pass[data-state="active"] .dot{
+  background:var(--surface);
+  box-shadow:0 0 0 3px color-mix(in oklch,var(--status-ok) 14%,transparent);
+}
+
+/* ═══ type ═══ */
+h1.display{font-family:var(--font-display);font-size:var(--text-4xl);font-weight:600;line-height:var(--leading-tight);letter-spacing:var(--tracking-display);margin:0}
+h2.sect{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;margin:0}
+h3.sub{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;line-height:1.4;margin:0}
+.card-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;line-height:1.4;margin:0}
+.lead{font-size:var(--text-lg);color:var(--muted);max-width:62ch}
+.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.sm{font-size:var(--text-sm);color:var(--muted)}
+.cap{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.avail{color:var(--muted);font-size:var(--text-sm)}
+.avail-mono{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);letter-spacing:.02em}
+
+/* ═══ surfaces ═══ */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-5)}
+.card.flat{background:transparent}
+.stack{display:flex;flex-direction:column;gap:var(--space-4)}
+.stack-2{display:flex;flex-direction:column;gap:var(--space-2)}
+.row{display:flex;align-items:center;gap:var(--space-3)}
+.row-between{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+.wrap{flex-wrap:wrap}
+
+/* ═══ buttons ═══ */
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  height:36px;padding:0 var(--space-5);border-radius:var(--radius-md);border:1px solid transparent;
+  font-size:var(--text-base);font-weight:500;white-space:nowrap;
+  transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+/* The primary action's hover goes deeper, not lighter.
+
+   `--accent-hover` is a lighter violet, and on this near-black theme lightening the fill while
+   the label stays `--accent-on` white *reduces* that label's contrast — it is the one state of
+   this button that does not sit in the theme. `--accent` at rest is already the theme's colour;
+   what was off was what hovering did to it. `--accent-active` is the same violet one step down,
+   so hovering now deepens the button instead of washing it out, and the label gains contrast
+   rather than losing it. The pressed state goes one step further again, derived from the token
+   rather than invented. */
+.btn-primary{background:var(--accent);color:var(--accent-on);font-weight:600}
+.btn-primary:hover{background:var(--accent-active)}
+.btn-primary:active{background:color-mix(in oklch, var(--accent-active) 80%, var(--bg))}
+.btn-ghost{border-color:var(--border);color:var(--fg)}
+.btn-ghost:hover{background:var(--border-soft);border-color:var(--muted)}
+.btn-quiet{color:var(--muted);padding-inline:var(--space-3)}
+.btn-quiet:hover{color:var(--fg);background:var(--border-soft)}
+.btn-sm{height:30px;font-size:var(--text-sm);padding:0 var(--space-4)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+
+/* ═══ composer ═══ */
+.composer-wrap{max-width:var(--reading-max);margin-inline:auto;width:100%}
+.composer{
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-3);display:flex;flex-direction:column;gap:var(--space-3);
+}
+.composer textarea{
+  width:100%;background:transparent;border:0;color:var(--fg);font:inherit;
+  font-size:var(--text-base);line-height:var(--leading-body);resize:none;outline:none;
+  padding:var(--space-1) var(--space-2) 0;min-height:48px;
+  /* A long question grows this box instead of hiding inside it. The composer is the
+     only control on the page, so a two-row window that scrolls away what the operator
+     has already written is the worst place in the product to lose their text. It grows
+     to a cap and scrolls only past it, which keeps the run settings, the send control
+     and the starter questions on screen.
+
+     The cap is viewport-relative as well as absolute, so a short window cannot let the
+     box eat the page. `overflow-y` stays `auto` rather than `hidden` so the text is
+     reachable even if the script that does the growing never runs. */
+  max-height:min(232px,32vh);overflow-y:auto;
+}
+.composer textarea::placeholder{color:var(--meta)}
+.composer textarea[aria-invalid="true"]{color:var(--fg)}
+.composer-bar{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap}
+.composer-bar .spacer{flex:1}
+.plus{
+  width:32px;height:32px;border-radius:var(--radius-md);border:1px solid var(--border);
+  display:grid;place-items:center;color:var(--muted);flex:none;
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard);
+}
+.plus:hover{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus[aria-expanded="true"]{background:var(--border-soft);color:var(--fg);border-color:var(--muted)}
+.plus svg{width:15px;height:15px}
+/* Extra-passes stepper. A bounded numeric control rather than a segmented row: the
+   value has a minimum and a maximum, and the buttons disable at those bounds, so
+   the limit is visible instead of being enforced silently by a clamp. */
+.stepper{display:flex;align-items:center;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;width:fit-content}
+.stepper button{
+  width:30px;height:30px;border-radius:var(--radius-sm);display:grid;place-items:center;color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.stepper button:hover:not(:disabled){background:var(--border-soft);color:var(--fg)}
+.stepper button:disabled{opacity:.35;cursor:not-allowed}
+.stepper button svg{width:14px;height:14px}
+.stepper-v{
+  min-width:38px;text-align:center;font-size:var(--text-base);color:var(--fg);
+  font-variant-numeric:tabular-nums;
+}
+.setting-pill{
+  display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  font-size:var(--text-sm);color:var(--muted);cursor:default;
+}
+.setting-pill .k{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta)}
+.setting-pill .v{color:var(--fg)}
+.send{
+  width:36px;height:36px;border-radius:var(--radius-md);background:var(--accent);color:var(--accent-on);
+  display:grid;place-items:center;flex:none;
+  transition:background var(--motion-fast) var(--ease-standard);
+}
+/* Same correction as `.btn-primary` above, and for the same reason: the icon is `--accent-on`
+   white, so hovering through the lighter `--accent-hover` dropped it to 2.64:1 — under even the
+   3:1 non-text floor. The send control is a 36px icon button, so it has no label to fall back on;
+   the fill has to carry the whole contrast budget. Deepening on hover takes it to 5.38:1. */
+.send:hover{background:var(--accent-active)}
+.send:active{background:color-mix(in oklch, var(--accent-active) 80%, var(--bg))}
+.send[disabled]{background:var(--border);color:var(--meta);cursor:not-allowed}
+.send svg{width:16px;height:16px}
+.composer-hint{display:flex;justify-content:space-between;gap:var(--space-3);flex-wrap:wrap;padding:0 var(--space-2)}
+.hint.err{color:var(--status-danger);font-family:var(--font-body);font-size:var(--text-sm)}
+
+/* ═══ popover ═══ */
+.pop-anchor{position:relative;display:inline-flex}
+/* The panel opens upward by default, but the composer sits high enough on the
+   first page that a panel anchored above the bar would start above y=0. When
+   there is not enough room above, placement switches to fixed-below, measured at
+   open time; placePop() also caps the height to the room actually free on that
+   side, so no row can end up below the bottom of the viewport. */
+.popover{
+  position:absolute;bottom:calc(100% + 10px);left:0;z-index:40;
+  width:344px;max-width:min(344px,calc(100vw - 48px));
+  background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:var(--space-4);display:none;
+  /* placePop() caps the panel to the room on whichever side it lands, so this
+     scrolling is the last resort for a very short viewport rather than the way
+     the panel is normally read. */
+  overflow-y:auto;overscroll-behavior:contain;
+}
+.popover[data-place="below"]{
+  position:fixed;bottom:auto;left:auto;top:auto;
+}
+.popover[data-open="true"]{display:block;animation:enter var(--motion-base) var(--ease-standard) 1}
+.pop-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-3)}
+/* Tighter than --space-4 between rows: with the API-mapping notes gone the panel
+   is five controls and a header, and five 16px gaps plus the header gap pushed it
+   past the bottom of an 853px viewport. --space-3 keeps every row separated while
+   letting the whole panel sit above the fold. */
+.pop-row{margin-bottom:var(--space-3)}
+.pop-row:last-of-type{margin-bottom:0}
+.pop-row .lbl{font-size:var(--text-sm);color:var(--muted);margin-bottom:var(--space-2);display:block}
+.seg{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);padding:2px;flex-wrap:wrap}
+.seg button{
+  flex:1;min-width:62px;min-height:30px;padding:5px 10px;border-radius:var(--radius-sm);
+  font-size:var(--text-sm);color:var(--muted);font-family:var(--font-mono);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.seg button:hover:not([disabled]){background:var(--border-soft);color:var(--fg)}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.seg button[disabled]{opacity:.4;cursor:not-allowed}
+.pop-note{font-size:var(--text-xs);color:var(--muted);line-height:1.5;margin-top:var(--space-2)}
+/* The effort note is empty unless thinking is off, so it must not reserve its
+   margin in the common case. */
+.pop-note:empty{display:none}
+.pop-note.warn{color:var(--status-warn)}
+
+/* ═══ fields ═══ */
+.input{
+  width:100%;background:var(--surface);border:1px solid var(--border);color:var(--fg);
+  font-family:var(--font-body);font-size:var(--text-base);border-radius:var(--radius-md);
+  padding:10px var(--space-4);min-height:44px;transition:border-color var(--motion-fast) var(--ease-standard);
+}
+.input::placeholder{color:var(--meta)}
+.input:hover{border-color:var(--muted)}
+.input:focus{outline:2px solid var(--accent);outline-offset:0;border-color:var(--accent)}
+.input.mono-in{font-family:var(--font-mono);font-size:var(--text-sm)}
+
+/* ═══ key/value ═══ */
+.kv{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--space-2) var(--space-4);font-size:var(--text-sm);align-items:baseline;margin:0}
+.kv dt{color:var(--muted);white-space:nowrap}
+.kv dd{margin:0;text-align:right;font-family:var(--font-mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.kv dd.plain{font-family:var(--font-body)}
+.kv dd.avail{font-family:var(--font-body);color:var(--muted)}
+
+/* ═══ metrics ═══ */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:var(--space-4)}
+.metric .val{font-family:var(--font-mono);font-size:var(--text-2xl);font-variant-numeric:tabular-nums;line-height:1.1}
+.metric .lbl{font-size:var(--text-sm);color:var(--muted);margin-top:2px}
+
+/* ═══ running head ═══ */
+.run-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+.run-q{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;line-height:1.3;max-width:46ch;margin:0}
+.progress-line{display:flex;align-items:center;gap:var(--space-3);margin-top:var(--space-3);flex-wrap:wrap}
+.track{height:4px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden;flex:1;min-width:120px;display:block}
+.track span{display:block;height:100%;background:var(--status-ok);border-radius:var(--radius-pill);width:0;transition:width var(--motion-fluid) var(--ease-entrance)}
+
+/* ═══ report ═══ */
+.prose{max-width:var(--reading-max)}
+.prose p{margin-bottom:var(--space-4);line-height:var(--leading-body)}
+.prose h2{font-family:var(--font-display);font-size:var(--text-2xl);font-weight:600;margin:var(--space-8) 0 var(--space-4);line-height:1.3}
+.prose h3{font-family:var(--font-display);font-size:var(--text-xl);font-weight:600;margin:var(--space-6) 0 var(--space-3);line-height:1.4}
+.prose ul{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose li{margin-bottom:var(--space-2);line-height:var(--leading-body)}
+.prose strong{font-weight:600}
+.cite{font-family:var(--font-mono);font-size:var(--text-sm);color:var(--muted);white-space:nowrap}
+.cite:hover{color:var(--fg)}
+.report-head{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-5);flex-wrap:wrap;margin-bottom:var(--space-6)}
+/* The report head stacks in three bands: provenance and actions share the first, the
+   question owns the second, the run's settings the third. It used to be one wrapping
+   row, so a question wide enough to hold a two-line measure pushed the actions onto
+   a line of their own — and `justify-content` applies per line, so they landed at the
+   LEFT with the whole right half of the head empty beside them.
+
+   The third band was the status badge until the badge moved to the topbar and the
+   settings chips took its place; the halted-run head that shares this class has only
+   the first two bands.
+
+   Each band asks for the full flex basis rather than the parent changing shape, so
+   `.report-head` is untouched and the halted-run head that shares it is unaffected.
+   Nothing here is a fixed height: a longer question simply takes more lines and
+   everything below it moves down, which is the dynamic behaviour the head needs. */
+.report-head-bar{flex:1 1 100%;display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap}
+/* when the provenance line and the actions cannot share a band, the actions take the
+   next one and stay hard right rather than dropping to the left margin */
+.report-head-bar > .row{margin-left:auto}
+/* The title fills its line rather than stopping at a measure. An earlier pass capped
+   it at 46ch — ~715px inside an 893px head row — and the `text-wrap:balance` this
+   heading inherits from the global h1 rule then split it into two ~575px lines, so
+   the text ended 318px short of the row margin with nothing beside it. Two things
+   had to go for the line to fill: the cap, and balance.
+
+   `max-width:100%` hands the measure to the row, so the heading is as wide as the
+   space it sits in and each line wraps where the words actually run out. The wrap
+   is `pretty` rather than the inherited `balance`: balance deliberately shortens
+   every line to even them out, which is the opposite of filling the line. `pretty`
+   wraps greedily like normal text and only intervenes to stop a lone word being
+   left on the last line. Where `pretty` is unsupported the fallback is ordinary
+   wrapping, which is still the filled-line behaviour wanted here.
+
+   `overflow-wrap:anywhere` is what keeps an oversized question from breaking the
+   head open: without it a pasted URL or a long compound word runs past the column
+   and drags the page into horizontal scroll. `anywhere` rather than `break-word`
+   because it also lowers the min-content width, so the line can shrink to the
+   column instead of forcing the column wider. */
+/* The report's question wears the same frame as the running stage's.
+
+   It used to be bare text: same size, same width, but with nothing around it. That put it
+   on the page as one more line among the provenance meta above and the options below, and
+   the operator said they might miss it. The question is the subject of everything under it,
+   so it is set as a fixed record the way §3.3 describes — dashed edge, translucent surface,
+   `--radius-md` — and reads as an object rather than a line.
+
+   `margin: 0 auto` is what centres it. `.report-head` is wider than the frame and lays its
+   children out with `justify-content: space-between`, which puts a lone full-width child at
+   the *left* edge; auto margins absorb that free space instead. Centring is not cosmetic
+   here: it puts the frame at the same x as the running stage's, which is centred in
+   `--reading-max` of the same column, so the handoff between the two is a purely vertical
+   move with no sideways component to reconcile. See `enterReport()`.
+
+   The frame is also what makes the two stages' question boxes geometrically identical:
+   720px wide with `16px/20px` inside, so a 678px measure on both. The travelling box lands
+   on that measure, so the two have to agree. */
+.report-q{
+  flex:1 1 100%;font-family:var(--font-display);font-size:var(--text-base);font-weight:400;line-height:var(--leading-body);
+  margin:0 auto;max-width:min(100%, var(--reading-max));text-wrap:pretty;overflow-wrap:anywhere;
+  padding:var(--space-4) var(--space-5);
+  border:1px dashed var(--border);border-radius:var(--radius-md);
+  background:color-mix(in oklch,var(--surface) 60%,transparent);
+}
+/* The run's settings get their own band in the head, so the actions above never crowd them,
+   and centre on the same axis as the question frame — which is the page's.
+
+   They used to live down in the report column, beside the report card. That column is narrower
+   than the stage by `--rail` plus the grid gap, so its axis sits exactly half that — 166px —
+   to the left of the frame's, and centring them where they were would have left them 166px off
+   it. They belong to the run's header, so they are in the header.
+
+   The status badge used to sit above them in its own band. It is gone: the topbar chip already
+   reports the same thing on this stage, and the running stage dropped its own copy for the same
+   reason. */
+#reportOpts{flex:1 1 100%}
+.tbl{width:100%;border-collapse:collapse;font-size:var(--text-sm)}
+.tbl th,.tbl td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);vertical-align:top}
+.tbl th{color:var(--muted);font-weight:500;font-family:var(--font-mono);font-size:var(--text-xs);letter-spacing:.04em;text-transform:uppercase}
+.tbl tbody tr:hover{background:var(--border-soft)}
+.tbl .n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;width:1%}
+.tbl td.wrapcell{overflow-wrap:anywhere}
+.tbl .tlink{color:var(--fg)}
+.tbl .tlink:hover{color:var(--accent)}
+.tbl-foot{font-size:var(--text-sm);color:var(--muted);padding-top:var(--space-3)}
+.bars{display:flex;flex-direction:column;gap:var(--space-3)}
+.bar-row{display:grid;grid-template-columns:136px minmax(0,1fr) 46px;gap:var(--space-3);align-items:center;font-size:var(--text-sm)}
+.bar-row .bar{height:6px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+/* The fill's colour is the meter's verdict, and it is derived from the number rather than set
+   beside it — see `paintMeters()`. The three steps are the product's own status roles, not new
+   colours: above 0.80 reads as `--status-ok`, 0.40 to 0.80 as `--status-warn`, below 0.40 as
+   `--status-danger`. The default `--muted` is what a row with no figure keeps, which is this
+   product's rendering for a value that is absent rather than zero. */
+.bar-row .bar span{display:block;height:100%;background:var(--muted);border-radius:var(--radius-pill)}
+.bar-row .bar span.ok{background:var(--status-ok)}
+.bar-row .bar span.warn{background:var(--status-warn)}
+.bar-row .bar span.danger{background:var(--status-danger)}
+.bar-row .n{text-align:right;font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+
+/* ═══ notes ═══ */
+.note{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-md);padding:var(--space-4)}
+.note .note-head{display:flex;gap:var(--space-2);align-items:center;font-size:var(--text-sm);color:var(--fg);margin-bottom:var(--space-2);overflow-wrap:anywhere}
+.note .note-head .mk{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 5px;flex:none}
+.note p{font-size:var(--text-sm);color:var(--muted);line-height:1.6}
+.note.bad{border-color:color-mix(in oklch,var(--status-danger) 44%,var(--border))}
+.note.bad .note-head{color:var(--status-danger)}
+
+/* ═══ disclosures ═══ */
+details.disc{border-top:1px solid var(--border)}
+details.disc:first-of-type{border-top:0}
+details.disc summary{
+  cursor:pointer;padding:var(--space-3) 0;font-size:var(--text-sm);color:var(--muted);
+  list-style:none;display:flex;justify-content:space-between;gap:var(--space-3);align-items:center;min-height:40px;
+}
+details.disc summary::-webkit-details-marker{display:none}
+details.disc summary::after{content:"+";font-family:var(--font-mono);color:var(--muted)}
+details.disc[open] summary::after{content:"–"}
+details.disc summary:hover{color:var(--fg)}
+details.disc .disc-body{padding-bottom:var(--space-4)}
+
+/* ═══ scrim ═══ */
+.scrim{display:none;position:fixed;inset:0;background:color-mix(in oklch,var(--bg) 74%,transparent);z-index:28;border:0;padding:0}
+
+@media (max-width:1080px){
+  .app,.app[data-sidebar="collapsed"]{grid-template-columns:minmax(0,1fr)}
+  .sidebar{
+    position:fixed;top:0;left:0;bottom:0;width:min(320px,88vw);height:100dvh;z-index:30;
+    transform:translateX(-100%);transition:transform var(--motion-base) var(--ease-standard);
+  }
+  .app[data-sidebar="expanded"] .sidebar{transform:none}
+  .app[data-sidebar="expanded"] .scrim{display:block}
+  /* the collapsed treatment is desktop chrome only */
+  .app[data-sidebar="collapsed"] .sb-wordmark,
+  .app[data-sidebar="collapsed"] .sb-label span,
+  .app[data-sidebar="collapsed"] .sb-list,
+  .app[data-sidebar="collapsed"] .sb-foot,
+  .app[data-sidebar="collapsed"] .sb-new span{display:revert}
+  .app[data-sidebar="collapsed"] .sb-new{width:100%;margin:0 var(--space-3) var(--space-3);padding-inline:var(--space-4)}
+}
+@media (max-width:900px){
+  .viewport{padding:var(--space-6) var(--container-gutter-phone) var(--space-12)}
+  .topbar-in{padding-inline:var(--container-gutter-phone)}
+  .metrics{grid-template-columns:repeat(auto-fit,minmax(100px,1fr))}
+  .bar-row{grid-template-columns:112px minmax(0,1fr) 40px}
+  .popover{width:min(344px,calc(100vw - 32px))}
+  /* touch targets */
+  .send{width:44px;height:44px}
+  .plus{width:44px;height:44px}
+  .plus svg{width:18px;height:18px}
+  .setting-pill{height:44px}
+  #pillThinking{display:none}
+  .btn{height:44px}
+  .btn-sm{height:38px}
+  .icon-btn{width:44px;height:44px}
+  .sb-item{padding:var(--space-4) var(--space-3)}
+  .seg button{min-height:40px}
+}
+@media (prefers-reduced-motion:reduce){
+  /* the delay matters as much as the duration: a staggered card keeps `both` fill,
+     so a surviving 60ms delay would hold it at opacity 0 before it snapped in */
+  *{animation-duration:0ms !important;animation-delay:0ms !important;animation-iteration-count:1 !important;transition-duration:0ms !important}
+  /* Restore a travel-free cross-fade between stages. Zeroing every duration above
+     turned each page change into a jump cut, which is not what this preference asks
+     for: what it targets is *travel*, and the translateY in enter/leave/arrive is the
+     part that has to go. Redefining the three names here drops the movement and keeps
+     the fade, and the rules that consume them get a duration back below — otherwise
+     the change from page 1 to page 2 has nothing left to show at all.
+     These win on specificity, not source order: `.stage.is-on` (0,2,0) outranks `*`
+     (0,0,0) even though both declarations are !important. */
+  @keyframes enter{from{opacity:0}to{opacity:1}}
+  @keyframes leave{from{opacity:1}to{opacity:0}}
+  @keyframes arrive{from{opacity:0}to{opacity:1}}
+  .stage.is-on,.stage.is-leaving,
+  .stage.is-revealing .ask-head > *,.stage.is-revealing .card,
+  .stage.is-arriving .card{animation-duration:240ms !important}
+  /* The drain in beat one is an opacity change, so it survives the preference: it
+     tells the operator that everything except their question has gone. Without this
+     the blanket rule above snaps the page instead of draining it. */
+  .stage.is-clearing .stack > *,
+  .stage.is-clearing .composer-bar,
+  .stage.is-clearing .composer-hint{transition-duration:var(--motion-clear) !important}
+  /* Nothing here needs motion to be read: the running step is a solid node with
+     a halo, done steps are solid with a quieter ring, and the connector arrives
+     filled. Pin the halo to its resting radius rather than letting a stopped
+     animation freeze it at whatever frame it happened to reach. */
+  .spine-lg li[data-state="active"] .bullet{
+    box-shadow:0 0 0 5px color-mix(in oklch,var(--status-ok) 16%,transparent) !important;
+  }
+  .spine-lg li[data-fed="1"]::after{height:calc(100% + var(--space-2))}
+  /* The return arc does not need to travel to be read: its presence, its
+     direction and its arrowhead are all static. Stop the dashes and show them
+     as a solid line instead of freezing them mid-offset. */
+  .loop-layer .loop-flow{animation:none !important;stroke-dasharray:none;opacity:1}
+  .spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
+}
+/* ═══ 2026-09-26: the counters block ═══ */
+/* A compact two-column key/value list; one column at phone width. */
+.counters{padding-top:var(--space-5);border-top:1px solid var(--border)}
+.counters .kv{margin-top:var(--space-3)}
+.counters .kv dt, #failedCounters dt{white-space:normal}
+.counters .kv dt .cap, #failedCounters dt .cap{display:block;color:var(--muted)}
+#failedCounters dt, #failedCounters dd{line-height:var(--leading-tight)}
+.kv-2{grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr)}
+@media (max-width:900px){ .kv-2{grid-template-columns:auto minmax(0,1fr)} }
+/* An author `display` rule beats the browser's [hidden] rule, so the ↺ span says so itself. */
+.spine-lg .loops[hidden]{display:none}
+/* ═══ 2026-09-26: two arcs and the loop tag ═══ */
+/* The arc's stroke is the loop's kind: amber `--warn` for an extra pass, grey `--meta` for a
+   redraft (spec §4.1). `--meta` is a stroke here and never text. */
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-base,
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-flow{stroke:var(--warn)}
+.spine-wrap[data-arc="extra_pass"] .loop-layer .loop-head{fill:var(--warn)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-base,
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-flow{stroke:var(--meta)}
+.spine-wrap[data-arc="redraft"] .loop-layer .loop-head{fill:var(--meta)}
+/* The loop tag: a small bordered word plus the reason. Text amber is the text-safe
+   `--status-warn` (the same `.pop-note.warn` uses), never `--warn`. An author `display`
+   rule beats the browser's [hidden] rule, so the tag says so itself. */
+.loop-tag{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;font-size:var(--text-sm);color:var(--muted);margin-top:var(--space-2)}
+.loop-tag[hidden]{display:none}
+.loop-tag .tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg)}
+.loop-tag[data-kind="extra_pass"] .tag{color:var(--status-warn);border-color:var(--status-warn)}
+.loop-tag[data-kind="redraft"] .tag{color:var(--muted);border-color:var(--meta)}
+/* 2026-09-27 fix: at rest (settled) the arc composited to ≈1.3:1 (redraft) / ≈2:1 (extra
+   pass) against the card — the layer's own opacity and the base line's opacity were
+   multiplying. Settled now shows the layer fully opaque with the base line near-solid;
+   colour stays the loop's kind (amber/grey), never text. */
+.spine-wrap[data-loop="settled"] .loop-layer{opacity:1}
+.spine-wrap[data-loop="settled"] .loop-layer .loop-base{opacity:.7}
+/* ═══ 2026-09-26: the consumer-format report ═══ */
+/* Tables sit in a frame that scrolls sideways; the page itself never does. The findings table
+   (4 columns) fits the desktop column; the options table (up to 6 columns, states.html) pins
+   its Option column over the scroll. */
+.tbl-frame{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.tbl-frame .tbl{margin:0}
+.tbl-frame .tbl td .cite{color:var(--fg)}
+.prose .sources{margin:0 0 var(--space-4);padding-left:var(--space-5)}
+.prose .sources li{margin-bottom:var(--space-2);overflow-wrap:anywhere}
+/* The 0.80 acceptance line on the review meter (types.py:1131). */
+.bar-row .bar{position:relative}
+.bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
+/* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since the
+   not-found clause) overflowed the topbar and pushed the whole page into horizontal scroll —
+   `.chip{white-space:nowrap}` plus no shrink budget anywhere in the topbar's flex chain. The
+   chip never wraps (the topbar's height must stay `--topbar`); instead its variable note
+   ellipsizes while the fixed status label and dot stay fully visible. `min-width:0` has to
+   apply at every flex-item link in the chain — `.topbar-right` inside `.topbar-in`, then
+   `.chip` inside `.topbar-right` — because a flex item's default min-width is its content's
+   width, which is exactly the nowrap text this rule needs to be allowed to shrink past. */
+.topbar-right{min-width:0}
+.chip{max-width:100%;min-width:0}
+.chip .kind{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* ═══ 2026-09-26: the Evidence view ═══ */
+#stage-report[data-view="evidence"] .report-main{display:none}
+#stage-report:not([data-view="evidence"]) .evidence-view{display:none}
+.seg-view{flex:none}
+.seg-view button{flex:none;min-width:84px}
+.chip-filters{display:flex;gap:var(--space-2);flex-wrap:wrap}
+.chip-filter{
+  display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 var(--space-3);
+  border:1px solid var(--border);border-radius:var(--radius-pill);font-size:var(--text-sm);color:var(--muted);
+  transition:background var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard);
+}
+.chip-filter:hover{background:var(--border-soft);color:var(--fg)}
+.chip-filter[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:var(--elev-ring)}
+.chip-filter .n{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.ev-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-2)}
+.ev-list:focus-visible{outline:2px solid var(--accent);outline-offset:4px;border-radius:var(--radius-md)}
+.ev-row{
+  display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:var(--space-3);align-items:center;
+  padding:var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);cursor:pointer;
+}
+.ev-row:hover{border-color:var(--muted)}
+.ev-row[aria-selected="true"]{border-color:var(--fg)}
+.ev-row .lbl{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted)}
+.ev-row .txt{font-size:var(--text-sm);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ev-row .tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.pill{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--muted);white-space:nowrap}
+.pill[data-status="verified"],.pill[data-status="verified_corrected"]{color:var(--status-ok);border-color:var(--status-ok)}
+.pill[data-status="quoted"],.pill[data-status="not_found"]{color:var(--status-warn);border-color:var(--status-warn)}
+.pill[data-status="dropped"],.pill[data-status="refused"]{color:var(--status-danger);border-color:var(--status-danger)}
+.tag{font-family:var(--font-mono);font-size:var(--text-xs);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px;color:var(--fg);white-space:nowrap}
+.tag.soft{color:var(--muted)}
+.ev-detail .ev-title{font-family:var(--font-display);font-size:var(--text-lg);font-weight:600;margin:0}
+.ev-detail .ev-status{font-size:var(--text-sm);color:var(--muted)}
+.ev-detail blockquote{margin:0;padding-left:var(--space-3);border-left:2px solid var(--border);font-size:var(--text-sm);color:var(--fg)}
+.ev-detail .kv dd{text-align:left}
+.ev-detail ul{margin:0;padding-left:var(--space-5);font-size:var(--text-sm)}
+.ev-detail .ev-cited button{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--fg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:1px 6px}
+.ev-detail .ev-cited button:hover{border-color:var(--muted)}
+@media (max-width:1120px){ .ev-detail{position:static} }
+/* 2026-09-27 fix: at 1252px the meta line, the Report|Evidence toggle and the two action
+   buttons could not share `.report-head-bar`'s one row at their natural widths, so the row
+   wrapped and pushed the question ~53px lower than the 2026-09-16 design. `#reportMeta` is the
+   one child with prose that can wrap; letting it shrink (min-width:0 overrides the flex-item
+   default of never shrinking below its content's min-content) and wrap onto a second line
+   keeps the toggle and both buttons on the bar's single row, right-aligned. */
+#reportMeta{flex:1 1 240px;min-width:0}
