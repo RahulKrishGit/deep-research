@@ -854,7 +854,7 @@ python -m deep_research.api --mode live --host 127.0.0.1 --port 8000
 python -m deep_research.api --mode replay --replay-case missing-target-triggers-one-extra-pass --replay-delay-ms 150
 
 # 2. the app, in web/ (once: npm install)
-npm run dev            # http://localhost:3000; DEEP_RESEARCH_API_URL overrides the API origin
+npm run dev            # http://localhost:3000, bound to 127.0.0.1 only (I2 -- the API binds loopback on purpose and the proxy would otherwise undo that); DEEP_RESEARCH_API_URL overrides the API origin
 ```
 
 Replay mode wraps the whole server in the e2e harness's `offline_credentials()` and

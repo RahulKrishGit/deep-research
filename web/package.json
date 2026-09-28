@@ -8,9 +8,9 @@
   },
   "scripts": {
     "test": "vitest run",
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "test:e2e": "next build && playwright test --project chromium",
     "capture:events": "node scripts/capture-replay-events.mjs",

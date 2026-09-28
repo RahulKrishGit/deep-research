@@ -7,7 +7,9 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
 
 1. API: from the repository root, `python -m deep_research.api --mode replay` (free, offline)
    or `--mode live` (needs the configured secrets and spends their credit). Default `127.0.0.1:8000`.
-2. App: `npm install` once, then `npm run dev` → http://localhost:3000.
+2. App: `npm install` once, then `npm run dev` → http://localhost:3000 (bound to
+   127.0.0.1 only, per I2 — the API binds loopback on purpose and the proxy would
+   otherwise undo that).
    `DEEP_RESEARCH_API_URL` overrides the API origin (default `http://127.0.0.1:8000`).
 
 ## Test
