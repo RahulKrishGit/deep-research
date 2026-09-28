@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { submit, waitTerminal } from "./support";
+import { API, submit, waitTerminal } from "./support";
 
 const px = (page: Page, sel: string, prop: "width" | "height") => page.locator(sel).first().evaluate((el, p) => el.getBoundingClientRect()[p as "width" | "height"], prop);
 const noSideScroll = async (page: Page) => expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
@@ -118,3 +118,38 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
     }
   });
 }
+
+test.describe("Evidence view — long refused-citation list and a long source URL (live-run fix)", () => {
+  // AC21 found this: replay data never produces a refused item with a long finding_labels list,
+  // so no existing capture or test exercised it. Real replay E1 JSON, mutated with the two shapes
+  // that overflowed — a refused row's single tag holding a dozen joined labels, and a finding
+  // whose source URL is long enough that an unbroken string alone would force the rail wider than
+  // the viewport.
+  test.use({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
+
+  test("stays within the viewport width, in the list and in the detail pane", async ({ page, context, request }) => {
+    const id = await submit(page, "q");
+    await waitTerminal(request, id);
+    const real = await (await request.get(`${API}/research/${id}/evidence`)).json();
+    const longUrl = `https://example.com/${"a".repeat(200 - "https://example.com/".length)}`;
+    const longLabels = Array.from({ length: 12 }, (_, i) => `F${(i + 1) * 11}`);
+    const mutated = {
+      ...real,
+      findings: real.findings.map((f: { source: Record<string, unknown> }, i: number) =>
+        i === 0 ? { ...f, source: { ...f.source, url: longUrl, title: "" } } : f),
+      refused: [...real.refused, { where: "test fixture", text: "A refused sentence citing many findings.", reason: "test fixture", finding_labels: longLabels }],
+    };
+    await context.route(new RegExp(`/api/research/${id}/evidence$`), (route) => route.fulfill({ json: mutated }));
+    await page.goto(`/research/${id}`);
+    await expect(page.locator("#stage-report .prose h2").first()).toBeVisible({ timeout: 20_000 });
+    await page.locator("#segView button[data-view='evidence']").click();
+    await expect(page.locator(".ev-row").first()).toBeVisible();
+    // The list: every row, including the refused row's long "cited F11, F22, …" tag, is on screen
+    // at once — this is the defect AC21 found (scrollWidth 435 against innerWidth 390).
+    await noSideScroll(page);
+    // The detail pane: select the finding whose source URL is the 200-character string.
+    await page.locator(`.ev-row[data-id="${real.findings[0].label}"]`).click();
+    await expect(page.locator("#evDetail a.tlink")).toHaveText(longUrl);
+    await noSideScroll(page);
+  });
+});

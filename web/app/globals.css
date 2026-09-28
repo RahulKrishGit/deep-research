@@ -1158,3 +1158,24 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    actually happens, and the mode chip — a fixed, short label — never itself shrinks or wraps. */
 .topbar-right{flex-wrap:nowrap;min-width:0}
 #modeChip{flex-shrink:0;white-space:nowrap}
+/* Live-run fix (AC21): at 390 px a refused row's single tag ("cited F11, F22, …") holding a long
+   finding_labels list forced the page into horizontal scroll — .tag inherits white-space:nowrap
+   (index.html:1115) and .ev-row's own grid-template-columns (index.html:1102) sizes its last
+   column with a bare "auto" track, neither of which can shrink below the tag's own content width.
+   Replay data never produces a long finding_labels list, so no existing capture or test exercised
+   this. Redefining grid-template-columns wholesale (not modifying the verbatim rule above) turns
+   the last track into minmax(0,auto): it keeps its natural width for the common case (one or two
+   short tags) but can now shrink to fit when it has to. min-width:0 has to apply at every
+   flex/grid-item link in the chain — .tags as the grid item, then .tag as .tags's own flex child
+   — for the same reason the chip-ellipsis fix above needs it at every link. The tag truncates
+   with an ellipsis rather than wrapping, matching .ev-row .txt's own single-line convention so
+   every row keeps the same height. */
+.ev-row{grid-template-columns:auto auto minmax(0,1fr) minmax(0,auto)}
+.ev-row .tags{min-width:0}
+.ev-row .tags .tag{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+/* Live-run fix (AC21): the list row above truncates, but the detail pane has no such single-line
+   convention — a long source URL (FindingDetail's Source: link, reused verbatim by
+   NotFoundDetail's pages-read links, both .tlink) is one unbroken token with no space to wrap at,
+   so it would otherwise force the rail, and the page, wider than the viewport — the same failure
+   mode the .ask-q and .kv dd overflow-wrap rules already guard against elsewhere. */
+.ev-detail{overflow-wrap:anywhere}
