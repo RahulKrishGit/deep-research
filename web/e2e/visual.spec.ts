@@ -44,5 +44,13 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await expect(page.locator(".ev-row").first()).toBeVisible();
       await shoot(page, `08-evidence${suffix}`);
     });
+
+    test(`05-failed${suffix}`, async ({ page, request, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Case": "no-such-case" });
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await waitTerminal(request, id);
+      await expect(page.locator("#stage-failed")).toBeVisible({ timeout: 20_000 });
+      await shoot(page, `05-failed${suffix}`);
+    });
   });
 }

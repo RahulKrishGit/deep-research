@@ -8,6 +8,7 @@ import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/s
 import { backoffDelaysMs, readStream } from "@/lib/stream";
 import { useConsole } from "./ConsoleProvider";
 import { Counters } from "./Counters";
+import { FailedStage } from "./FailedStage";
 import { ReportStage } from "./ReportStage";
 import { RunningPipeline } from "./RunningPipeline";
 import { SessionNotFound } from "./SessionNotFound";
@@ -111,7 +112,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     if (beat) return <SubmittedStage question={status.query} strip={strip} />;
     return <RunningPipeline run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
   }
-  if (status.status === "failed") return <FinishedHeader status={status} run={run.current} strip={strip} />; // Task 18: FailedStage
+  if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;
 }
 
@@ -142,20 +143,3 @@ function StoppedStage({ status, run, strip, onNew }: { status: ResearchSessionRe
   );
 }
 
-/* A finished session's header and frozen counters; Task 17 renders the Report stage and Task 18 the Failed stage here. */
-function FinishedHeader({ status, run, strip }: { status: ResearchSessionResponse; run: RunState; strip: ReactNode }) {
-  return (
-    <section className="stage is-on" id="stage-finished" aria-labelledby="finished-h">
-      <div className="run-wrap">
-        <div className="ask-head">
-          <p className="eyebrow" style={{ margin: 0 }}>Session finished</p>
-          <h1 className={"ask-q ask-locked" + qFitClass(status.query)} id="finished-h">{status.query}</h1>
-          {strip}
-        </div>
-        <div className="card stack" style={{ gap: "var(--space-5)" }}>
-          <Counters counters={run.counters} absentText="not reached" pass={run.countersPass} />
-        </div>
-      </div>
-    </section>
-  );
-}
