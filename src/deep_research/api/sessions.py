@@ -65,7 +65,9 @@ class ResearchSession:
         iteration = event.metadata.get("iteration")
         if event.event_type == "graph.node.started" and isinstance(node, str):
             self.current_agent = node
-        if isinstance(iteration, int):
+        # Only the graph's own events carry the pass: researcher.tool_call also
+        # carries an ``iteration``, but that is the ReAct step index (A6).
+        if event.event_type.startswith("graph.") and isinstance(iteration, int):
             self.iteration = iteration
         self.changed.set()
 
