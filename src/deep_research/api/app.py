@@ -199,9 +199,13 @@ def create_app(
     async def list_research(
         limit: int = Query(default=20, ge=1, le=200),
     ) -> SessionListResponse:
-        """The newest sessions this process holds — memory only, empty after a restart."""
+        """The newest sessions this process holds — memory only, empty after
+        a restart.
+        """
         return SessionListResponse(
-            sessions=[_session_response(session) for session in store.list_sessions(limit)]
+            sessions=[
+                _session_response(session) for session in store.list_sessions(limit)
+            ]
         )
 
     @router.post(
@@ -315,7 +319,8 @@ def create_app(
         request: Request,
         format: Literal["json", "markdown"] = Query(default="json"),
     ) -> Response:
-        """E1: the run's findings, verification and sources as JSON, or its evidence log.
+        """E1: the run's findings, verification and sources as JSON, or its
+        evidence log.
 
         Both forms come from the finished run's own state — the composition
         and the ledger Markdown the writer composed — so they cannot disagree
@@ -335,7 +340,9 @@ def create_app(
             return Response(log, media_type="text/markdown")
         if session.outcome.composition is None:
             raise ApiProblem(code="evidence_unavailable", status_code=409)
-        return JSONResponse(build_evidence_response(session.outcome).model_dump(mode="json"))
+        return JSONResponse(
+            build_evidence_response(session.outcome).model_dump(mode="json")
+        )
 
     @router.get(
         "/research/{session_id}/trace",

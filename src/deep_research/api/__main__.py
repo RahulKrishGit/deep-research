@@ -39,9 +39,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Serve the Deep Research API, live or on offline replay cases.",
     )
     parser.add_argument("--mode", choices=("live", "replay"), default="live",
-                        help="live: the real graph (needs the configured secrets); replay: scripted offline cases, no network")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=_port, default=8000)
+                        help="live: the real graph (needs the configured secrets); replay: scripted "
+                             "offline cases, no network (default: %(default)s)")
+    parser.add_argument("--host", default="127.0.0.1", help="interface to bind (default: %(default)s)")
+    parser.add_argument("--port", type=_port, default=8000, help="port to bind (default: %(default)s)")
     parser.add_argument("--replay-case", metavar="ID", default=None,
                         help=f"replay mode only; default {DEFAULT_REPLAY_CASE}")
     parser.add_argument("--replay-delay-ms", metavar="N", type=int, default=None,
@@ -93,8 +94,10 @@ def main(argv: Sequence[str] | None = None, *, serve: Callable[..., None] = uvic
 
     root = Path(tempfile.mkdtemp(prefix="deep-research-replay-"))
     try:
-        # Resolve before the guard: network_denied() refuses getaddrinfo, and a numeric host needs none.
-        numeric_host = socket.getaddrinfo(args.host, args.port, type=socket.SOCK_STREAM)[0][4][0]
+        # Resolve before the guard: network_denied() refuses getaddrinfo, and a numeric host needs
+        # none. M4: family=AF_INET — otherwise a resolver that prefers IPv6 for "localhost" binds
+        # only [::1], which the default DEEP_RESEARCH_API_URL (127.0.0.1) cannot reach.
+        numeric_host = socket.getaddrinfo(args.host, args.port, family=socket.AF_INET, type=socket.SOCK_STREAM)[0][4][0]
         app = build_app(args, replay_root=root)
         print(
             f"deep-research api: mode=replay case={args.replay_case} "

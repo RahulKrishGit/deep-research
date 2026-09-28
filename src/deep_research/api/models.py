@@ -175,7 +175,9 @@ class ResearchSessionResponse(ApiModel):
 
 
 class SessionListResponse(ApiModel):
-    """The process's sessions, newest first; each item is that session's status response."""
+    """The process's sessions, newest first; each item is that session's
+    status response.
+    """
 
     sessions: list[ResearchSessionResponse] = Field(default_factory=list)
 
@@ -249,7 +251,9 @@ class EvidenceRefusedResponse(EvidenceModel):
 
 
 class EvidenceResponse(EvidenceModel):
-    """E1: every finding with its verification and source, the not-found targets, the refused sentences."""
+    """E1: every finding with its verification and source, the not-found
+    targets, the refused sentences.
+    """
 
     session_id: str
     iteration: int

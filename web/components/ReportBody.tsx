@@ -1,6 +1,9 @@
 "use client";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+// M9: `mdast` types only, never a runtime import — they arrive transitively through
+// react-markdown/remark-gfm's own `@types/mdast` dependency, so AC19's "no new dependency" holds
+// without declaring `@types/mdast` in package.json.
 import type { Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
 
 /* remarkCitationAnchors (spec §4.3 Report rendering): marks what the design adapts with

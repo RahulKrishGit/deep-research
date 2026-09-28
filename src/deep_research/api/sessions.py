@@ -188,9 +188,13 @@ class SessionStore:
             ) from None
 
     def list_sessions(self, limit: int) -> list[ResearchSession]:
-        """The newest ``limit`` sessions: ``started_at`` descending, ties newest-registered first."""
+        """The newest ``limit`` sessions: ``started_at`` descending, ties
+        newest-registered first.
+        """
         newest_registered_first = list(reversed(list(self._sessions.values())))
-        ordered = sorted(newest_registered_first, key=lambda s: s.started_at, reverse=True)
+        ordered = sorted(
+            newest_registered_first, key=lambda s: s.started_at, reverse=True
+        )
         return ordered[:limit]
 
     async def iter_events(

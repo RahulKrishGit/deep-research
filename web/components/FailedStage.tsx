@@ -22,6 +22,13 @@ export function FailedStage({ status, run, strip }: { status: ResearchSessionRes
   const headline = hard ? (HALT_HEADLINES[hard.error_type] ?? "Research run failed") : "Research run failed";
   const reason = hard && typeof hard.details.reason === "string" ? hard.details.reason : null;
   const exceptionType = hard && typeof hard.details.exception_type === "string" ? hard.details.exception_type : null;
+  // M1: `_record_failure` (sessions.py) never sets `session.outcome`, so an API-level failure
+  // (source "api" — a configuration error or an unhandled exception before the graph ever ran)
+  // answers `GET /report` with 409 session_not_complete, the same code a still-running session
+  // gets — not report_unavailable, which is reserved for a graph halt that reached an outcome
+  // with no report. A record-less halt defaults to the graph wording (K19: nothing invented).
+  const apiFailure = hard?.source === "api";
+  const reportCode = apiFailure ? "session_not_complete" : "report_unavailable";
   const haltIndex = run.openNode ? AGENT_ORDER.indexOf(run.openNode) : -1;
   return (
     <section className="stage is-on" id="stage-failed" aria-labelledby="failed-h">
@@ -56,9 +63,13 @@ export function FailedStage({ status, run, strip }: { status: ResearchSessionRes
               {reason ? <><dt>reason</dt><dd id="failFactReason">{reason}</dd></> : null}
               {exceptionType ? <><dt>exception_type</dt><dd id="failFactException">{exceptionType}</dd></> : null}
               <dt>report_path</dt><dd className="avail">Not published</dd>
-              <dt>GET /report</dt><dd>409 report_unavailable</dd>
+              <dt>GET /report</dt><dd id="failFactReportCode">409 {reportCode}</dd>
             </dl>
-            <p className="avail">A finished session with no artifact answers <span className="mono">409 report_unavailable</span> — distinct from the <span className="mono">409 session_not_complete</span> a running session returns, and from the <span className="mono">404</span> an unknown id returns. There is no download control here, disabled or otherwise.</p>
+            {apiFailure ? (
+              <p className="avail">The service never recorded an outcome for a run that fails before publishing, so <span className="mono">GET /report</span> answers <span className="mono">409 session_not_complete</span> — the same code a still-running session returns — distinct from the <span className="mono">404</span> an unknown id returns. There is no download control here, disabled or otherwise.</p>
+            ) : (
+              <p className="avail">A finished session with no artifact answers <span className="mono">409 report_unavailable</span> — distinct from the <span className="mono">409 session_not_complete</span> a running session returns, and from the <span className="mono">404</span> an unknown id returns. There is no download control here, disabled or otherwise.</p>
+            )}
           </div>
         </div>
         <aside className="rail" aria-label="Run details">

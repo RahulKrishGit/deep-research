@@ -82,4 +82,19 @@ describe("FailedStage", () => {
     expect(dl.textContent).toContain("GET /report");
     expect(dl.textContent).toContain("409 report_unavailable");
   });
+
+  it("M1: an API-level failure (source \"api\") reports the real 409 session_not_complete code, never the graph-halt report_unavailable", () => {
+    const status = failed({ error_type: "api.research.failed", source: "api", message: "Research run failed unexpectedly.", recoverable: false, timestamp: "", details: {} });
+    const run = newRunState(2);
+    const { container } = render(<FailedStage status={status} run={run} strip={null} />);
+    expect(container.querySelector("#failFactReportCode")!.textContent).toBe("409 session_not_complete");
+    expect(container.querySelector("p.avail")!.textContent).toContain("409 session_not_complete");
+    expect(container.querySelector("p.avail")!.textContent).not.toContain("report_unavailable");
+  });
+  it("a graph halt still reports the real 409 report_unavailable code", () => {
+    const status = failed({ error_type: "graph_provider_configuration_error", source: "graph", message: "m", recoverable: false, timestamp: "", details: {} });
+    const run = newRunState(2);
+    const { container } = render(<FailedStage status={status} run={run} strip={null} />);
+    expect(container.querySelector("#failFactReportCode")!.textContent).toBe("409 report_unavailable");
+  });
 });
