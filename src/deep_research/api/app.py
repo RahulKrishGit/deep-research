@@ -83,10 +83,11 @@ class ApiProblem(Exception):
 async def _trace_request(request: Request) -> AsyncIterator[None]:
     """Bind one API observability span around every route handler.
 
-    POST /research has no path session id, so the dependency invents one
-    before the route starts; status lookups take the id from the path. The
-    route template (not the concrete path) is recorded so a status URL is
-    never mistaken for a report or stream URL in traces.
+    Neither ``POST /research`` nor ``GET /research`` has a path session id,
+    so the dependency invents one before the route starts; every other route
+    takes the id from the path. The route template (not the concrete path) is
+    recorded so a status URL is never mistaken for a report or stream URL in
+    traces.
     """
     session_id = request.path_params.get("session_id") or new_session_id()
     route = request.scope["route"].path
@@ -134,11 +135,15 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
 
 
 class ModeHeaderMiddleware:
-    """Stamp ``X-Deep-Research-Mode`` on every HTTP response, streams and errors included.
+    """Stamp ``X-Deep-Research-Mode`` on every response the routes and
+    exception handlers produce, streams included.
 
     Pure ASGI on purpose: it must sit outside Starlette's exception middleware
     so 4xx/5xx bodies carry the header too, and it must never hop the request
-    into another task (the replay-case ContextVar rides the same task).
+    into another task (the replay-case ContextVar rides the same task). An
+    unhandled exception that reaches Starlette's own ``ServerErrorMiddleware``
+    — above this middleware in the stack — is the one response that carries
+    no header: that fallback 500 is synthesised outside where this class runs.
     """
 
     def __init__(self, app: ASGIApp, *, mode: str) -> None:
@@ -192,11 +197,9 @@ def create_app(
 
     @router.get("/research", response_model=SessionListResponse)
     async def list_research(
-        request: Request,
         limit: int = Query(default=20, ge=1, le=200),
     ) -> SessionListResponse:
         """The newest sessions this process holds — memory only, empty after a restart."""
-        del request
         return SessionListResponse(
             sessions=[_session_response(session) for session in store.list_sessions(limit)]
         )
