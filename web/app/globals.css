@@ -1143,3 +1143,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .tbl-frame[data-pinned] th:first-child,.tbl-frame[data-pinned] td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
 /* The evidence-log link in the report is a button styled as text: it switches the view instead of navigating. */
 .prose .link{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer}
+/* Controller fix round 1, item 4 (minor): the base .kv dd rule (index.html:815) already carries
+   overflow-wrap:anywhere, so a long mono value never overflows — but right-aligned text still
+   lands its wrapped remainder isolated at the line's right edge (e.g. "…configuration_err" then
+   "or" on its own line) at phone width, reading worse than a left-to-right continuation would.
+   index.html's own .ev-detail .kv dd{text-align:left} (:1126) already makes this same trade for
+   prose-shaped values; the failed stage's facts get it too, only at phone width. */
+@media (max-width:480px){#stage-failed .kv dd{text-align:left}}

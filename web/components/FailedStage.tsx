@@ -6,12 +6,22 @@ import { AGENT_ORDER, failedMarks, type RunState } from "@/lib/run-state";
 import { Counters } from "./Counters";
 import { Spine } from "./Spine";
 
-const API_FAILURE: ResearchError = { error_type: "api.research.failed", source: "api", message: "", recoverable: false, timestamp: "", details: {} };
-
+/* Controller ruling, fix round 1 (Important, plan-mandated): graph/state.py:137-150 — agents
+   record non-recoverable provider failures a research pass is expected to survive, so the first
+   non-recoverable error in `errors` is not necessarily the halt that ended the run. Select, in
+   order: (1) the first record whose error_type is a recognised halting type (a HALT_HEADLINES
+   key); (2) failing that, the first non-recoverable record; (3) failing that, no record — never
+   an invented api.research.failed/api/false stand-in (minor, fix round 1). */
 export function FailedStage({ status, run, strip }: { status: ResearchSessionResponse; run: RunState; strip: ReactNode }) {
-  const hard = status.errors.find((e) => !e.recoverable) ?? API_FAILURE;
-  const reason = typeof hard.details.reason === "string" ? hard.details.reason : null;
-  const exceptionType = typeof hard.details.exception_type === "string" ? hard.details.exception_type : null;
+  const hard: ResearchError | null =
+    status.errors.find((e) => e.error_type in HALT_HEADLINES)
+    ?? status.errors.find((e) => !e.recoverable)
+    ?? null;
+  // Fix round 1 #2: an unrecognised type still headlines in plain words, never its raw enum value
+  // — the raw error_type stays visible in the facts row below.
+  const headline = hard ? (HALT_HEADLINES[hard.error_type] ?? "Research run failed") : "Research run failed";
+  const reason = hard && typeof hard.details.reason === "string" ? hard.details.reason : null;
+  const exceptionType = hard && typeof hard.details.exception_type === "string" ? hard.details.exception_type : null;
   const haltIndex = run.openNode ? AGENT_ORDER.indexOf(run.openNode) : -1;
   return (
     <section className="stage is-on" id="stage-failed" aria-labelledby="failed-h">
@@ -32,17 +42,17 @@ export function FailedStage({ status, run, strip }: { status: ResearchSessionRes
         <div className="stack" style={{ gap: "var(--space-5)" }}>
           <div className="note bad">
             {/* The headline is the halting type in plain words; the enumerated type stays in the facts; the API's message is the sentence. */}
-            <div className="note-head"><span className="mk">halt</span><span id="failedType">{HALT_HEADLINES[hard.error_type] ?? hard.error_type}</span></div>
-            <p id="failedMessage">{hard.message || "The run stopped on a non-recoverable error."}</p>
+            <div className="note-head"><span className="mk">halt</span><span id="failedType">{headline}</span></div>
+            <p id="failedMessage">{hard?.message || "The run stopped on a non-recoverable error."}</p>
           </div>
           <div className="card stack" style={{ gap: "var(--space-4)" }}>
             <h2 className="card-title">Why nothing was published</h2>
             <p className="sm">A halted run skips publication: no report, evidence log or quality record was written.</p>
             <dl className="kv">
-              <dt>error_type</dt><dd id="failFactType">{hard.error_type}</dd>
+              {hard ? <><dt>error_type</dt><dd id="failFactType">{hard.error_type}</dd></> : null}
               {/* K19: no invented values — the source row is omitted rather than showing a made-up "graph". */}
-              {hard.source ? <><dt>source</dt><dd id="failFactSource">{hard.source}</dd></> : null}
-              <dt>recoverable</dt><dd id="failFactRecoverable">{String(Boolean(hard.recoverable))}</dd>
+              {hard?.source ? <><dt>source</dt><dd id="failFactSource">{hard.source}</dd></> : null}
+              {hard ? <><dt>recoverable</dt><dd id="failFactRecoverable">{String(Boolean(hard.recoverable))}</dd></> : null}
               {reason ? <><dt>reason</dt><dd id="failFactReason">{reason}</dd></> : null}
               {exceptionType ? <><dt>exception_type</dt><dd id="failFactException">{exceptionType}</dd></> : null}
               <dt>report_path</dt><dd className="avail">Not published</dd>

@@ -4,9 +4,9 @@ import { FailedStage } from "../../components/FailedStage";
 import type { ResearchError, ResearchSessionResponse } from "../../lib/api";
 import { applyEvent, newRunState } from "../../lib/run-state";
 
-const failed = (error: ResearchError): ResearchSessionResponse => ({
+const failed = (...errors: ResearchError[]): ResearchSessionResponse => ({
   session_id: "s", query: "q", status: "failed", current_agent: null, iteration: 0, started_at: "2026-09-27T10:00:00Z",
-  finished_at: "2026-09-27T10:00:04Z", report_path: null, trace_url: null, errors: [error], evidence_path: null, quality_path: null,
+  finished_at: "2026-09-27T10:00:04Z", report_path: null, trace_url: null, errors, evidence_path: null, quality_path: null,
   quality_contract_version: null, semantic_review_status: null, semantic_review_score: null, duration_seconds: null, coverage: null, evidence_counts: null,
 });
 
@@ -42,5 +42,44 @@ describe("FailedStage", () => {
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failFactSource")).toBeNull();
     expect([...container.querySelectorAll("dd")].some((dd) => dd.textContent === "graph")).toBe(false);
+  });
+
+  it("fix round 1 #1: prefers the halting error over an earlier non-recoverable agent error the run survived", () => {
+    // graph/state.py:137-150 — agents record non-recoverable provider failures a pass is expected
+    // to survive; the halt that actually ended the run may arrive later in `errors`. The headline
+    // and the facts must come from the halt (a HALT_HEADLINES key), never the earlier survived one.
+    const survived: ResearchError = { error_type: "researcher_extraction_provider_error", source: "agent.researcher", message: "The extraction call could not reach the provider.", recoverable: false, timestamp: "", details: {} };
+    const halt: ResearchError = { error_type: "graph_request_attempt_limit_exceeded", source: "graph.report_writer", message: "The request attempt limit was reached, so the research run stopped.", recoverable: false, timestamp: "", details: {} };
+    const status = failed(survived, halt);
+    const run = newRunState(2);
+    const { container } = render(<FailedStage status={status} run={run} strip={null} />);
+    expect(container.querySelector("#failedType")!.textContent).toBe("Request attempt limit reached");
+    expect(container.querySelector("#failedMessage")!.textContent).toBe("The request attempt limit was reached, so the research run stopped.");
+    expect(container.querySelector("#failFactType")!.textContent).toBe("graph_request_attempt_limit_exceeded");
+    expect(container.querySelector("#failFactSource")!.textContent).toBe("graph.report_writer");
+  });
+
+  it("fix round 1 #2: falls back to 'Research run failed' when no record's error_type is a recognised halt, keeping the raw type in the facts", () => {
+    const status = failed({ error_type: "some_unmapped_error_type", source: "agent.report_writer", message: "", recoverable: false, timestamp: "", details: {} });
+    const run = newRunState(2);
+    const { container } = render(<FailedStage status={status} run={run} strip={null} />);
+    expect(container.querySelector("#failedType")!.textContent).toBe("Research run failed");
+    expect(container.querySelector("#failFactType")!.textContent).toBe("some_unmapped_error_type");
+  });
+
+  it("fix round 1 #3: with no error record at all, shows only the true report facts — no invented error_type, source or recoverable", () => {
+    const status = failed();
+    const run = newRunState(2);
+    const { container } = render(<FailedStage status={status} run={run} strip={null} />);
+    expect(container.querySelector("#failedType")!.textContent).toBe("Research run failed");
+    expect(container.querySelector("#failedMessage")!.textContent).toBe("The run stopped on a non-recoverable error.");
+    expect(container.querySelector("#failFactType")).toBeNull();
+    expect(container.querySelector("#failFactSource")).toBeNull();
+    expect(container.querySelector("#failFactRecoverable")).toBeNull();
+    const dl = container.querySelector("dl.kv")!;
+    expect(dl.textContent).toContain("report_path");
+    expect(dl.textContent).toContain("Not published");
+    expect(dl.textContent).toContain("GET /report");
+    expect(dl.textContent).toContain("409 report_unavailable");
   });
 });
