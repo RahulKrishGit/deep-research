@@ -94,4 +94,35 @@ describe("the proxy", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(closed).toBe(true);
   });
+  it("I1: ends the proxied body cleanly when the upstream body errors mid-stream (300 s idle timeout), never throwing", async () => {
+    process.env.DEEP_RESEARCH_API_URL = await upstream((_req, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write("id: 1\nevent: a\ndata: {}\n\n");
+      // Real delay, not a fake timer: this drives a real node:http socket destroy() over a real
+      // TCP connection (the file-level comment above explains why fake timers can't simulate
+      // this), and only needs to fire after the first real chunk lands on the wire.
+      setTimeout(() => res.destroy(), 50); // simulates undici's BodyTimeoutError after 300 s idle
+    });
+    const response = await GET(new NextRequest("http://localhost:3000/api/research/s1/stream"), ctx("research", "s1", "stream"));
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toContain("event: a");
+    // The upstream connection is destroyed mid-body; the wrapped stream must close cleanly
+    // (done: true) instead of rejecting, so the browser sees an ordinary end and reconnects on
+    // its own ladder rather than Next surfacing an unhandled "failed to pipe response" stack.
+    const second = await reader.read();
+    expect(second.done).toBe(true);
+  });
+  it("M6: strips a trailing slash from DEEP_RESEARCH_API_URL so the target path never doubles up", async () => {
+    const seen: { url?: string } = {};
+    const base = await upstream((req, res) => {
+      seen.url = req.url;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    process.env.DEEP_RESEARCH_API_URL = `${base}/`;
+    const response = await GET(new NextRequest("http://localhost:3000/api/research"), ctx("research"));
+    expect(response.status).toBe(200);
+    expect(seen.url).toBe("/research");
+  });
 });
