@@ -58,3 +58,54 @@ export interface EvidenceRefused { where: string; text: string; reason: string; 
 export interface EvidenceResponse {
   session_id: string; iteration: number; findings: EvidenceFinding[]; not_found: EvidenceNotFound[]; refused: EvidenceRefused[];
 }
+
+// ── the client ─────────────────────────────────────────────────────────────
+// Every call goes to the app's own origin (/api/*, the proxy of app/api/[...path]/route.ts),
+// never caches, and maps any non-2xx to ApiError — or ApiUnreachableError for the proxy's
+// 502 api_unreachable. Nothing here retries; a POST is exactly one fetch.
+
+export class ApiError extends Error {
+  constructor(readonly status: number, readonly body: ApiErrorBody) { super(body.message); this.name = "ApiError"; }
+}
+export class ApiUnreachableError extends Error {
+  constructor(readonly target: string) { super(`Research service not reachable at ${target}`); this.name = "ApiUnreachableError"; }
+}
+export interface ApiResult<T> { data: T; mode: ApiMode | null }
+
+export function modeOf(response: Response): ApiMode | null {
+  const m = response.headers.get("x-deep-research-mode");
+  return m === "live" || m === "replay" ? m : null;
+}
+async function request(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(path, { ...init, cache: "no-store" });
+  if (response.ok) return response;
+  let body: ApiErrorBody | null = null;
+  try { body = ((await response.json()) as { error?: ApiErrorBody }).error ?? null; } catch { body = null; }
+  if (body?.code === "api_unreachable") throw new ApiUnreachableError(body.target ?? "");
+  throw new ApiError(response.status, body ?? { code: `http_${response.status}`, message: response.statusText || "Request failed.", reason: null, issues: [] });
+}
+const id = (sessionId: string) => encodeURIComponent(sessionId);
+export const reportUrl = (sessionId: string) => `/api/research/${id(sessionId)}/report`;
+export const evidenceMarkdownUrl = (sessionId: string) => `/api/research/${id(sessionId)}/evidence?format=markdown`;
+export const streamUrl = (sessionId: string) => `/api/research/${id(sessionId)}/stream`;
+
+export async function startResearch(body: ResearchRequest): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request("/api/research", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
+}
+export async function getStatus(sessionId: string): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/status`);
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
+}
+export async function listSessions(limit = 50): Promise<ApiResult<SessionListResponse>> {
+  const r = await request(`/api/research?limit=${limit}`);
+  return { data: (await r.json()) as SessionListResponse, mode: modeOf(r) };
+}
+export async function getReport(sessionId: string): Promise<ApiResult<string>> {
+  const r = await request(reportUrl(sessionId));
+  return { data: await r.text(), mode: modeOf(r) };
+}
+export async function getEvidence(sessionId: string): Promise<ApiResult<EvidenceResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/evidence`);
+  return { data: (await r.json()) as EvidenceResponse, mode: modeOf(r) };
+}
