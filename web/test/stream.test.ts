@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createServer, type Server } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createServer as createNetServer, type Server as NetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ResearchEvent } from "../lib/api";
 import { backoffDelaysMs, parseSse, readStream } from "../lib/stream";
@@ -37,7 +37,7 @@ describe("readStream", () => {
   // Node's Server#address() types as `string | AddressInfo | null`; the cast to the ephemeral
   // port shape is the standard idiom for reading back a `.listen(0, …)` port — no external or
   // user-controlled data is involved, so there is nothing to validate at runtime.
-  const portOf = (s: Server) => (s.address() as { port: number }).port;
+  const portOf = (s: NetServer) => (s.address() as { port: number }).port;
   const listen = (handler: Parameters<typeof createServer>[1]) =>
     new Promise<string>((resolve) => { server = createServer(handler).listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${portOf(server!)}`)); });
   // K11: no hard-coded refused port — reserve an ephemeral port with a real bind, then close it
@@ -46,7 +46,7 @@ describe("readStream", () => {
     new Promise<number>((resolve) => {
       const probe = createNetServer();
       probe.listen(0, "127.0.0.1", () => {
-        const port = portOf(probe as unknown as Server);
+        const port = portOf(probe);
         probe.close(() => resolve(port));
       });
     });
@@ -55,6 +55,8 @@ describe("readStream", () => {
     const origin = await listen((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream", "x-deep-research-mode": "replay" });
       res.write(frame(1, "graph.session.started"));
+      // real socket timing: proves frame 1 is delivered before frame 2 is written; a fake clock
+      // cannot drive node:http.
       setTimeout(() => { res.write(frame(2, "graph.node.started")); res.end(); }, 100);
     });
     const seen: [string, number, number][] = [];

@@ -26,6 +26,20 @@ describe("the client", () => {
     await expect(startResearch(request)).rejects.toMatchObject({ target: "http://127.0.0.1:59999" });
     expect(fetchMock).toHaveBeenCalledTimes(2); // one call per startResearch, none of its own
   });
+  it("never retries a network error", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => { throw new TypeError("fetch failed"); });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(startResearch(request)).rejects.toBeInstanceOf(TypeError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("maps a 500 configuration_error to ApiError with its reason, in one call", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(500, { error: { code: "configuration_error", message: "Service configuration error.", reason: "missing_secrets", issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = await startResearch(request).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.body.reason).toBe("missing_secrets");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   it("maps a 422 to ApiError with the issues", async () => {
     vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(422, { error: { code: "validation_error", message: "Request validation failed.", reason: null, issues: [{ location: "body.query", type: "string_too_short" }] } })));
     const error = await startResearch(request).catch((e) => e);
