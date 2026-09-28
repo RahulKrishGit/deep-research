@@ -5,12 +5,17 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from fastapi.testclient import TestClient
 import pytest
 
+from deep_research.api.app import create_app
 from deep_research.api.evidence import build_evidence_response, evidence_from_composition
 from deep_research.api.models import EvidenceFindingResponse, EvidenceResponse
 from deep_research.runtime.outcome import ResearchOutcome
+from tests.test_api.fakes import GateRunner, ScriptedRunner
 from tests.test_api.replay_support import DROPPED_FINDING_CASE, EXTRA_PASS_CASE, replay_outcome
+from tests.test_api.test_app import valid_preflight, wait_until_terminal
+from tests.test_api.test_sessions import judged_state
 
 HEADING = re.compile(r"^### (\S+) — ", re.MULTILINE)
 
@@ -86,3 +91,53 @@ def test_response_models_keep_verbatim_whitespace() -> None:
     again = EvidenceFindingResponse.model_validate(finding.model_dump(mode="json"))
     assert again.snippet == "  two spaces either side  "
     assert again.passage == "\tpassage\n"
+
+
+E1_KEYS = {"session_id", "iteration", "findings", "not_found", "refused"}
+FINDING_KEYS = {"label", "status", "dropped_reason", "context_unchecked", "cited", "target_ids", "content", "snippet", "passage", "source", "figures"}
+SOURCE_KEYS = {"url", "title", "organisation", "evaluation_status", "low_confidence", "authority_score", "recency_score", "relevance_score", "overall_score"}
+
+
+def test_evidence_route_codes() -> None:
+    gate = GateRunner()
+    app = create_app(runner=gate, preflight=valid_preflight)
+    with TestClient(app) as client:
+        assert client.get("/research/nope/evidence").status_code == 404
+        session_id = client.post("/research", json={"query": "Question"}).json()["session_id"]
+        running = client.get(f"/research/{session_id}/evidence")
+        assert running.status_code == 409
+        assert running.json()["error"]["code"] == "session_not_complete"
+        assert client.get(f"/research/{session_id}/evidence?format=pdf").status_code == 422
+        client.portal.call(gate.release.set)  # set the asyncio.Event on the app's loop, as the existing tests do
+        wait_until_terminal(client, session_id)
+    # a finished run without a composition or a log
+    app = create_app(runner=ScriptedRunner(), preflight=valid_preflight)
+    with TestClient(app) as client:
+        session_id = client.post("/research", json={"query": "Question"}).json()["session_id"]
+        wait_until_terminal(client, session_id)
+        for query in ("", "?format=markdown"):
+            response = client.get(f"/research/{session_id}/evidence{query}")
+            assert response.status_code == 409
+            assert response.json()["error"] == {
+                "code": "evidence_unavailable",
+                "message": "Research session finished without an evidence log.",
+                "reason": None,
+                "issues": [],
+            }
+
+
+def test_evidence_route_serves_json_and_markdown() -> None:
+    state = judged_state().model_copy(update={"report_evidence": "# Evidence log: q\n\n## Findings\n"})
+    app = create_app(runner=ScriptedRunner(state=state), preflight=valid_preflight)
+    with TestClient(app) as client:
+        session_id = client.post("/research", json={"query": "Question"}).json()["session_id"]
+        wait_until_terminal(client, session_id)
+        body = client.get(f"/research/{session_id}/evidence").json()
+        assert set(body) == E1_KEYS
+        assert [f["label"] for f in body["findings"]] == ["X01", "X02"]
+        assert all(set(f) == FINDING_KEYS and set(f["source"]) == SOURCE_KEYS for f in body["findings"])
+        assert body["not_found"][0]["target_id"] == "topic-02-target-01"
+        markdown = client.get(f"/research/{session_id}/evidence?format=markdown")
+        assert markdown.status_code == 200
+        assert markdown.headers["content-type"].startswith("text/markdown")
+        assert markdown.text == "# Evidence log: q\n\n## Findings\n"

@@ -20,6 +20,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from deep_research.api.events import api_error_event, encode_sse
+from deep_research.api.evidence import build_evidence_response
 from deep_research.api.models import (
     ApiErrorBody,
     ApiErrorResponse,
@@ -54,6 +55,7 @@ _SAFE_MESSAGES = {
     "configuration_error": "Research service configuration is unavailable.",
     "session_not_complete": "Research session has not produced a report yet.",
     "report_unavailable": "Research session finished without a report.",
+    "evidence_unavailable": "Research session finished without an evidence log.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -304,6 +306,33 @@ def create_app(
                 status_code=409,
             )
         return Response(session.outcome.report, media_type="text/markdown")
+
+    @router.get("/research/{session_id}/evidence")
+    async def research_evidence(
+        request: Request,
+        format: Literal["json", "markdown"] = Query(default="json"),
+    ) -> Response:
+        """E1: the run's findings, verification and sources as JSON, or its evidence log.
+
+        Both forms come from the finished run's own state — the composition
+        and the ledger Markdown the writer composed — so they cannot disagree
+        with each other or with ``/report``. A running session and a run that
+        composed nothing are explicit 409s, never an empty list.
+        """
+        try:
+            session = store.require(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        if session.outcome is None:
+            raise ApiProblem(code="session_not_complete", status_code=409)
+        if format == "markdown":
+            log = session.outcome.state.report_evidence
+            if log is None:
+                raise ApiProblem(code="evidence_unavailable", status_code=409)
+            return Response(log, media_type="text/markdown")
+        if session.outcome.composition is None:
+            raise ApiProblem(code="evidence_unavailable", status_code=409)
+        return JSONResponse(build_evidence_response(session.outcome).model_dump(mode="json"))
 
     @router.get(
         "/research/{session_id}/trace",
