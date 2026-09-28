@@ -121,6 +121,8 @@ class ResearchSessionResponse(ApiModel):
     """
 
     session_id: str = Field(min_length=1)
+    query: str = Field(min_length=1)
+    """The research question the session runs — the request's ``query``, stripped."""
     status: SessionStatus
     current_agent: str | None = None
     iteration: int = Field(ge=0)

@@ -114,6 +114,7 @@ def _record_api_error(
 def _session_response(session: ResearchSession) -> ResearchSessionResponse:
     return ResearchSessionResponse(
         session_id=session.session_id,
+        query=session.query,
         status=session.status,
         current_agent=session.current_agent,
         iteration=session.iteration,

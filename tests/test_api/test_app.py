@@ -213,3 +213,14 @@ def test_lifespan_shutdown_cancels_running_sessions() -> None:
     assert session.task is not None
     assert session.task.cancelled()
     assert session.finished_at is not None
+
+
+def test_every_session_response_echoes_the_stripped_query() -> None:
+    app = create_app(runner=ScriptedRunner(), preflight=valid_preflight)
+    with TestClient(app) as client:
+        posted = client.post("/research", json={"query": "  How mature is quantum error correction?  "})
+        assert posted.status_code == 202
+        assert posted.json()["query"] == "How mature is quantum error correction?"
+        session_id = posted.json()["session_id"]
+        status = client.get(f"/research/{session_id}/status").json()
+    assert status["query"] == "How mature is quantum error correction?"
