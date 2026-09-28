@@ -8,6 +8,7 @@ system and are not restated here except where a product fact forces a
 qualification.
 
 *Updated 2026-09-26 to the Evidence Verifier pipeline (f27ac7e); the 2026-09-16 design is otherwise unchanged.*
+*Implemented by the Next.js app in `web/` (2026-09-27); this package remains the reference.*
 
 Grounding sources read before this document was written:
 

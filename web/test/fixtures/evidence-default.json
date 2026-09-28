@@ -1,0 +1,42 @@
+{
+  "session_id": "b41e77aa", "iteration": 0,
+  "findings": [
+    { "label": "F01", "status": "verified", "dropped_reason": null, "context_unchecked": false, "cited": true, "target_ids": ["T01"],
+      "content": "2,600 GW of proposed U.S. generation and storage projects were waiting for grid access at the end of 2023.",
+      "snippet": "As of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more.",
+      "passage": "The report notes that as of the end of 2023, 2,600 GW of proposed generation and storage projects were waiting for grid access, with typical wait times stretching to five years or more, and that fewer than a quarter of queued projects reach completion.",
+      "source": { "url": "https://www.novoco.com/", "title": "Resolving the Interconnection Queue Bottleneck", "organisation": "Novogradac", "evaluation_status": "scored", "low_confidence": false, "authority_score": 0.62, "recency_score": 0.71, "relevance_score": 0.93, "overall_score": 0.74 },
+      "figures": [{ "value": "2,600 GW", "kept": true, "period": "end of 2023", "scope": "proposed U.S. generation and storage awaiting grid access", "organisation": "Lawrence Berkeley National Laboratory", "attribution": "relayed", "kind": "actual", "release": "2024 queue study", "evidence_words": "2,600 GW of proposed generation and storage projects", "corrected": false, "dropped_reason": null, "reason": null }] },
+    { "label": "F02", "status": "verified_corrected", "dropped_reason": null, "context_unchecked": false, "cited": true, "target_ids": ["T03"],
+      "content": "China's average share of mineral supply, excluding rare earths, rose to 72 percent in 2025 from 70 percent in 2023.",
+      "snippet": "Excluding rare earths, the average share of mineral supply held by China rose to 72% in 2025 from 70% in 2023.", "passage": null,
+      "source": { "url": "https://crsreports.congress.gov/", "title": "Critical Minerals and Materials for Selected Energy Technologies", "organisation": "Congressional Research Service", "evaluation_status": "scored", "low_confidence": false, "authority_score": 0.91, "recency_score": 0.84, "relevance_score": 0.88, "overall_score": 0.89 },
+      "figures": [{ "value": "72%", "kept": true, "period": "2025", "scope": "average share of mineral supply held by China, excluding rare earths", "organisation": "Congressional Research Service", "attribution": "own", "kind": "actual", "release": "R48149, 2025", "evidence_words": "rose to 72% in 2025", "corrected": true, "dropped_reason": null, "reason": "the draft read 2024; the page says 2025" }] },
+    { "label": "F03", "status": "quoted", "dropped_reason": null, "context_unchecked": false, "cited": true, "target_ids": ["T03"],
+      "content": "The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production at risk.",
+      "snippet": "The IEA estimates that full implementation of China's export controls could put $6.5 trillion in annual production outside China at risk.", "passage": null,
+      "source": { "url": "https://www.aa.com.tr/", "title": "Why the IEA says critical minerals have become a $6.5 trillion economic security risk", "organisation": "Anadolu Agency", "evaluation_status": "scored", "low_confidence": false, "authority_score": 0.74, "recency_score": 0.90, "relevance_score": 0.80, "overall_score": 0.80 },
+      "figures": [] },
+    { "label": "F04", "status": "dropped", "dropped_reason": "snippet_not_on_page", "context_unchecked": false, "cited": false, "target_ids": ["T02"],
+      "content": "The U.S. interconnection queue swelled to a 2,600 GW backlog as of 2026 with median waits approaching five years.",
+      "snippet": "a 2,600 GW backlog as of 2026 with median waits approaching five years", "passage": null,
+      "source": { "url": "https://www.enkiai.com/", "title": "Grid Interconnection Delays 2026: A Threat to US Energy", "organisation": "Enki AI", "evaluation_status": "scored", "low_confidence": true, "authority_score": 0.38, "recency_score": 0.95, "relevance_score": 0.82, "overall_score": 0.67 },
+      "figures": [] },
+    { "label": "F05", "status": null, "dropped_reason": null, "context_unchecked": false, "cited": false, "target_ids": ["T01"],
+      "content": "For every $1 billion in delayed transmission investment, consumers lose between $150 million and $370 million in net benefits per year of delay.",
+      "snippet": "For every $1 billion in transmission investments that is delayed, consumers lose between $150 million and $370 million in net benefits per year of delay.", "passage": null,
+      "source": { "url": "https://www.enkiai.com/", "title": "Grid Interconnection Delays 2026: A Threat to US Energy", "organisation": "Enki AI", "evaluation_status": "scored", "low_confidence": true, "authority_score": 0.38, "recency_score": 0.95, "relevance_score": 0.82, "overall_score": 0.67 },
+      "figures": [] },
+    { "label": "F06", "status": "verified", "dropped_reason": null, "context_unchecked": true, "cited": true, "target_ids": ["T03"],
+      "content": "China processed 70 to 95 percent of global lithium, cobalt, phosphate and graphite in 2024.",
+      "snippet": "China retained its dominance over the midstream and downstream EV and storage battery supply chain in 2024, processing 70-95% of global lithium, cobalt, phosphate and graphite.", "passage": null,
+      "source": { "url": "https://www.iea.org/", "title": "Global Critical Minerals Outlook 2025", "organisation": "IEA", "evaluation_status": "scored", "low_confidence": false, "authority_score": 0.95, "recency_score": 0.88, "relevance_score": 0.92, "overall_score": 0.92 },
+      "figures": [{ "value": "70–95%", "kept": true, "period": "2024", "scope": "share of global lithium, cobalt, phosphate and graphite processed in China", "organisation": "IEA", "attribution": "own", "kind": "actual", "release": "Global Critical Minerals Outlook 2025", "evidence_words": "processing 70-95% of global lithium, cobalt, phosphate and graphite", "corrected": false, "dropped_reason": null, "reason": null }] }
+  ],
+  "not_found": [
+    { "target_id": "T04", "question": "How do non-U.S. grid connection regimes constrain battery deployment?", "queries": ["EU grid connection queue battery storage 2025", "UK connections reform battery storage wait times"], "pages_read": ["https://www.entsoe.eu/", "https://www.neso.energy/"], "searched": true }
+  ],
+  "refused": [
+    { "where": "Critical minerals and supply-chain concentration", "text": "Export controls have already removed $6.5 trillion of production from world markets.", "reason": "The cited finding gives an estimate of production at risk under full implementation, not a realised loss.", "finding_labels": ["F03"] }
+  ]
+}

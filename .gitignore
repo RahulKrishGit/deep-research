@@ -241,3 +241,22 @@ scratch/
 # Local DeepSeek/Claude routing helper; never commit credentials or tooling.
 /.local-deepseek/
 .transport-probe-path.txt
+
+# web/ (Next.js console)
+web/node_modules/
+web/.next/
+web/next-env.d.ts
+web/test-results/
+web/playwright-report/
+web/visual/
+web/.e2e-tmp/
+web/tsconfig.tsbuildinfo
+# M7: `next dev` writes these on every run (an AI-agent context file Next.js generates); never
+# meant to be tracked.
+web/AGENTS.md
+web/CLAUDE.md
+# Python's `lib/` ignore (line 17) is a directory-name pattern with no leading
+# slash, so it also matches web/lib/ at any depth; unignore it, since that is
+# where the console's TypeScript library modules live.
+!web/lib/
+.launch-*.pid

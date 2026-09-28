@@ -65,7 +65,9 @@ class ResearchSession:
         iteration = event.metadata.get("iteration")
         if event.event_type == "graph.node.started" and isinstance(node, str):
             self.current_agent = node
-        if isinstance(iteration, int):
+        # Only the graph's own events carry the pass: researcher.tool_call also
+        # carries an ``iteration``, but that is the ReAct step index (A6).
+        if event.event_type.startswith("graph.") and isinstance(iteration, int):
             self.iteration = iteration
         self.changed.set()
 
@@ -184,6 +186,16 @@ class SessionStore:
             raise KeyError(
                 f"no research session with id {session_id!r}"
             ) from None
+
+    def list_sessions(self, limit: int) -> list[ResearchSession]:
+        """The newest ``limit`` sessions: ``started_at`` descending, ties
+        newest-registered first.
+        """
+        newest_registered_first = list(reversed(list(self._sessions.values())))
+        ordered = sorted(
+            newest_registered_first, key=lambda s: s.started_at, reverse=True
+        )
+        return ordered[:limit]
 
     async def iter_events(
         self, session_id: str

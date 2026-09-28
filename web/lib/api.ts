@@ -1,0 +1,111 @@
+// Mirrors src/deep_research/api/models.py (+ query, SessionListResponse, the E1 models).
+export type SessionStatus = "running" | "completed" | "max_iterations" | "incomplete" | "failed";
+export type ApiMode = "live" | "replay";
+
+export interface ResearchRequest {
+  query: string;
+  max_iterations: number | null;
+  output_format: "markdown";
+  config_overrides: Record<string, unknown>;
+}
+export interface ResearchError {
+  error_type: string; source: string; message: string; recoverable: boolean; timestamp: string;
+  details: Record<string, unknown>;
+}
+export interface CoverageProgress {
+  required_targets: number; answered_targets: number;
+  missing_required_target_ids: string[]; not_found_target_ids: string[];
+}
+export interface EvidenceCounts {
+  read_records: number; network_reads: number; cache_reads: number; unique_works: number; publishers: number;
+  source_urls: number; findings: number; assessed_sources: number; cited_assessed_sources: number;
+  verified_findings: number; corrected_findings: number; quoted_findings: number; dropped_findings: number;
+  context_unchecked_findings: number; cited_findings: number;
+}
+export interface ResearchSessionResponse {
+  session_id: string; query: string; status: SessionStatus; current_agent: string | null; iteration: number;
+  started_at: string; finished_at: string | null; report_path: string | null; trace_url: string | null;
+  errors: ResearchError[];
+  evidence_path: string | null; quality_path: string | null; quality_contract_version: string | null;
+  semantic_review_status: string | null; semantic_review_score: number | null; duration_seconds: number | null;
+  coverage: CoverageProgress | null; evidence_counts: EvidenceCounts | null;
+}
+export interface SessionListResponse { sessions: ResearchSessionResponse[] }
+export interface ResearchEvent {
+  event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>;
+}
+export interface ValidationIssue { location: string; type: string }
+export interface ApiErrorBody {
+  code: string; message: string; reason: string | null; issues: ValidationIssue[];
+  target?: string; // the proxy's 502 api_unreachable carries the API origin here
+}
+export interface EvidenceSource {
+  url: string; title: string; organisation: string; evaluation_status: string | null; low_confidence: boolean;
+  authority_score: number | null; recency_score: number | null; relevance_score: number | null; overall_score: number | null;
+}
+export interface EvidenceFigure {
+  value: string; kept: boolean; period: string | null; scope: string | null; organisation: string | null;
+  attribution: "own" | "relayed" | "unattributed" | null; kind: "actual" | "forecast" | null; release: string | null;
+  evidence_words: string | null; corrected: boolean; dropped_reason: string | null; reason: string | null;
+}
+export interface EvidenceFinding {
+  label: string; status: "verified" | "verified_corrected" | "quoted" | "dropped" | null; dropped_reason: string | null;
+  context_unchecked: boolean; cited: boolean; target_ids: string[]; content: string; snippet: string | null;
+  passage: string | null; source: EvidenceSource; figures: EvidenceFigure[];
+}
+export interface EvidenceNotFound { target_id: string; question: string; queries: string[]; pages_read: string[]; searched: boolean }
+export interface EvidenceRefused { where: string; text: string; reason: string; finding_labels: string[] }
+export interface EvidenceResponse {
+  session_id: string; iteration: number; findings: EvidenceFinding[]; not_found: EvidenceNotFound[]; refused: EvidenceRefused[];
+}
+
+// ── the client ─────────────────────────────────────────────────────────────
+// Every call goes to the app's own origin (/api/*, the proxy of app/api/[...path]/route.ts),
+// never caches, and maps any non-2xx to ApiError — or ApiUnreachableError for the proxy's
+// 502 api_unreachable. Nothing here retries; a POST is exactly one fetch.
+
+export class ApiError extends Error {
+  constructor(readonly status: number, readonly body: ApiErrorBody) { super(body.message); this.name = "ApiError"; }
+}
+export class ApiUnreachableError extends Error {
+  constructor(readonly target: string) { super(`Research service not reachable at ${target}`); this.name = "ApiUnreachableError"; }
+}
+export interface ApiResult<T> { data: T; mode: ApiMode | null }
+
+export function modeOf(response: Response): ApiMode | null {
+  const m = response.headers.get("x-deep-research-mode");
+  return m === "live" || m === "replay" ? m : null;
+}
+async function request(path: string, init: RequestInit = {}): Promise<Response> {
+  const response = await fetch(path, { ...init, cache: "no-store" });
+  if (response.ok) return response;
+  let body: ApiErrorBody | null = null;
+  try { body = ((await response.json()) as { error?: ApiErrorBody }).error ?? null; } catch { body = null; }
+  if (body?.code === "api_unreachable") throw new ApiUnreachableError(body.target ?? "");
+  throw new ApiError(response.status, body ?? { code: `http_${response.status}`, message: response.statusText || "Request failed.", reason: null, issues: [] });
+}
+const id = (sessionId: string) => encodeURIComponent(sessionId);
+export const reportUrl = (sessionId: string) => `/api/research/${id(sessionId)}/report`;
+export const evidenceMarkdownUrl = (sessionId: string) => `/api/research/${id(sessionId)}/evidence?format=markdown`;
+export const streamUrl = (sessionId: string) => `/api/research/${id(sessionId)}/stream`;
+
+export async function startResearch(body: ResearchRequest): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request("/api/research", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
+}
+export async function getStatus(sessionId: string): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/status`);
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
+}
+export async function listSessions(limit = 50): Promise<ApiResult<SessionListResponse>> {
+  const r = await request(`/api/research?limit=${limit}`);
+  return { data: (await r.json()) as SessionListResponse, mode: modeOf(r) };
+}
+export async function getReport(sessionId: string): Promise<ApiResult<string>> {
+  const r = await request(reportUrl(sessionId));
+  return { data: await r.text(), mode: modeOf(r) };
+}
+export async function getEvidence(sessionId: string): Promise<ApiResult<EvidenceResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/evidence`);
+  return { data: (await r.json()) as EvidenceResponse, mode: modeOf(r) };
+}

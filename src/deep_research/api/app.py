@@ -11,18 +11,22 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from deep_research.api.events import api_error_event, encode_sse
+from deep_research.api.evidence import build_evidence_response
 from deep_research.api.models import (
     ApiErrorBody,
     ApiErrorResponse,
     ResearchRequest,
     ResearchSessionResponse,
+    SessionListResponse,
     TraceMetadata,
     TraceResponse,
     ValidationIssue,
@@ -51,6 +55,7 @@ _SAFE_MESSAGES = {
     "configuration_error": "Research service configuration is unavailable.",
     "session_not_complete": "Research session has not produced a report yet.",
     "report_unavailable": "Research session finished without a report.",
+    "evidence_unavailable": "Research session finished without an evidence log.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -78,10 +83,11 @@ class ApiProblem(Exception):
 async def _trace_request(request: Request) -> AsyncIterator[None]:
     """Bind one API observability span around every route handler.
 
-    POST /research has no path session id, so the dependency invents one
-    before the route starts; status lookups take the id from the path. The
-    route template (not the concrete path) is recorded so a status URL is
-    never mistaken for a report or stream URL in traces.
+    Neither ``POST /research`` nor ``GET /research`` has a path session id,
+    so the dependency invents one before the route starts; every other route
+    takes the id from the path. The route template (not the concrete path) is
+    recorded so a status URL is never mistaken for a report or stream URL in
+    traces.
     """
     session_id = request.path_params.get("session_id") or new_session_id()
     route = request.scope["route"].path
@@ -114,6 +120,7 @@ def _record_api_error(
 def _session_response(session: ResearchSession) -> ResearchSessionResponse:
     return ResearchSessionResponse(
         session_id=session.session_id,
+        query=session.query,
         status=session.status,
         current_agent=session.current_agent,
         iteration=session.iteration,
@@ -127,12 +134,42 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
 
 
 
+class ModeHeaderMiddleware:
+    """Stamp ``X-Deep-Research-Mode`` on every response the routes and
+    exception handlers produce, streams included.
+
+    Pure ASGI on purpose: it must sit outside Starlette's exception middleware
+    so 4xx/5xx bodies carry the header too, and it must never hop the request
+    into another task (the replay-case ContextVar rides the same task). An
+    unhandled exception that reaches Starlette's own ``ServerErrorMiddleware``
+    — above this middleware in the stack — is the one response that carries
+    no header: that fallback 500 is synthesised outside where this class runs.
+    """
+
+    def __init__(self, app: ASGIApp, *, mode: str) -> None:
+        self.app = app
+        self.mode = mode
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_mode(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Deep-Research-Mode"] = self.mode
+            await send(message)
+
+        await self.app(scope, receive, send_with_mode)
+
+
 def create_app(
     *,
     runner: ResearchRunner = run_research,
     config_path: str = DEFAULT_CONFIG_PATH,
     preflight: PreflightHandler = prepare_research_settings,
     tracker: Tracker | None = None,
+    mode: Literal["live", "replay"] = "live",
 ) -> FastAPI:
     """Build the local FastAPI interface around one process's session store."""
     if tracker is None:
@@ -153,8 +190,23 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
     app.state.session_store = store
     app.state.api_tracker = tracker
+    app.state.mode = mode
+    app.add_middleware(ModeHeaderMiddleware, mode=mode)
 
     router = APIRouter(dependencies=[Depends(_trace_request)])
+
+    @router.get("/research", response_model=SessionListResponse)
+    async def list_research(
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> SessionListResponse:
+        """The newest sessions this process holds — memory only, empty after
+        a restart.
+        """
+        return SessionListResponse(
+            sessions=[
+                _session_response(session) for session in store.list_sessions(limit)
+            ]
+        )
 
     @router.post(
         "/research",
@@ -261,6 +313,36 @@ def create_app(
                 status_code=409,
             )
         return Response(session.outcome.report, media_type="text/markdown")
+
+    @router.get("/research/{session_id}/evidence")
+    async def research_evidence(
+        request: Request,
+        format: Literal["json", "markdown"] = Query(default="json"),
+    ) -> Response:
+        """E1: the run's findings, verification and sources as JSON, or its
+        evidence log.
+
+        Both forms come from the finished run's own state — the composition
+        and the ledger Markdown the writer composed — so they cannot disagree
+        with each other or with ``/report``. A running session and a run that
+        composed nothing are explicit 409s, never an empty list.
+        """
+        try:
+            session = store.require(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        if session.outcome is None:
+            raise ApiProblem(code="session_not_complete", status_code=409)
+        if format == "markdown":
+            log = session.outcome.state.report_evidence
+            if log is None:
+                raise ApiProblem(code="evidence_unavailable", status_code=409)
+            return Response(log, media_type="text/markdown")
+        if session.outcome.composition is None:
+            raise ApiProblem(code="evidence_unavailable", status_code=409)
+        return JSONResponse(
+            build_evidence_response(session.outcome).model_dump(mode="json")
+        )
 
     @router.get(
         "/research/{session_id}/trace",

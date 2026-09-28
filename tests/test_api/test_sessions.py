@@ -18,7 +18,11 @@ from deep_research.api.models import (
     TraceResponse,
     ValidationIssue,
 )
-from deep_research.api.sessions import SessionStore, outcome_response_fields
+from deep_research.api.sessions import (
+    ResearchSession,
+    SessionStore,
+    outcome_response_fields,
+)
 from deep_research.graph.orchestrator import GraphRun
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
@@ -327,6 +331,7 @@ def test_session_response_accepts_every_status() -> None:
     ):
         response = ResearchSessionResponse(
             session_id="session-1",
+            query="Question",
             status=status,
             iteration=0,
             started_at=datetime.now(timezone.utc),
@@ -338,6 +343,7 @@ def test_session_response_accepts_every_status() -> None:
 def test_session_response_accepts_a_complete_lifecycle() -> None:
     response = ResearchSessionResponse(
         session_id="session-1",
+        query="Question",
         status="completed",
         current_agent=None,
         iteration=2,
@@ -369,6 +375,7 @@ def test_session_response_defaults_the_outcome_fields_to_no_answer() -> None:
     """
     response = ResearchSessionResponse(
         session_id="session-1",
+        query="Question",
         status="running",
         iteration=0,
         started_at=datetime.now(timezone.utc),
@@ -396,6 +403,7 @@ def test_session_response_reads_the_typed_measurements_a_pass_recorded() -> None
     state = judged_state()
     response = ResearchSessionResponse(
         session_id="session-1",
+        query="Question",
         status="completed",
         iteration=1,
         started_at=datetime.now(timezone.utc),
@@ -435,6 +443,7 @@ def test_session_response_counts_quoted_findings_apart() -> None:
     )
     response = ResearchSessionResponse(
         session_id="session-1",
+        query="Question",
         status="completed",
         iteration=1,
         started_at=datetime.now(timezone.utc),
@@ -781,3 +790,40 @@ async def test_start_rejects_duplicate_session_ids() -> None:
 
     with pytest.raises(ValueError, match="session-1"):
         start_session(store)
+
+
+# --- iteration follows graph events only (spec A6) -------------------------
+
+
+def _graph_or_tool_event(event_type: str, **metadata: object) -> ResearchEvent:
+    return ResearchEvent(
+        event_type=event_type, source="graph", message="event", metadata=metadata
+    )
+
+
+def test_publish_moves_iteration_only_for_graph_events() -> None:
+    session = ResearchSession(
+        session_id="session-1",
+        query="Question",
+        status="running",
+        started_at=datetime.now(timezone.utc),
+    )
+    session.publish(_graph_or_tool_event("graph.node.started", node="planner", iteration=0))
+    assert session.iteration == 0
+    # the researcher's ReAct step index must never read as the pass
+    session.publish(_graph_or_tool_event("researcher.tool_call", tool="web_search", iteration=7))
+    assert session.iteration == 0
+    session.publish(_graph_or_tool_event("graph.extra_pass.started", iteration=1, max_extra_passes=1, targets=[]))
+    assert session.iteration == 1
+    session.publish(_graph_or_tool_event("graph.node.completed", node="researcher"))
+    assert session.iteration == 1
+
+
+def test_session_response_requires_query() -> None:
+    with pytest.raises(ValidationError):
+        ResearchSessionResponse(
+            session_id="session-1",
+            status="running",
+            iteration=0,
+            started_at=datetime.now(timezone.utc),
+        )

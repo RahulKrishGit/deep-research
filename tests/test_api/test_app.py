@@ -213,3 +213,54 @@ def test_lifespan_shutdown_cancels_running_sessions() -> None:
     assert session.task is not None
     assert session.task.cancelled()
     assert session.finished_at is not None
+
+
+def test_every_session_response_echoes_the_stripped_query() -> None:
+    app = create_app(runner=ScriptedRunner(), preflight=valid_preflight)
+    with TestClient(app) as client:
+        posted = client.post("/research", json={"query": "  How mature is quantum error correction?  "})
+        assert posted.status_code == 202
+        assert posted.json()["query"] == "How mature is quantum error correction?"
+        session_id = posted.json()["session_id"]
+        status = client.get(f"/research/{session_id}/status").json()
+    assert status["query"] == "How mature is quantum error correction?"
+
+
+def test_list_returns_sessions_newest_first_with_a_bounded_limit() -> None:
+    app = create_app(runner=ScriptedRunner(), preflight=valid_preflight)
+    with TestClient(app) as client:
+        assert client.get("/research").json() == {"sessions": []}
+        ids = [client.post("/research", json={"query": f"Question {n}"}).json()["session_id"] for n in range(3)]
+        for session_id in ids:
+            wait_until_terminal(client, session_id)
+        listed = client.get("/research").json()["sessions"]
+        assert [item["session_id"] for item in listed] == list(reversed(ids))
+        assert [item["query"] for item in listed] == ["Question 2", "Question 1", "Question 0"]
+        for item in listed:
+            assert item == client.get(f"/research/{item['session_id']}/status").json()
+        assert len(client.get("/research?limit=2").json()["sessions"]) == 2
+        assert client.get("/research?limit=0").status_code == 422
+        assert client.get("/research?limit=201").status_code == 422
+
+
+@pytest.mark.parametrize("mode", ["live", "replay"])
+def test_every_response_carries_the_mode_header(mode: str) -> None:
+    app = create_app(runner=ScriptedRunner(report="# q\n\nbody\n"), preflight=valid_preflight, mode=mode)
+    with TestClient(app) as client:
+        posted = client.post("/research", json={"query": "Question"})
+        assert posted.headers["x-deep-research-mode"] == mode
+        session_id = posted.json()["session_id"]
+        wait_until_terminal(client, session_id)
+        for path, expected in (
+            (f"/research/{session_id}/status", 200),
+            (f"/research/{session_id}/report", 200),
+            (f"/research/{session_id}/stream", 200),
+            ("/research/nope/status", 404),
+        ):
+            response = client.get(path)
+            assert response.status_code == expected
+            assert response.headers["x-deep-research-mode"] == mode
+        invalid = client.post("/research", json={})
+        assert invalid.status_code == 422
+        assert invalid.headers["x-deep-research-mode"] == mode
+    assert create_app(runner=ScriptedRunner(), preflight=valid_preflight).state.mode == "live"
