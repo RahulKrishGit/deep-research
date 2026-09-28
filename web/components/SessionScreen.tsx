@@ -58,6 +58,10 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId, noteMode, clearUnreachable, noteUnreachable]);
   useEffect(() => { void load(); }, [load]);
+  // NB1: a session key stuck on ApiUnreachableError (e.g. the page is navigated away from mid
+  // outage) would otherwise stay registered forever — nothing left to run its retry, so the
+  // banner would sit up until an unrelated key happened to clear.
+  useEffect(() => () => clearUnreachable("session"), [clearUnreachable]);
 
   // C1: a page loaded while the API is down never gets a first `/status` — the ladder below used
   // to run only once a status had already arrived, so a dead-on-arrival page sat on "loading
@@ -128,13 +132,16 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
 
   // The topbar chip follows the run while streaming and /status afterwards. K7/M3: a stopped
   // session shows no chip at all — the sentence above the frozen pipeline already says what
-  // happened, and the green "Running" chip would contradict it.
+  // happened, and the green "Running" chip would contradict it. Re-review: a mid-run API restart
+  // can leave a stale "running" `status` on screen while the ladder's next /status lands a 404 —
+  // `notFound` must blank the chip too, or the not-in-memory page keeps showing "Running · pass…"
+  // over a session the page itself just said isn't in memory.
   const passes = ceiling();
   const stopped = status !== null && status.status === "running" && status.finished_at !== null;
   const view: SessionView | null = status ? toSessionView(status, passes) : null;
   // M4: the known ceiling, never run.current.maxPasses (which defaults to 1 before the ceiling is known).
   if (view && status?.status === "running" && streaming) { view.iteration = run.current.pass - 1; view.passes = passes; }
-  useEffect(() => { setChip(stopped ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, passes, stopped]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, passes, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (notFound) return <SessionNotFound onNew={() => router.push("/")} />;
   if (!status) return <section className="stage is-on" id="stage-loading"><div className="run-wrap"><p className="avail">loading session</p></div></section>;

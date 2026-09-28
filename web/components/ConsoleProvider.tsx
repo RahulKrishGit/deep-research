@@ -1,5 +1,5 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiUnreachableError, listSessions, type ApiMode, type ResearchSessionResponse } from "@/lib/api";
 import type { SessionView } from "@/lib/format";
 
@@ -29,17 +29,33 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [sidebar, setSidebarState] = useState<SidebarMode>("expanded");
   const [registry, setRegistry] = useState<Record<string, Unreachable>>({});
+  const registryRef = useRef<Record<string, Unreachable>>({});
   const noteMode = useCallback((m: ApiMode | null) => { if (m) setMode(m); }, []);
   const noteUnreachable = useCallback((key: string, target: string, retry: () => void) => {
-    setRegistry((prev) => ({ ...prev, [key]: { target, retry } }));
+    const next = { ...registryRef.current, [key]: { target, retry } };
+    registryRef.current = next;
+    setRegistry(next);
   }, []);
   const clearUnreachable = useCallback((key: string) => {
-    setRegistry((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+    if (!(key in registryRef.current)) return;
+    const next = { ...registryRef.current };
+    delete next[key];
+    registryRef.current = next;
+    setRegistry(next);
+    // C1 residual: a read that just succeeded (or landed a definite 404) is decent evidence the
+    // outage affecting *other* still-registered owners is over too — spec §4.3:522 says the
+    // banner disappears on the first success, not only on the first success of every owner
+    // independently. Without this, a key with no automatic ladder of its own (the sidebar's list
+    // read has none — its 5 s poll only runs while the last *successfully loaded* list showed a
+    // running session, which a failed read can never produce) could sit registered long after
+    // the service came back, propping the banner up until something unrelated happened to call
+    // its retry. `next` (not the pre-clear registry) so a key noted in the same tick is
+    // included; the key that just cleared is skipped so it isn't re-run on its own success.
+    // Each sibling gets one attempt, not a loop — a failed attempt re-registers itself exactly
+    // like any other failure, and the next success cascades again from there.
+    for (const [otherKey, entry] of Object.entries(next)) {
+      if (otherKey !== key) entry.retry();
+    }
   }, []);
   const refreshSessions = useCallback(async () => {
     try {

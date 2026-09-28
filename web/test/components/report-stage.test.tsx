@@ -112,6 +112,20 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     await waitFor(() => expect(document.querySelector("article.card p.avail")!.textContent).toBe("Not published"));
     expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
   });
+
+  it("NB1: unmounting while report and evidence are both stuck unreachable clears both keys", async () => {
+    const unreachable502 = () => json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
+    vi.stubGlobal("fetch", vi.fn(async () => unreachable502()));
+    const { unmount } = render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("evidence", "http://127.0.0.1:8010", expect.any(Function)));
+    mockConsole.clearUnreachable.mockClear();
+    // Nothing is left to run either key's retry once ReportStage is gone — without an unmount
+    // clear, both keys would stay registered forever and the banner would outlive the page.
+    unmount();
+    expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("report");
+    expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("evidence");
+  });
 });
 
 describe("ReportStage — q-center (controller ruling 1)", () => {

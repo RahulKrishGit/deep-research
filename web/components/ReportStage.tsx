@@ -43,7 +43,15 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
     };
     fetchReport();
     fetchEvidence();
-    return () => { live = false; };
+    return () => {
+      live = false;
+      // NB1: without this, a report/evidence read stuck on ApiUnreachableError leaves its key
+      // registered forever once the user navigates away — Retry can never reach it again (there
+      // is no more ReportStage to run it), so the banner would stay up until an unrelated key
+      // happened to clear too.
+      clearUnreachable("report");
+      clearUnreachable("evidence");
+    };
   }, [sessionId, noteUnreachable, clearUnreachable]);
   const sv = toSessionView(status, passes);
   const dur = fmtSeconds(status.duration_seconds);

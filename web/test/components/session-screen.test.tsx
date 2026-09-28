@@ -151,3 +151,31 @@ describe("SessionScreen — final-wave item 2: refreshSessions on reaching a ter
     await waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(2));
   });
 });
+
+describe("SessionScreen — re-review item 4: no false Running chip on the not-in-memory page", () => {
+  it("blanks the topbar chip once a stale running status resolves to not-in-memory", async () => {
+    let statusCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) return sse(""); // ends at once, no events
+      if (url.includes("/status")) {
+        statusCalls++;
+        // A mid-run API restart: the first /status still shows the old "running" record; the
+        // ladder's next /status (after the stream's own clean close) lands a 404 — the session
+        // is gone from the restarted process's memory.
+        return statusCalls === 1
+          ? json(200, RUNNING)
+          : json(404, { error: { code: "session_not_found", message: "Unknown session.", reason: null, issues: [] } });
+      }
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    await waitFor(() => expect(document.querySelector("#topbarStatus .chip")).toBeTruthy());
+    await waitFor(() => expect(document.getElementById("stage-not-found")).toBeTruthy());
+    // Before this fix: `stopped` is false (finished_at is null on the stale RUNNING record), so
+    // the chip kept reading the old status — "Running · pass 1 of 2" — over a page that itself
+    // says the session isn't in memory.
+    expect(document.querySelector("#topbarStatus .chip")).toBeNull();
+  });
+});
