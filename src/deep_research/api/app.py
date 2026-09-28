@@ -11,11 +11,13 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.datastructures import MutableHeaders
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from deep_research.api.events import api_error_event, encode_sse
 from deep_research.api.models import (
@@ -129,12 +131,38 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
 
 
 
+class ModeHeaderMiddleware:
+    """Stamp ``X-Deep-Research-Mode`` on every HTTP response, streams and errors included.
+
+    Pure ASGI on purpose: it must sit outside Starlette's exception middleware
+    so 4xx/5xx bodies carry the header too, and it must never hop the request
+    into another task (the replay-case ContextVar rides the same task).
+    """
+
+    def __init__(self, app: ASGIApp, *, mode: str) -> None:
+        self.app = app
+        self.mode = mode
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_mode(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message)["X-Deep-Research-Mode"] = self.mode
+            await send(message)
+
+        await self.app(scope, receive, send_with_mode)
+
+
 def create_app(
     *,
     runner: ResearchRunner = run_research,
     config_path: str = DEFAULT_CONFIG_PATH,
     preflight: PreflightHandler = prepare_research_settings,
     tracker: Tracker | None = None,
+    mode: Literal["live", "replay"] = "live",
 ) -> FastAPI:
     """Build the local FastAPI interface around one process's session store."""
     if tracker is None:
@@ -155,6 +183,8 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
     app.state.session_store = store
     app.state.api_tracker = tracker
+    app.state.mode = mode
+    app.add_middleware(ModeHeaderMiddleware, mode=mode)
 
     router = APIRouter(dependencies=[Depends(_trace_request)])
 

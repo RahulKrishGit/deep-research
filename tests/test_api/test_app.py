@@ -241,3 +241,26 @@ def test_list_returns_sessions_newest_first_with_a_bounded_limit() -> None:
         assert len(client.get("/research?limit=2").json()["sessions"]) == 2
         assert client.get("/research?limit=0").status_code == 422
         assert client.get("/research?limit=201").status_code == 422
+
+
+@pytest.mark.parametrize("mode", ["live", "replay"])
+def test_every_response_carries_the_mode_header(mode: str) -> None:
+    app = create_app(runner=ScriptedRunner(report="# q\n\nbody\n"), preflight=valid_preflight, mode=mode)
+    with TestClient(app) as client:
+        posted = client.post("/research", json={"query": "Question"})
+        assert posted.headers["x-deep-research-mode"] == mode
+        session_id = posted.json()["session_id"]
+        wait_until_terminal(client, session_id)
+        for path, expected in (
+            (f"/research/{session_id}/status", 200),
+            (f"/research/{session_id}/report", 200),
+            (f"/research/{session_id}/stream", 200),
+            ("/research/nope/status", 404),
+        ):
+            response = client.get(path)
+            assert response.status_code == expected
+            assert response.headers["x-deep-research-mode"] == mode
+        invalid = client.post("/research", json={})
+        assert invalid.status_code == 422
+        assert invalid.headers["x-deep-research-mode"] == mode
+    assert create_app(runner=ScriptedRunner(), preflight=valid_preflight).state.mode == "live"
