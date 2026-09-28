@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState, type ReactNode } from "react";
-import { fmtElapsed, passText } from "@/lib/format";
+import { fmtElapsed, passText, qFitClass } from "@/lib/format";
 import { AGENT_ORDER, BLURB, STAGES, marksFor, type RunState } from "@/lib/run-state";
 import { Counters } from "./Counters";
 import { Spine } from "./Spine";
@@ -25,7 +25,7 @@ export function RunningPipeline({ run, question, strip, startedAt, ceiling }: { 
       <div className="run-wrap">
         <div className="ask-head">
           <p className="eyebrow" style={{ margin: 0 }}>Session running</p>
-          <h1 className="ask-q ask-locked" id="running-h" aria-describedby="runningOpts">{question}</h1>
+          <h1 className={"ask-q ask-locked" + qFitClass(question)} id="running-h" aria-describedby="runningOpts">{question}</h1>
           {strip}
           <div className="ask-meta"><span className="avail-mono" id="runElapsed">{fmtElapsed(elapsed)} elapsed</span></div>
         </div>

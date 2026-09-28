@@ -9,7 +9,9 @@ test("the sidebar lists sessions newest first, refreshes while one runs, and sta
   // a session started elsewhere appears without a reload while one runs
   const posted = await request.post(`${API}/research`, { data: { query: "elsewhere" } });
   const { session_id: third } = await posted.json();
-  await expect(page.locator(`.sb-item[data-session="${third}"]`)).toBeVisible({ timeout: 8_000 });
+  // ConsoleProvider polls every 5 s while a session is running (spec: "within 5 s"); +1 s covers
+  // the request and render after that tick fires.
+  await expect(page.locator(`.sb-item[data-session="${third}"]`)).toBeVisible({ timeout: 5_000 + 1_000 });
   await expect(page.locator(".sb-foot")).toHaveText("Sessions are held in the service process's memory; this list empties when the service restarts.");
   for (const id of [first, second, third]) await waitTerminal(request, id);
 });

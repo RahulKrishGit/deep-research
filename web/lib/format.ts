@@ -39,6 +39,12 @@ export function passTotal(s: { passes: number | null }): number | null {
   const n = Number(s && s.passes);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
+/* index.html:1795-1811 (setQuestionFit) / DESIGN.md:401-405 — a short question sits in the middle
+   of the frame; the .ask-locked.q-center CSS rule (globals.css) does the actual centring. */
+export const Q_CENTER_MAX = 80;
+export function qFitClass(q: string): string {
+  return (q || "").length <= Q_CENTER_MAX ? " q-center" : "";
+}
 export function passText(s: SessionView): string {
   const total = passTotal(s);
   return "pass " + passNumber(s.iteration) + (total === null ? "" : " of " + total);

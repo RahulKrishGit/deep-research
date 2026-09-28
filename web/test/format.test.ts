@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResearchSessionResponse } from "../lib/api";
-import { fmtClock, fmtScore, fmtSeconds, meterClass, notFoundClause, passText, statusNote, toSessionView } from "../lib/format";
+import { fmtClock, fmtScore, fmtSeconds, meterClass, notFoundClause, passText, qFitClass, statusNote, toSessionView } from "../lib/format";
 
 const base: ResearchSessionResponse = {
   session_id: "s", query: "q", status: "running", current_agent: null, iteration: 0,
@@ -39,6 +39,10 @@ describe("statusNote — one rule per API status", () => {
 });
 
 describe("helpers", () => {
+  it("qFitClass centres the question at 80 characters, not 81", () => {
+    expect(qFitClass("a".repeat(80))).toBe(" q-center");
+    expect(qFitClass("a".repeat(81))).toBe("");
+  });
   it("passText adds one to the zero-based iteration and drops the clause without a ceiling", () => {
     expect(passText(toSessionView({ ...base, iteration: 1 }, 2))).toBe("pass 2 of 2");
     expect(passText(toSessionView({ ...base, iteration: 1 }, null))).toBe("pass 2");
