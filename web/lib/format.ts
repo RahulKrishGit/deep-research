@@ -73,7 +73,8 @@ export function fmtDur(a: string | null, b: string | null): string | null {
 }
 export function fmtSeconds(s: number | null): string | null {
   if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return null;
-  return Math.floor(s / 60) + "m " + String(Math.round(s % 60)).padStart(2, "0") + "s";
+  const t = Math.round(s);
+  return Math.floor(t / 60) + "m " + String(t % 60).padStart(2, "0") + "s";
 }
 export function fmtClock(iso: string | null): string | null {
   if (!iso) return null;

@@ -66,4 +66,10 @@ describe("helpers", () => {
     expect(fmtClock("2026-09-16T14:02:11Z")).toBe("14:02Z");
     expect(fmtClock(null)).toBeNull();
   });
+  it("fmtSeconds rounds the total once before splitting minutes and seconds", () => {
+    expect(fmtSeconds(119.7)).toBe("2m 00s");
+    expect(fmtSeconds(59.5)).toBe("1m 00s");
+    expect(fmtSeconds(3599.9)).toBe("60m 00s");
+    expect(fmtSeconds(125)).toBe("2m 05s");
+  });
 });
