@@ -19,21 +19,27 @@ export function groupByDay(sessions: ResearchSessionResponse[], now = new Date()
 }
 
 export function Sidebar() {
-  const { sessions } = useConsole();
+  const { sessions, sessionsLoaded, setSidebar } = useConsole();
   const router = useRouter();
   const params = useParams();
   const active = typeof params?.id === "string" ? params.id : null;
+  /* index.html:3782,:3838 — choosing a session or starting over collapses the drawer;
+     on desktop "expanded" is a pinned state, so navigation never touches it there. */
+  const navigate = (path: string) => {
+    router.push(path);
+    if (window.matchMedia("(max-width:1080px)").matches) setSidebar("collapsed");
+  };
   return (
     <aside className="sidebar" id="sidebar" aria-label="Session history">
       <div className="sb-head">
         <span className="mark" aria-hidden="true"></span>
         <span className="sb-wordmark">Deep Research</span>
       </div>
-      <button className="btn btn-ghost sb-new" id="newResearch" type="button" onClick={() => router.push("/")}>
+      <button className="btn btn-ghost sb-new" id="newResearch" type="button" onClick={() => navigate("/")}>
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="square" aria-hidden="true" style={{ width: 14, height: 14, flex: "none" }}><path d="M12 5v14M5 12h14" /></svg>
         <span>New Research</span>
       </button>
-      <div className="sb-label"><span>Sessions</span><span className="mono" id="sbCount">{sessions.length}</span></div>
+      <div className="sb-label"><span>Sessions</span><span className="mono" id="sbCount">{sessionsLoaded ? sessions.length : null}</span></div>
       <ul className="sb-list" id="sessionList">
         {groupByDay(sessions).map(([group, items]) => (
           <Fragment key={group}>
@@ -45,7 +51,7 @@ export function Sidebar() {
                 <li key={s.session_id}>
                   <button type="button" className="sb-item" data-session={s.session_id} data-run={running ? "1" : "0"} title={s.session_id}
                     aria-current={active === s.session_id ? "true" : "false"} aria-label={running ? `${s.query} — running` : undefined}
-                    onClick={() => router.push(`/research/${s.session_id}`)}>
+                    onClick={() => navigate(`/research/${s.session_id}`)}>
                     <span className="q">{s.query}</span><span className="sb-live" aria-hidden="true"></span>
                   </button>
                 </li>

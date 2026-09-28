@@ -1,5 +1,5 @@
 "use client";
-import { useLayoutEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { SubmittedSettings } from "@/lib/session-store";
 
 export const MODELS = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"] as const; // product data (the design's three buttons)
@@ -37,6 +37,22 @@ export function SettingsPopover({ open, settings, onChange, onClose, anchor }: P
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
   }, [open, anchor]);
+  useEffect(() => {
+    // index.html:1908-1912, :2386-2392 — Escape or a click outside (the anchor button excepted) closes the panel.
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const onClickAway = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (pop.current?.contains(target) || anchor.current?.contains(target)) return;
+      onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("click", onClickAway);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("click", onClickAway);
+    };
+  }, [open, onClose, anchor]);
   const seg = (pressed: boolean) => ({ "aria-pressed": pressed } as const);
   return (
     <div className="popover" id="settingsPop" role="dialog" aria-label="Run settings" data-open={open ? "true" : "false"} ref={pop}>

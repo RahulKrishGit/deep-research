@@ -48,4 +48,22 @@ describe("Composer", () => {
     fireEvent.submit(screen.getByLabelText("Research question").closest("form")!);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Service configuration error"));
   });
+  it("requires a question on empty submit and marks the field invalid", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    render(<ConsoleProvider><Composer /></ConsoleProvider>);
+    const box = screen.getByLabelText("Research question") as HTMLTextAreaElement;
+    fireEvent.submit(box.closest("form")!);
+    expect(screen.getByRole("alert").textContent).toBe("A question is required.");
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+  });
+  it("clears the error and the invalid mark when the question changes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    render(<ConsoleProvider><Composer /></ConsoleProvider>);
+    const box = screen.getByLabelText("Research question") as HTMLTextAreaElement;
+    fireEvent.submit(box.closest("form")!);
+    expect(screen.getByRole("alert").textContent).toBe("A question is required.");
+    fireEvent.change(box, { target: { value: "a" } });
+    expect(screen.getByRole("alert").textContent).toBe("");
+    expect(box.getAttribute("aria-invalid")).toBeNull();
+  });
 });

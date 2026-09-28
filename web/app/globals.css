@@ -1129,3 +1129,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    default of never shrinking below its content's min-content) and wrap onto a second line
    keeps the toggle and both buttons on the bar's single row, right-aligned. */
 #reportMeta{flex:1 1 240px;min-width:0}
+
+/* ═══ 2026-09-27: app-only additions ═══ */
+/* Task 14 fix round: React hydrates after the server-rendered HTML paints, which carries
+   data-sidebar="expanded" (ConsoleProvider's initial state, before its mount effect can measure
+   matchMedia). At the drawer breakpoint that markup alone reads as an open drawer + visible
+   scrim for one frame. AppShell marks the shell `data-ready` once mounted; until then, force the
+   drawer shut with no transition so the snap-closed never paints. */
+@media (max-width:1080px){.app:not([data-ready]) .sidebar{transform:translateX(-100%);transition:none}.app:not([data-ready]) .scrim{display:none}}

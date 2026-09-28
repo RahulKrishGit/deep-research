@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { groupByDay } from "../../components/Sidebar";
+import { render, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ConsoleProvider } from "../../components/ConsoleProvider";
+import { Sidebar, groupByDay } from "../../components/Sidebar";
 import type { ResearchSessionResponse } from "../../lib/api";
 
 const session = (id: string, started_at: string): ResearchSessionResponse => ({
@@ -14,5 +16,21 @@ describe("groupByDay", () => {
     const groups = groupByDay([session("a", new Date(2026, 8, 27, 9).toISOString()), session("b", new Date(2026, 8, 26, 23).toISOString()), session("c", new Date(2026, 8, 20).toISOString())], now);
     expect(groups.map(([g, items]) => [g, items.map((s) => s.session_id)])).toEqual([["Today", ["a"]], ["Yesterday", ["b"]], ["Earlier", ["c"]]]);
     expect(groupByDay([], now)).toEqual([]);
+  });
+});
+
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }), useParams: () => ({}) }));
+const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+afterEach(() => vi.unstubAllGlobals());
+
+describe("Sidebar session count", () => {
+  it("shows no count before the session list has loaded, then 0 once loaded empty (never an invented 0)", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.stubGlobal("fetch", vi.fn(async () => { await gate; return json(200, { sessions: [] }); }));
+    render(<ConsoleProvider><Sidebar /></ConsoleProvider>);
+    expect(document.getElementById("sbCount")!.textContent).toBe("");
+    release();
+    await waitFor(() => expect(document.getElementById("sbCount")!.textContent).toBe("0"));
   });
 });

@@ -1,5 +1,5 @@
 "use client";
-import { useRef, useState, type FormEvent } from "react";
+import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, startResearch, type ResearchRequest } from "@/lib/api";
 import { recordSubmission, type SubmittedSettings } from "@/lib/session-store";
@@ -35,14 +35,38 @@ export function Composer() {
   const [question, setQuestion] = useState("");
   const [settings, setSettings] = useState<SubmittedSettings>(DEFAULT_SETTINGS);
   const [error, setError] = useState<string | null>(null);
+  const [invalid, setInvalid] = useState(false);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const plus = useRef<HTMLButtonElement>(null);
+  const prompt = useRef<HTMLTextAreaElement>(null);
+
+  /* index.html:2303-2317, DESIGN.md:371-376 — the box fits what has been typed, capped at the
+     stylesheet's own min(232px,32vh) (.composer textarea's max-height), read back rather than
+     repeated here so the viewport-relative half of the cap keeps working unmodified. */
+  useLayoutEffect(() => {
+    const el = prompt.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const want = el.scrollHeight;
+    if (!want) return;
+    let cap = parseFloat(getComputedStyle(el).maxHeight);
+    if (!Number.isFinite(cap) || cap <= 0) cap = 232;
+    const edges = el.offsetHeight - el.clientHeight || 0;
+    el.style.height = `${Math.min(want + edges, cap)}px`;
+  }, [question]);
 
   async function submit(raw: string) {
     const text = raw.trim();
-    if (!text || busy) return;
-    setBusy(true); setError(null);
+    if (!text) {
+      // index.html:2404-2410 — an empty submit never reaches the network.
+      setError("A question is required.");
+      setInvalid(true);
+      prompt.current?.focus();
+      return;
+    }
+    if (busy) return;
+    setBusy(true); setError(null); setInvalid(false);
     try {
       const result = await startResearch(buildRequest(text, settings)); // one fetch; never retried
       noteMode(result.mode);
@@ -58,13 +82,16 @@ export function Composer() {
     } finally { setBusy(false); }
   }
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void submit(question); };
+  // index.html:2381-2385 — any error (the empty-required message included) clears on the next keystroke.
+  const onQuestionChange = (value: string) => { setQuestion(value); setError(null); setInvalid(false); };
 
   return (
     <>
       <div className="composer-wrap" id="composerIdleHost">
         <form className="composer" id="composer" noValidate onSubmit={onSubmit}>
           <label className="sr" htmlFor="prompt">Research question</label>
-          <textarea id="prompt" rows={2} placeholder="Ask anything." value={question} onChange={(e) => setQuestion(e.target.value)}
+          <textarea id="prompt" rows={2} placeholder="Ask anything." value={question} ref={prompt}
+            aria-invalid={invalid ? "true" : undefined} onChange={(e) => onQuestionChange(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submit(question); } }} />
           <div className="composer-bar">
             <span className="pop-anchor">

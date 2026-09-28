@@ -23,12 +23,20 @@ if (action === "start") {
   const child = spawn(command, { shell: true, detached: true, windowsHide: true, stdio: "ignore" });
   child.unref();
   writeFileSync(pidFile, String(child.pid));
+  let up = false;
   for (let i = 0; i < 240; i++) {
-    if ((await answers(readyPath)) === 200) { console.log(`up: http://127.0.0.1:${port}${readyPath} (pid ${child.pid} → ${pidFile})`); process.exit(0); }
+    if ((await answers(readyPath)) === 200) { console.log(`up: http://127.0.0.1:${port}${readyPath} (pid ${child.pid} → ${pidFile})`); up = true; break; }
     await sleep(500);
   }
-  console.error(`http://127.0.0.1:${port}${readyPath} did not answer 200 within 120 s (pid ${child.pid} is in ${pidFile}; run stop)`);
-  process.exit(1);
+  if (!up) {
+    console.error(`http://127.0.0.1:${port}${readyPath} did not answer 200 within 120 s (pid ${child.pid} is in ${pidFile}; run stop)`);
+    process.exit(1);
+  }
+  // Let the event loop drain instead of process.exit(): on this Windows/Node combination,
+  // exiting immediately after unref()'ing a detached, stdio:"ignore" child raced a libuv handle
+  // teardown in this launcher's own process (a UV_HANDLE_CLOSING assertion) right after it had
+  // already written the pid file and printed "up:" — the detached child itself was unaffected.
+  process.exitCode = 0;
 } else if (action === "stop") {
   if (!name || !port) { console.error("usage: launch.mjs stop <name> <port>"); process.exit(2); }
   const pid = existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim() : null;
