@@ -1150,3 +1150,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    index.html's own .ev-detail .kv dd{text-align:left} (:1126) already makes this same trade for
    prose-shaped values; the failed stage's facts get it too, only at phone width. */
 @media (max-width:480px){#stage-failed .kv dd{text-align:left}}
+/* Final-wave item 1: at <=390px with the replay mode chip showing, `.topbar-right{flex-wrap:wrap}`
+   (the base rule above, unmodified) let the mode chip drop to a second row once the status chip's
+   note grew long enough (e.g. "Completed · review accepted · 0.90"), pushing the topbar past its
+   fixed --topbar height. `.chip`'s own min-width:0/ellipsis (2026-09-27 fix, above) already lets
+   the status chip shrink; nowrap here keeps both chips on the bar's one row so that shrink is what
+   actually happens, and the mode chip — a fixed, short label — never itself shrinks or wraps. */
+.topbar-right{flex-wrap:nowrap;min-width:0}
+#modeChip{flex-shrink:0;white-space:nowrap}

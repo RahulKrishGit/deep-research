@@ -45,6 +45,21 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
       if (!phone) {
         expect(await px(page, ".prose", "width")).toBeLessThanOrEqual(720);
         expect(await px(page, ".rail", "width")).toBe(300);
+      } else {
+        // Final-wave item 1: at 390 px, with the replay mode chip showing and the status chip's
+        // note at its longest (a completed, reviewed run), the topbar must still hold both chips
+        // on its one fixed-height row rather than wrapping the mode chip onto a second line. 60,
+        // not the desktop's 56: globals.css:987 enlarges .icon-btn to a 44 px touch target at this
+        // breakpoint (verbatim prototype CSS, phone-only), so 60 = 44 + the topbar-in's own 8 px
+        // top/bottom padding is this row's real single-line height — a second row would add a
+        // whole chip's height (~28 px) on top of that, not 4 px.
+        expect(await px(page, ".topbar-in", "height")).toBe(60);
+        const modeBox = await page.locator("#modeChip").boundingBox();
+        const statusBox = await page.locator("#topbarStatus .chip").boundingBox();
+        expect(modeBox).not.toBeNull();
+        expect(statusBox).not.toBeNull();
+        expect(modeBox!.y).toBeLessThan(statusBox!.y + statusBox!.height);
+        expect(statusBox!.y).toBeLessThan(modeBox!.y + modeBox!.height);
       }
       await page.locator("#segView button[data-view='evidence']").click();
       await expect(page.locator(".ev-row").first()).toBeVisible();
