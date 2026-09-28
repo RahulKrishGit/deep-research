@@ -95,9 +95,20 @@ def main(argv: Sequence[str] | None = None, *, serve: Callable[..., None] = uvic
     root = Path(tempfile.mkdtemp(prefix="deep-research-replay-"))
     try:
         # Resolve before the guard: network_denied() refuses getaddrinfo, and a numeric host needs
-        # none. M4: family=AF_INET — otherwise a resolver that prefers IPv6 for "localhost" binds
-        # only [::1], which the default DEEP_RESEARCH_API_URL (127.0.0.1) cannot reach.
-        numeric_host = socket.getaddrinfo(args.host, args.port, family=socket.AF_INET, type=socket.SOCK_STREAM)[0][4][0]
+        # none. Prefer family=AF_INET (M4 — otherwise a resolver that prefers IPv6 for "localhost"
+        # binds only [::1], which the default DEEP_RESEARCH_API_URL, 127.0.0.1, cannot reach), but
+        # fall back to an unrestricted lookup (NB3) so an IPv6 literal host such as "--host ::1"
+        # still resolves — AF_INET alone rejects it outright, a regression M4 introduced. A host
+        # neither lookup can resolve at all is a usage error, not an unhandled socket.gaierror.
+        try:
+            numeric_host = socket.getaddrinfo(
+                args.host, args.port, family=socket.AF_INET, type=socket.SOCK_STREAM
+            )[0][4][0]
+        except socket.gaierror:
+            try:
+                numeric_host = socket.getaddrinfo(args.host, args.port, type=socket.SOCK_STREAM)[0][4][0]
+            except socket.gaierror as error:
+                build_parser().error(f"cannot resolve --host {args.host!r}: {error}")
         app = build_app(args, replay_root=root)
         print(
             f"deep-research api: mode=replay case={args.replay_case} "

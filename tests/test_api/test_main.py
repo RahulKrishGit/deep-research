@@ -109,6 +109,38 @@ def test_main_serves_with_the_numeric_host_and_a_bounded_shutdown(tmp_path: Path
     assert list(tmp_path.glob("deep-research-replay-*")) == []  # the root was removed
 
 
+def test_main_falls_back_to_an_unrestricted_lookup_for_an_ipv6_literal_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # NB3 (re-review): M4's family=socket.AF_INET fixed "--host localhost" (a resolver that
+    # prefers IPv6 used to bind only [::1]) but, tried alone, it also rejects a *literal* IPv6
+    # host like "::1" outright (AF_INET can't reinterpret an IPv6 address) — a host that worked
+    # at the base and still works in live mode. AF_INET must be preferred, not the only attempt.
+    calls: list[dict[str, Any]] = []
+
+    def fake_serve(app: Any, **kwargs: Any) -> None:
+        calls.append({"app": app, **kwargs})
+
+    monkeypatch.setenv("TEMP", str(tmp_path))
+    monkeypatch.setenv("TMP", str(tmp_path))
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    assert start.main(["--mode", "replay", "--host", "::1", "--port", "8125"], serve=fake_serve) == 0
+    assert calls[-1]["host"] == "::1" and calls[-1]["port"] == 8125
+
+
+def test_main_maps_an_unresolvable_host_to_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    # NB3: neither lookup can resolve every possible --host value; that is a usage error (exit 2,
+    # argparse's own "error:" message on stderr), never an unhandled socket.gaierror traceback.
+    # Monkeypatched (not a real unresolvable hostname) so this stays offline and deterministic.
+    def always_fails(*args: Any, **kwargs: Any) -> Any:
+        raise socket.gaierror(-2, "Name or service not known")
+
+    monkeypatch.setattr(socket, "getaddrinfo", always_fails)
+    calls: list[Any] = []
+    with pytest.raises(SystemExit) as raised:
+        start.main(["--mode", "replay", "--host", "nonsense.invalid", "--port", "8126"], serve=lambda *a, **k: calls.append((a, k)))
+    assert raised.value.code == 2
+    assert calls == []  # serve() is never reached
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
