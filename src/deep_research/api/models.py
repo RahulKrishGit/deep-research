@@ -8,7 +8,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from deep_research.utils.config import ConfigSettings, apply_config_overrides
-from deep_research.utils.types import ResearchError
+from deep_research.utils.types import (
+    FigureAttribution,
+    FigureDropReason,
+    FigureKind,
+    FindingDropReason,
+    FindingStatus,
+    ResearchError,
+    SourceEvaluationStatus,
+)
 
 SessionStatus = Literal[
     "running",
@@ -170,6 +178,84 @@ class SessionListResponse(ApiModel):
     """The process's sessions, newest first; each item is that session's status response."""
 
     sessions: list[ResearchSessionResponse] = Field(default_factory=list)
+
+
+class EvidenceModel(BaseModel):
+    """Base for the evidence view's models: strict shape, verbatim text.
+
+    Unlike ``ApiModel`` it does not strip strings: ``content``, ``snippet``,
+    ``passage`` and ``evidence_words`` are verbatim page text and must reach
+    the client exactly as the run recorded them.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+
+
+class EvidenceSourceResponse(EvidenceModel):
+    url: str
+    title: str
+    organisation: str
+    evaluation_status: SourceEvaluationStatus | None = None
+    """``None`` when the composition holds no ``ScoredSource`` for this URL."""
+    low_confidence: bool = False
+    authority_score: float | None = None
+    recency_score: float | None = None
+    relevance_score: float | None = None
+    overall_score: float | None = None
+
+
+class EvidenceFigureResponse(EvidenceModel):
+    value: str
+    kept: bool
+    period: str | None
+    scope: str | None
+    organisation: str | None
+    attribution: FigureAttribution | None
+    kind: FigureKind | None
+    release: str | None
+    evidence_words: str | None
+    corrected: bool
+    dropped_reason: FigureDropReason | None
+    reason: str | None
+
+
+class EvidenceFindingResponse(EvidenceModel):
+    label: str
+    status: FindingStatus | None
+    dropped_reason: FindingDropReason | None
+    context_unchecked: bool
+    cited: bool
+    target_ids: list[str]
+    content: str
+    snippet: str | None
+    passage: str | None
+    source: EvidenceSourceResponse
+    figures: list[EvidenceFigureResponse]
+
+
+class EvidenceNotFoundResponse(EvidenceModel):
+    target_id: str
+    question: str
+    queries: list[str]
+    pages_read: list[str]
+    searched: bool
+
+
+class EvidenceRefusedResponse(EvidenceModel):
+    where: str
+    text: str
+    reason: str
+    finding_labels: list[str]
+
+
+class EvidenceResponse(EvidenceModel):
+    """E1: every finding with its verification and source, the not-found targets, the refused sentences."""
+
+    session_id: str
+    iteration: int
+    findings: list[EvidenceFindingResponse]
+    not_found: list[EvidenceNotFoundResponse]
+    refused: list[EvidenceRefusedResponse]
 
 
 class TraceMetadata(ApiModel):
