@@ -1,0 +1,115 @@
+// The prototype's display helpers, ported from docs/design/prototype/index.html:1704-1784,
+// :3267-3270, :3483-3485, :3708-3717. Bodies unchanged; types added; toSessionView adapts the
+// API's flat fields to the prototype's session shape so statusNote/passText keep their bodies.
+import type { CoverageProgress, ResearchSessionResponse, SessionStatus } from "./api";
+
+export interface SessionView {
+  status: SessionStatus;
+  iteration: number;
+  passes: number | null;
+  review: { status: string | null; score: number | null } | null;
+  coverage: CoverageProgress | null;
+}
+
+export function toSessionView(s: ResearchSessionResponse, passes: number | null): SessionView {
+  const review =
+    s.semantic_review_status === null && s.semantic_review_score === null
+      ? null
+      : { status: s.semantic_review_status, score: s.semantic_review_score };
+  return { status: s.status, iteration: s.iteration, passes, review, coverage: s.coverage };
+}
+
+/* Label and dot per API status (api/models.py:13-19). The second clause is built by statusNote(). */
+export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "dot-ok" | "dot-warn" | "dot-danger" }> = {
+  running: { label: "Running", dot: "dot-live" },
+  completed: { label: "Completed", dot: "dot-ok" },
+  max_iterations: { label: "Partially completed", dot: "dot-warn" },
+  incomplete: { label: "Partially completed", dot: "dot-warn" },
+  failed: { label: "Failed", dot: "dot-danger" },
+};
+
+/* `iteration` is the API's zero-based value; the interface counts passes from 1. This is the only
+   place the offset lives. */
+export function passNumber(iteration: unknown): number {
+  const n = Number(iteration);
+  return (Number.isFinite(n) ? n : 0) + 1;
+}
+/* The ceiling: 1 + max_extra_passes. A session that has none drops the "of P" clause. */
+export function passTotal(s: { passes: number | null }): number | null {
+  const n = Number(s && s.passes);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+export function passText(s: SessionView): string {
+  const total = passTotal(s);
+  return "pass " + passNumber(s.iteration) + (total === null ? "" : " of " + total);
+}
+/* Scores print with two decimals; null is "no score", never 0. */
+export function fmtScore(v: unknown): string | null {
+  return typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : null;
+}
+/* coverage.not_found_target_ids → " · 1 target not found" / " · n targets not found" / "" */
+export function notFoundClause(s: SessionView): string {
+  const ids = (s && s.coverage && s.coverage.not_found_target_ids) || [];
+  if (!ids.length) return "";
+  return " · " + ids.length + (ids.length === 1 ? " target not found" : " targets not found");
+}
+/* The chip's second clause, one rule per API status. */
+export function statusNote(s: SessionView): string {
+  const score = fmtScore(s.review && s.review.score);
+  switch (s.status) {
+    case "completed": return "review accepted" + (score === null ? "" : " · " + score) + notFoundClause(s);
+    case "max_iterations": return "extra passes used" + notFoundClause(s);
+    case "incomplete": return s.review && s.review.status === "scored" && score !== null ? "not accepted · " + score : "review unavailable";
+    case "failed": return "halted";
+    default: return passText(s);
+  }
+}
+export function fmtDur(a: string | null, b: string | null): string | null {
+  if (!a || !b) return null;
+  const ms = new Date(b).getTime() - new Date(a).getTime();
+  if (Number.isNaN(ms) || ms < 0) return null;
+  const s = Math.round(ms / 1000);
+  return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
+}
+export function fmtSeconds(s: number | null): string | null {
+  if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return null;
+  return Math.floor(s / 60) + "m " + String(Math.round(s % 60)).padStart(2, "0") + "s";
+}
+export function fmtClock(iso: string | null): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return String(d.getUTCHours()).padStart(2, "0") + ":" + String(d.getUTCMinutes()).padStart(2, "0") + "Z";
+}
+export function fmtElapsed(sec: number): string {
+  return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+}
+/* Meter colour is a judgement about the number (DESIGN.md §3.6): v > 0.8 is green, so exactly 0.80
+   paints yellow on purpose while acceptance is ≥ 0.80. Do not "fix" either side. */
+export function meterClass(v: number): "ok" | "warn" | "danger" | null {
+  if (Number.isNaN(v)) return null;
+  return v > 0.8 ? "ok" : v >= 0.4 ? "warn" : "danger";
+}
+/* Halting types (graph/state.py:141-150) in plain words; the two api.research.* types are the
+   API layer's own failures, which never emit graph.session.completed. */
+export const HALT_HEADLINES: Readonly<Record<string, string>> = {
+  graph_planning_failed: "Planning failed",
+  graph_provider_configuration_error: "Model provider misconfigured",
+  graph_agent_configuration_error: "Agent misconfigured",
+  graph_invalid_agent_state: "Invalid agent state",
+  graph_invalid_route: "Invalid route",
+  graph_request_attempt_limit_exceeded: "Request attempt limit reached",
+  "api.research.configuration_error": "Service configuration error",
+  "api.research.failed": "Research run failed",
+};
+export const PILL_TEXT: Readonly<Record<string, string>> = {
+  verified: "verified", verified_corrected: "corrected", quoted: "quoted", dropped: "dropped",
+  not_checked: "not checked", not_found: "not found", refused: "refused",
+};
+/* The evidence log's verbs (agents/report.py:1929-1933). */
+export const VERIFICATION_TEXT: Readonly<Record<string, string>> = {
+  verified: "verified",
+  verified_corrected: "verified with corrections",
+  quoted: "quoted (snippet found on the page; not checked for context)",
+  not_checked: "not checked",
+};
