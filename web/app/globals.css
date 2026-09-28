@@ -1160,17 +1160,22 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 #modeChip{flex-shrink:0;white-space:nowrap}
 /* Live-run fix (AC21): at 390 px a refused row's single tag ("cited F11, F22, …") holding a long
    finding_labels list forced the page into horizontal scroll — .tag inherits white-space:nowrap
-   (index.html:1115) and .ev-row's own grid-template-columns (index.html:1102) sizes its last
-   column with a bare "auto" track, neither of which can shrink below the tag's own content width.
-   Replay data never produces a long finding_labels list, so no existing capture or test exercised
-   this. Redefining grid-template-columns wholesale (not modifying the verbatim rule above) turns
-   the last track into minmax(0,auto): it keeps its natural width for the common case (one or two
-   short tags) but can now shrink to fit when it has to. min-width:0 has to apply at every
-   flex/grid-item link in the chain — .tags as the grid item, then .tag as .tags's own flex child
-   — for the same reason the chip-ellipsis fix above needs it at every link. The tag truncates
-   with an ellipsis rather than wrapping, matching .ev-row .txt's own single-line convention so
-   every row keeps the same height. */
-.ev-row{grid-template-columns:auto auto minmax(0,1fr) minmax(0,auto)}
+   (index.html:1115) from the verbatim base rule, and neither it nor its .tags parent had any
+   shrink budget below the tag's own content width. Replay data never produces a long
+   finding_labels list, so no existing capture or test exercised this.
+   min-width:0 on .tags (a grid item in .ev-row's untouched, verbatim grid-template-columns —
+   redefining that column as minmax(0,auto) was tried and re-review-verified empirically
+   redundant once .tags itself has min-width:0: a grid item's own min-width overrides its
+   automatic-minimum-size contribution to an "auto" track regardless of the track's own
+   definition, so the desktop grid needs no override at all) plus min-width:0 on .tag itself (the
+   flex child inside .tags) — the same every-link-in-the-chain pattern the chip-ellipsis fix above
+   needs — let the tag's box actually shrink; max-width:100%/overflow:hidden/text-overflow:
+   ellipsis then truncates it instead of letting it spill past .tags's own bounds. Truncating
+   (rather than wrapping) matches .ev-row .txt's own single-line convention so every row keeps the
+   same height. Both declarations are load-bearing: dropping either alone still passes the AC21
+   regression test (each is independently sufficient once the other is present), but dropping
+   both together reproduces the original horizontal-scroll defect — this file keeps one of the
+   two working declarations (.tags's, the smaller and more targeted of the two), not both. */
 .ev-row .tags{min-width:0}
 .ev-row .tags .tag{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 /* Live-run fix (AC21): the list row above truncates, but the detail pane has no such single-line

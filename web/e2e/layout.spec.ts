@@ -147,6 +147,21 @@ test.describe("Evidence view — long refused-citation list and a long source UR
     // The list: every row, including the refused row's long "cited F11, F22, …" tag, is on screen
     // at once — this is the defect AC21 found (scrollWidth 435 against innerWidth 390).
     await noSideScroll(page);
+    // scrollWidth alone is not enough to catch every way this can go wrong: with
+    // justify-content:flex-end on .tags and no shrink budget on .tag, an unellipsized tag spills
+    // *left*, off the start of the viewport (x < 0) — document.scrollingElement.scrollWidth never
+    // grows for that, so a scrollWidth-only check passes even though the tag is unreadable.
+    // Pin the tag itself: fully on screen, and visibly truncated (not merely narrow by luck).
+    const refusedRowId = "R" + String(real.refused.length + 1).padStart(2, "0");
+    const tag = page.locator(`.ev-row[data-id="${refusedRowId}"] .tag`);
+    await expect(tag).toBeVisible();
+    const innerWidth = await page.evaluate(() => window.innerWidth);
+    const box = (await tag.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(innerWidth);
+    const clip = await tag.evaluate((el) => ({ scrollWidth: el.scrollWidth, clientWidth: el.clientWidth, textOverflow: getComputedStyle(el).textOverflow }));
+    expect(clip.scrollWidth).toBeGreaterThan(clip.clientWidth); // the full "cited F11, F22, …" text is wider than the box that holds it
+    expect(clip.textOverflow).toBe("ellipsis");
     // The detail pane: select the finding whose source URL is the 200-character string.
     await page.locator(`.ev-row[data-id="${real.findings[0].label}"]`).click();
     await expect(page.locator("#evDetail a.tlink")).toHaveText(longUrl);
