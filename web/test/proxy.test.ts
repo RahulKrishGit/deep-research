@@ -66,6 +66,7 @@ describe("the proxy", () => {
     expect(seen.method).toBe("POST");
     expect(seen.url).toBe("/research?limit=5");
     expect(seen.body).toBe(JSON.stringify({ query: "q" }));
+    expect(seen.headers!["content-type"]).toBe("application/json");
     expect(seen.headers!["x-replay-case"]).toBe("review-unavailable");
     expect(seen.headers!["accept"]).toBe("application/json");
     expect(seen.headers!["cookie"]).toBeUndefined();
