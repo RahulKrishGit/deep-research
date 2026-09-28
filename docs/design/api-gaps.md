@@ -10,8 +10,8 @@ or a disabled control.**
 
 The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
 3 Running, 4 Report, 5 Failed) and a collapsible session sidebar, so gaps are
-keyed `{stage}.{n}` plus `SB.{n}` for the sidebar, with `E1` — the one new
-endpoint every stage would use — listed first. Re-keyed on 2026-09-26 to the
+keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1 and 1.2 are closed
+and recorded above. Re-keyed on 2026-09-26 to the
 Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 
 ---
@@ -21,23 +21,28 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | Method | Path | Returns |
 |---|---|---|
 | `POST` | `/research` | `202` `ResearchSessionResponse` (`api/app.py:159-188`; `max_iterations` is passed to the graph as `max_extra_passes`, `:183`) |
+| `GET` | `/research` | `200` `{"sessions": [ResearchSessionResponse, …]}`, newest first, `?limit=` 1–200, default 20 (`:198-205`) |
 | `GET` | `/research/{id}/status` | `200` `ResearchSessionResponse` (`:190-202`) |
 | `GET` | `/research/{id}/stream` | `200` `text/event-stream`, replayed from id 1 then live; ids restart at 1 per subscriber (`:204-236`, `api/events.py:14-27`) |
 | `GET` | `/research/{id}/report` | `200` `text/markdown`, or `409` `session_not_complete` / `report_unavailable` (`:238-263`) |
+| `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`:313-338`) |
 | `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:265-269`) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 17 fields: `session_id`, `status`, `current_agent`,
-`iteration`, `started_at`, `finished_at`, `report_path`, `trace_url`, `errors`,
-`evidence_path`, `quality_path`, `quality_contract_version`,
-`semantic_review_status`, `semantic_review_score`, `duration_seconds`,
-`coverage` (`required_targets`, `answered_targets`,
-`missing_required_target_ids`, `not_found_target_ids`) and `evidence_counts`
-(fifteen counts; `null` unless the run left both a composition and a quality
-snapshot, `runtime/outcome.py:525`). `status` is one of `running`, `completed`,
-`max_iterations`, `incomplete`, `failed`. Not on the response: `quality_status`,
-`query`, `max_iterations`/`max_extra_passes`, token usage, tool-call totals, any
-report structure.
+`api/sessions.py:73-128`), 18 fields: `session_id`, `query`, `status`,
+`current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
+`trace_url`, `errors`, `evidence_path`, `quality_path`,
+`quality_contract_version`, `semantic_review_status`,
+`semantic_review_score`, `duration_seconds`, `coverage`
+(`required_targets`, `answered_targets`, `missing_required_target_ids`,
+`not_found_target_ids`) and `evidence_counts` (fifteen counts; `null`
+unless the run left both a composition and a quality snapshot,
+`runtime/outcome.py:525`). `status` is one of `running`, `completed`,
+`max_iterations`, `incomplete`, `failed`. Not on the response:
+`quality_status`, `max_iterations`/`max_extra_passes`, token usage,
+tool-call totals, any report structure.
+
+Every response carries `X-Deep-Research-Mode: live|replay`.
 
 `ResearchRequest` accepts `query`, `max_iterations` (`int | None`, `ge=0`,
 default → config), `output_format` and `config_overrides`; overrides are
@@ -63,44 +68,10 @@ Kept as a record, one line each.
 | 3.3 | `evidence_path` | the path is served; the content moves to E1 |
 | 3.5 | claim verdicts and confidence | obsolete: the pipeline has no claims; findings carry a verification status instead (E1) |
 | 2.2 | tool-call counts | partly closed: the verifier, writer and reviewer make no tool calls; `researcher.tool_call` misses the planner's single budgeted call and `finalize_report`'s `write_document` and `save_to_memory` calls (`config.yaml:159`; `agents/planner.py:2999`; `agents/report_writer.py:3286-3293`; `graph/nodes.py:586`); the planner's count is recoverable from `planner.planning.completed.tool_calls`, but `finalize_report`'s calls carry no event-stream count at all — only `ResearchOutcome.tool_calls` (`tools/base.py:107-113`) sees them |
-
----
-
-## E1 — `GET /research/{id}/evidence`
-
-The one endpoint every stage would use. JSON by default; `?format=markdown`
-returns the published evidence log as `text/markdown`, which is what makes a
-`Download evidence log` button appear on the report stage (today the button is
-absent, never disabled). Subsumes the old 3.4 (citations with URLs), 3.6 (source
-scores and bands) and the coverage id → question need. Ground truth:
-`ReportComposition` and `ResearchState`.
-
-| Needed | Why | Where it exists today | Honest workaround | Suggested shape |
-|---|---|---|---|---|
-| **The findings, their verification and their sources** | The Evidence view (DESIGN.md §2 C) lists every finding with its status, target, snippet, source scores, Context Check and figures; coverage's not-found ids want their question text; the report's `How this was researched` link wants a destination | `composition.finding_labels`, `FindingVerification` (`utils/types.py:413-419`), `ScoredSource` (`:625-640`), `FigureResult` + `FigureContext` (`:368-400`), `NotFoundTarget` (`:1521-1532`), `RejectedDraftPoint` (`:1476-1486`), `composition.statement_passages` | The real app shows one muted line, `not served by the service yet`, where the list would be; the prototype renders the target state from a fixture in this shape | the JSON below |
-
-```json
-{"session_id": "…", "iteration": 0,
- "findings": [{"label": "F06", "status": "verified", "dropped_reason": null, "context_unchecked": false,
-               "cited": true, "target_ids": ["T01"], "content": "…", "snippet": "…", "passage": null,
-               "source": {"url": "…", "title": "…", "organisation": "…", "evaluation_status": "scored", "low_confidence": false,
-                          "authority_score": 0.8, "recency_score": 0.7, "relevance_score": 0.9, "overall_score": 0.8},
-               "figures": [{"value": "10.4 GW", "kept": true, "period": "2024", "scope": "…", "organisation": "…",
-                            "attribution": "own", "kind": "actual", "release": "…", "evidence_words": "…",
-                            "corrected": false, "dropped_reason": null, "reason": null}]}],
- "not_found": [{"target_id": "T02", "question": "…", "queries": ["…"], "pages_read": ["…"], "searched": true}],
- "refused": [{"where": "…", "text": "…", "reason": "…", "finding_labels": ["F03"]}]}
-```
-
-| Field group | Source type |
-|---|---|
-| finding `label`, `status`, `dropped_reason`, `context_unchecked` | `composition.finding_labels` (`types.py:1658`); `FindingVerification` (`types.py:413-419`); `status` is `null` when the finding was never verified (the evidence log's `not checked`) |
-| `passage` | `composition.statement_passages` (`agents/report.py:1940`) |
-| `source` scores and statuses | `ScoredSource` (`types.py:625-640`); `organisation` = the Context Check's organisation or the page owner |
-| `figures[]` | `FigureResult` + `FigureContext` (`types.py:368-400`): `attribution` ∈ own \| relayed \| unattributed, `kind` ∈ actual \| forecast; `release` as the evidence log prints it (`report.py:1961-1962`); a quoted finding, or one dropped before the Context Check (`read_not_found`, `snippet_not_on_page`), carries none; an `all_figures_dropped` finding carries every figure, each with its `dropped_reason` |
-| `not_found[]` | `NotFoundTarget` (`types.py:1521-1532`) |
-| `refused[]` | `RejectedDraftPoint` (`types.py:1476-1486`) |
-| `cited` | what the response's `evidence_counts.cited_findings` sums |
+| E1 | `GET /research/{id}/evidence` | served since 2026-09-27: JSON in the shape recorded here (built from `ReportComposition` by `api/evidence.py`, reusing the evidence log's own label pairing and figure text); `?format=markdown` returns `state.report_evidence` as `text/markdown`; `409 session_not_complete` while running, `409 evidence_unavailable` when nothing was composed |
+| 1.1 | `query` echo | `query` is on every `ResearchSessionResponse` (`api/models.py`) |
+| 1.2 | `GET /research` | the session list, newest first, `?limit=` 1–200 (default 20); process-local memory, as SB.2 records |
+| — | `/status.iteration` store fix | `ResearchSession.publish` copies `iteration` from `graph.*` events only (`api/sessions.py`), so `researcher.tool_call`'s ReAct step index never moves the pass |
 
 ---
 
@@ -108,8 +79,6 @@ scores and bands) and the coverage id → question need. Ground truth:
 
 | # | Needed | Why | Where it exists today | Honest workaround | Suggested shape |
 |---|---|---|---|---|---|
-| 1.1 | **The session's own `query`** [1.1] | Neither `POST /research` nor `GET /status` echoes the question back. The sidebar row, the running header and the report header all display it, so all three would be empty after a reload. | `ResearchSession.query`, `ResearchState.original_question` | The client keeps its own copy at submit time, and the sidebar states that it is client-assembled | Add `query: str` to `ResearchSessionResponse` |
-| 1.2 | **The session list `GET /research`** [1.2, 5.1] | There is no collection route, and `new_session_id()` mints the id server-side, so a client cannot even enumerate what it cannot already name. The sidebar is this gap's whole surface. | `SessionStore._sessions` | Client ledger of ids from `202` responses, disclosed in the sidebar footer | `GET /research?limit=` |
 | 1.3 | **The effective settings echo, now including per-role effort** [1.3] | The composer sends `llm.model` and `llm.thinking_mode` as overrides and `max_iterations` at the top level, then cannot show what was actually used; effort is fixed per role in `llm.model_overrides` (`config.yaml:32-63`) and the response has no config block, so the settings strip shows the submitted values and the effort line states the configured ones. | `ConfigSettings.llm` after `apply_config_overrides` | Show the submitted values, labelled as submitted; state effort per agent from the configuration | A non-secret `config` block: `provider`, `model`, `thinking_mode`, per-role `reasoning_effort`, `max_extra_passes` |
 | 1.4 | **`GET /capabilities`** [1.4 + 1.5] | The provider override is now accepted by validation, but nothing lists the valid provider/model/thinking-mode/effort combinations, so the composer mirrors `capabilities.py` by hand (three DeepSeek models, `enabled`/`disabled`) and that copy drifts the moment the registry changes. | `_CAPABILITIES` in `providers/capabilities.py:71-77` | Hand-mirrored; the configured provider only | `GET /capabilities` returning `{provider, models[], thinking_modes[], enabled_efforts[]}[]` |
 | 1.5 | **`GET /health`** [1.6] | A configuration failure is only discoverable by submitting, so the operator loses the question they just typed. | `prepare_research_settings` is already a side-effect-free callable | None; the compose surface cannot warn ahead of time | `GET /health` → `{ready: bool, reasons: [enumerated]}`, reusing the `configuration_error` reasons |

@@ -754,15 +754,18 @@ The `graph.route.decided` fragment is always the router's own enumerated reason
 
 ## FastAPI Interface
 
-The in-process API exposes one research start endpoint and four read
-endpoints, all served by a process-local `SessionStore`:
+The in-process API exposes one research start endpoint, a session list
+endpoint, and five session-scoped read endpoints (`status`, `stream`,
+`report`, `evidence`, `trace`), all served by a process-local `SessionStore`:
 
 | Method | Path | Response |
 | --- | --- | --- |
 | `POST` | `/research` | `202` `ResearchSessionResponse` |
+| `GET` | `/research` | `200` `{"sessions": [ResearchSessionResponse, …]}`, newest first (`?limit=`, default 20, 1–200) |
 | `GET` | `/research/{session_id}/status` | `200` `ResearchSessionResponse` |
 | `GET` | `/research/{session_id}/stream` | `200` `text/event-stream` |
 | `GET` | `/research/{session_id}/report` | `200` `text/markdown` |
+| `GET` | `/research/{session_id}/evidence` | `200` JSON (the findings, their verification and sources, the not-found targets, the refused sentences); `?format=markdown` → the evidence log as `text/markdown` |
 | `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
 
 Start a session:
@@ -781,7 +784,7 @@ curl -X POST http://localhost:8000/research \
   }'
 ```
 
-The `202` response carries the session snapshot: `session_id`, `status`,
+The `202` response carries the session snapshot: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, and `errors`. Sessions start immediately in a background task;
 `status` is `running` until the run reaches `completed`, `max_iterations`,
@@ -825,22 +828,47 @@ Errors are structured and safe:
 | Status | Meaning |
 | --- | --- |
 | `422` | Invalid request body or override shape; the error body lists field locations and types only, never rejected values |
-| `404` | Unknown `session_id`, identical for all four GET routes |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) |
+| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence` and `/trace` |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
+
+Every response carries `X-Deep-Research-Mode: live` or `replay` (see *Run the app*).
 
 Sessions, background tasks, and event history are process-local memory:
 everything disappears when the process exits. Authentication, multi-tenant
 authorization, durable queues, databases, and deployment setup remain out of
-scope — running the app is left to the caller.
+scope; see *Run the app* below for running the API together with the console.
 
-## UI
+## Run the app
 
-The Streamlit app was removed. It built `ScoredSource` objects with the
-`corroboration_score` field, which the research engine no longer defines, so it
-could not run against the current engine. The CLI and the FastAPI interface are
-the supported interfaces until a replacement front end lands on top of the
-FastAPI API.
+The console is a Next.js app in `web/` that talks to the API through a same-origin
+proxy (`/api/*` → `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8000`). Two
+processes:
+
+```bash
+# 1. the API — live: the real graph calling the real provider, needs the
+#    secrets of the matrix above, and spends their credit on every session …
+python -m deep_research.api --mode live --host 127.0.0.1 --port 8000
+#    … or replay: the real graph on scripted offline cases — offline and
+#    free, no network, no keys, no provider credit spent
+python -m deep_research.api --mode replay --replay-case missing-target-triggers-one-extra-pass --replay-delay-ms 150
+
+# 2. the app, in web/ (once: npm install)
+npm run dev            # http://localhost:3000; DEEP_RESEARCH_API_URL overrides the API origin
+```
+
+Replay mode wraps the whole server in the e2e harness's `offline_credentials()` and
+`network_denied()`: every provider call is scripted and every socket connect is refused, so
+a session costs nothing and finishes in seconds (`--replay-delay-ms` paces the stream so the
+running stage can be watched). A `POST /research` may name the case with the header
+`X-Replay-Case: <case id>` (the ids of `e2e_evaluation/replay_matrix.py`); the session
+records the case's own question. In replay mode the topbar shows a muted `replay mode` chip.
+Sessions are held in the API process's memory: the sidebar's list empties when the API
+restarts.
+
+Tests: `pytest` for the API; in `web/`, `npm test` (Vitest), `npm run test:e2e` (Playwright
+against the API in replay mode; set `DEEP_RESEARCH_PYTHON` to the venv interpreter inside a
+worktree), `npm run capture:visual` (full-page captures at 1252 and 390 px into `web/visual/`).
 
 Live-provider smoke tests are opt-in and require separate authorization at
 execution time. They are not part of the default repository test runs.
