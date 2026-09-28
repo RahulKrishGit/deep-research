@@ -10,7 +10,11 @@ export interface ConsoleState {
   chip: SessionView | null; setChip(view: SessionView | null): void;
   sessions: ResearchSessionResponse[]; sessionsLoaded: boolean; refreshSessions(): Promise<void>;
   sidebar: SidebarMode; setSidebar(mode: SidebarMode): void;
-  unreachable: Unreachable | null; noteUnreachable(target: string, retry: () => void): void; clearUnreachable(): void;
+  /* C1: keyed by owner ("sidebar", "session", "report", "evidence", "composer", …) so one
+     component's success never silently dismisses another component's still-broken read. The
+     banner is up while any key is registered; its target comes from whichever entry exists, and
+     its Retry (`unreachable.retry`) re-runs every registered retry, not just the last one noted. */
+  unreachable: Unreachable | null; noteUnreachable(key: string, target: string, retry: () => void): void; clearUnreachable(key: string): void;
 }
 const ConsoleContext = createContext<ConsoleState | null>(null);
 export function useConsole(): ConsoleState {
@@ -24,21 +28,30 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
   const [sessions, setSessions] = useState<ResearchSessionResponse[]>([]);
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [sidebar, setSidebarState] = useState<SidebarMode>("expanded");
-  const [unreachable, setUnreachable] = useState<Unreachable | null>(null);
+  const [registry, setRegistry] = useState<Record<string, Unreachable>>({});
   const noteMode = useCallback((m: ApiMode | null) => { if (m) setMode(m); }, []);
-  const noteUnreachable = useCallback((target: string, retry: () => void) => setUnreachable({ target, retry }), []);
-  const clearUnreachable = useCallback(() => setUnreachable(null), []);
+  const noteUnreachable = useCallback((key: string, target: string, retry: () => void) => {
+    setRegistry((prev) => ({ ...prev, [key]: { target, retry } }));
+  }, []);
+  const clearUnreachable = useCallback((key: string) => {
+    setRegistry((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
   const refreshSessions = useCallback(async () => {
     try {
       const result = await listSessions(50);
       setSessions(result.data.sessions);
       setSessionsLoaded(true);
       noteMode(result.mode);
-      setUnreachable(null);
+      clearUnreachable("sidebar");
     } catch (error) {
-      if (error instanceof ApiUnreachableError) setUnreachable({ target: error.target, retry: () => void refreshSessions() });
+      if (error instanceof ApiUnreachableError) noteUnreachable("sidebar", error.target, () => void refreshSessions());
     }
-  }, [noteMode]);
+  }, [noteMode, noteUnreachable, clearUnreachable]);
   useEffect(() => { void refreshSessions(); }, [refreshSessions]);
   const anyRunning = sessions.some((s) => s.status === "running");
   useEffect(() => {
@@ -56,6 +69,13 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     setSidebarState(m);
     if (!window.matchMedia("(max-width:1080px)").matches) window.localStorage.setItem("dr.console.sidebar", m);
   }, []);
+  const retryAll = useCallback(() => {
+    for (const entry of Object.values(registry)) entry.retry();
+  }, [registry]);
+  const unreachable = useMemo<Unreachable | null>(() => {
+    const keys = Object.keys(registry);
+    return keys.length === 0 ? null : { target: registry[keys[0]].target, retry: retryAll };
+  }, [registry, retryAll]);
   const value = useMemo<ConsoleState>(
     () => ({ mode, noteMode, chip, setChip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable }),
     [mode, noteMode, chip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable],

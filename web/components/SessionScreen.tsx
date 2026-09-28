@@ -21,7 +21,7 @@ import { SubmittedStage } from "./SubmittedStage";
    failed → Failed (Task 18) · other terminal → Report (Task 17). */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const router = useRouter();
-  const { noteMode, noteUnreachable, clearUnreachable, setChip } = useConsole();
+  const { noteMode, noteUnreachable, clearUnreachable, refreshSessions, setChip } = useConsole();
   const [status, setStatus] = useState<ResearchSessionResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -46,16 +46,36 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
       const result = await getStatus(sessionId);
       noteMode(result.mode);
       setStatus(result.data);
-      clearUnreachable();
+      clearUnreachable("session");
       return result.data;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) setNotFound(true);
+      // C1: a 404 means the session truly is not in memory — SessionNotFound's own sentence is
+      // the answer, never an "unreachable service" banner, so this tab's own key clears too.
+      if (error instanceof ApiError && error.status === 404) { setNotFound(true); clearUnreachable("session"); }
       // Retry (spec line 522) forces an attempt immediately and resets the ladder back to 1 s.
-      else if (error instanceof ApiUnreachableError) noteUnreachable(error.target, () => { delaysRef.current = backoffDelaysMs(); wake.current?.(); void load(); });
+      else if (error instanceof ApiUnreachableError) noteUnreachable("session", error.target, () => { delaysRef.current = backoffDelaysMs(); wake.current?.(); void load(); });
       return null;
     }
   }, [sessionId, noteMode, clearUnreachable, noteUnreachable]);
   useEffect(() => { void load(); }, [load]);
+
+  // C1: a page loaded while the API is down never gets a first `/status` — the ladder below used
+  // to run only once a status had already arrived, so a dead-on-arrival page sat on "loading
+  // session" behind the banner forever with no way out but a manual Retry click. This retries
+  // `load()` on the same ladder while no attempt has ever succeeded (or answered 404) yet.
+  useEffect(() => {
+    if (status !== null || notFound) return;
+    let cancelled = false;
+    const sleep = (ms: number) => new Promise<void>((resolve) => { const t = setTimeout(() => { wake.current = null; resolve(); }, ms); wake.current = () => { clearTimeout(t); wake.current = null; resolve(); }; });
+    (async () => {
+      while (!cancelled) {
+        await sleep(delaysRef.current.next().value);
+        if (cancelled) return;
+        await load();
+      }
+    })();
+    return () => { cancelled = true; wake.current?.(); };
+  }, [status, notFound, load]);
 
   const ceiling = useCallback(() => ceilingFromStream.current ?? (submission ? submission.settings.extraPasses + 1 : null), [submission]);
 
@@ -73,20 +93,32 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     const sleep = (ms: number) => new Promise<void>((resolve) => { const t = setTimeout(() => { wake.current = null; resolve(); }, ms); wake.current = () => { clearTimeout(t); wake.current = null; resolve(); }; });
     (async () => {
       while (!cancelled) {
-        run.current = newRunState(ceiling());
-        bump();
         await readStream(streamUrl(sessionId), {
-          onOpen: (mode) => { noteMode(mode); clearUnreachable(); setStreaming(true); },
+          // C2: the fresh RunState is swapped in only once the connection actually opens — never
+          // before the fetch — so a reconnect attempt that fails during an outage leaves whatever
+          // stage last rendered on screen under the banner, instead of resetting to a fake
+          // "Planning" pipeline the run never actually re-entered. I1: the ladder also resets here
+          // (not only once at effect start), so a long-lived run's periodic ~300 s idle drop keeps
+          // reconnecting after 1 s, never inheriting a stale 30 s cadence from an earlier gap.
+          onOpen: (mode) => { noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs(); run.current = newRunState(ceiling()); bump(); setStreaming(true); },
           onEvent: (event) => {
             if (event.event_type === "graph.session.started" && typeof event.metadata.max_extra_passes === "number") ceilingFromStream.current = (event.metadata.max_extra_passes as number) + 1;
             applyEvent(run.current, toRunEvent(event));
             bump();
           },
         }, controller.signal);
-        setStreaming(false);
         if (cancelled) return;
+        // M3: `load()` (a real GET) settles before the chip is allowed to fall back to streaming's
+        // idea of the run — otherwise a one-round-trip window shows the `/status` fetched at mount.
         const latest = await load();
-        if (latest && (latest.status !== "running" || latest.finished_at !== null)) return;
+        setStreaming(false);
+        if (latest && (latest.status !== "running" || latest.finished_at !== null)) {
+          // Final-wave item 2: the sidebar only polls every 5 s while some session is running;
+          // refresh it the moment this tab proves the run it's watching just finished, so the
+          // running ring doesn't linger on a stopped run for the rest of that window.
+          void refreshSessions();
+          return;
+        }
         await sleep(delaysRef.current.next().value);
       }
     })();

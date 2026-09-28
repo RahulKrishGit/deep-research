@@ -31,7 +31,7 @@ function configurationErrorText(reason: string | null): string {
 
 export function Composer() {
   const router = useRouter();
-  const { refreshSessions, noteMode, noteUnreachable } = useConsole();
+  const { refreshSessions, noteMode, noteUnreachable, clearUnreachable } = useConsole();
   const [question, setQuestion] = useState("");
   const [settings, setSettings] = useState<SubmittedSettings>(DEFAULT_SETTINGS);
   const [error, setError] = useState<string | null>(null);
@@ -70,11 +70,15 @@ export function Composer() {
     try {
       const result = await startResearch(buildRequest(text, settings)); // one fetch; never retried
       noteMode(result.mode);
+      clearUnreachable("composer");
       recordSubmission(result.data.session_id, settings);
       void refreshSessions();
       router.push(`/research/${result.data.session_id}`);
     } catch (e) {
-      if (e instanceof ApiUnreachableError) noteUnreachable(e.target, () => void refreshSessions());
+      // C1: "composer" is this tab's own key. Retry never re-POSTs (M2) — it only re-checks
+      // reachability via the sidebar's own read; once that succeeds, this key clears too, so the
+      // banner doesn't outlive the outage it reported just because a resubmit never happened.
+      if (e instanceof ApiUnreachableError) noteUnreachable("composer", e.target, () => { void refreshSessions().then(() => clearUnreachable("composer")); });
       else if (e instanceof ApiError && e.status === 422) setError(`The service rejected the request: ${e.body.issues.map((i) => `${i.location} (${i.type})`).join(", ")}`);
       else if (e instanceof ApiError && e.body.code === "configuration_error") setError(configurationErrorText(e.body.reason));
       else if (e instanceof ApiError) setError(`${e.body.code}: ${e.body.message}`);

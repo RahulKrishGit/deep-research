@@ -1,5 +1,6 @@
 import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AppShell } from "../../components/AppShell";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
 import { SessionScreen } from "../../components/SessionScreen";
 import { Topbar } from "../../components/Topbar";
@@ -18,6 +19,11 @@ const STOPPED: ResearchSessionResponse = {
   report_path: null, trace_url: null, errors: [], evidence_path: null, quality_path: null, quality_contract_version: null,
   semantic_review_status: null, semantic_review_score: null, duration_seconds: null, coverage: null, evidence_counts: null,
 };
+const RUNNING: ResearchSessionResponse = { ...STOPPED, finished_at: null };
+const COMPLETED: ResearchSessionResponse = {
+  ...STOPPED, status: "completed", report_path: "api-output/report.md", finished_at: "2026-09-27T00:05:00+00:00",
+};
+const unreachableBody = { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } };
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
@@ -53,5 +59,95 @@ describe("SessionScreen — service stopped (K7)", () => {
     // effect would sleep and reconnect, and streamCalls would become 2 well within this window.
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(streamCalls).toBe(1);
+  });
+});
+
+describe("SessionScreen — C1: the ladder retries getStatus before any status has ever loaded", () => {
+  it("recovers on its own, with no click, once the service answers again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let statusCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/status")) {
+        statusCalls++;
+        return statusCalls < 3 ? json(502, unreachableBody) : json(200, RUNNING);
+      }
+      if (url.includes("/stream")) return sse("");
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stage-loading")).toBeTruthy());
+    expect(document.querySelector('[role="alert"]')).toBeTruthy();
+    // No click anywhere in this test: the ladder itself must keep retrying (1 s, then 2 s, …)
+    // until the service answers.
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });
+    await waitFor(() => expect(statusCalls).toBeGreaterThanOrEqual(3));
+    await waitFor(() => expect(document.getElementById("stage-loading")).toBeNull());
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("SessionScreen — C2: no false Planning state during an outage", () => {
+  it("a failed reconnect leaves the last-rendered stage and active row untouched under the banner", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let statusCalls = 0;
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) {
+        streamCalls++;
+        if (streamCalls === 1) {
+          return sse(
+            frame(1, "graph.session.started", { max_extra_passes: 1 })
+            + frame(2, "graph.node.started", { node: "planner", iteration: 0 })
+            + frame(3, "graph.node.completed", { node: "planner" }),
+          );
+        }
+        throw new Error("network down"); // every reconnect attempt fails outright
+      }
+      if (url.includes("/status")) {
+        statusCalls++;
+        return statusCalls === 1 ? json(200, RUNNING) : json(502, unreachableBody);
+      }
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    await waitFor(() => expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done"));
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+    // Drive the loop through the outage: the stream ends, the follow-up /status answers 502
+    // (raising the banner), the ladder sleeps, and the reconnect attempt itself also fails. Before
+    // C2, the loop reset `run.current` to a fresh RunState before *every* attempt — including this
+    // doomed one — which painted a false "Planning" pipeline under the banner.
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_500); });
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
+    expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done");
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+  });
+});
+
+describe("SessionScreen — final-wave item 2: refreshSessions on reaching a terminal status", () => {
+  it("refreshes the sidebar's session list once this tab's run leaves \"running\", not only via the sidebar's own poll", async () => {
+    let listCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) return sse(""); // ends at once, no events
+      if (url.includes("/status")) return json(200, COMPLETED); // terminal from the very first load
+      // A terminal status renders ReportStage, which fetches its own report and evidence log —
+      // neither is the sidebar's own list read, so only "?limit=" (listSessions' own query
+      // string) may count toward listCalls.
+      if (url.includes("?limit=")) { listCalls++; return json(200, { sessions: [] }); }
+      if (url.includes("/report")) return new Response("# R\n", { status: 200, headers: { "content-type": "text/markdown" } });
+      return json(200, { session_id: "s1", iteration: 0, findings: [], not_found: [], refused: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stage-report")).toBeTruthy());
+    // ConsoleProvider's own mount already contributes one list call; SessionScreen's own
+    // terminal-status effect must add at least one more beyond that baseline, immediately rather
+    // than waiting for the sidebar's separate 5 s poll (which only runs while a session is
+    // "running" in the first place).
+    await waitFor(() => expect(listCalls).toBeGreaterThanOrEqual(2));
   });
 });

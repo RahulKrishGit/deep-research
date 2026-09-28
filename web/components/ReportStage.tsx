@@ -8,7 +8,6 @@ import { ReportBody } from "./ReportBody";
 import { ReportRail } from "./ReportRail";
 
 type Loaded<T> = { kind: "loading" } | { kind: "ready"; value: T } | { kind: "unavailable" };
-type Read = "report" | "evidence";
 
 export function ReportStage({ sessionId, status, strip, passes }: { sessionId: string; status: ResearchSessionResponse; strip: ReactNode; passes: number | null }) {
   const { noteUnreachable, clearUnreachable } = useConsole();
@@ -17,39 +16,30 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
   const [evidence, setEvidence] = useState<Loaded<EvidenceResponse>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
-    // I1 (fix round 1): ConsoleProvider keeps a single { target, retry } pair (setUnreachable, not a
-    // queue) — the usual outage has both reads unreachable at mount, so two independent per-read
-    // retries would let whichever failure lands last silently drop the other read forever. `pending`
-    // tracks every read still owed a successful attempt; one shared `retryAll` repeats all of them,
-    // and the banner clears only once nothing is left pending.
-    const pending = new Set<Read>();
-    const settle = (key: Read) => {
-      pending.delete(key);
-      if (pending.size === 0) clearUnreachable();
-    };
+    // C1: the provider now owns the "run every registered retry, clear the banner once every key
+    // clears" logic (ConsoleProvider.tsx) — this only has to register its own two keys and clear
+    // each one for itself. A single shared { target, retry } pair used to mean whichever read
+    // failed *last* silently dropped the other read's retry forever; two independent keys survive
+    // the usual outage where both fail at mount.
     const fetchReport = () => {
       getReport(sessionId)
-        .then((r) => { if (!live) return; setReport({ kind: "ready", value: r.data }); settle("report"); })
+        .then((r) => { if (!live) return; setReport({ kind: "ready", value: r.data }); clearUnreachable("report"); })
         .catch((e) => {
           if (!live) return;
-          if (e instanceof ApiUnreachableError) { pending.add("report"); noteUnreachable(e.target, retryAll); return; }
+          if (e instanceof ApiUnreachableError) { noteUnreachable("report", e.target, fetchReport); return; }
           setReport({ kind: "unavailable" }); // minor 4: any other ApiError (409 or otherwise) → "Not published", never endless loading
-          settle("report");
+          clearUnreachable("report");
         });
     };
     const fetchEvidence = () => {
       getEvidence(sessionId)
-        .then((r) => { if (!live) return; setEvidence({ kind: "ready", value: r.data }); settle("evidence"); })
+        .then((r) => { if (!live) return; setEvidence({ kind: "ready", value: r.data }); clearUnreachable("evidence"); })
         .catch((e) => {
           if (!live) return;
-          if (e instanceof ApiUnreachableError) { pending.add("evidence"); noteUnreachable(e.target, retryAll); return; }
+          if (e instanceof ApiUnreachableError) { noteUnreachable("evidence", e.target, fetchEvidence); return; }
           setEvidence({ kind: "unavailable" });
-          settle("evidence");
+          clearUnreachable("evidence");
         });
-    };
-    const retryAll = () => {
-      if (pending.has("report")) fetchReport();
-      if (pending.has("evidence")) fetchEvidence();
     };
     fetchReport();
     fetchEvidence();

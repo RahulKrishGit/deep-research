@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 describe("ReportStage — K14: ApiUnreachableError on the report fetch raises the console banner", () => {
-  it("calls noteUnreachable with the failed request's target; its own retry re-fetches and then clears the banner", async () => {
+  it("calls noteUnreachable under its own \"report\" key with the failed request's target; its own retry re-fetches and then clears that key", async () => {
     let reportCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -44,16 +44,16 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     });
     vi.stubGlobal("fetch", fetchMock);
     render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
-    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("http://127.0.0.1:8010", expect.any(Function)));
-    expect(mockConsole.clearUnreachable).not.toHaveBeenCalled();
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
+    expect(mockConsole.clearUnreachable).not.toHaveBeenCalledWith("report");
     expect(document.querySelector("article.card p.avail")!.textContent).toBe("loading report"); // not stuck silently — the banner also fired above
-    const retry = mockConsole.noteUnreachable.mock.calls[0][1] as () => void;
+    const retry = mockConsole.noteUnreachable.mock.calls[0][2] as () => void;
     await act(async () => { retry(); });
     await waitFor(() => expect(document.querySelector(".prose")).toBeTruthy());
-    expect(mockConsole.clearUnreachable).toHaveBeenCalled();
+    expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("report");
   });
 
-  it("I1: a single Retry recovers every read still pending when both fetches are unreachable at once", async () => {
+  it("C1: registers report and evidence under independent keys, so each can be retried on its own without touching the other", async () => {
     let reportCalls = 0;
     let evidenceCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -70,17 +70,23 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
     await waitFor(() => expect(reportCalls).toBe(1));
     await waitFor(() => expect(evidenceCalls).toBe(1));
-    await waitFor(() => expect(mockConsole.noteUnreachable.mock.calls.length).toBeGreaterThanOrEqual(1));
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
+    await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("evidence", "http://127.0.0.1:8010", expect.any(Function)));
     expect(mockConsole.clearUnreachable).not.toHaveBeenCalled();
-    // ConsoleProvider keeps a single { target, retry } pair (setUnreachable, not a queue) — whichever
-    // fetch failed last wins the slot, so the *same* retry must repeat every read still pending, not
-    // just the one that happened to fail last.
-    const retry = mockConsole.noteUnreachable.mock.calls.at(-1)![1] as () => void;
-    await act(async () => { retry(); });
+    // C1: the provider (not ReportStage) now runs "every registered retry" for a single Retry
+    // click — this proves ReportStage's own half of the contract: each key's retry repeats only
+    // that read, so calling the report retry alone must never touch the evidence read.
+    const reportRetry = mockConsole.noteUnreachable.mock.calls.find((c) => c[0] === "report")!.at(-1) as () => void;
+    await act(async () => { reportRetry(); });
     await waitFor(() => expect(reportCalls).toBe(2));
+    expect(evidenceCalls).toBe(1);
+    expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("report");
+    expect(mockConsole.clearUnreachable).not.toHaveBeenCalledWith("evidence");
+    const evidenceRetry = mockConsole.noteUnreachable.mock.calls.find((c) => c[0] === "evidence")!.at(-1) as () => void;
+    await act(async () => { evidenceRetry(); });
     await waitFor(() => expect(evidenceCalls).toBe(2));
     await waitFor(() => expect(document.querySelector(".prose")).toBeTruthy());
-    expect(mockConsole.clearUnreachable).toHaveBeenCalled();
+    expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("evidence");
   });
 
   it("minor 4: any other ApiError (neither 409 nor unreachable) also shows Not published, never an endless loading state", async () => {
