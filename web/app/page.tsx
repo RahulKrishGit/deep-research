@@ -1,3 +1,5 @@
+import { Composer } from "@/components/Composer";
+
 export default function IdlePage() {
   return (
     <section className="stage is-on" id="stage-idle" aria-labelledby="idle-h">
@@ -9,6 +11,7 @@ export default function IdlePage() {
             report will be here when you return.
           </p>
         </div>
+        <Composer />
       </div>
     </section>
   );
