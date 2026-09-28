@@ -1184,3 +1184,15 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    so it would otherwise force the rail, and the page, wider than the viewport — the same failure
    mode the .ask-q and .kv dd overflow-wrap rules already guard against elsewhere. */
 .ev-detail{overflow-wrap:anywhere}
+
+/* Issue 1 (human-reported 2026-09-28): a long, left-aligned question left a gap on the right —
+   measured on a live 136-char question, `.ask-locked`'s dashed box spanned 572-1292 but the text
+   ended at 1057, ~215px short. Cause: the global `h1{text-wrap:balance}` rule (line 64, verbatim
+   from the prototype) balances a long question's two wrapped lines to similar widths instead of
+   filling the frame — the same defect `.report-q` already worked around locally (line 893) by
+   overriding `balance` with `pretty` for its own frame. `.ask-q` (the running/submitted stages'
+   question, ":363") never got the same override. `pretty` wraps greedily and only intervenes to
+   stop a lone word on the last line, so a long question now fills the frame the way `.report-q`
+   already does; a short (<=80 char, `.q-center`) question is centred and single-line regardless,
+   so the wrap algorithm makes no visible difference for it. */
+.ask-q{text-wrap:pretty}
