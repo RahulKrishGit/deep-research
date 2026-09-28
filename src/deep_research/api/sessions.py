@@ -187,6 +187,12 @@ class SessionStore:
                 f"no research session with id {session_id!r}"
             ) from None
 
+    def list_sessions(self, limit: int) -> list[ResearchSession]:
+        """The newest ``limit`` sessions: ``started_at`` descending, ties newest-registered first."""
+        newest_registered_first = list(reversed(list(self._sessions.values())))
+        ordered = sorted(newest_registered_first, key=lambda s: s.started_at, reverse=True)
+        return ordered[:limit]
+
     async def iter_events(
         self, session_id: str
     ) -> AsyncIterator[ResearchEvent]:

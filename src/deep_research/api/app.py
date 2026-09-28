@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TypeAlias
 
-from fastapi import APIRouter, Depends, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -23,6 +23,7 @@ from deep_research.api.models import (
     ApiErrorResponse,
     ResearchRequest,
     ResearchSessionResponse,
+    SessionListResponse,
     TraceMetadata,
     TraceResponse,
     ValidationIssue,
@@ -156,6 +157,17 @@ def create_app(
     app.state.api_tracker = tracker
 
     router = APIRouter(dependencies=[Depends(_trace_request)])
+
+    @router.get("/research", response_model=SessionListResponse)
+    async def list_research(
+        request: Request,
+        limit: int = Query(default=20, ge=1, le=200),
+    ) -> SessionListResponse:
+        """The newest sessions this process holds — memory only, empty after a restart."""
+        del request
+        return SessionListResponse(
+            sessions=[_session_response(session) for session in store.list_sessions(limit)]
+        )
 
     @router.post(
         "/research",

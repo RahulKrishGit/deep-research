@@ -166,6 +166,12 @@ class ResearchSessionResponse(ApiModel):
     """The distinct counts, or ``None`` without a composition to count."""
 
 
+class SessionListResponse(ApiModel):
+    """The process's sessions, newest first; each item is that session's status response."""
+
+    sessions: list[ResearchSessionResponse] = Field(default_factory=list)
+
+
 class TraceMetadata(ApiModel):
     """Session and route facts one trace response carries."""
 
