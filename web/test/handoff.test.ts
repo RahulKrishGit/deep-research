@@ -1,16 +1,17 @@
-// The idle→running lift's state machine (DESIGN.md:1359-1451; prototype clearFlight :1941,
-// flyQuestionToLock :2009, holdBeat :2069). jsdom has no layout engine (every rect is 0x0x0x0), so
-// these tests cover the state machine — session matching, one-shot consumption, cancellation,
-// graceful degradation with no usable geometry — not pixel animation, which e2e/handoff.spec.ts
-// proves against a real browser.
+// The two DESIGN.md handoffs' state machines (DESIGN.md:1359-1490; prototype clearFlight :1941,
+// flyQuestionToLock :2009, holdBeat :2069, REPORT_HANDOFF/enterReport :3195). jsdom has no layout
+// engine (every rect is 0x0x0x0), so these tests cover the state machine — session matching,
+// one-shot consumption, cancellation, graceful degradation with no usable geometry — not pixel
+// animation, which e2e/handoff.spec.ts proves against a real browser.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  armIdleToRunningFlight, beginIdleToRunningClear, cancelIdleToRunningClear, clearIdleToRunningFlight,
-  motionMs, reducedMotion, runIdleToRunningLift, takeIdleToRunningFlight,
+  armIdleToRunningFlight, beginIdleToRunningClear, cancelIdleToRunningClear, clearIdleToRunningFlight, clearRunningLayout,
+  motionMs, noteRunningLayout, reducedMotion, runIdleToRunningLift, runReportSlide, takeIdleToRunningFlight, takeRunningLayout,
 } from "../lib/handoff";
 
 afterEach(() => {
   clearIdleToRunningFlight();
+  clearRunningLayout();
   vi.unstubAllGlobals();
   document.body.innerHTML = "";
 });
@@ -93,5 +94,76 @@ describe("runIdleToRunningLift — no usable geometry (jsdom, or a collapsed fra
     runIdleToRunningLift(flight, document.getElementById("submitted-h")!, onLanded);
     await vi.waitFor(() => expect(onLanded).toHaveBeenCalledTimes(1));
     expect(document.querySelector(".q-flight")).toBeNull();
+  });
+});
+
+describe("running → report layout handoff (REPORT_HANDOFF/enterReport)", () => {
+  it("takeRunningLayout returns the noted rects for a matching session, one-shot", () => {
+    document.body.innerHTML = '<h1 id="running-h"></h1><div id="runningOpts"></div>';
+    noteRunningLayout("s1", document.getElementById("running-h")!, document.getElementById("runningOpts")!);
+    expect(takeRunningLayout("s1")).not.toBeNull();
+    expect(takeRunningLayout("s1")).toBeNull(); // consumed
+  });
+  it("a different session's rects are never handed over — opening a finished session from the sidebar must not slide", () => {
+    document.body.innerHTML = '<h1 id="running-h"></h1><div id="runningOpts"></div>';
+    noteRunningLayout("s1", document.getElementById("running-h")!, document.getElementById("runningOpts")!);
+    expect(takeRunningLayout("s2")).toBeNull();
+  });
+  it("no prior noteRunningLayout call (a session opened straight to its report) returns null", () => {
+    expect(takeRunningLayout("s1")).toBeNull();
+  });
+});
+
+describe("runReportSlide", () => {
+  function mockRect(el: HTMLElement, top: number, height = 10) {
+    vi.spyOn(el, "getBoundingClientRect").mockReturnValue({ left: 0, top, right: 10, bottom: top + height, width: 10, height, x: 0, y: top, toJSON() { return {}; } });
+  }
+  it("resets a stale inline transform/transition on every call before doing anything else", () => {
+    document.body.innerHTML = '<div id="q"></div>';
+    const el = document.getElementById("q")!;
+    el.style.transform = "translateY(-40px)";
+    el.style.transition = "transform 999ms linear";
+    mockRect(el, 300);
+    runReportSlide([{ from: null, toEl: el }]); // no `from`: nothing to animate, but the reset still runs
+    expect(el.style.transform).toBe("");
+    expect(el.style.transition).toBe("");
+  });
+  it("a pair less than 2px apart is left alone (the two already agree)", () => {
+    document.body.innerHTML = '<div id="q"></div>';
+    const el = document.getElementById("q")!;
+    mockRect(el, 300);
+    runReportSlide([{ from: { left: 0, top: 301, width: 10, height: 10 }, toEl: el }]);
+    expect(el.style.transform).toBe("");
+    expect(el.style.transition).toBe("");
+  });
+  it("applies the inverse offset then releases it into a transition, clearing both after --motion-base", () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<div id="q"></div>';
+    const el = document.getElementById("q")!;
+    mockRect(el, 300);
+    runReportSlide([{ from: { left: 0, top: 100, width: 10, height: 10 }, toEl: el }]);
+    // Released synchronously within the same call (the forced reflow is what lets the browser
+    // still animate from the offset it never got to paint) — by the time this returns, the
+    // transform is already back to none and a transition is what carries it there.
+    expect(el.style.transform).toBe("");
+    expect(el.style.transition).toContain("transform");
+    vi.advanceTimersByTime(motionMs("--motion-base", 200) + 40);
+    expect(el.style.transition).toBe("");
+    vi.useRealTimers();
+  });
+  it("never inherits a half-finished slide from a previous one: cancels the prior clear-timer on every call", () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<div id="q1"></div><div id="q2"></div>';
+    const el1 = document.getElementById("q1")!;
+    const el2 = document.getElementById("q2")!;
+    mockRect(el1, 300);
+    mockRect(el2, 300);
+    runReportSlide([{ from: { left: 0, top: 100, width: 10, height: 10 }, toEl: el1 }]);
+    vi.advanceTimersByTime(motionMs("--motion-base", 200) + 40); // el1's clear-timer fires and resolves
+    runReportSlide([{ from: { left: 0, top: 150, width: 10, height: 10 }, toEl: el2 }]);
+    expect(el2.style.transition).toContain("transform");
+    vi.advanceTimersByTime(motionMs("--motion-base", 200) + 40);
+    expect(el2.style.transition).toBe("");
+    vi.useRealTimers();
   });
 });

@@ -149,7 +149,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   if (stopped) return <StoppedStage status={status} run={run.current} strip={strip} onNew={() => router.push("/")} />;
   if (status.status === "running") {
     if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
-    return <RunningPipeline run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;

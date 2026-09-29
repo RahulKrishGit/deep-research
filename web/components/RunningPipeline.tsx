@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { fmtElapsed, passText, qFitClass } from "@/lib/format";
+import { noteRunningLayout } from "@/lib/handoff";
 import { AGENT_ORDER, BLURB, STAGES, marksFor, type RunState } from "@/lib/run-state";
 import { Counters } from "./Counters";
 import { Spine } from "./Spine";
 
-export function RunningPipeline({ run, question, strip, startedAt, ceiling }: { run: RunState; question: string; strip: ReactNode; startedAt: string; ceiling: number | null }) {
+export function RunningPipeline({ sessionId, run, question, strip, startedAt, ceiling }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; ceiling: number | null }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
@@ -20,8 +21,19 @@ export function RunningPipeline({ run, question, strip, startedAt, ceiling }: { 
      which is not a known ceiling of 1 — passText drops the "of P" clause for a null ceiling, so
      the caller's own ceiling (never run.maxPasses) decides whether the clause prints. */
   const passesLabel = passText({ status: "running", iteration: run.pass - 1, passes: ceiling, review: null, coverage: null });
+  // Noted on every render while this stage is mounted, so the rects are as fresh as the moment
+  // status flips to a terminal one allows — see enterReport/runReportSlide (ReportStage.tsx),
+  // ported from REPORT_HANDOFF (index.html:3195) / DESIGN.md:1453-1483.
+  useLayoutEffect(() => {
+    const q = document.getElementById("running-h");
+    const o = document.getElementById("runningOpts");
+    if (q && o) noteRunningLayout(sessionId, q, o);
+  });
   return (
-    <section className="stage is-on" id="stage-running" aria-labelledby="running-h">
+    // no-enter + is-arriving (index.html:2440, :3797, DESIGN.md:1438-1451 "submitted → running"):
+    // both stages share the same header offset inside the same .run-wrap, so the seam is held
+    // still — the generic slide is suppressed and only the card below the header rises in.
+    <section className="stage is-on no-enter is-arriving" id="stage-running" aria-labelledby="running-h">
       <div className="run-wrap">
         <div className="ask-head">
           <p className="eyebrow" style={{ margin: 0 }}>Session running</p>

@@ -168,3 +168,56 @@ export function runIdleToRunningLift(flight: PendingFlight, toEl: Element, onLan
     flightTimers.push(setTimeout(() => { if (box.parentNode) box.parentNode.removeChild(box); }, dissolveMs));
   }, liftMs));
 }
+
+// ── running → report ────────────────────────────────────────────────────────
+// SessionScreen swaps RunningPipeline for ReportStage directly (never a route change), so this
+// half only needs the same one-shot "note, then consume" shape as the flight above, keyed by
+// session so opening a finished session straight from the sidebar — which never renders
+// RunningPipeline for it in this page load — finds nothing to slide.
+export interface RunningLayout { sessionId: string; question: FlightRect; opts: FlightRect }
+let runningLayout: RunningLayout | null = null;
+
+/* RunningPipeline calls this on every render while it is mounted, so the rects are as fresh as
+   the moment status flips to a terminal one allows. */
+export function noteRunningLayout(sessionId: string, questionEl: Element, optsEl: Element): void {
+  runningLayout = { sessionId, question: rectOf(questionEl), opts: rectOf(optsEl) };
+}
+export function takeRunningLayout(sessionId: string): RunningLayout | null {
+  if (!runningLayout || runningLayout.sessionId !== sessionId) return null;
+  const layout = runningLayout;
+  runningLayout = null;
+  return layout;
+}
+export function clearRunningLayout(): void { runningLayout = null; }
+
+export interface ReportHandoffPair { from: FlightRect | null; toEl: Element }
+let reportSlideTimer: NodeJS.Timeout | null = null;
+/* enterReport, ported (index.html:3195-3231, DESIGN.md:1453-1483): each pair is reset — never
+   inherit a half-finished slide from a previous one — then, for a pair whose start position is
+   known and at least 2px from where it already sits, the inverse offset is applied and released
+   into a transition in the same synchronous pass, so the browser paints the release, not the
+   offset — one forced reflow (`moved[0].offsetWidth`) commits every pair's start before any of
+   them is released, matching "nothing is seen sitting at its destination before the slide". */
+export function runReportSlide(pairs: ReportHandoffPair[]): void {
+  if (reportSlideTimer) { clearTimeout(reportSlideTimer); reportSlideTimer = null; }
+  for (const pair of pairs) { const el = pair.toEl as HTMLElement; el.style.transition = ""; el.style.transform = ""; }
+  const moved: HTMLElement[] = [];
+  for (const pair of pairs) {
+    if (!pair.from) continue;
+    const el = pair.toEl as HTMLElement;
+    const end = el.getBoundingClientRect();
+    if (!end.height) continue;
+    const dy = pair.from.top - end.top;
+    if (Math.abs(dy) < 2) continue; // the two already agree: nothing to move
+    el.style.transform = `translateY(${dy}px)`;
+    moved.push(el);
+  }
+  if (!moved.length) return;
+  void moved[0].offsetWidth; // one reflow commits every pair's start
+  const base = motionMs("--motion-base", 200);
+  moved.forEach((el) => { el.style.transition = `transform ${base}ms var(--ease-standard)`; el.style.transform = ""; });
+  reportSlideTimer = setTimeout(() => {
+    moved.forEach((el) => { el.style.transition = ""; el.style.transform = ""; });
+    reportSlideTimer = null;
+  }, base + 40);
+}

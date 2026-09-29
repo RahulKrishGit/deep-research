@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { ApiUnreachableError, evidenceMarkdownUrl, getEvidence, getReport, reportUrl, type EvidenceResponse, type ResearchSessionResponse } from "@/lib/api";
 import { fmtClock, fmtSeconds, passText, qFitClass, toSessionView } from "@/lib/format";
+import { runReportSlide, takeRunningLayout } from "@/lib/handoff";
 import { useConsole } from "./ConsoleProvider";
 import { EvidenceView } from "./EvidenceView";
 import { ReportBody } from "./ReportBody";
@@ -53,6 +54,19 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
       clearUnreachable("evidence");
     };
   }, [sessionId, noteUnreachable, clearUnreachable]);
+  /* enterReport, ported (index.html:3195-3231, DESIGN.md:1453-1483 "the header block slides
+     down"): the running stage's own rects — noted while it was mounted, RunningPipeline.tsx —
+     are consumed once and paired with this stage's own #report-h/#reportOpts. Opening a finished
+     session straight from the sidebar never rendered RunningPipeline for it in this page load, so
+     takeRunningLayout returns null and nothing slides. */
+  useLayoutEffect(() => {
+    const layout = takeRunningLayout(sessionId);
+    if (!layout) return;
+    const q = document.getElementById("report-h");
+    const o = document.getElementById("reportOpts");
+    if (!q || !o) return;
+    runReportSlide([{ from: layout.question, toEl: q }, { from: layout.opts, toEl: o }]);
+  }, [sessionId]);
   const sv = toSessionView(status, passes);
   const dur = fmtSeconds(status.duration_seconds);
   const meta = `session ${status.session_id} · finished ${fmtClock(status.finished_at) ?? "not recorded"}${dur ? ` · ${dur}` : ""} · ${passText(sv)}`;
