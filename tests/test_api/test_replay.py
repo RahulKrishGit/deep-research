@@ -161,6 +161,14 @@ async def test_the_replay_runner_delivers_every_event_once_inside_its_own_node(t
             open_node = None
         elif event.source.startswith("agent."):
             assert open_node == event.source.removeprefix("agent."), event.event_type
+    # The loop below would pass vacuously with no tool calls, or with topics run one by one: pin both.
+    assert any(event.event_type == "researcher.tool_call" for event in received)
+    first_completed = next(
+        index for index, event in enumerate(received) if event.event_type == "researcher.sub_topic.completed"
+    )
+    assert sum(
+        1 for event in received[:first_completed] if event.event_type == "researcher.sub_topic.started"
+    ) >= 2, "the topics run concurrently: several start before the first one completes"
     started_at: dict[str, int] = {}
     for index, event in enumerate(received):
         if event.event_type == "researcher.sub_topic.started":

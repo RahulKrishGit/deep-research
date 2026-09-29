@@ -100,7 +100,9 @@ async def test_a_sink_bound_around_the_graph_stream_reaches_node_tasks() -> None
 
 
 def test_publish_live_without_a_bound_sink_is_a_no_op() -> None:
+    assert _LIVE_SINK.get() is None  # nothing bound, and no earlier test leaked a sink
     publish_live(_event("planner.planning.started"))  # nothing bound: no error
+    assert _LIVE_SINK.get() is None  # publishing never binds one
 
 
 def test_bind_live_sink_restores_the_previous_sink() -> None:
