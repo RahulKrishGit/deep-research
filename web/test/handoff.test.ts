@@ -84,6 +84,17 @@ describe("armIdleToRunningFlight / takeIdleToRunningFlight", () => {
     expect(resolved).toBe(true);
     vi.useRealTimers();
   });
+  it("never creates a .q-flight box under prefers-reduced-motion, even with real geometry — DESIGN.md:1485-1487", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: true, media: q }) as MediaQueryList);
+    document.body.innerHTML = '<form id="composer"></form>';
+    const composer = document.getElementById("composer")!;
+    vi.spyOn(composer, "getBoundingClientRect").mockReturnValue({ left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50, x: 10, y: 20, toJSON() { return {}; } });
+    await armIdleToRunningFlight({ sessionId: "s1", question: "q", composerEl: composer, clearDeadline: Date.now() });
+    expect(document.querySelector(".q-flight")).toBeNull();
+    expect(composer.classList.contains("is-handing-off")).toBe(false); // "the composer keeps its own frame"
+    const flight = takeIdleToRunningFlight("s1"); // beats one and three still run — the flight is still recorded, just boxless
+    expect(flight?.box ?? null).toBeNull();
+  });
 });
 
 describe("runIdleToRunningLift — no usable geometry (jsdom, or a collapsed frame)", () => {
@@ -165,5 +176,16 @@ describe("runReportSlide", () => {
     vi.advanceTimersByTime(motionMs("--motion-base", 200) + 40);
     expect(el2.style.transition).toBe("");
     vi.useRealTimers();
+  });
+  it("resets a stale transform but applies no new one under prefers-reduced-motion, even with real geometry — DESIGN.md:1485-1489", () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: true, media: q }) as MediaQueryList);
+    document.body.innerHTML = '<div id="q"></div>';
+    const el = document.getElementById("q")!;
+    el.style.transform = "translateY(-40px)";
+    el.style.transition = "transform 999ms linear";
+    mockRect(el, 300);
+    runReportSlide([{ from: { left: 0, top: 100, width: 10, height: 10 }, toEl: el }]);
+    expect(el.style.transform).toBe("");
+    expect(el.style.transition).toBe("");
   });
 });

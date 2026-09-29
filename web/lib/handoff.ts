@@ -95,13 +95,18 @@ export function cancelIdleToRunningClear(stageId: string): void {
    indistinguishable"): once the POST has succeeded and the clear deadline has passed, the box is
    created at the composer's own frame — not the textarea, see runIdleToRunningLift — and the
    composer is hidden in the same synchronous step, then handed to the destination route via the
-   module state below, since the composer itself is about to unmount. */
+   module state below, since the composer itself is about to unmount.
+
+   Under reduced motion (DESIGN.md:1485-1487) no box is created and the composer keeps its own
+   frame (no is-handing-off) — matching the prototype's `travel = !reducedMotion() && from &&
+   from.height > 0` (index.html:2080). Beats one and three still run either way: the flight is
+   still recorded (boxless), so the destination still fades the record in on its own timing. */
 export async function armIdleToRunningFlight(opts: { sessionId: string; question: string; composerEl: HTMLElement | null; clearDeadline: number }): Promise<void> {
   const wait = opts.clearDeadline - Date.now();
   if (wait > 0) await new Promise<void>((resolve) => { flightTimers.push(setTimeout(resolve, wait)); });
   if (!opts.composerEl) { pendingFlight = { sessionId: opts.sessionId, question: opts.question, from: { left: 0, top: 0, width: 0, height: 0 }, box: null }; return; }
   const from = rectOf(opts.composerEl);
-  if (!from.width || !from.height) { pendingFlight = { sessionId: opts.sessionId, question: opts.question, from, box: null }; return; }
+  if (reducedMotion() || !from.width || !from.height) { pendingFlight = { sessionId: opts.sessionId, question: opts.question, from, box: null }; return; }
   const box = document.createElement("div");
   box.className = "q-flight";
   box.setAttribute("aria-hidden", "true");
@@ -197,10 +202,15 @@ let reportSlideTimer: NodeJS.Timeout | null = null;
    known and at least 2px from where it already sits, the inverse offset is applied and released
    into a transition in the same synchronous pass, so the browser paints the release, not the
    offset — one forced reflow (`moved[0].offsetWidth`) commits every pair's start before any of
-   them is released, matching "nothing is seen sitting at its destination before the slide". */
+   them is released, matching "nothing is seen sitting at its destination before the slide".
+
+   Under reduced motion (DESIGN.md:1485-1489) the reset still runs — nothing is left mid-slide —
+   but no new offset is ever applied, matching the prototype's own `if(reducedMotion()) return;`
+   straight after the reset (index.html:3211). */
 export function runReportSlide(pairs: ReportHandoffPair[]): void {
   if (reportSlideTimer) { clearTimeout(reportSlideTimer); reportSlideTimer = null; }
   for (const pair of pairs) { const el = pair.toEl as HTMLElement; el.style.transition = ""; el.style.transform = ""; }
+  if (reducedMotion()) return;
   const moved: HTMLElement[] = [];
   for (const pair of pairs) {
     if (!pair.from) continue;
