@@ -6,33 +6,33 @@
 
 **Architecture:** The engine gains one run-scoped live sink: `graph/live.py` holds a ContextVar that `_stream_graph_result` binds for the stream; `agent_node` and the five agents hand events to it the moment they build them, and the snapshot loop skips any `event_id` already published, so each event reaches the handler once (live ones early, the rest in state order). The web app keeps its burst-safe event core: `RunState` gains the topic checklist, outcome lines and reopen lines; a pure `lib/briefs.ts` derives each row's brief; a new `BriefSpine` renders the running stage's rows (head + `0fr→1fr` brief) with the pick-1A open/close, the pick-3B overlapped hand-off and the connector redrawn node-centre to node-centre; the Failed and Stopped stages keep the compact `Spine`. Docs record the new delivery model and the new running stage.
 
-**Tech Stack:** Python 3.12 (`.venv`), LangGraph 1.2.10, pydantic 2, pytest + pytest-asyncio; Node v24.13.1, Next.js 16.3 (Turbopack), React 19, Vitest 5 + Testing Library + jsdom, Playwright (Chromium) against the API in replay mode. Windows; every check is pytest, Vitest, Playwright or a `node` one-liner.
+**Tech Stack:** Python 3.12 (`.venv`), LangGraph 1.2.10, pydantic 2, pytest + pytest-asyncio; Node v24.13.1, Next.js 16.3 (Turbopack), React 19, Vitest 5 + Testing Library + jsdom, Playwright (Chromium) against the API in replay mode. Written and dry-run on Windows, executed on Linux (the Conventions give both command forms); every check is pytest, Vitest, Playwright or a `node` one-liner.
 
 **Spec:** `docs/superpowers/specs/2026-09-28-live-briefs-and-reader-notes-design.md` — Phase 1 only: §4.1 (E1–E5), §4.2, §4.3, the Phase-1 rows of §4.9, AC1–AC9 and the Phase-1 parts of §6. Decisions D1–D3, D12–D15 and D17 are closed; nothing here reopens them. Section numbers below (§4.3, E2, AC6, D15 …) are the spec's unless prefixed `DESIGN.md`. Phase 2 (the one-time check) and Phase 3 (reader notes) are **not** planned here.
 
-**Evidence.** Planning dry-ran this plan (2026-09-28) in scratch exports of `7afb21de`, applying every edit by its anchor with scripts that stop unless the anchor occurs exactly once. Tasks 1–6 ran step by step and each of their "Expected" lines was observed, ending at `4784 passed, 1 failed, 1 deselected` in the export — the failure is the `.env`-dependent test described under Conventions, so the main checkout reads `4785 passed, 1 deselected`. Tasks 7–10 ran step by step for `tsc` and Vitest (every count below observed at its step), with the Playwright `chromium` project run at the end of Tasks 7, 9 and 10 and the `visual` project at the end. The doc edits of Tasks 6 and 11 were applied by anchor and Task 11's check printed its expected JSON. "Observed in planning" below refers to these runs. R1 held, so Contingency C was exercised only by a simulation: with its code applied and the stream-level binding replaced by a no-op, the five handler-level tests of `test_live.py` and the rest of the graph, runtime and API suites passed through the Tracker-keyed re-binding alone.
+**Evidence.** Planning dry-ran this plan (2026-09-28) in scratch exports of `7afb21de`, applying every edit by its anchor with scripts that stop unless the anchor occurs exactly once. Tasks 1–6 ran step by step and each of their "Expected" lines was observed, ending at `4784 passed, 1 failed, 1 deselected` in the export — the failure is the `.env`-dependent test described under Conventions, so the main checkout reads `4785 passed, 1 deselected`. Tasks 7–10 ran step by step for `tsc` and Vitest (every count below observed at its step), with the Playwright `chromium` project run at the end of Tasks 7, 9 and 10 and the `visual` project at the end. The doc edits of Tasks 6 and 11 were applied by anchor and Task 11's check printed its expected JSON. Review round 1's changes were dry-run the same way on the web side (Vitest `155`, Chromium `47`, visual `8`) and on the two backend tests it touched. "Observed in planning" below refers to these runs. R1 held, so Contingency C was exercised only by a simulation: with its code applied and the stream-level binding replaced by a no-op, the five handler-level tests of `test_live.py` and the rest of the graph, runtime and API suites passed through the Tracker-keyed re-binding alone.
 
 ## Global Constraints
 
-- **Where.** Repository root `C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research`, branch `feat/live-briefs-and-reader-notes` (checked out in the main checkout). Every path below is relative to the root (or to the worktree root if the controller executes in a `.worktrees/*` tree; then run `cd web && npm ci` once before Task 7 and keep `PY` pointing at the main checkout's venv). Tasks run **one after another**, never two at once. Commit after every task.
+- **Where.** Branch `feat/live-briefs-and-reader-notes`: in the Windows main checkout `C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research`, or wherever a Linux cloud session cloned it. Every path below is relative to the repository root (or to the worktree root if the controller executes in a `.worktrees/*` tree; then run `cd web && npm ci` once before Task 7 and keep `PY` pointing at the main checkout's venv). Tasks run **strictly in order 1 → 12**, one after another, never two at once — later tasks edit what earlier ones wrote (e.g. Task 11 Step 6 rewrites the api-gaps header sentence Task 6 Step 4 wrote). Commit after every task.
 - **No live model.** Never run the live CLI (`python -m deep_research "…"`), never call a model provider, never read `.env`. Python runs are pytest or the API in `--mode replay` (scripted, network-denied).
 - **No prompt text changes (spec §3.2).** No string that reaches a model changes: `agents/prompts.py` stays byte-identical and no message builder is edited. The replay harness asserts substrings and parses packet lines with anchored regexes (`e2e_evaluation/replay.py:529-571`, `:804-808`, `:1496`); the full replay suite must pass unchanged. The five agent-module fingerprint pins move (module code only) and are re-pinned in the task that moves them, with a comment in the file's existing style.
 - **Events (E1–E3).** `ResearchEvent.event_id: str` defaults to a fresh `uuid4().hex` per event. Published live, exactly these: `graph.node.started` from `agent_node`; `planner.planning.started`, `planner.memory.recalled`, `planner.planning.completed`; `researcher.sub_topic.started`, `researcher.tool_call` (built when its step's observation is recorded), `researcher.sub_topic.completed`; `source_evaluator.evaluation.started` / `.completed`; `evidence_verifier.verification.completed`; `report_writer.report.written`. Every other event keeps snapshot publication. The object published live is the object returned in `state_update["events"]`. New metadata: `researcher.sub_topic.started` / `.completed` gain `coverage_id`; `planner.planning.completed` gains `sub_topics: [{coverage_id, title}]`, each title `summarize_text(title, limit=160)` (≤ 160 characters).
 - **API.** No API code changes. `ResearchRequest.max_iterations` stays accepted (`api/models.py:46-72`); the web app stops sending it. The SSE `id:` line stays the per-subscriber position; the payload's `event_id` is the event's identity.
 - **Web copy, verbatim (spec §4.2, §4.3; `·` is U+00B7 with a space each side, `…` is U+2026).** Chip while running: `Running · {step label}`, or `Running · starting` before any step is known. Subtitles while running: the row's static meta (`STAGES[].meta`), except Researching: `{n} topics · researching` until the first topic is done, then `{done} of {n} topics done · {pages} pages read · {findings} findings`. Bodies: Planning `Breaking your question into sub-topics…`; Evaluating `Rating sources for trustworthiness and relevance`; Verifying `Checking {findings} findings against their pages`; Writing `Writing the report from verified findings only`; Reviewing `Reviewing the draft on 7 dimensions`; Publishing `Saving the report and evidence log`. Outcomes: `{n} sub-topics`; `{n} topics · {pages} pages read · {findings} findings`; `{source_count} sources rated`; `{verified} verified · {corrected} corrected · {dropped} dropped`; `Report drafted · {statements} sentences · {citations} citations`; `Accepted · {score}` / `Not accepted · {score}` / `Sent back to fill {k} gaps`; `Published`. Topic facts: `not yet`, `reading`, `{findings} findings`. Reopen lines: `Going back to research {k} gaps the review found`, `Rewriting to fix {n} issues the review found`. Report pass fact: `One research round` / `Went back once to fill gaps` / `Went back twice to fill gaps` / `Went back {n} times to fill gaps`, plus ` · went back {once|twice|k times} for your notes` when `note_passes` > 0 (always 0 in Phase 1). Every count pluralises (singular at 1); in Researching's texts a measured 0 reads `no pages read` / `no findings` / `no topics`, never a bare `0` (AC5).
 - **Motion (spec §4.3 table; D1, D3).** Only `transform`, `opacity`, `grid-template-rows` and the check's `stroke-dashoffset` animate. Open: height `0fr→1fr` over `--motion-fluid` (420 ms, `--ease-entrance`); lines opacity 0→1 and `translateY(4px)→0` over 240 ms at `280ms + i*60ms`. Close: lines →0 over 160 ms, no stagger; height over 420 ms at 160 ms. Hand-off from the render that marks row k done and row k+1 active: row k lines fade (180 ms, at 0), height closes (420 ms, at 100 ms), subtitle cross-fades to the outcome (200 ms, at 260 ms), connector k→k+1 fills (`--fill-line` 620 ms, at 180 ms); row k+1 node fills (420 ms, at 600 ms), height opens (420 ms, at 600 ms), lines rise (240 ms, at `900ms + i*60ms`). Topic done: ✓ `stroke-dashoffset 14→0` over 360 ms at 80 ms; the dot fades over 200 ms. Counts tween over 400 ms (rAF). The `halo` loop (active node, running topic dots) stays the only loop. Reduced motion: heights change at once; lines fade over 160 ms with no stagger and no translate; the ✓ appears without drawing; counts jump; halos pinned.
-- **Theme (D17, BRIEF.md "Theme rules").** Tokens only. `web/app/globals.css` lines 1–1131 stay the prototype's CSS verbatim; every new rule goes at the end of the file, under `/* ═══ 2026-09-27: app-only additions ═══ */` (`:1133`), with no colour literal; `cd web && npm run -s check:css` prints `OK`. Colour means status (green = running/ok, amber `--status-warn` = the extra-pass reopen line). Purple only on the primary button. One surface per region: hairlines (`--border-soft`), no nested boxes.
+- **Theme (D17; `docs/design/running-stage-picks/BRIEF.md` "Theme rules", `:109-125`).** Tokens only. `web/app/globals.css` lines 1–1131 stay the prototype's CSS verbatim; every new rule goes at the end of the file, under `/* ═══ 2026-09-27: app-only additions ═══ */` (`:1133`), with no colour literal; `cd web && npm run -s check:css` prints `OK`. Colour means status (green = running/ok, amber `--status-warn` = the extra-pass reopen line). Purple only on the primary button. One surface per region: hairlines (`--border-soft`), no nested boxes.
 - **Viewports.** `1252 × 853` desktop, `390 × 844` phone; captures are `fullPage: true`.
 - **Out of Phase 1.** No `needs_input`, no check stage, no notes, no `note_passes` field, no new routes, no proxy header changes. `docs/design/prototype/` and `docs/design/reference/` are not changed.
 
 ### Conventions every task uses
 
-- **Shell.** Every block runs in the agent's bash tool from the repository root (a POSIX shell with `node`, `npm`, `npx`, `git`, `grep`, `sed`). The harness keeps no shell state between calls: every block that runs Python or Playwright sets `PY` first, every `web/` block starts with `cd web`. Paths contain spaces: quote them. No step runs `bash <file>`.
-- **Python.** `PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"` then `PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest <files> -q`. Baseline at `7afb21de`: `4726 passed, 1 deselected` in about 80 s. One existing test, `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, needs the provider keys from the main checkout's untracked `.env`; in a `.worktrees/*` tree (no `.env`) it fails with `MissingSecretsError: Missing required environment variables in strict mode: …` (observed in planning). That failure is environmental: in a worktree add `--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config` to full-suite runs and expect one fewer passed and `2 deselected` (e.g. `4784 passed, 2 deselected` at the end of Task 6), and never copy, read or create `.env`.
+- **Shell.** Every block runs in the agent's bash tool from the repository root (a POSIX shell with `node`, `npm`, `npx`, `git`, `grep`, `sed` — Git Bash on Windows, bash on Linux). The harness keeps no shell state between calls: every block that runs Python or Playwright sets `PY` first, every `web/` block starts with `cd web`. Paths contain spaces: quote them. No step runs `bash <file>`.
+- **Python.** Every block that runs Python starts with the Windows line `PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"`. **On Linux**, create the venv once — `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"` (Python ≥ 3.11, `pyproject.toml:9`) — and use `PY="$PWD/.venv/bin/python"` in place of that line (blocks start at the repository root). The pytest line is the same everywhere: `PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest <files> -q`. Baseline at `7afb21de`: `4726 passed, 1 deselected` (`-m 'not live'`, `pyproject.toml:45`) in about 80 s. One existing test, `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, needs provider keys from an untracked `.env` that only the Windows main checkout has; wherever no `.env` exists — a `.worktrees/*` tree, the Linux cloud checkout — it fails with `MissingSecretsError: Missing required environment variables in strict mode: …` (observed in planning). That failure is environmental: there, add `--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config` to every full-suite run and expect one fewer passed and `2 deselected` (e.g. `4784 passed, 2 deselected` at the end of Task 6). Never read, copy or create `.env`.
 - **Web unit tests.** `cd web && npx vitest run [files]`; `cd web && npm run -s typecheck` (tests are type-checked too: `tsconfig.json` includes `**/*.ts(x)`); `cd web && npm run -s check:css`. Baseline: `Test Files 19 passed (19)`, `Tests 117 passed (117)` — under full-suite load one pre-existing race (the C1 test in `session-screen.test.tsx`) can fail it; Task 7 fixes that race.
-- **Playwright.** The API runs in replay mode as a Playwright `webServer` (`web/playwright.config.ts`); inside a worktree `DEEP_RESEARCH_PYTHON="$PY"` is required, and every block below sets it. A scoped run builds first and puts the spec files **before** the project flag — `--project chromium` placed first swallows the file arguments as project names (observed in planning): `cd web && npm run -s build && DEEP_RESEARCH_PYTHON="$PY" npx playwright test e2e/a.spec.ts --project=chromium`. The whole project: `cd web && DEEP_RESEARCH_PYTHON="$PY" npm run -s test:e2e` (build + `chromium`; baseline `39 passed`). Captures: `cd web && npm run -s build && VISUAL_CHECKPOINT=<name> DEEP_RESEARCH_PYTHON="$PY" npx playwright test --project=visual` → `8 passed`, images in `web/visual/<name>/` (gitignored).
-- **Background servers across calls** start and stop only through `web/scripts/launch.mjs` (`start <name> <port> <ready-path> "<command>"`, `stop <name> <port>`; the API's ready path is `/research`).
-- **Files are CRLF on disk** (`core.autocrlf=true`); keep the editor on CRLF. Edits are given by anchor: the exact existing text to replace (line numbers are `7afb21de`'s, and only locate the text).
+- **Playwright.** The API runs in replay mode as a Playwright `webServer` (`web/playwright.config.ts`, which sets `cwd` to the repository root and `PYTHONPATH=src`, so it serves the checkout's own backend). `DEEP_RESEARCH_PYTHON="$PY"` is required everywhere but the Windows main checkout (the config's fallback is the Windows venv path), and every block below sets it. On Linux run `cd web && npm ci && npx playwright install --with-deps chromium` once before Task 7. A scoped run builds first and puts the spec files **before** the project flag — `--project chromium` placed first swallows the file arguments as project names (observed in planning): `cd web && npm run -s build && DEEP_RESEARCH_PYTHON="$PY" npx playwright test e2e/a.spec.ts --project=chromium`. The whole project: `cd web && DEEP_RESEARCH_PYTHON="$PY" npm run -s test:e2e` (build + `chromium`; baseline `39 passed`). Captures: `cd web && npm run -s build && VISUAL_CHECKPOINT=<name> DEEP_RESEARCH_PYTHON="$PY" npx playwright test --project=visual` → `8 passed`, images in `web/visual/<name>/` (gitignored).
+- **Background servers across calls** start and stop only through `web/scripts/launch.mjs` (`start <name> <port> <ready-path> "<command>"`, `stop <name> <port>`; the API's ready path is `/research`). Its `stop` kills with `taskkill` (`launch.mjs:45`), which exists only on Windows; on Linux the step first ends the recorded process group itself (`start` spawns it detached, so its pid leads the group) and `stop` then only confirms the port is closed.
+- **Line endings.** On Windows the files are CRLF on disk (`core.autocrlf=true`); on Linux they are LF. Keep whatever the checkout has — anchors are text and match either way. Edits are given by anchor: the exact existing text to replace (line numbers are `7afb21de`'s, and only locate the text).
 - **TDD boundary.** pytest and Vitest tests are written first and shown failing; Playwright specs and replay-level proofs are verification written after the code they exercise ("Verification test").
 - **Fingerprint pins.** `tests/test_evaluation/test_config.py` pins `agent_prompt_fingerprint(name)` (a hash of `deep_research.agents.<name>` plus `agents/prompts.py`, `evaluation/config.py:280-288`) for the five agents (`:983` planner, `:1128` researcher, `:1139` source_evaluator, `:1214` evidence_verifier, `:1309` report_writer). A task that edits an agent module re-pins it with the `repin` snippet in its own steps; nothing else in that file changes.
 - **Commits.** `git add <paths> && git commit -m "<type>(<scope>): <what>"` — never `git add -A` (`web/visual/`, `web/.e2e-tmp/`, `web/test-results/`, `.launch-*.pid` are gitignored). Append whatever attribution trailer your own session requires.
@@ -47,24 +47,26 @@
 6. **Burst-safety of the new RunState fields.** The state after event k must equal a fresh replay of events 1..k for every k of both captures. → Task 8 (`(i) burst-safety`).
 7. **The cross-fade needs a stable head.** Swapping the head between `div` and `button` when a row finishes remounts the subtitle and silently kills the 3B cross-fade (observed in planning: no `m-out` transition was recorded). → Task 9 keeps `div.ps-head` and lays a `button.ps-toggle` over it; Task 9's Vitest asserts the same subtitle node survives, Task 10's recorder asserts the transition.
 8. **The connector includes the rows' borders.** `.spine-lg li` has `border:1px solid transparent` (`globals.css:470-475`); node centre to next node centre is `--space-2 + 2px + --node-c` below the padding box, or AC6's ±1 px fails by 2 px. → Task 9 geometry e2e at both widths.
+9. **A route decision moves the active row before the row it leaves is done.** `graph.route.decided` (finalize) makes Publishing active one event before Reviewing's own `graph.node.completed` (`web/lib/run-state.ts:145-158`, `:100-108`); in replay the two are 150 ms apart. Keyed on the active change alone, the Reviewing → Publishing hand-off never got its `from` role, and Reviewing was painted pending for that event. → Task 9 awaits the row (its mark turning done gives it `from`, and it stays painted active and open until then); `brief-spine.test.tsx` pins the sequence and `motion.spec.ts` checks that nothing on Reviewing's row moves between its `to` and `from` transitions.
 
 ## Spec ambiguities resolved here
 
 1. **E3's `graph.node.started` row cites `graph/nodes.py:209-212` (`agent_node`) only.** The reviewer, finalize and hop nodes keep snapshot publication: the web derives the active row from completions (`web/lib/run-state.ts:100-108`, and route decisions at `:145-158`), and the snapshot publishes each node's events in state order with its `graph.node.started` first, so AC1 holds for every node.
 2. **Live events of a node that halts** are delivered once and are absent from the final state — inherent to live publication; E3's "same object later returned in `state_update`" cannot hold for a node that raises. Pinned by a test and documented (Tasks 2, 6).
-3. **Connector formula (§4.3):** the spec's `bottom: calc(-1 * (var(--space-2) + var(--space-3) + 16.5px))` omits the two rows' 1 px borders; the plan uses `bottom: calc(-1 * (var(--space-2) + 2px + var(--node-c)))` with `--node-c: calc(var(--space-3) + 16.5px)`, which AC6's ±1 px requires. The node-centre formula itself is the spec's (no 4 px node offset from the canvas, `theme.css:88`).
+3. **Connector formula (§4.3):** the spec's `bottom: calc(-1 * (var(--space-2) + var(--space-3) + 16.5px))` omits the two rows' 1 px borders; the plan uses `bottom: calc(-1 * (var(--space-2) + 2px + var(--node-c)))` with `--node-c: calc(var(--space-3) + 16.5px)`, which AC6's ±1 px requires. The node-centre formula itself is the spec's (no 4 px node offset from the canvas, `docs/design/running-stage-picks/theme.css:88`).
 4. **"The head is a `button[aria-expanded]`" (§4.3):** implemented as `div.ps-head` (name + subtitle) with a `button.ps-toggle[aria-expanded][aria-controls]` laid over the whole head and named by it (`aria-labelledby`), so the head element never changes and the 3B subtitle cross-fade can run (Review Focus 7).
 5. **Checklist rows are `div[role=listitem]` in `div.ps-topics[role=list]`**, not `li`: the verbatim descendant rules `.spine-lg li …` (`globals.css:470-496`) would style every topic as a pipeline row. The row itself carries the spec's `li.spine-row` class; no rule targets `.spine-row` today (`git grep spine-row` finds nothing in `web/`, `DESIGN.md` or the prototype), so it is a name, not a style hook.
 6. **Extra-pass checklist (§4.3 "shows only the sub-topics that pass re-runs").** The stream names a re-run topic only by its `researcher.sub_topic.started`, so the extra pass's checklist starts empty and lists topics as they start (no waiting rows). It is emptied at `graph.route.decided` (`extra_pass`) — otherwise the previous pass's checklist shows for the hop's duration — and the reason line arrives with `graph.extra_pass.started`, as the spec says.
-7. **Zero in words.** AC5 ("no count is ever rendered as `0`") is applied to every Researching text (subtitle, outcome, facts): `no pages read`, `no findings`, `no topics`. Other rows keep the spec's numeric templates (`4 verified · 0 corrected · 0 dropped`): a measured zero is not an unknown value (BRIEF.md theme rule 7), and AC5 is scoped to the checklist.
+7. **Zero in words.** AC5 ("no count is ever rendered as `0`") is applied to every Researching text (subtitle, outcome, facts): `no pages read`, `no findings`, `no topics`. Other rows keep the spec's numeric templates (`4 verified · 0 corrected · 0 dropped`): a measured zero is not an unknown value (`docs/design/running-stage-picks/BRIEF.md:123`, theme rule 7), and AC5 is scoped to the checklist.
 8. **Copy the spec does not give:** Verifying with 0 or 1 findings (`No findings to check`, `Checking 1 finding against its page`); Reviewing with no score (`Review unavailable`, the chip's own words) or an extra-pass route that lists no target (`Sent back for more research`); the chip before any step is known (`starting`, DESIGN.md §4 rule 6's stage name).
 9. **The report head bar's `pass N of P` clause** (`ReportStage.tsx:70-72`) also becomes the plain-words pass fact: D15 makes the report speak in plain words, and DESIGN.md §4 requires the head bar and Session facts to agree. At 1252 px the meta line then wraps to three lines (observed in planning; `#reportMeta` is the one head-bar child allowed to shrink and wrap, so the toggle and both buttons keep their single row, `globals.css:1125-1131`).
 10. **Dead helpers.** Removing the ceiling plumbing leaves `passText`, `passTotal`, `passNumber` and `SessionView.passes` unused; they are deleted. `SessionView` gains `step`.
 11. **Doc rows the spec's §4.9 does not list** but that D13–D15 or E3 make false are amended too: DESIGN.md §2 (line 143), §3 inventory and the counters paragraph, §3.0, §3.2's composer table and request body, §3.5's arc paragraph ("the loop tag's amber"), §4 (chip copy and the pass section), §6's Running row, and api-gaps 3.1 (recorded obsolete).
 12. **RunState** gains, beyond the spec's list, `plan` (the ordered titles Planning's reopened brief shows), `passFindings` (Verifying's count) and `reopen` (the reason lines); `open` lives on RunState as the spec says and a loop's re-armed rows drop out of it.
-13. **Topic numbers use `--muted`**, not the canvas's `--meta` (`theme.css:125`): DESIGN.md §3.5 records `--meta` as a stroke, never text.
+13. **Topic numbers use `--muted`**, not the canvas's `--meta` (`docs/design/running-stage-picks/theme.css:125`): DESIGN.md §3.5 records `--meta` as a stroke, never text.
 14. **The chip at the very end.** After `graph.session.completed` and before `/status` turns terminal, `run.active` is `null`; the chip then names the row the run ended on (`chipStep`: Publishing, or the node that halted) rather than falling back to a stale `/status.current_agent`.
 15. **A pre-existing test race.** `web/test/components/session-screen.test.tsx:80-81` asserts the unreachable banner without `waitFor`; under full-suite load it failed once at `7afb21de` itself and in 2 of 4 full Vitest runs once `BriefSpine` joined the module graph (planning). Task 7, the first task that expects the whole suite green, waits for it.
+16. **The hand-off moment when a route decision leads (§4.3 motion table, "timed from the moment row k is marked done and row k+1 becomes active").** For Reviewing → Publishing those are two events. Publishing takes its `to` role when it becomes active; Reviewing keeps painting as the active row, open, until its own completion, and only then takes `from` and folds (review round 1, P2-1). Its lines and height fold only as far as they had opened: in replay Reviewing is active for about four paced events, less than its own opening delays as the `to` row.
 
 ## Open issues (for the human)
 
@@ -345,7 +347,7 @@ git add src/deep_research/utils/types.py tests/test_types.py tests/test_graph/te
 
 **Files:**
 - Create: `src/deep_research/graph/live.py`, `tests/test_graph/test_live.py`
-- Modify: `src/deep_research/graph/orchestrator.py:36-40` (imports), `:304-354` (`async def _stream_graph_result(`); `src/deep_research/graph/nodes.py:67-79` (imports), `:209-214` (inside `agent_node`); `src/deep_research/graph/__init__.py` (imports, `__all__`)
+- Modify: `src/deep_research/graph/orchestrator.py:36-40` (imports), `:304-354` (`async def _stream_graph_result(`); `src/deep_research/graph/nodes.py:67-79` (imports), `:209-214` (inside `agent_node`); `src/deep_research/graph/__init__.py` (imports, `__all__`); `tests/test_imports.py:488` (the graph-submodule guard's list)
 
 **Interfaces:**
 - Consumes: `ResearchEvent.event_id` (Task 1).
@@ -826,6 +828,20 @@ from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
 
 and in `__all__` add `"LiveSink",` after `"GraphRun",`, `"bind_live_sink",` after `"agent_node",`, and `"publish_live",` after `"publication_write_error",`.
 
+`tests/test_imports.py` — `test_graph_submodule_public_names_all_reach_all` checks that every public module-level name of the graph submodules it lists is in `deep_research.graph.__all__`; add the new module to its list (`:488`), replacing
+
+```python
+    submodules = ["errors", "events", "nodes", "orchestrator", "state"]
+```
+
+with
+
+```python
+    submodules = ["errors", "events", "live", "nodes", "orchestrator", "state"]
+```
+
+(`live.py`'s public names are `LiveSink`, `publish_live` and `bind_live_sink`, all exported above; `_LIVE_SINK` is private.)
+
 - [ ] **Step 7: Run the graph, runtime and API suites**
 
 ```bash
@@ -837,7 +853,7 @@ Expected: `440 passed`, `0 failed`; `tests/test_graph/test_live.py` contributes 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/deep_research/graph/live.py src/deep_research/graph/orchestrator.py src/deep_research/graph/nodes.py src/deep_research/graph/__init__.py tests/test_graph/test_live.py && git commit -m "feat(graph): publish events live through a run-scoped sink, each id once"
+git add src/deep_research/graph/live.py src/deep_research/graph/orchestrator.py src/deep_research/graph/nodes.py src/deep_research/graph/__init__.py tests/test_graph/test_live.py tests/test_imports.py && git commit -m "feat(graph): publish events live through a run-scoped sink, each id once"
 ```
 
 **Contingency C — only if Step 3's R1 test failed.** The ContextVar did not reach the node's task, so each node re-binds the run's sink inside its own task, finding it through the `Tracker` the agents already hold (spec R1: "pass the sink through the Tracker the agents already hold", `agents/base.py:325-328`). Sinks are keyed by session id, because one `Tracker` can serve concurrent runs — the tests' shared `tracker` fixture does in `test_two_runs_at_once_keep_their_own_sinks` — and every call site keeps calling `publish_live`. Planning never ran this path (R1 held on LangGraph 1.2.10).
@@ -1428,7 +1444,7 @@ print(f"{agent}: {old} -> {new}")
 EOF
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint
 ```
-Expected: `researcher: a0691eedc3b2 -> e31f857727b3`, then `11 passed, 67 deselected`. The new value is what the planning dry run produced from exactly this plan's text; the fingerprint hashes the module source (`inspect.getsource`, so line endings do not matter), so any other value means `researcher.py` differs from the plan somewhere — find the difference before going on. The snippet also writes the comment above the pin, in the file's existing `Moved \`old\` -> \`new\`.` style.
+Expected: `researcher: a0691eedc3b2 -> e31f857727b3`, then `11 passed, 67 deselected`. That is the value the planning dry run produced from exactly this plan's text (the fingerprint hashes the module source through `inspect.getsource`, so line endings do not matter). A different value is acceptable when `git diff -- src/deep_research/agents/researcher.py` shows only this task's edits and every test this task runs passes — the snippet pins whatever the module now hashes to; do not hunt for single characters. The snippet also writes the comment above the pin, in the file's existing `Moved \`old\` -> \`new\`.` style.
 
 - [ ] **Step 7: Commit**
 
@@ -1680,7 +1696,7 @@ EOF
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint
 ```
 
-Expected: `planner: 9c5745683d9b -> d40ffac43845`, then `11 passed, 67 deselected`. The new value is what the planning dry run produced from exactly this plan's text; the fingerprint hashes the module source (`inspect.getsource`, so line endings do not matter), so any other value means `planner.py` differs from the plan somewhere — find the difference before going on.
+Expected: `planner: 9c5745683d9b -> d40ffac43845`, then `11 passed, 67 deselected` — the planning dry run's value. A different value is acceptable when `git diff -- src/deep_research/agents/planner.py` shows only this task's edits and every test this task runs passes; do not hunt for single characters.
 
 - [ ] **Step 6: Commit**
 
@@ -1943,7 +1959,7 @@ repin report_writer ee5199095402 "Live briefs (live-briefs spec E3, 2026-09-28):
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint
 ```
 
-Expected: `source_evaluator: 0d96c48eae29 -> fb7f60d73873`, `evidence_verifier: 0dc169302934 -> 4a3d56fab932`, `report_writer: ee5199095402 -> 0dcd4a41a378` (the values the planning dry run produced from exactly this plan's text; any other value means that module differs from the plan — find the difference before going on), then `11 passed, 67 deselected`.
+Expected: `source_evaluator: 0d96c48eae29 -> fb7f60d73873`, `evidence_verifier: 0dc169302934 -> 4a3d56fab932`, `report_writer: ee5199095402 -> 0dcd4a41a378` (the planning dry run's values; a different value is acceptable when `git diff` of that module shows only this task's edits and every test this task runs passes — do not hunt for single characters), then `11 passed, 67 deselected`.
 
 - [ ] **Step 6: Commit**
 
@@ -2054,7 +2070,8 @@ def test_topic_findings_sum_matches_research_total(case_id: str, tmp_path: Path)
         elif event.event_type == "researcher.research.completed":
             assert retained == event.metadata["findings"]
             passes += 1
-    assert passes >= 1
+    if passes == 0:
+        pytest.skip(f"{case_id} completes no research pass, so it has no total to compare")
 ```
 
 ```bash
@@ -2069,9 +2086,10 @@ Expected: `41 passed`, `0 failed`; the two new tests contribute `36` of them (1 
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 node web/scripts/launch.mjs start api 8010 /research "\"$PY\" -m deep_research.api --mode replay --port 8010 --replay-delay-ms 0"
 cd web && DEEP_RESEARCH_API_URL=http://127.0.0.1:8010 node scripts/capture-replay-events.mjs missing-target-triggers-one-extra-pass scoped-redraft-after-a-named-defect; cd ..
+if [ "$(uname -s)" = "Linux" ]; then kill -TERM -- "-$(cat .launch-api.pid)"; fi
 node web/scripts/launch.mjs stop api 8010
 ```
-Expected: `up: http://127.0.0.1:8010/research …`, then `test\fixtures\events\missing-target-triggers-one-extra-pass.json: 72 events, completed/1` and `test\fixtures\events\scoped-redraft-after-a-named-defect.json: 49 events, completed/0`, then `stopped: port 8010 refuses connections …`. A `FAILED:` line means a server survived: find its owner as the message says before going on.
+Expected: `up: http://127.0.0.1:8010/research …`, then `test\fixtures\events\missing-target-triggers-one-extra-pass.json: 72 events, completed/1` and `test\fixtures\events\scoped-redraft-after-a-named-defect.json: 49 events, completed/0` (`test/fixtures/events/…` on Linux), then `stopped: port 8010 refuses connections …`. On Linux the `kill` line has already ended the server's process group, so `stop` first reports that `taskkill` failed and then `stopped: port 8010 refuses connections (pid … was already gone)`. A `FAILED:` line means a server survived: find its owner as the message says before going on.
 
 - [ ] **Step 3: Check the captures carry the new fields and the old event core still reads them**
 
@@ -2179,7 +2197,7 @@ In §6's table, in the `| Running |` row delete `events arrive once per node ste
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q
 ```
-Expected: `4785 passed, 1 deselected` (the baseline's 4726 plus the 59 tests Tasks 1–6 add: 4 + 8 + 6 + 2 + 3 + 36), `0 failed`. Also `git diff 196dd3f1 -- src/deep_research/agents/prompts.py` prints nothing.
+Expected: `4785 passed, 1 deselected` (the baseline's 4726 plus the 59 tests Tasks 1–6 add: 4 + 8 + 6 + 2 + 3 + 36), `0 failed`; without a `.env` (Linux, a worktree) run it with the `--deselect` of Conventions and expect `4784 passed, 2 deselected`. Also `git diff 196dd3f1 -- src/deep_research/agents/prompts.py` prints nothing.
 
 - [ ] **Step 7: Commit**
 
@@ -2192,14 +2210,14 @@ git add tests/test_api/test_replay.py web/test/fixtures/events docs/design/api-g
 ### Task 7: The removals, the chip and the pass fact (spec §4.2; D12–D15; AC3, AC8)
 
 **Files:**
-- Modify: `web/lib/format.ts:1-3`, `:6-20`, `:31-50`, `:70`; `web/lib/api.ts:5-10`; `web/lib/session-store.ts:4`; `web/lib/run-state.ts:88` (after `plural`)
+- Modify: `web/lib/format.ts:1-3`, `:6-20`, `:31-50`, `:70`; `web/lib/api.ts:5-10`, `:34-36`; `web/lib/session-store.ts:4`; `web/lib/run-state.ts:88` (after `plural`)
 - Modify: `web/components/RunningPipeline.tsx` (whole file), `SessionScreen.tsx:7`, `:32`, `:85-86`, `:108-110`, `:140-145`, `:176`, `:180`, `:183`; `Composer.tsx:21-28`, `:124`; `SettingsPopover.tsx:6`, `:80-91`; `SettingsStrip.tsx:4-19`; `ReportRail.tsx:3`, `:16-17`, `:54`; `ReportStage.tsx:4`, `:13`, `:70-72`, `:101`
 - Test: `web/test/format.test.ts`, `web/test/api.test.ts:7`, `web/test/run-state.test.ts`, `web/test/components/running-pipeline.test.tsx` (whole file), `status-chip.test.tsx`, `composer.test.tsx`, `report-rail.test.tsx`, `report-stage.test.tsx`, `session-screen.test.tsx:80-81` (a pre-existing race)
 - E2E: `web/e2e/running.spec.ts:20`, `:29`; `arcs.spec.ts:4-11`, `:18-24`; `report.spec.ts:17`; `visual.spec.ts:31`; create `web/e2e/settings.spec.ts`
 
 **Interfaces:**
 - Consumes: nothing new from the backend (the API still accepts `max_iterations`).
-- Produces: `SessionView { status, iteration, step: string | null, review, coverage }`; `toSessionView(s, step: string | null = null)`; `statusNote(view)` → `view.step ?? "starting"` while running; `passFact(iteration: number, notePasses = 0): string`; `stepLabel(node: string | null | undefined): string | null`; `chipStep(run: RunState): string | null`; `SubmittedSettings { model, thinking, outputDir }`; `ResearchRequest` without `max_iterations`; `SettingsStrip({ settings, id })`; `ReportRail({ status, evidence })`; `ReportStage({ sessionId, status, strip })`; `RunningPipeline({ sessionId, run, question, strip, startedAt })` (Task 9 adds `onToggleRow`). Removed: `passNumber`, `passTotal`, `passText`, `EXTRA_MIN`, `EXTRA_MAX`, `#pillExtra`, `#stepExtra`, `.pipe-now` and `<Counters>` in the running stage.
+- Produces: `SessionView { status, iteration, step: string | null, review, coverage }`; `toSessionView(s, step: string | null = null)`; `statusNote(view)` → `view.step ?? "starting"` while running; `passFact(iteration: number, notePasses = 0): string`; `stepLabel(node: string | null | undefined): string | null`; `chipStep(run: RunState): string | null`; `SubmittedSettings { model, thinking, outputDir }`; `ResearchRequest` without `max_iterations`; `ResearchEvent` with `event_id: string` (E1); `SettingsStrip({ settings, id })`; `ReportRail({ status, evidence })`; `ReportStage({ sessionId, status, strip })`; `RunningPipeline({ sessionId, run, question, strip, startedAt })` (Task 9 adds `onToggleRow`). Removed: `passNumber`, `passTotal`, `passText`, `EXTRA_MIN`, `EXTRA_MAX`, `#pillExtra`, `#stepExtra`, `.pipe-now` and `<Counters>` in the running stage.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -2447,6 +2465,25 @@ export interface ResearchRequest {
   query: string;
   output_format: "markdown";
 ```
+
+and replace
+
+```ts
+export interface ResearchEvent {
+  event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>;
+}
+```
+
+with
+
+```ts
+/* `event_id` is the event's identity (live-briefs spec E1); the web app does not read it yet. */
+export interface ResearchEvent {
+  event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>; event_id: string;
+}
+```
+
+(the type is only ever cast from parsed JSON — `lib/stream.ts:63`, the captures in the tests — so no literal needs the new field).
 
 `web/lib/session-store.ts:4`: replace `extraPasses: number; ` with nothing, so the line reads `export interface SubmittedSettings { model: string; thinking: "enabled" | "disabled"; outputDir: string }`.
 
@@ -3319,7 +3356,7 @@ git add web/lib/run-state.ts web/lib/briefs.ts web/test/run-state.test.ts web/te
 
 **Interfaces:**
 - Consumes: `rowBrief`, `subtitleText`, `RowState`, `Subtitle` (Task 8); `toggleOpen`, `RunState.open` (Task 8); `reducedMotion()` (`web/lib/handoff.ts:22-24`).
-- Produces: `BriefSpine({ marks, run, onToggle(id: NodeId) })` rendering `#spineWrap > svg.loop-layer + ol#spine.spine-lg.briefs > li.spine-row[data-stage][data-state][data-fed][data-open][data-handoff?][data-toggle?][aria-current?]`, each `li` = `span.bullet` + `div.ps-body` > (`div.ps-head` > `span.stage-name#name-{id}`, `span.stage-meta.xf#meta-{id}` > `span.m-live` + `span.m-out`, `span.stage-meta.loops`, `button.ps-toggle[aria-expanded][aria-controls][aria-labelledby]` on done/loop rows) + `div.ps-x#brief-{id}` > `div.ps-xi` > `div.ps-brief` > lines (`p.ln.b-why[data-kind]`, `p.ln.b-line`, `div.ps-topics[role=list] > div.ln[role=listitem][data-topic]`, `div.ps-titles[role=list] > div.ln`), each line carrying `--i`. `HANDOFF_HOLD_MS = 2000` and the `data-handoff="from"|"to"` roles (styled in Task 10). `drawLoopArc(host, list, arc)`; `useLoopArc(enabled, wrap, list, arc, deps)` (window resize + `ResizeObserver` on the wrap + `transitionend` of `grid-template-rows`). `tweenValue(from, to, elapsedMs, durationMs = 400)`, `useTween(value)`, `TWEEN_MS = 400`. `RunningPipeline` gains `onToggleRow(id: NodeId): void`. Phase 3's note line goes after `BriefSpine` inside the same `.card`, and its acknowledgement lines go first in a brief's `lines`.
+- Produces: `BriefSpine({ marks, run, onToggle(id: NodeId) })` rendering `#spineWrap > svg.loop-layer + ol#spine.spine-lg.briefs > li.spine-row[data-stage][data-state][data-fed][data-open][data-handoff?][data-toggle?][aria-current?]`, each `li` = `span.bullet` + `div.ps-body` > (`div.ps-head` > `span.stage-name#name-{id}`, `span.stage-meta.xf#meta-{id}` > `span.m-live` + `span.m-out`, `span.stage-meta.loops`, `button.ps-toggle[aria-expanded][aria-controls][aria-labelledby]` on done/loop rows) + `div.ps-x#brief-{id}` > `div.ps-xi` > `div.ps-brief` > lines (`p.ln.b-why[data-kind]`, `p.ln.b-line`, `div.ps-topics[role=list] > div.ln[role=listitem][data-topic]`, `div.ps-titles[role=list] > div.ln`), each line carrying `--i`. `HANDOFF_HOLD_MS = 2000` and the `data-handoff="from"|"to"` roles (styled in Task 10), including the awaited hand-off: when the active row moves to the successor of a row not yet done (a route decision precedes the reviewer's own completion), that row stays painted active and open until its completion gives it the `from` role. `drawLoopArc(host, list, arc)`; `useLoopArc(enabled, wrap, list, arc, deps)` (window resize + `ResizeObserver` on the wrap + `transitionend` of `grid-template-rows`). `tweenValue(from, to, elapsedMs, durationMs = 400)`, `useTween(value)`, `TWEEN_MS = 400`. `RunningPipeline` gains `onToggleRow(id: NodeId): void`. Phase 3's note line goes after `BriefSpine` inside the same `.card`, and its acknowledgement lines go first in a brief's `lines`.
 
 - [ ] **Step 1: Write the failing unit tests**
 
@@ -3524,6 +3561,51 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
     expect(container.querySelector("[data-handoff]")).toBeNull();
   });
+  it("awaits the row a route decision leaves until its own completion, then hands it off (Reviewing → Publishing)", () => {
+    vi.useFakeTimers();
+    const run = newRunState(2);
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const { container, rerender } = show(run);
+    const again = () => rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
+    applyEvent(run, { type: "graph.report.reviewed", metadata: { mean_score: 0.9 } });
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "finalize", reason: "report_accepted" } });
+    again();
+    // The route decision moved the active row one event before Reviewing's own completion.
+    expect(run.active).toBe("finalize_report");
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("active");
+    expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("1");
+    expect(row(container, "report_reviewer").hasAttribute("aria-current")).toBe(false);
+    expect(row(container, "report_reviewer").hasAttribute("data-handoff")).toBe(false);
+    expect(row(container, "finalize_report").getAttribute("data-handoff")).toBe("to");
+    expect(row(container, "finalize_report").getAttribute("aria-current")).toBe("step");
+    applyEvent(run, { type: "graph.node.completed", metadata: { node: "report_reviewer" } });
+    again();
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("done");
+    expect(row(container, "report_reviewer").getAttribute("data-handoff")).toBe("from");
+    expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
+    expect(row(container, "report_reviewer").querySelector(".m-out")!.textContent).toBe("Accepted · 0.90");
+    expect(row(container, "finalize_report").getAttribute("data-handoff")).toBe("to");
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(container.querySelector("[data-handoff]")).toBeNull();
+  });
+  it("never awaits a row a loop sends the run back from", () => {
+    const run = newRunState(2);
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const { container, rerender } = show(run);
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", missing_required_target_ids: ["topic-01-target-01"] } });
+    rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
+    expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
+    expect(row(container, "researcher").getAttribute("data-state")).toBe("active");
+  });
   it("a first render is not a hand-off", () => {
     const { container } = show(researching());
     expect(container.querySelector("[data-handoff]")).toBeNull();
@@ -3726,7 +3808,12 @@ import { useLoopArc } from "./loop-arc";
 /* How long the two hand-off roles stay on their rows (live-briefs spec §4.3 motion table): past the
    last line's rise with ten topics, 900 + 10 × 60 + 240 = 1740 ms. */
 export const HANDOFF_HOLD_MS = 2000;
-interface Handoff { from: NodeId | null; to: NodeId | null }
+/* `awaiting` is the row the active row just left before that row was marked done. A route decision
+   moves the active row one event before the row it leaves reports its own completion
+   (graph.route.decided precedes the reviewer's graph.node.completed, web/lib/run-state.ts:145-158 and
+   :100-108; 150 ms apart in replay). Until that completion arrives the awaited row keeps painting as
+   the active row, open; then it takes the `from` role and folds with the 3B timings. */
+interface Handoff { from: NodeId | null; to: NodeId | null; awaiting: NodeId | null }
 interface Props { marks: Partial<Record<NodeId, PaintedMark>>; run: RunState; onToggle(id: NodeId): void }
 
 const lineStyle = (i: number) => ({ ["--i" as string]: String(i) }) as CSSProperties;
@@ -3746,11 +3833,18 @@ export function BriefSpine({ marks, run, onToggle }: Props) {
   // The hand-off is the render in which the active row changes: the row that was active (now done)
   // and the row that is active now carry data-handoff for HANDOFF_HOLD_MS, so the stylesheet can
   // time them as one choreography. Derived during render (React's "adjust state on prop change").
+  // When the row that was active is not done yet and the new active row is its successor, that row is
+  // awaited instead: its mark turning done or loop gives it the `from` role, restarting the hold.
   const [prevActive, setPrevActive] = useState<NodeId | null>(run.active);
   const [handoff, setHandoff] = useState<Handoff | null>(null);
   if (run.active !== prevActive) {
     setPrevActive(run.active);
-    setHandoff({ from: prevActive && finishedState(marks[prevActive]) ? prevActive : null, to: run.active });
+    const from = prevActive && finishedState(marks[prevActive]) ? prevActive : null;
+    const successor = prevActive === null ? null : STAGES[STAGES.findIndex((s) => s.id === prevActive) + 1]?.id ?? null;
+    const awaiting = from === null && prevActive !== null && successor === run.active && run.finalStatus === null ? prevActive : null;
+    setHandoff({ from, to: run.active, awaiting });
+  } else if (handoff?.awaiting && handoff.from === null && handoff.to === run.active && finishedState(marks[handoff.awaiting])) {
+    setHandoff({ from: handoff.awaiting, to: run.active, awaiting: null });
   }
   useEffect(() => {
     if (!handoff) return;
@@ -3759,7 +3853,8 @@ export function BriefSpine({ marks, run, onToggle }: Props) {
   }, [handoff]);
   useLoopArc(true, wrap, list, run.arc, [run.arc, run.loop, marks]);
   const rows = STAGES.map((s, i) => {
-    const st: RowState = marks[s.id] || "pending";
+    const awaited = handoff?.awaiting === s.id;
+    const st: RowState = awaited ? "active" : marks[s.id] || "pending";
     const prev = i > 0 ? marks[STAGES[i - 1].id] || "pending" : null;
     const finished = finishedState(st);
     const open = st === "active" || (finished && run.open.has(s.id));
@@ -3810,7 +3905,7 @@ export function BriefSpine({ marks, run, onToggle }: Props) {
     return (
       <li key={s.id} className="spine-row" data-stage={s.id} data-state={st} data-fed={prev === null ? undefined : finishedState(prev) ? "1" : "0"}
         data-open={open ? "1" : "0"} data-handoff={role} data-toggle={finished ? "1" : undefined}
-        aria-current={st === "active" ? "step" : undefined} style={{ ["--delay" as string]: String(i * 60) }}>
+        aria-current={st === "active" && !awaited ? "step" : undefined} style={{ ["--delay" as string]: String(i * 60) }}>
         <span className="bullet" aria-hidden="true">{i + 1}</span>
         <div className="ps-body">
           {head}
@@ -3967,7 +4062,7 @@ Append to `web/app/globals.css` (end of file, inside the app-only section):
 ```bash
 cd web && npm run -s typecheck && npx vitest run && npm run -s check:css
 ```
-Expected: no `typecheck` output; `Test Files 23 passed (23)`, `Tests 153 passed (153)`; `OK`.
+Expected: no `typecheck` output; `Test Files 23 passed (23)`, `Tests 155 passed (155)`; `OK`.
 
 - [ ] **Step 7: The e2e specs (verification)**
 
@@ -4111,7 +4206,7 @@ Expected: `45 passed` (Task 7's 40 plus the five in `briefs.spec.ts`; `layout.sp
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 cd web && npm run -s build && VISUAL_CHECKPOINT=P1-T09-briefs DEEP_RESEARCH_PYTHON="$PY" npx playwright test --project=visual
 ```
-Expected: `8 passed`. Review `web/visual/P1-T09-briefs/03-running.png`, `03-running-phone.png`, `09-running-extra-pass.png`, `09-running-extra-pass-phone.png` full height against the canvas picks (`.superpowers/pick-sheet/project/Main.dc.html` 1A, `Briefs.dc.html` column C, `PhoneBrief.dc.html`; values in `theme.css:79-136`, `:225-226`) and the spec's §4.3 tables, and confirm: Planning closed on `3 sub-topics`; Researching open with its subtitle in green (`1 of 3 topics done · … pages read · … findings`, or `3 topics · researching`), its checklist below with hairlines between topics, each topic marked by its state — ● green dot with `reading` in green, ✓ with `{n} findings` muted, ○ with `not yet` (at capture time the replay has topics 1 and 3 reading and topic 2 done: `1 of 3 topics done · 2 pages read · 2 findings`, observed in planning); the other rows closed on their static meta; the grey connector passes node centre to node centre through the open brief and the green fill stops at the last done node; no box inside the card, no purple; on phone each topic's fact sits under its title; in `09` the amber arc joins Reviewing's and Researching's nodes and Researching reads `1 topic · researching` and opens on the amber `Going back to research 1 gap the review found` above only the topic the extra pass re-runs (`1 Adoption rate · reading`), never the first pass's topics; no sideways scroll. Every other capture matches `P1-T07-removals`. Attach the four images to the task summary.
+Expected: `8 passed`. Review `web/visual/P1-T09-briefs/03-running.png`, `03-running-phone.png`, `09-running-extra-pass.png`, `09-running-extra-pass-phone.png` full height against the canvas picks in `docs/design/running-stage-picks/` (`Main.dc.html` 1A, `Briefs.dc.html` column C, `PhoneBrief.dc.html`; values in `theme.css:79-136`, `:225-226`) and the spec's §4.3 tables, and confirm: Planning closed on `3 sub-topics`; Researching open with its subtitle in green (`1 of 3 topics done · … pages read · … findings`, or `3 topics · researching`), its checklist below with hairlines between topics, each topic marked by its state — ● green dot with `reading` in green, ✓ with `{n} findings` muted, ○ with `not yet` (at capture time the replay has topics 1 and 3 reading and topic 2 done: `1 of 3 topics done · 2 pages read · 2 findings`, observed in planning); the other rows closed on their static meta; the grey connector passes node centre to node centre through the open brief and the green fill stops at the last done node; no box inside the card, no purple; on phone each topic's fact sits under its title; in `09` the amber arc joins Reviewing's and Researching's nodes and Researching reads `1 topic · researching` and opens on the amber `Going back to research 1 gap the review found` above only the topic the extra pass re-runs (`1 Adoption rate · reading`), never the first pass's topics; no sideways scroll. Every other capture matches `P1-T07-removals`. Attach the four images to the task summary.
 
 - [ ] **Step 9: Commit**
 
@@ -4203,11 +4298,17 @@ export async function installMotionRecorder(page: Page): Promise<void> {
       const style = getComputedStyle(el, e.pseudoElement || null);
       const props = style.transitionProperty.split(",").map((p) => p.trim());
       const delays = style.transitionDelay.split(","), durations = style.transitionDuration.split(",");
+      // A shorthand in the list starts its transitions on longhands: background → background-color,
+      // border-color → border-top-color and its three siblings. A property the list does not name at
+      // all records -1/-1, so no assertion can match it by borrowing another property's timing.
+      const shorthand = e.propertyName === "background-color" ? "background"
+        : /^border-(top|right|bottom|left)-color$/.test(e.propertyName) ? "border-color" : e.propertyName;
       let i = props.indexOf(e.propertyName);
+      if (i < 0) i = props.indexOf(shorthand);
       if (i < 0) i = props.indexOf("all");
-      if (i < 0) i = 0;
       w.__drMotion.push({ stage: row.getAttribute("data-stage"), handoff: row.getAttribute("data-handoff"), open: row.getAttribute("data-open"),
-        part: partOf(el, e.pseudoElement), prop: e.propertyName, delay: ms(delays[i % delays.length]), duration: ms(durations[i % durations.length]) });
+        part: partOf(el, e.pseudoElement), prop: e.propertyName,
+        delay: i < 0 ? -1 : ms(delays[i % delays.length]), duration: i < 0 ? -1 : ms(durations[i % durations.length]) });
     }, true);
   });
 }
@@ -4256,6 +4357,25 @@ test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep
   expect(timings(only(to, { part: "line", prop: "opacity" }))).toEqual(["900/240"]);
   expect(timings(only(to, { part: "line", prop: "transform" }))).toEqual(["900/240"]);
 
+  // Reviewing → Publishing. graph.route.decided moves the active row one event before Reviewing's own
+  // completion (150 ms apart in replay); Reviewing stays as it was — active, open — until then, so nothing
+  // on its row moves between its last to-role transition and its first from-role one (it is never painted pending)…
+  const onReviewing = records.filter((r) => r.stage === "report_reviewer");
+  const firstFrom = onReviewing.findIndex((r) => r.handoff === "from");
+  const lastTo = onReviewing.slice(0, Math.max(firstFrom, 0)).map((r) => r.handoff).lastIndexOf("to");
+  expect(firstFrom).toBeGreaterThan(0);
+  expect(onReviewing.slice(lastTo + 1, firstFrom)).toEqual([]);
+  // …and its completion folds it with the from-role timings. The subtitle cross-fade and the connector fill
+  // always run; its lines and height fold only as far as they had opened — Reviewing is active for about
+  // four paced events, less than its own 600/900 ms opening delays — so those are held to their timing,
+  // not their presence.
+  const reviewing = onReviewing.filter((r) => r.handoff === "from");
+  expect(timings(only(reviewing, { part: "m-out", prop: "opacity" }))).toEqual(["260/200"]);
+  expect(timings(only(reviewing, { part: "connector", prop: "transform" }))).toEqual(["180/620"]);
+  expect(timings(only(reviewing, { part: "line", prop: "opacity" })).filter((x) => x !== "0/180")).toEqual([]);
+  expect(only(reviewing, { part: "line", prop: "transform" })).toEqual([]);
+  expect(timings(only(reviewing, { part: "ps-x", prop: "grid-template-rows" })).filter((x) => x !== "100/420")).toEqual([]);
+
   // A reader's open (1A): height at once over 420ms, then the three titles rise 60ms apart from 280ms.
   const opened = only(records, { stage: "planner", handoff: null, open: "1" });
   expect(timings(only(opened, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["0/420"]);
@@ -4303,7 +4423,7 @@ Expected: `47 passed` (the existing `reduced-motion.spec.ts` included). Without 
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 cd web && npm run -s build && VISUAL_CHECKPOINT=P1-T10-motion DEEP_RESEARCH_PYTHON="$PY" npx playwright test --project=visual
 ```
-Expected: `8 passed`. Open the fourteen images in `web/visual/P1-T10-motion/` full height beside the same names in `web/visual/P1-T09-briefs/`: every rest state is unchanged (this task changes timing only, never a resting style). The hand-off itself — the canvas's `Handoff.dc.html` column B, `theme.css:166-174` — is verified by `motion.spec.ts` in Step 2, not by eye. Attach the images to the task summary.
+Expected: `8 passed`. Open the fourteen images in `web/visual/P1-T10-motion/` full height beside the same names in `web/visual/P1-T09-briefs/`: every rest state is unchanged (this task changes timing only, never a resting style). The hand-off itself — the canvas's `docs/design/running-stage-picks/Handoff.dc.html` column B, `docs/design/running-stage-picks/theme.css:166-174` — is verified by `motion.spec.ts` in Step 2, not by eye. Attach the images to the task summary.
 
 - [ ] **Step 4: Commit**
 
@@ -4698,14 +4818,14 @@ git add docs/design/DESIGN.md docs/design/api-gaps.md && git commit -m "docs(des
 PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q && git diff 196dd3f1 -- src/deep_research/agents/prompts.py src/deep_research/api | head -5
 ```
-Expected: `4785 passed, 1 deselected`, `0 failed`; the diff prints nothing (no prompt text, no API code changed).
+Expected: `4785 passed, 1 deselected`, `0 failed` (without a `.env`: the `--deselect` of Conventions, `4784 passed, 2 deselected`); the diff prints nothing (no prompt text, no API code changed).
 
 - [ ] **Step 2: The web unit layer**
 
 ```bash
 cd web && npm run -s typecheck && npx vitest run && npm run -s check:css
 ```
-Expected: no `typecheck` output; `Test Files 23 passed (23)`, `Tests 153 passed (153)`; `OK`. (Planning saw `test/stream.test.ts` "delivers frames as they arrive…" fail once in six runs of the unmodified repository; if a run fails there, rerun that file alone once — a second failure is real and is investigated, not retried.)
+Expected: no `typecheck` output; `Test Files 23 passed (23)`, `Tests 155 passed (155)`; `OK`. (Planning saw `test/stream.test.ts` "delivers frames as they arrive…" fail once in six runs of the unmodified repository; if a run fails there, rerun that file alone once — a second failure is real and is investigated, not retried.)
 
 - [ ] **Step 3: Playwright, both projects**
 
@@ -4717,7 +4837,7 @@ Expected: `47 passed`, then `8 passed`.
 
 - [ ] **Step 4: The final full-height review**
 
-Open all fourteen images in `web/visual/P1-T12-final/` (Read tool), full height. For every capture: no sideways scroll; tokens only (no colour outside the palette); purple only on `Download Report`/the send button; one surface per region. `01-idle`/`07-idle-phone`: two composer pills, six starters, unchanged otherwise from `docs/design/reference/01-idle.png`/`07-idle-phone.png`. `02-submitted` (+ phone): the question and four chips. `03-running` (+ phone): as Task 9 Step 8 — the Researching brief open with at least one ✓ topic, connector node to node, chip `Running · Researching`, no Now/counters/pass text. `09-running-extra-pass` (+ phone): amber arc attached at both nodes; the amber reopen line; only the re-run topic. `04-report` (+ phone): head bar ends `Went back once to fill gaps`; (the Session facts row is asserted by `report.spec.ts`; a full-page capture clips the self-scrolling rail, `globals.css:317-325`). `05-failed`, `08-evidence` (+ phone): identical to `P1-T07-removals`. Compare the running captures with the canvas picks (`.superpowers/pick-sheet/project/Main.dc.html`, `Briefs.dc.html` column C, `Handoff.dc.html` column B, `PhoneBrief.dc.html`) and with spec §4.3; the spec wins where they differ (concurrent-topic wording; `not yet`/`reading`). Attach the images and a one-paragraph verdict per capture to the task summary.
+Open all fourteen images in `web/visual/P1-T12-final/` (Read tool), full height. For every capture: no sideways scroll; tokens only (no colour outside the palette); purple only on `Download Report`/the send button; one surface per region. `01-idle`/`07-idle-phone`: two composer pills, six starters, unchanged otherwise from `docs/design/reference/01-idle.png`/`07-idle-phone.png`. `02-submitted` (+ phone): the question and four chips. `03-running` (+ phone): as Task 9 Step 8 — the Researching brief open with at least one ✓ topic, connector node to node, chip `Running · Researching`, no Now/counters/pass text. `09-running-extra-pass` (+ phone): amber arc attached at both nodes; the amber reopen line; only the re-run topic. `04-report` (+ phone): head bar ends `Went back once to fill gaps`; (the Session facts row is asserted by `report.spec.ts`; a full-page capture clips the self-scrolling rail, `globals.css:317-325`). `05-failed`, `08-evidence` (+ phone): identical to `P1-T07-removals`. Compare the running captures with the canvas picks in `docs/design/running-stage-picks/` (`Main.dc.html`, `Briefs.dc.html` column C, `Handoff.dc.html` column B, `PhoneBrief.dc.html`) and with spec §4.3; the spec wins where they differ (concurrent-topic wording; `not yet`/`reading`). Attach the images and a one-paragraph verdict per capture to the task summary.
 
 - [ ] **Step 5: Record**
 
@@ -4745,7 +4865,7 @@ In the task summary: the counts from Steps 1–3, the checkpoint folder names (`
 
 **2. Placeholder scan.** No "TBD", "TODO", "similar to", "add validation". Every code step shows the code; every check shows its command and expected output. Each re-pinned fingerprint is computed and written by the `repin` snippet, and the value the planning dry run produced from this exact text is given as the expected output.
 
-**3. Type consistency.** `publish_live(event) -> None` in `graph/live.py` (Task 2) is what `agents/events.publish_live` calls (Task 3) and what Tasks 4–5 import; `bind_live_sink` is what every live test uses; `tool_call_event(sub_topic, step)` (Task 3) is what `tool_call_events` and the step callback call. On the web: `SessionView.step`, `toSessionView(s, step)`, `statusNote`, `passFact`, `stepLabel`, `chipStep` (Task 7) are what `SessionScreen`, `ReportRail`, `ReportStage` and the tests use; `Topic`, `TopicState`, `PlannedTopic`, `ReopenLine`, `RunState.plan/topics/pagesRead/findingsSoFar/passFindings/reopen/outcomes/open`, `countPhrase`, `toggleOpen` (Task 8) are what `lib/briefs.ts` imports and `BriefSpine`, `SessionScreen` and the tests use; `RowState`, `Subtitle`, `RowBrief`, `rowBrief`, `subtitleText`, `STATIC_META`, `SENTENCES`, `topicFact`, `verifyingSentence` (Task 8) are what Task 9 renders and tests; `useTween`, `TWEEN_MS`, `tweenValue`, `drawLoopArc`, `useLoopArc`, `HANDOFF_HOLD_MS`, `BriefSpine({ marks, run, onToggle })`, `RunningPipeline({ …, onToggleRow })` match across Tasks 9–10 and their tests; `connectorOffsets` (Task 9) and `installMotionRecorder`/`motion`/`MotionRecord` (Task 10) match their specs.
+**3. Type consistency.** `Handoff { from, to, awaiting }` is local to `BriefSpine.tsx` (Task 9); `ResearchEvent.event_id: string` (Task 7) matches the payload of E1. `publish_live(event) -> None` in `graph/live.py` (Task 2) is what `agents/events.publish_live` calls (Task 3) and what Tasks 4–5 import; `bind_live_sink` is what every live test uses; `tool_call_event(sub_topic, step)` (Task 3) is what `tool_call_events` and the step callback call. On the web: `SessionView.step`, `toSessionView(s, step)`, `statusNote`, `passFact`, `stepLabel`, `chipStep` (Task 7) are what `SessionScreen`, `ReportRail`, `ReportStage` and the tests use; `Topic`, `TopicState`, `PlannedTopic`, `ReopenLine`, `RunState.plan/topics/pagesRead/findingsSoFar/passFindings/reopen/outcomes/open`, `countPhrase`, `toggleOpen` (Task 8) are what `lib/briefs.ts` imports and `BriefSpine`, `SessionScreen` and the tests use; `RowState`, `Subtitle`, `RowBrief`, `rowBrief`, `subtitleText`, `STATIC_META`, `SENTENCES`, `topicFact`, `verifyingSentence` (Task 8) are what Task 9 renders and tests; `useTween`, `TWEEN_MS`, `tweenValue`, `drawLoopArc`, `useLoopArc`, `HANDOFF_HOLD_MS`, `BriefSpine({ marks, run, onToggle })`, `RunningPipeline({ …, onToggleRow })` match across Tasks 9–10 and their tests; `connectorOffsets` (Task 9) and `installMotionRecorder`/`motion`/`MotionRecord` (Task 10) match their specs.
 
 **4. Review Focus.** (1) Task 3 Step 1's import guard; (2) Task 2 Step 4 and Task 6 Step 1; (3) Task 2 Step 4; (4) Task 2 Step 3 with Contingency C; (5) Task 3 Step 1; (6) Task 8 `(i)`; (7) Task 9's hand-off test and Task 10's recorder; (8) Task 9's geometry e2e.
 
@@ -4762,9 +4882,25 @@ In the task summary: the counts from Steps 1–3, the checkpoint folder names (`
 - Contingency C now keys the sink by session id on the `Tracker` and is written as exact code: a single `live_sink` attribute would cross concurrent runs that share one `Tracker`, as the tests' `tracker` fixture does. It was checked by the simulation described under Evidence.
 - A worktree's missing `.env` is handled explicitly (Conventions); a "watch it by eye" step was replaced by the recorder's check; the Task 9 edits that follow Task 7's now quote Task 7's lines; three citations were corrected (`run-state.ts` active-row and re-arm lines, `#reportMeta`'s place in the verbatim block).
 
+## Review round 1 (2026-09-28): findings and how each was resolved
+
+Verdict APPROVED WITH CHANGES, no P1. Every change below is applied in the tasks above and was dry-run as described under Evidence.
+
+- **P2-1 — the Reviewing → Publishing hand-off never got `from`.** Confirmed: `graph.route.decided` (finalize) moves the active row before Reviewing's own completion, and in replay the two render 150 ms apart. Fixed in Task 9 as suggested — `from` is also derived from the mark transition of the row the active row left (an `awaiting` field beside `from`/`to`; the hold restarts) — plus one addition the suggestion alone does not reach: until its completion, the awaited row keeps painting as the active row, open (and without `aria-current`, which stays on the true active row). Evidence: with the mechanism alone, Reviewing was painted `pending` at the route decision (`brief-spine.test.tsx`: `expected 'pending' to be 'active'`) and the new `motion.spec.ts` check failed at "nothing on Reviewing's row moves between its `to` and `from` transitions"; with the addition both pass. The `motion.spec.ts` block cannot mirror the researcher's line-for-line: a recorder trace showed Reviewing active for about 600–750 ms in replay, less than its own 900 ms line-rise delay as the `to` row, so its lines never rose and have nothing to fold (its height folds only when its 600 ms opening had started). The block therefore requires the subtitle cross-fade (`260/200`) and the connector fill (`180/620`) under `from`, and holds any line or height fold to `0/180` and `100/420`. Counts: Vitest `153 → 155` (two tests in `brief-spine.test.tsx`); Playwright unchanged (`47`).
+- **P3-1 — `tests/test_imports.py:488` lists the graph submodules.** Task 2 Step 6 adds `"live"`; `live.py`'s three public names are exported in the same step (`26 passed` in the dry run).
+- **P3-2 — `web/lib/api.ts` `ResearchEvent` lacked `event_id`.** Task 7 Step 3 adds `event_id: string`; the type is only cast from parsed JSON, so no literal changes (typecheck clean).
+- **P3-3 — `test_topic_findings_sum_matches_research_total` asserted `passes >= 1`.** Now `pytest.skip`s a case that completes no research pass. None does today, so the count stays `41 passed` with no skips.
+- **P3-4 — the recorder fell back to index 0 for longhand properties.** Task 10 maps `background-color` to `background` and `border-*-color` to `border-color` before indexing the element's transition list, and records `-1/-1` for a property the list does not name, so nothing can borrow another property's timing.
+- **P3-5 — fingerprint expectations.** Tasks 3–5 keep the dry run's pin as the expected output and accept a different value when `git diff` of the module shows only that task's edits and the task's tests pass.
+- **P3-6 — the api-gaps header is edited by Tasks 6 and 11.** No text change needed; the strict 1 → 12 order is now stated in Global Constraints and in the Execution notes, naming this coupling.
+- **Orchestrator note 7 (O1).** Left as resolved: the outcome is computed and unreachable; the human decides.
+- **Orchestrator note 8.** Every canvas and brief reference now points at `docs/design/running-stage-picks/` (byte-identical to the old `.superpowers/` files, checked).
+- **Orchestrator note 9.** Conventions give the Linux form of every command: the venv and `PY="$PWD/.venv/bin/python"`, the `--deselect` wherever no `.env` exists (never read or create one), `npm ci` plus the Playwright browser install, LF line endings. Found while doing this: `launch.mjs stop` kills with `taskkill`, which Linux lacks, so Task 6 Step 2 now ends the API's process group itself on Linux; otherwise the capture's API would keep port 8010 and every later Playwright run would fail to start.
+
 ## Execution notes for the controller
 
-- Recommended: **subagent-driven**, one fresh implementer per task, a reviewer gate after each; tasks strictly in order 1 → 12 (Tasks 3–5 share `tests/test_evaluation/test_config.py`; Tasks 7–10 share `SessionScreen.tsx`, `run-state.ts`, `globals.css` and `e2e/support.ts`).
-- Tasks 1–6 need only the venv; Tasks 7–12 need `web/node_modules` (`cd web && npm ci` once in a fresh worktree) and free ports 8010, 3010, 3011 for Playwright. OneDrive can lock `.next` during `next build` (`EPERM`/`EBUSY`): pause syncing for the command, as `web/README.md` says.
+- Recommended: **subagent-driven**, one fresh implementer per task, a reviewer gate after each; tasks strictly in order 1 → 12 (Tasks 3–5 share `tests/test_evaluation/test_config.py`; Tasks 7–10 share `SessionScreen.tsx`, `run-state.ts`, `globals.css` and `e2e/support.ts`; Task 11 rewrites the api-gaps header sentence Task 6 wrote).
+- Tasks 1–6 need only the venv; Tasks 7–12 need `web/node_modules` (`cd web && npm ci` once in a fresh worktree or checkout, plus `npx playwright install --with-deps chromium` on Linux) and free ports 8010, 3010, 3011 for Playwright. Windows only: OneDrive can lock `.next` during `next build` (`EPERM`/`EBUSY`); pause syncing for the command, as `web/README.md` says.
+- On Linux (the cloud checkout), apply the Conventions throughout: `PY="$PWD/.venv/bin/python"`, the `--deselect` of the `.env`-dependent test in every full-suite run, and the process-group `kill` before `launch.mjs stop` (Task 6 Step 2 carries it). The canvas picks and the design brief are in `docs/design/running-stage-picks/`.
 - If Task 2's R1 test fails, the implementer applies Contingency C inside Task 2 and says so; later tasks are unaffected (every call site still calls `publish_live`).
 - Open issue O1 goes to the human with the Task 12 summary; it does not block any task.
