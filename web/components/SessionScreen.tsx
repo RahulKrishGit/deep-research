@@ -94,6 +94,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     const controller = new AbortController();
     let cancelled = false;
     delaysRef.current = backoffDelaysMs();
+    let streamed = false; // this effect run (this session) has already opened the stream once
     const sleep = (ms: number) => new Promise<void>((resolve) => { const t = setTimeout(() => { wake.current = null; resolve(); }, ms); wake.current = () => { clearTimeout(t); wake.current = null; resolve(); }; });
     (async () => {
       while (!cancelled) {
@@ -104,7 +105,18 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
           // "Planning" pipeline the run never actually re-entered. I1: the ladder also resets here
           // (not only once at effect start), so a long-lived run's periodic ~300 s idle drop keeps
           // reconnecting after 1 s, never inheriting a stale 30 s cadence from an earlier gap.
-          onOpen: (mode) => { noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs(); run.current = newRunState(null); bump(); setStreaming(true); },
+          // Live-briefs final review M2: the rows the reader reopened are reader state, not stream
+          // state, so they ride across the reset (only on a reconnect of this same session). A row
+          // that is not finished never renders open, and a loop's re-arm during the replay drops the
+          // rows it re-arms, exactly as it did the first time.
+          onOpen: (mode) => {
+            noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs();
+            const reopened = streamed ? run.current.open : new Set<NodeId>();
+            streamed = true;
+            run.current = newRunState(null);
+            run.current.open = reopened;
+            bump(); setStreaming(true);
+          },
           onEvent: (event) => {
             applyEvent(run.current, toRunEvent(event));
             bump();

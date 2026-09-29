@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "../../components/AppShell";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
@@ -129,6 +129,69 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done");
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
+  });
+});
+
+describe("SessionScreen — live-briefs final review M2: a reconnect keeps the rows the reader reopened", () => {
+  it("replays from event 0 into a fresh run state without folding a done row the reader reopened", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) {
+        streamCalls++;
+        const head = frame(1, "graph.session.started", { max_extra_passes: 1 })
+          + frame(2, "graph.node.started", { node: "planner", iteration: 0 })
+          + frame(3, "graph.node.completed", { node: "planner" });
+        // The reconnect replays from event 0 and then carries on past where the first stream ended,
+        // so a settled Researching row proves the whole replay reached the page.
+        return sse(streamCalls === 1 ? head : head + frame(4, "graph.node.started", { node: "researcher", iteration: 0 }) + frame(5, "graph.node.completed", { node: "researcher" }));
+      }
+      if (url.includes("/status")) return json(200, RUNNING);
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    const row = (id: string) => document.querySelector(`#spine li[data-stage="${id}"]`);
+    await waitFor(() => expect(row("planner")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
+    // The reader reopens Planning to read its titles.
+    fireEvent.click(row("planner")!.querySelector("button.ps-toggle")!);
+    expect(row("planner")?.getAttribute("data-open")).toBe("1");
+    // The stream ends, /status still says running, the ladder sleeps 1 s and reconnects.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(row("researcher")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-state")).toBe("done");
+    expect(row("planner")?.getAttribute("data-open")).toBe("1");
+    // Only what the reader opened carries over: Researching stays folded on its outcome.
+    expect(row("researcher")?.getAttribute("data-open")).toBe("0");
+  });
+  it("does not carry a row the reader had closed again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) {
+        streamCalls++;
+        const head = frame(1, "graph.session.started", { max_extra_passes: 1 })
+          + frame(2, "graph.node.started", { node: "planner", iteration: 0 })
+          + frame(3, "graph.node.completed", { node: "planner" });
+        return sse(streamCalls === 1 ? head : head + frame(4, "graph.node.started", { node: "researcher", iteration: 0 }) + frame(5, "graph.node.completed", { node: "researcher" }));
+      }
+      if (url.includes("/status")) return json(200, RUNNING);
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    const row = (id: string) => document.querySelector(`#spine li[data-stage="${id}"]`);
+    await waitFor(() => expect(row("planner")?.getAttribute("data-state")).toBe("done"));
+    const toggle = () => fireEvent.click(row("planner")!.querySelector("button.ps-toggle")!);
+    toggle(); toggle(); // opened, then closed again
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(row("researcher")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
   });
 });
 

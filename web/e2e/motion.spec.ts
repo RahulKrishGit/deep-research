@@ -87,5 +87,10 @@ test.describe("reduced motion", () => {
     expect(lines.length).toBeGreaterThan(0);
     expect(timings(lines)).toEqual(["0/160"]);
     expect([...new Set(lines.map((r) => r.prop))]).toEqual(["opacity"]);
+    // Nothing waits on the hand-off timings either: state reads at once (a delayed transition still
+    // fires with a 0ms duration, so a surviving delay would show as a record with delay > 0), and the
+    // ✓ appears without drawing, so no check transition runs at all.
+    expect(records.filter((r) => r.delay > 0)).toEqual([]);
+    expect(only(records, { part: "check" })).toEqual([]);
   });
 });

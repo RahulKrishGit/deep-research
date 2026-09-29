@@ -119,10 +119,12 @@ export function stepLabel(node: string | null | undefined): string | null {
 }
 /* The node the chip names while the stream is open: the active row; once graph.session.completed
    has arrived (and until /status turns terminal), the row the run ended on — Publishing, or the
-   node that halted. */
+   node that halted. Between Publishing's own completion and graph.session.completed no row is active
+   and none is open, so the chip keeps naming Publishing rather than fall back to a stale /status. */
 export function chipStep(run: RunState): string | null {
   if (run.active) return run.active;
-  if (run.finalStatus === null || run.finalStatus === "failed") return run.openNode;
+  if (run.finalStatus === null) return run.openNode ?? (run.marks.finalize_report ? "finalize_report" : null);
+  if (run.finalStatus === "failed") return run.openNode;
   return "finalize_report";
 }
 /* A measured count in words: 0 reads "no …", never a bare 0 (live-briefs spec AC5). */

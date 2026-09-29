@@ -156,6 +156,23 @@ describe("the chip's step (live-briefs spec §4.2)", () => {
     applyEvent(halted, { type: "graph.session.completed", metadata: { status: "failed", iteration: 0, error_count: 1, has_report: false } });
     expect(chipStep(halted)).toBe("researcher");
   });
+  it("chipStep keeps naming Publishing between its completion and graph.session.completed (no stale /status fallback)", () => {
+    const events = extraPass.events;
+    const published = at(events, (e) => e.event_type === "graph.node.completed" && e.metadata.node === "finalize_report");
+    const run = newRunState(P(extraPass));
+    for (let k = 0; k <= published; k++) applyEvent(run, toRunEvent(events[k]));
+    // Publishing's completion has been applied; graph.session.completed has not. The row is done, so
+    // there is no active row and no open node — the chip must still read Publishing, never fall
+    // through to whatever /status last said.
+    expect(run.finalStatus).toBeNull();
+    expect(run.active).toBeNull();
+    expect(run.openNode).toBeNull();
+    expect(chipStep(run)).toBe("finalize_report");
+    // a run that ended without ever finishing Publishing (the reviewer routed to "end") has nothing to name
+    const ended = newRunState(2);
+    applyEvent(ended, { type: "graph.route.decided", metadata: { destination: "end", reason: "no_report" } });
+    expect(chipStep(ended)).toBeNull();
+  });
 });
 
 /* live-briefs spec §4.3: the step briefs' state, proven on the regenerated live captures. */

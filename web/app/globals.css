@@ -1323,6 +1323,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .spine-lg.briefs .ps-x{transition:none !important}
   .spine-lg.briefs .ln{transform:none !important;transition-property:opacity !important;transition-duration:160ms !important;transition-delay:0ms !important}
   .spine-lg.briefs > li::after{transition:none !important}
+  /* Nothing waits on the hand-off timings (the --d-* delays above, the per-row stagger on the row's
+     colours): with no travel to time against, a delay would only show the next row's node hollow
+     and the finished row's live subtitle for 0.26-0.6s after the state changed. */
+  .spine-lg.briefs > li,.spine-lg.briefs > li *{transition-delay:0ms !important}
   .mk svg path{transition:none !important}
   .mk .dotc{transform:none !important}
   [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
