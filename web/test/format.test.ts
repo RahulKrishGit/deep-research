@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResearchSessionResponse } from "../lib/api";
-import { fmtClock, fmtScore, fmtSeconds, meterClass, notFoundClause, passFact, qFitClass, statusNote, toSessionView } from "../lib/format";
+import { STATUS, fmtClock, fmtScore, fmtSeconds, isLive, meterClass, notFoundClause, passFact, qFitClass, statusNote, toSessionView } from "../lib/format";
 
 const base: ResearchSessionResponse = {
   session_id: "s", query: "q", status: "running", current_agent: null, iteration: 0,
@@ -37,9 +37,16 @@ describe("statusNote — one rule per API status", () => {
   it("failed → halted", () => {
     expect(statusNote(toSessionView({ ...base, status: "failed" }))).toBe("halted");
   });
+  it("needs_input → Waiting for you · a few quick questions, on the warn dot (live-briefs spec §4.5)", () => {
+    expect(statusNote(toSessionView({ ...base, status: "needs_input" }, "Planning"))).toBe("a few quick questions");
+    expect(STATUS.needs_input).toEqual({ label: "Waiting for you", dot: "dot-warn" });
+  });
 });
 
 describe("helpers", () => {
+  it("isLive: a running session and one waiting for the reader are in progress; every other status is not", () => {
+    expect((["running", "needs_input", "completed", "max_iterations", "incomplete", "failed"] as const).map(isLive)).toEqual([true, true, false, false, false, false]);
+  });
   it("qFitClass centres the question at 80 characters, not 81", () => {
     expect(qFitClass("a".repeat(80))).toBe(" q-center");
     expect(qFitClass("a".repeat(81))).toBe("");

@@ -20,5 +20,8 @@ describe("StatusChip", () => {
     expect(container.querySelector(".dot")!.className).toContain("dot-warn");
     rerender(<StatusChip view={view({ status: "failed" })} />);
     expect(text(container)).toBe("Failed · halted");
+    rerender(<StatusChip view={view({ status: "needs_input", step: null })} />);
+    expect(text(container)).toBe("Waiting for you · a few quick questions");
+    expect(container.querySelector(".dot")!.className).toContain("dot-warn");
   });
 });

@@ -23,11 +23,17 @@ export function toSessionView(s: ResearchSessionResponse, step: string | null = 
 /* Label and dot per API status (api/models.py:13-19). The second clause is built by statusNote(). */
 export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "dot-ok" | "dot-warn" | "dot-danger" }> = {
   running: { label: "Running", dot: "dot-live" },
+  needs_input: { label: "Waiting for you", dot: "dot-warn" },
   completed: { label: "Completed", dot: "dot-ok" },
   max_iterations: { label: "Partially completed", dot: "dot-warn" },
   incomplete: { label: "Partially completed", dot: "dot-warn" },
   failed: { label: "Failed", dot: "dot-danger" },
 };
+/* A session still in progress: running, or waiting for the reader's answers to the one-time check
+   (live-briefs spec §4.4: needs_input is not terminal). */
+export function isLive(status: SessionStatus): boolean {
+  return status === "running" || status === "needs_input";
+}
 
 /* index.html:1795-1811 (setQuestionFit) / DESIGN.md:401-405 — a short question sits in the middle
    of the frame; the .ask-locked.q-center CSS rule (globals.css) does the actual centring. */
@@ -60,6 +66,7 @@ export function statusNote(s: SessionView): string {
     case "completed": return "review accepted" + (score === null ? "" : " · " + score) + notFoundClause(s);
     case "max_iterations": return "extra passes used" + notFoundClause(s);
     case "incomplete": return s.review && s.review.status === "scored" && score !== null ? "not accepted · " + score : "review unavailable";
+    case "needs_input": return "a few quick questions";
     case "failed": return "halted";
     default: return s.step ?? "starting";
   }

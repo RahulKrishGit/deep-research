@@ -26,7 +26,7 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 const P = (c: Capture) => (c.events[0].metadata.max_extra_passes as number) + 1;
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the seventeen handlers", () => {
+  it("has the seven rows and the nineteen handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
@@ -34,7 +34,7 @@ describe("the port is the prototype's core", () => {
       "graph.node.started", "graph.report.redraft_requested", "graph.report.reviewed", "graph.route.decided",
       "graph.session.completed", "graph.session.started", "planner.planning.completed", "report_writer.report.written",
       "researcher.research.completed", "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
-      "source_evaluator.evaluation.completed",
+      "session.clarification.answered", "session.clarification.requested", "source_evaluator.evaluation.completed",
     ]);
   });
 });
@@ -282,4 +282,49 @@ describe("(i) burst-safety: a late subscriber paints the same briefs", () => {
       capture.events.forEach((_, k) => expect(replayRun(capture.events.slice(0, k + 1), P(capture))).toEqual(snaps[k]));
     });
   }
+});
+
+describe("(j) the one-time check (live-briefs spec §4.4-§4.5)", () => {
+  const questions = [
+    { id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], best_guess: "Global" },
+    { id: "q2", dimension: "period", text: "How recent should the sources be?", short: "Period", options: ["Last 12 months", "Since 2023", "Any time"], best_guess: "Since 2023" },
+  ];
+  const requested = { type: "session.clarification.requested", metadata: { questions, deadline_at: "2026-09-29T10:01:00.000Z" } };
+  const answered = { type: "session.clarification.answered", metadata: { reason: "skipped", answers: [
+    { question_id: "q1", value: "Global", source: "chosen" }, { question_id: "q2", value: "Since 2023", source: "best_guess" },
+  ] } };
+  it("holds the questions and the deadline, then the answers and why; no row moves", () => {
+    const run = newRunState(null);
+    expect(run.clarify).toBeNull();
+    applyEvent(run, requested);
+    expect(run.clarify).toEqual({
+      questions: [
+        { id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], bestGuess: "Global" },
+        { id: "q2", dimension: "period", text: "How recent should the sources be?", short: "Period", options: ["Last 12 months", "Since 2023", "Any time"], bestGuess: "Since 2023" },
+      ],
+      deadlineAt: "2026-09-29T10:01:00.000Z",
+      answered: null,
+    });
+    applyEvent(run, answered);
+    expect(run.clarify!.answered).toEqual({ reason: "skipped", answers: [
+      { questionId: "q1", value: "Global", source: "chosen" }, { questionId: "q2", value: "Since 2023", source: "best_guess" },
+    ] });
+    expect(run.clarify!.questions).toHaveLength(2);
+    expect(run.active).toBe("planner");
+    expect(run.marks).toEqual({});
+  });
+  it("drops a malformed question or answer rather than inventing one", () => {
+    const run = newRunState(null);
+    applyEvent(run, { type: "session.clarification.requested", metadata: { questions: [questions[0], { id: "q2", text: "no options" }, null], deadline_at: 5 } });
+    expect(run.clarify!.questions.map((q) => q.id)).toEqual(["q1"]);
+    expect(run.clarify!.deadlineAt).toBe("");
+    applyEvent(run, { type: "session.clarification.answered", metadata: { answers: [{ question_id: "q1", value: "Global", source: "guessed" }] } });
+    expect(run.clarify!.answered).toEqual({ answers: [], reason: "" });
+  });
+  it("is burst-safe: a late subscriber paints the same check", () => {
+    const events: ResearchEvent[] = [requested, answered, { type: "graph.session.started", metadata: { max_extra_passes: 1 } }, { type: "graph.node.started", metadata: { node: "planner", iteration: 0 } }]
+      .map((e, i) => ({ event_type: e.type, source: "api", message: "m", timestamp: "2026-09-29T10:00:00+00:00", metadata: e.metadata, event_id: `e${i}` }));
+    const snaps = snapshots(events, 2);
+    events.forEach((_, k) => expect(replayRun(events.slice(0, k + 1), 2)).toEqual(snaps[k]));
+  });
 });

@@ -50,6 +50,11 @@ export interface Topic { coverageId: string; title: string; state: TopicState; f
 export interface PlannedTopic { coverageId: string; title: string }
 /* The first line of a row a loop reopened: why it reopened (the old loop tag's content). */
 export interface ReopenLine { kind: "extra_pass" | "redraft"; text: string }
+/* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from
+   session.clarification.requested, then the answers the run starts with from .answered. */
+export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
+export interface ClarifyAnswer { questionId: string; value: string; source: "chosen" | "typed" | "best_guess" }
+export interface ClarifyState { questions: ClarifyQuestion[]; deadlineAt: string; answered: { answers: ClarifyAnswer[]; reason: string } | null }
 export interface RunState {
   marks: Partial<Record<NodeId, Mark>>;   /* node id → "done" | "loop" | "skipped"; the active row is derived */
   active: NodeId | null;                  /* the "Now" row: the successor of the last graph.node.completed */
@@ -70,6 +75,7 @@ export interface RunState {
   reopen: Partial<Record<NodeId, ReopenLine>>;
   outcomes: Partial<Record<NodeId, string>>;  /* each row's outcome line once it is done */
   open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
+  clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
 }
 export interface RunEvent { type: string; metadata: Record<string, unknown> }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,7 +95,7 @@ export function newRunState(passes: number | null | undefined): RunState {
     rearmed: {}, rearmedFirst: null, captions: {}, blurbs: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
     plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
-    reopen: {}, outcomes: {}, open: new Set(),
+    reopen: {}, outcomes: {}, open: new Set(), clarify: null,
   };
 }
 function nextRow(node: NodeId): NodeId | null {
@@ -152,6 +158,18 @@ function reviewOutcome(run: RunState, md: Md): string {
 }
 export function toggleOpen(run: RunState, id: NodeId): void {
   if (run.open.has(id)) run.open.delete(id); else run.open.add(id);
+}
+
+/* The check's wire shapes (api/clarify.py): an entry that does not fit is dropped, never invented. */
+const isText = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+function isClarifyQuestion(q: unknown): q is { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string } {
+  const m = q as Md | null;
+  return !!m && isText(m.id) && isText(m.dimension) && isText(m.text) && isText(m.short)
+    && Array.isArray(m.options) && m.options.every(isText) && isText(m.best_guess);
+}
+function isClarifyAnswer(a: unknown): a is { question_id: string; value: string; source: ClarifyAnswer["source"] } {
+  const m = a as Md | null;
+  return !!m && isText(m.question_id) && typeof m.value === "string" && ["chosen", "typed", "best_guess"].includes(m.source);
 }
 
 /* Keyed by event type; each handler reads only `md` (the event's metadata). */
@@ -277,6 +295,20 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     run.finalStatus = md.status;
     run.loop = "off"; run.arc = null; run.tag = null;
     run.active = null;
+  },
+  /* live-briefs spec §4.4: the session asks before the graph starts; neither event moves a row. */
+  "session.clarification.requested": (run, md) => {
+    const listed: unknown[] = Array.isArray(md.questions) ? md.questions : [];
+    run.clarify = {
+      questions: listed.filter(isClarifyQuestion).map((q) => ({ id: q.id, dimension: q.dimension, text: q.text, short: q.short, options: [...q.options], bestGuess: q.best_guess })),
+      deadlineAt: typeof md.deadline_at === "string" ? md.deadline_at : "",
+      answered: null,
+    };
+  },
+  "session.clarification.answered": (run, md) => {
+    const listed: unknown[] = Array.isArray(md.answers) ? md.answers : [];
+    const answers = listed.filter(isClarifyAnswer).map((a) => ({ questionId: a.question_id, value: a.value, source: a.source }));
+    run.clarify = { questions: run.clarify?.questions ?? [], deadlineAt: run.clarify?.deadlineAt ?? "", answered: { answers, reason: typeof md.reason === "string" ? md.reason : "" } };
   },
 };
 export function applyEvent(run: RunState, ev: RunEvent): void {
