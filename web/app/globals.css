@@ -1196,3 +1196,26 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    already does; a short (<=80 char, `.q-center`) question is centred and single-line regardless,
    so the wrap algorithm makes no visible difference for it. */
 .ask-q{text-wrap:pretty}
+
+/* Report stage at wide windows (human-reported live at 1568×843). .report-main's left grid
+   column was minmax(0,1fr): it grew to fill whatever the 300px rail left (892px at 1568) while
+   .prose{max-width:720px} (verbatim, :826) stayed put — an empty strip inside the card, to the
+   right of the text and tables. Separately, .report-head-bar and #reportOpts spanned the full
+   viewport width (.report-head carries no max-width of its own) while #report-h stayed centred
+   at 720px (:891-893) — three rows at three different widths.
+   Human decision, "card hugs the text": the card is exactly the prose width plus the card's own
+   padding (--space-5 each side) and border (1px each side); the card and the 300px rail are
+   centred together as one group; the head row, the question frame and the settings row all align
+   to that group's left edge, right edge and axis.
+   --report-card-w is scoped on #stage-report so .report-main and .report-head read the same one
+   value — they can never drift apart. minmax(0, …) rather than a bare length keeps the existing
+   shrink-to-fit behaviour below the width the cap needs (at 1252px the column already renders
+   narrower than 720px and this changes nothing there); max-width + margin-inline:auto is what
+   turns the leftover space above that width into centred margins instead of a dead strip on the
+   right. Guarded to the existing rail breakpoint (1120px, verbatim :332-337) so the single-column
+   phone layout is unchanged. */
+#stage-report{--report-card-w:calc(var(--reading-max) + 2 * var(--space-5) + 2px)}
+@media (min-width:1121px){
+  .report-main{grid-template-columns:minmax(0,var(--report-card-w)) var(--rail);max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
+  #stage-report .report-head{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
+}

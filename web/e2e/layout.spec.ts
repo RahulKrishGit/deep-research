@@ -119,6 +119,51 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
   });
 }
 
+// Human-reported (live session, 1568×843): the report card grows with the grid (1fr against the
+// 300px rail), leaving an empty strip to the right of .prose{max-width:720px}; the head row and
+// #reportOpts spanned the full width while #report-h stayed centred at 720px, so the three rows
+// didn't line up either. Human decision: "card hugs the text" — the card is exactly the prose
+// width plus its own padding, the card and the rail are centred together as one group, and the
+// head row/question frame/settings row all align to that group.
+for (const width of [1252, 1568, 1920]) {
+  test.describe(`report stage at ${width}px — card hugs the text`, () => {
+    test.use({ viewport: { width, height: 853 }, reducedMotion: "reduce" });
+    test("no empty strip: the group is centred and every row aligns to it", async ({ page, request }) => {
+      const id = await submit(page, "q");
+      await waitTerminal(request, id);
+      await expect(page.locator("#stage-report .prose h2").first()).toBeVisible({ timeout: 20_000 });
+      const prose = (await page.locator(".prose").first().boundingBox())!;
+      const cardLoc = page.locator(".report-main .card").first();
+      const card = (await cardLoc.boundingBox())!;
+      const cardPadRight = await cardLoc.evaluate((el) => parseFloat(getComputedStyle(el).paddingRight));
+      // .prose's right edge is within the card's content box (card right minus padding), ±2px.
+      expect(Math.abs(prose.x + prose.width - (card.x + card.width - cardPadRight))).toBeLessThanOrEqual(2);
+
+      const rail = (await page.locator(".report-main .rail").first().boundingBox())!;
+      const gap = await page.locator(".report-main").first().evaluate((el) => parseFloat(getComputedStyle(el).columnGap));
+      // the card's right edge plus the gap equals the rail's left edge.
+      expect(Math.abs(card.x + card.width + gap - rail.x)).toBeLessThanOrEqual(2);
+
+      const viewportBox = await page.locator("#viewport").evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const s = getComputedStyle(el);
+        return { left: r.left + parseFloat(s.paddingLeft), right: r.right - parseFloat(s.paddingRight) };
+      });
+      const groupLeft = card.x;
+      const groupRight = rail.x + rail.width;
+      const groupCentre = (groupLeft + groupRight) / 2;
+      const mainCentre = (viewportBox.left + viewportBox.right) / 2;
+      // the group is centred in the viewport's main area, ±2px.
+      expect(Math.abs(groupCentre - mainCentre)).toBeLessThanOrEqual(2);
+
+      const reportH = (await page.locator("#report-h").boundingBox())!;
+      const reportHCentre = reportH.x + reportH.width / 2;
+      // #report-h's centre equals the group's centre, ±2px.
+      expect(Math.abs(reportHCentre - groupCentre)).toBeLessThanOrEqual(2);
+    });
+  });
+}
+
 test.describe("Evidence view — long refused-citation list and a long source URL (live-run fix)", () => {
   // AC21 found this: replay data never produces a refused item with a long finding_labels list,
   // so no existing capture or test exercised it. Real replay E1 JSON, mutated with the two shapes
