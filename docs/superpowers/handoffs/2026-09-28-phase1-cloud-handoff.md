@@ -25,7 +25,13 @@ Everything in this document and in `cloud-session/` is for the cloud session onl
 3. Read `.claude/CLAUDE.md` (the routing table and working rules) and follow it for the whole session.
 4. **The agent types must be dispatchable.** A cloud session loads agent types only at launch, so the five agents come from the cloud environment's **Setup script**, which runs `cloud-session/setup.sh --cloud` before launch. Running `setup.sh` mid-session is only for the Python, npm and Playwright checks.
 
-   Confirm that `cloud-implementer`, `cloud-task-reviewer`, `cloud-branch-reviewer`, `spec-plan-author` and `spec-plan-reviewer` are listed as agent types. If they are not, say so and stop. Never substitute other models or model overrides.
+   Confirm that `cloud-implementer`, `cloud-task-reviewer`, `cloud-branch-reviewer`, `spec-plan-author` and `spec-plan-reviewer` are listed as agent types. The environment script (`cloud-session/environment-setup-script.sh`) installs them into both `~/.claude/agents/` and the repo's `.claude/agents/`, and logs to `/root/cloud-setup.log`.
+
+   If the agent types are not listed, stop and report:
+   - the full contents of `/root/cloud-setup.log` (or say it does not exist, which means the environment's setup script did not run);
+   - `ls ~/.claude/agents .claude/agents`.
+
+   Never substitute other models or model overrides.
 5. If the superpowers skills do not appear in your skill list, read and follow them directly from `.claude/skills/<name>/SKILL.md`. Start with `using-superpowers`, then `subagent-driven-development`.
 6. **The Playwright browser.** The Playwright-managed Chromium should install from `cdn.playwright.dev`, which the environment's network allowlist permits.
 

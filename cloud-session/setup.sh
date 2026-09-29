@@ -18,11 +18,19 @@ fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
-# 1. Skills, agents and routing rules -> .claude/ (on the cloud machine only).
+# 1. Skills, agents and routing rules -> .claude/ in the repo AND the cloud VM's own
+#    ~/.claude/ (read at launch whatever the working directory). Both exist only on the
+#    cloud VM; the owner's machine never runs this.
 mkdir -p .claude/skills .claude/agents
 cp -R cloud-session/claude/skills/. .claude/skills/
 cp cloud-session/claude/agents/*.md .claude/agents/
 cp cloud-session/claude/CLAUDE.md .claude/CLAUDE.md
+VMHOME="${HOME:-/root}"
+mkdir -p "$VMHOME/.claude/skills" "$VMHOME/.claude/agents"
+cp -R cloud-session/claude/skills/. "$VMHOME/.claude/skills/"
+cp cloud-session/claude/agents/*.md "$VMHOME/.claude/agents/"
+cp cloud-session/claude/CLAUDE.md "$VMHOME/.claude/CLAUDE.md"
+echo "cloud-session/setup.sh: agents in $VMHOME/.claude/agents: $(ls "$VMHOME/.claude/agents" | tr '\n' ' ')"
 
 # Hide the copies (and the venv) from git on this machine only; never committed.
 EXCLUDE="$(git rev-parse --git-path info/exclude)"
