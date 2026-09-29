@@ -715,8 +715,7 @@ cleanly next to a 1px connector; anything without an edge reads as dirt.
 
 **Pacing is a prototype concern, not a design one.** A real run takes minutes and
 each step holds its highlight for as long as it actually runs; on the real stream
-a node's events arrive together, once per node step, when the node finishes
-(`graph/orchestrator.py:312-346`). The prototype cannot reproduce either, so it
+each event arrives as it happens (§5.7). The prototype cannot reproduce either, so it
 plays one event per tick, compresses the schedule and weights it per node — the
 researcher emits a tool-call event per tool per sub-topic and would otherwise
 starve every other step of screen time. The weighting changes when a step is
@@ -744,10 +743,10 @@ the whole budget and ends `max_iterations`. Both are ordinary, and the same UI
 has to read correctly for a one-pass run, an extra-pass run, a redrafted run and
 a budget-exhausted run.
 
-**The active row is derived, and it is derived from completions.** On the real
-stream a node's `graph.node.started` arrives only when the node has already
-finished, in the same burst as its own `graph.node.completed`, so the started
-event cannot mark the running row. The "Now" row is the **successor of the last
+**The active row is derived, and it is derived from completions.** A node's
+`graph.node.started` now arrives live when the node starts (§5.7), but a reconnect
+replays the whole log as one burst and the reviewer's own start arrives with its
+snapshot, so completions stay the rule and read the same either way. The "Now" row is the **successor of the last
 `graph.node.completed`**: Planning until the planner completes, then
 Researching, and so on. The exceptions are keyed on the reviewer's route
 decision, which it emits before its own completion (`graph/nodes.py:819-841`):
@@ -1530,16 +1529,17 @@ and the loop tag from `graph.route.decided`, `graph.extra_pass.started` and
 `graph.report.reviewed`; the failed stage's skipped rows from
 `graph.node.skipped` and its Publishing row from `graph.session.completed`.
 
-**Delivery is once per node step.** The orchestrator publishes each
-`stream_mode="values"` snapshot's new events together
-(`graph/orchestrator.py:312-346`), so a node's `graph.node.started`, everything
-it emitted and its `graph.node.completed` arrive at once, when the node finishes.
-The screen therefore moves once per node — and during the researcher, the longest
-stage, the research counters read `not yet` for its whole duration. Every
-derivation above is written so the state after event *k* depends only on events
-1..*k*: a 100-event replay, a per-node burst and a one-per-tick playback paint
-the same screen. Live per-event delivery is an API gap (api-gaps 3.7), listed for
-the API work.
+**Delivery is live.** Each event reaches the stream as it happens: `graph.node.started`
+when a node starts, and each agent's progress events as the agent builds them — the
+researcher's `researcher.sub_topic.started`, `researcher.tool_call` (built when its
+step's observation is recorded) and `researcher.sub_topic.completed` while its topics
+run, concurrently. Events that are not published live — the graph's route, review,
+hop and completion events, and `researcher.research.completed` — arrive with their
+node's snapshot, and an id already published live is never published twice
+(`graph/live.py`, `graph/orchestrator.py`; api-gaps 3.7, closed). The screen therefore
+moves within a node: the Researching checklist ticks topics off as they finish. Every
+derivation above is still written so the state after event *k* depends only on events
+1..*k*: a live run, a 100-event replay and a reconnect's burst paint the same screen.
 
 This is a product judgement, stated so it can be overruled: a run emits well over
 100 events, the operator's question is "is it progressing and what has it found",
@@ -1596,7 +1596,7 @@ Full detail, with the request shape each gap implies, is in
 | Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
 | Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
 | Submitted | nothing beyond Idle |
-| Running | events arrive once per node step, not live per event; `max_extra_passes` is on the stream but not on `/status`; no token usage; no terminal frame; no event identity for reconnects; the halting vocabulary is a client copy; shutdown leaves `running` |
+| Running | `max_extra_passes` is on the stream but not on `/status`; no token usage; no terminal frame; no event identity for reconnects; the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
 | Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
 | Sidebar | no `GET /research`; no result summary per row; no durable store |

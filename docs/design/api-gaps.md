@@ -10,7 +10,7 @@ or a disabled control.**
 
 The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
 3 Running, 4 Report, 5 Failed) and a collapsible session sidebar, so gaps are
-keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1 and 1.2 are closed
+keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the
 Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 
@@ -49,11 +49,19 @@ default → config), `output_format` and `config_overrides`; overrides are
 validated against `ConfigSettings()`, so an unknown path is a `422` before a
 session exists.
 
-**Delivery model.** Events reach the stream once per node step: each
-`stream_mode="values"` snapshot publishes the events that superstep appended
-(`graph/orchestrator.py:312-346`), so a node's `graph.node.started`, everything
-it emitted and its `graph.node.completed` arrive together when the node finishes.
-Every running-stage rule in DESIGN.md §3.5 and §5.7 is written for that.
+**Delivery model.** Events reach the stream as they happen (3.7, closed
+2026-09-28). Every `ResearchEvent` carries an `event_id`. `agent_node` publishes
+`graph.node.started` when a node starts, and the agents publish their progress
+events the moment they build them — the researcher's `researcher.sub_topic.started`,
+each `researcher.tool_call` as its step is recorded, and
+`researcher.sub_topic.completed`, while its topics run concurrently — through the
+run's sink (`graph/live.py`). The per-superstep snapshot publishes everything else,
+in state order, skipping any `event_id` already published live
+(`graph/orchestrator.py`, `_stream_graph_result`). Every event is delivered exactly
+once; a live event can arrive ahead of events its node recorded earlier; a node that
+halts after publishing live has delivered those events although its halted state
+keeps none of them. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays
+burst-safe: the state after event *k* depends only on events 1..*k*.
 
 ---
 
@@ -72,6 +80,7 @@ Kept as a record, one line each.
 | 1.1 | `query` echo | `query` is on every `ResearchSessionResponse` (`api/models.py`) |
 | 1.2 | `GET /research` | the session list, newest first, `?limit=` 1–200 (default 20); process-local memory, as SB.2 records |
 | — | `/status.iteration` store fix | `ResearchSession.publish` copies `iteration` from `graph.*` events only (`api/sessions.py`), so `researcher.tool_call`'s ReAct step index never moves the pass |
+| 3.7 | live per-event delivery | closed 2026-09-28 (live-briefs spec E1–E3): every `ResearchEvent` carries an `event_id`; `agent_node` and the agents publish progress live through the run's sink (`graph/live.py`), and the snapshot loop skips ids already published, so each event is delivered once (`graph/orchestrator.py`) |
 
 ---
 
@@ -103,7 +112,6 @@ Kept as a record, one line each.
 | 3.4 | **Event identity / `Last-Event-ID`** [2.6] | SSE `id` is per-subscriber and starts at 1, so it is a stream position rather than an event identity. A reconnect cannot ask for "everything after what I saw". | `ResearchSession.events` list index | Re-derive the running stage from the full replay — every rule is idempotent over events 1..k | A monotonic `sequence` on `ResearchEvent`, plus `Last-Event-ID` support |
 | 3.5 | **Halting-type vocabulary** [2.5] | The failed stage headlines the halting type in plain words and the rail groups recoverable errors, but the client keeps its own copy of `HALTING_ERROR_TYPES` to know which is which. | `HALTING_ERROR_TYPES` in `graph/state.py:141-150` | Client copy, small and stable | `halting: bool` on `ResearchError`, or publish the enumerated set |
 | 3.6 | **Shutdown while running** [2.7] | On cancellation the store sets `finished_at` and leaves `status` as `running`, then the stream ends. The console sees a closed stream with a non-terminal status. | Deliberate: *"cancellation stays cancellation"* | On stream close, re-read `/status`; a closed stream with `finished_at` set and `status == "running"` means the service stopped | The terminal frame from 3.3, or an explicit status |
-| 3.7 | **Live per-event delivery** (new) | Events are published once per node step (`graph/orchestrator.py:312-346`), not as they happen, so the running stage's counters and active row move once per node; during the researcher — the longest stage — the research counters read `not yet` for its whole duration. | The events exist as they are appended to `ResearchState.events`; only publication is batched per superstep | The design's burst-safe rules (DESIGN.md §3.5, §5.7): the state after event *k* depends only on events 1..*k*, so bursts, ticks and replays paint the same screen | Publish each event as it is appended (stream the node's events, not the superstep snapshot); listed for the API work |
 
 ---
 

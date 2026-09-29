@@ -13,9 +13,10 @@ from deep_research.api.app import create_app
 from deep_research.api.replay import ReplayCaseMiddleware, ReplayRunner
 from deep_research.api.sessions import SessionStore
 from deep_research.e2e_evaluation.replay import production_config_path
-from deep_research.e2e_evaluation.replay_matrix import scenario_by_id
+from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_IDS, scenario_by_id
+from deep_research.utils.types import ResearchEvent
 from tests.test_api.fakes import ScriptedRunner
-from tests.test_api.replay_support import EXTRA_PASS_CASE, REVIEW_UNAVAILABLE_CASE, guarded
+from tests.test_api.replay_support import EXTRA_PASS_CASE, REVIEW_UNAVAILABLE_CASE, guarded, replay_outcome
 from tests.test_api.test_app import valid_preflight, wait_until_terminal
 
 
@@ -128,3 +129,67 @@ async def test_close_cancels_the_pacer_and_publishes_nothing_more(tmp_path: Path
         await asyncio.sleep(0.5)
     assert len(session.events) == published
     assert session.status == "running" and session.finished_at is not None
+
+
+@pytest.mark.asyncio
+async def test_the_replay_runner_delivers_every_event_once_inside_its_own_node(tmp_path: Path) -> None:
+    """live-briefs spec E4 and AC1 on the real graph: the paced queue receives live
+    events through the same handler; every event arrives once; each agent's events
+    arrive between its node's graph.node.started and graph.node.completed; and each
+    researcher.tool_call arrives after its topic's started event and before its
+    completed event, although the topics run concurrently."""
+    received: list[ResearchEvent] = []
+    with guarded():
+        scenario = scenario_by_id(EXTRA_PASS_CASE)
+        runner = ReplayRunner(default_case=EXTRA_PASS_CASE, delay=0.0, root=tmp_path)
+        outcome = await runner(
+            question=scenario.question, session_id="s1", max_extra_passes=None,
+            output_format="markdown", config_overrides={},
+            config_path=str(production_config_path()), event_handler=received.append,
+        )
+
+    ids = [event.event_id for event in received]
+    assert len(ids) == len(set(ids))
+    assert set(ids) == {event.event_id for event in outcome.state.events}
+    open_node: str | None = None
+    for event in received:
+        if event.event_type == "graph.node.started":
+            assert open_node is None, event.metadata
+            open_node = event.metadata["node"]
+        elif event.event_type == "graph.node.completed":
+            assert open_node == event.metadata["node"]
+            open_node = None
+        elif event.source.startswith("agent."):
+            assert open_node == event.source.removeprefix("agent."), event.event_type
+    started_at: dict[str, int] = {}
+    for index, event in enumerate(received):
+        if event.event_type == "researcher.sub_topic.started":
+            started_at[event.metadata["sub_topic"]] = index
+        if event.event_type == "researcher.tool_call":
+            title = event.metadata["sub_topic"]
+            assert started_at[title] < index
+            assert any(
+                later.event_type == "researcher.sub_topic.completed"
+                and later.metadata["sub_topic"] == title
+                for later in received[index + 1:]
+            )
+
+
+@pytest.mark.parametrize("case_id", REPLAY_CASE_IDS)
+def test_topic_findings_sum_matches_research_total(case_id: str, tmp_path: Path) -> None:
+    """The spec's §4.3 inference: over every replay case, the findings_retained of a
+    pass's completed topics sum to that pass's researcher.research.completed.findings,
+    so the Researching subtitle's running total lands on the pass total."""
+    outcome = replay_outcome(case_id, tmp_path)
+    passes = 0
+    retained = 0
+    for event in outcome.state.events:
+        if event.event_type == "graph.node.started" and event.metadata.get("node") == "researcher":
+            retained = 0
+        elif event.event_type == "researcher.sub_topic.completed":
+            retained += event.metadata["findings_retained"]
+        elif event.event_type == "researcher.research.completed":
+            assert retained == event.metadata["findings"]
+            passes += 1
+    if passes == 0:
+        pytest.skip(f"{case_id} completes no research pass, so it has no total to compare")
