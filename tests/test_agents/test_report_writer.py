@@ -39,6 +39,7 @@ from deep_research.agents.report_writer import (
     statement_passages,
 )
 from deep_research.agents.sources import normalize_source_url
+from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import ProviderOutputLimitError, ProviderResponseError, ProviderResponseTelemetry
@@ -54,6 +55,7 @@ from deep_research.utils.types import (
     ItemMarkDraft,
     ReportSection,
     ReportStatement,
+    ResearchEvent,
     ResearchState,
     ReviewDefect,
     ScoredSource,
@@ -3605,3 +3607,28 @@ def test_target_line_credits_a_label_that_is_one_of_the_parts_own_findings() -> 
     )
 
     assert "answered by F01" in line
+
+
+@pytest.mark.asyncio
+async def test_the_report_written_event_is_published_live(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """live-briefs spec E3: report.written, live, as the object returned."""
+    def route(messages, schema):
+        del messages, schema
+        raise ProviderResponseError(
+            "provider returned an HTTP error", retryable=True,
+            failure_category="http", http_status_code=503, failure_origin="sdk",
+        )
+
+    state = _one_part_state()
+    agent = _writer(tracker, ScriptedCompleter(outputs=[route] * 10), report_writer_tools(tracker, output_root=tmp_path))
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span(state.session_id, state.original_question):
+        with bind_live_sink(received.append):
+            run = await agent.run(state)
+
+    [written] = run.state_update["events"]
+    assert written.event_type == "report_writer.report.written"
+    assert [event.event_id for event in received] == [written.event_id]

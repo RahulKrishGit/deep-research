@@ -1148,7 +1148,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the dossier Self-description line,
     # the self-declared relay and subject-relevance rules; reviews, Fable
     # prompt review GREEN at 6424075). Moved `72339771d728` -> `0d96c48eae29`.
-    "source_evaluator": "0d96c48eae29",
+    # Live briefs (live-briefs spec E3, 2026-09-28): both evaluation events
+    # are published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `0d96c48eae29` -> `fb7f60d73873`.
+    "source_evaluator": "fb7f60d73873",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1223,7 +1226,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; a pronoun is never an organisation,
     # and the shared prompts module; reviews, Fable prompt review GREEN at
     # 6424075). Moved `624687fd7ae1` -> `0dc169302934`.
-    "evidence_verifier": "0dc169302934",
+    # Live briefs (live-briefs spec E3, 2026-09-28): verification.completed is
+    # published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `0dc169302934` -> `4a3d56fab932`.
+    "evidence_verifier": "4a3d56fab932",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1318,7 +1324,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # floor, authority-ordered registry, the outcome mark, Outcome block and
     # re-ask, why-part points; reviews, Fable prompt review GREEN at 6424075).
     # Moved `f1a5d8f8efc3` -> `ee5199095402`.
-    "report_writer": "ee5199095402",
+    # Live briefs (live-briefs spec E3, 2026-09-28): report.written is
+    # published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `ee5199095402` -> `0dcd4a41a378`.
+    "report_writer": "0dcd4a41a378",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

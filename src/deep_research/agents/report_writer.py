@@ -34,7 +34,7 @@ from deep_research.agents.base import (
     BaseAgent,
 )
 from deep_research.agents.errors import AgentConfigurationError, agent_error
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import cosmetic_text
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import Clock, answer_form_requirement, utc_now
@@ -3340,6 +3340,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             stop_reason=stop_reason,
             errors=list(composition.errors),
         )
+        written = report_written_event(result)
+        publish_live(written)  # live-briefs spec E3; returned below as well
         return AgentRun(
             agent_name=self.name,
             result=result,
@@ -3351,7 +3353,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
                 "composition": result.composition,
                 "unique_source_count": result.citation_count,
                 "errors": list(composition.errors),
-                "events": [report_written_event(result)],
+                "events": [written],
             },
             call_fingerprints=dict(self._call_fingerprints),
         )

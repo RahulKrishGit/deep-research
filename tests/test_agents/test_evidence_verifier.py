@@ -41,6 +41,7 @@ from deep_research.agents.evidence_verifier import (
 )
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END
 from deep_research.agents.steps import ReActRun
+from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -56,6 +57,7 @@ from deep_research.utils.types import (
     FigureResult,
     Finding,
     FindingVerification,
+    ResearchEvent,
     ResearchState,
     ScoredSource,
     SourceTemporal,
@@ -2450,3 +2452,21 @@ def test_the_statement_check_sees_the_page_title_a_sentence_may_name_a_document_
     assert ("    page: Article 12: Registration of widgets | Example Act | Example Register "
             "(example-register.example)") in body
     assert "    read at: example-register.example" in body
+
+
+@pytest.mark.asyncio
+async def test_the_verification_completed_event_is_published_live(tracker: Tracker) -> None:
+    """live-briefs spec E3: verification.completed, live, as the object returned."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET)
+    agent = _evidence_verifier(tracker, ScriptedCompleter())
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    [event] = outcome.state_update["events"]
+    assert event.event_type == "evidence_verifier.verification.completed"
+    assert [e.event_id for e in received] == [event.event_id]

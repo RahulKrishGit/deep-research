@@ -39,6 +39,7 @@ from deep_research.agents.source_evaluator import (
 )
 from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import ReActRun
+from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -52,6 +53,7 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     ReadRecord,
+    ResearchEvent,
     ResearchState,
     ScoredSource,
     merge_research_state,
@@ -3058,3 +3060,22 @@ async def test_two_failing_batches_record_their_errors_in_batch_order(
         "unscored_provider",
         "unscored_provider",
     ]
+
+
+@pytest.mark.asyncio
+async def test_the_evaluation_events_are_published_live(tracker: Tracker) -> None:
+    """live-briefs spec E3: both evaluation events, live, as the objects returned."""
+    agent = _evaluator(tracker, ScriptedCompleter())
+    state = _eval_state([])
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", state.original_question):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    events = outcome.state_update["events"]
+    assert [event.event_type for event in events] == [
+        "source_evaluator.evaluation.started",
+        "source_evaluator.evaluation.completed",
+    ]
+    assert [event.event_id for event in received] == [event.event_id for event in events]

@@ -29,7 +29,7 @@ from deep_research.agents.errors import (
     agent_error,
     agent_provider_failure_details,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import (
     ReadDossier,
     ReadIdentityRequest,
@@ -1358,6 +1358,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 source_count=len(task.groups),
             )
         ]
+        publish_live(events[0])  # live-briefs spec E3; returned below as well
         errors: list[ResearchError] = []
 
         async with self.tracker.agent_span(self.name) as span:
@@ -1374,13 +1375,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 for error in lookup_errors
             )
             snapshot = self._snapshot(sources)
-            events.append(
-                evaluation_completed_event(
-                    snapshot,
-                    reputation_hits=hits,
-                    reputation_failures=failures,
-                )
+            completed = evaluation_completed_event(
+                snapshot,
+                reputation_hits=hits,
+                reputation_failures=failures,
             )
+            publish_live(completed)
+            events.append(completed)
             span.set_outputs(
                 {
                     "agent_name": self.name,
