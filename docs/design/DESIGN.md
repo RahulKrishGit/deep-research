@@ -180,7 +180,13 @@ three, two to four answers each with one marked `best guess`, and **Other…** f
 reader's own words. A tapped answer moves on after 240ms. The footer offers Back, Skip
 this one and Just start, and its cap counts down to the start on best guesses (60s, D6).
 The answers are shown once, in the summary line, and never again: there is no
-assumptions UI (D7). No purple on the card: nothing on it is the page's primary action.
+assumptions UI (D7). No purple at rest: the only accent is the focus ring, because
+nothing on the card is the page's primary action. Two refusals have their own face, in
+place of the summary (the answers are posted once, never retried): `Already started with best guesses`
+when the API answers 409 (the check is no longer waiting), and
+`Your answers could not be sent; the run starts with best guesses.` when the POST fails
+any other way. Either way the run goes on with best guesses, and the stream then moves
+the stage on.
 There is no `checking` status (pending open issue O2 of the Phase 2 plan): while the
 check call runs, for up to `hitl.check_timeout_s` (20s), `/status` reads `running` and
 the page shows stage 3; if questions come back, stage 2a replaces the pipeline card.
@@ -253,10 +259,12 @@ effort at all in that mode (`providers/capabilities.py:77`). Effort is otherwise
 
 ### 3.1 The sidebar, and the one thing it cannot do
 
-The sidebar is the redesign's most constrained surface, because **the API has no
-collection route**. `SessionStore._sessions` is a process-local dict and the only
-five routes are `POST /research` plus four `GET`s keyed by an id the client must
-already hold. A session id is generated server-side (`new_session_id()`), so a
+The sidebar is the redesign's most constrained surface, because **the API keeps no
+durable collection**. `SessionStore._sessions` is a process-local dict, and the routes
+are `POST /research`, `GET /research` (the newest sessions that process holds, memory
+only), the `GET`s keyed by an id the client must already hold (`/research/{id}/status`,
+`/stream`, `/report`, `/evidence`, `/trace`) and `POST /research/{id}/answers` for the
+one-time check. A session id is generated server-side (`new_session_id()`), so a
 client cannot even guess one.
 
 The sidebar therefore renders a **client-assembled ledger**, and says so in its
@@ -265,7 +273,7 @@ own footer rather than implying a server-side history:
 | Sidebar row shows | Source | Honest when absent |
 |---|---|---|
 | Question text | The client's own copy of what it submitted, clamped to two lines | Never absent for rows the client created |
-| A running mark | `status === "running"` in the session snapshot | Absent on every settled row, by design — see below |
+| A running mark | `isLive(status)` in the session snapshot: `running`, or `needs_input` while the session waits for the reader's answers | Absent on every settled row, by design — see below |
 | Session id | `session_id`, carried on the row as `data-session` and `title` | Never rendered as text, so it cannot be missing from the page |
 | Report body on click | `GET /research/{id}/report` | A failed row opens stage 4, not an empty reader |
 
@@ -290,7 +298,8 @@ a status.
 **This row is the one place in the product where a status has no word.** Everywhere else
 §5.1's rule holds and a status carries its label. Here the running mark is a ring, and the
 cues that carry it are the ring's `--status-ok` hue, its spin, a step from `--muted` to `--fg`
-on the question, and an accessible name ending in `— running`. Under
+on the question, and an accessible name ending in `— running` (`— waiting for you` while the
+session waits for the reader's answers). Under
 `prefers-reduced-motion` the spin is suppressed, which leaves the hue and the text step.
 That is a genuine narrowing of the rule, taken because four status words in a 296px column
 cost more than they returned, and it is recorded rather than glossed.
