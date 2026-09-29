@@ -1,7 +1,7 @@
 "use client";
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { qFitClass } from "@/lib/format";
-import { clearIdleToRunningFlight, motionMs, runIdleToRunningLift, takeIdleToRunningFlight } from "@/lib/handoff";
+import { cancelDeferredClearIdleToRunningFlight, deferClearIdleToRunningFlight, motionMs, runIdleToRunningLift, takeIdleToRunningFlight } from "@/lib/handoff";
 
 /* Beats two and three of the idle→running lift land here (DESIGN.md:1378-1406). The section
    starts held at opacity 0 (is-preparing, index.html:224-225) so #submitted-h can be measured
@@ -15,17 +15,22 @@ import { clearIdleToRunningFlight, motionMs, runIdleToRunningLift, takeIdleToRun
    branch (index.html:2100-2105): the record simply appears rather than being carried to.
    Review fix round 1 (Important #1): the flight branch returns a cleanup that clears the box —
    a sidebar click or a second submit mid-lift must not leave it flying over whatever page comes
-   next; SessionScreen's own cleanups cover every other way this stage can be abandoned. */
+   next; SessionScreen's own cleanups cover every other way this stage can be abandoned.
+   Review fix round 2: that cleanup is now deferred (cancelDeferredClearIdleToRunningFlight is
+   called first, on every mount) — React StrictMode (next dev) mounts, cleans up and remounts
+   this effect synchronously, and an immediate clear would kill the flight this same mount just
+   took before the remount ever ran. A real unmount still clears, since nothing cancels it then. */
 export function SubmittedStage({ sessionId, question, strip }: { sessionId: string; question: string; strip: ReactNode }) {
   const [preparing, setPreparing] = useState(true);
   const [revealing, setRevealing] = useState(false);
   useLayoutEffect(() => {
+    cancelDeferredClearIdleToRunningFlight(sessionId);
     const onLanded = () => { setPreparing(false); setRevealing(true); };
     const flight = takeIdleToRunningFlight(sessionId);
     const target = document.getElementById("submitted-h");
     if (flight && target) {
       runIdleToRunningLift(flight, target, onLanded);
-      return () => clearIdleToRunningFlight();
+      return () => deferClearIdleToRunningFlight(sessionId);
     }
     const t = setTimeout(onLanded, motionMs("--motion-clear", 320));
     return () => clearTimeout(t);

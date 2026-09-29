@@ -3,7 +3,7 @@ import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } 
 import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, getStatus, streamUrl, type ResearchSessionResponse } from "@/lib/api";
 import { qFitClass, toSessionView, type SessionView } from "@/lib/format";
-import { clearIdleToRunningFlight, clearRunningLayout } from "@/lib/handoff";
+import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
 import { applyEvent, marksFor, newRunState, toRunEvent, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
@@ -156,8 +156,15 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     clearIdleToRunningFlight();
   }, [notFound, status, stopped, beat]);
   // Abandoning this page (a sidebar click, New Research) mid-flight must not leave the box
-  // animating over whatever the operator navigates to next.
-  useEffect(() => () => clearIdleToRunningFlight(), [sessionId]);
+  // animating over whatever the operator navigates to next. Deferred (fix round 2): React
+  // StrictMode (next dev) mounts, cleans up and remounts this effect synchronously on first
+  // mount, so an immediate clear here would kill a flight that had only just landed — deferring
+  // it and letting the remount's own body cancel it (below) survives that, while a real unmount
+  // or a genuine sessionId change still clears, since nothing cancels it there.
+  useEffect(() => {
+    cancelDeferredClearIdleToRunningFlight(sessionId);
+    return () => deferClearIdleToRunningFlight(sessionId);
+  }, [sessionId]);
   // Review fix round 1 (Important #2): a running-stage layout this tab noted (for this session or
   // an earlier one it watched run) must not survive past this page — otherwise a later visit to
   // this same session's now-finished report, reached without passing through RunningPipeline

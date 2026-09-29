@@ -85,6 +85,31 @@ export function clearIdleToRunningFlight(): void {
   pendingFlight = null;
 }
 
+// next.config.ts's reactStrictMode:true (dev only) mounts, cleans up and remounts every effect
+// synchronously, so a cleanup that calls clearIdleToRunningFlight directly would kill a flight
+// that is still legitimately in progress before the remounted effect ever runs. Deferring the
+// clear by one macrotask and cancelling it if the same session's effect fires again (the
+// StrictMode remount, which happens synchronously, well before a setTimeout(0) can fire) lets a
+// real unmount or session change still clear normally, since nothing cancels it there.
+let deferredClearTimer: NodeJS.Timeout | null = null;
+let deferredClearSessionId: string | null = null;
+export function deferClearIdleToRunningFlight(sessionId: string): void {
+  cancelDeferredClearIdleToRunningFlight(sessionId);
+  deferredClearSessionId = sessionId;
+  deferredClearTimer = setTimeout(() => {
+    deferredClearTimer = null;
+    deferredClearSessionId = null;
+    clearIdleToRunningFlight();
+  }, 0);
+}
+export function cancelDeferredClearIdleToRunningFlight(sessionId: string): void {
+  if (deferredClearTimer && deferredClearSessionId === sessionId) {
+    clearTimeout(deferredClearTimer);
+    deferredClearTimer = null;
+    deferredClearSessionId = null;
+  }
+}
+
 /* Composer, beat one (index.html:2079-2086, DESIGN.md:1371-1377): start draining page 1 and
    return the wall-clock deadline the caller must wait out before beat two may start. */
 export function beginIdleToRunningClear(stageId: string): number {

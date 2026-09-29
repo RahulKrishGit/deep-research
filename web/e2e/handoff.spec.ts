@@ -98,10 +98,22 @@ test.describe("abandonment cleanup (review fix round 1, Important #1): the fligh
     await expect(page.locator(".q-flight")).toHaveCount(0);
   });
 
-  test("/status resolves after the submitted beat has already expired: no .q-flight left behind", async ({ page, context }) => {
-    let first = true;
+  test("/status is held past the submitted beat's expiry on every attempt, not just the first: no .q-flight left behind (fix round 2: the prior version never actually went RED)", async ({ page, context }) => {
+    // Review fix round 2: holding only the *first* /status let the C1 retry ladder's second
+    // attempt (fired ~1000ms after the first, lib/stream.ts's backoffDelaysMs) land inside the
+    // 2170ms with-motion beat, so status always arrived on time and this test could never
+    // actually observe the bug it names. Holding every matching request past t0+3500ms — t0
+    // recorded right at the click, well past the 2170ms budget plus slack for the POST's own
+    // latency (the budget is measured from submittedAt, set only once the POST resolves, so a
+    // slow POST eats directly into the margin between the click and the beat's real expiry —
+    // measured empirically at up to ~400ms here) — guarantees the first successful response
+    // lands after the beat has expired, however many attempts the ladder makes first.
+    let t0 = 0;
     await context.route(/\/api\/research\/[^/]+\/status$/, async (route) => {
-      if (first) { first = false; const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 2_800); await promise; } // > the 2170ms with-motion budget
+      if (t0) {
+        const remaining = 3_500 - (Date.now() - t0);
+        if (remaining > 0) { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, remaining); await promise; }
+      }
       return route.continue();
     });
     await page.goto("/");
@@ -113,6 +125,7 @@ test.describe("abandonment cleanup (review fix round 1, Important #1): the fligh
       new MutationObserver(() => { if (document.querySelector(".q-flight")) w.__everSeenFlight = true; }).observe(document.documentElement, { childList: true, subtree: true });
     });
     await page.getByLabel("Research question").fill("q");
+    t0 = Date.now(); // recorded at the click, per the review's own prescription
     await page.getByRole("button", { name: "Start research" }).click();
     await page.waitForURL(/\/research\/[0-9a-f]+$/);
     // Straight to Running, never Submitted: the beat had already elapsed by the time status landed.

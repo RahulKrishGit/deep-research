@@ -5,8 +5,9 @@
 // animation, which e2e/handoff.spec.ts proves against a real browser.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  armIdleToRunningFlight, beginIdleToRunningClear, cancelIdleToRunningClear, clearIdleToRunningFlight, clearRunningLayout,
-  motionMs, noteRunningLayout, reducedMotion, runIdleToRunningLift, runReportSlide, takeIdleToRunningFlight, takeRunningLayout,
+  armIdleToRunningFlight, beginIdleToRunningClear, cancelDeferredClearIdleToRunningFlight, cancelIdleToRunningClear,
+  clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight, motionMs, noteRunningLayout, reducedMotion,
+  runIdleToRunningLift, runReportSlide, takeIdleToRunningFlight, takeRunningLayout,
 } from "../lib/handoff";
 
 afterEach(() => {
@@ -94,6 +95,47 @@ describe("armIdleToRunningFlight / takeIdleToRunningFlight", () => {
     expect(composer.classList.contains("is-handing-off")).toBe(false); // "the composer keeps its own frame"
     const flight = takeIdleToRunningFlight("s1"); // beats one and three still run — the flight is still recorded, just boxless
     expect(flight?.box ?? null).toBeNull();
+  });
+  describe("deferClearIdleToRunningFlight / cancelDeferredClearIdleToRunningFlight (fix round 2: React StrictMode dev)", () => {
+    // next.config.ts's reactStrictMode:true mounts, cleans up and remounts every effect
+    // synchronously in `next dev` — an unmount cleanup that clears the flight immediately would
+    // kill it before the remounted effect ever runs. Deferring by one tick and cancelling if the
+    // same session's effect fires again (the remount) lets a real unmount/navigation still clear.
+    it("clears after the deferred tick when nothing cancels it (a real unmount/navigation)", async () => {
+      document.body.innerHTML = '<form id="composer"></form>';
+      await armIdleToRunningFlight({ sessionId: "s1", question: "q", composerEl: document.getElementById("composer"), clearDeadline: Date.now() });
+      deferClearIdleToRunningFlight("s1");
+      expect(takeIdleToRunningFlight("s1"), "not cleared synchronously").not.toBeNull();
+    });
+    it("cancelling before the deferred tick keeps the flight intact (a StrictMode remount)", async () => {
+      vi.useFakeTimers();
+      document.body.innerHTML = '<form id="composer"></form>';
+      await armIdleToRunningFlight({ sessionId: "s1", question: "q", composerEl: document.getElementById("composer"), clearDeadline: Date.now() });
+      deferClearIdleToRunningFlight("s1");
+      cancelDeferredClearIdleToRunningFlight("s1"); // the "remount": same session, cancels the pending clear
+      await vi.advanceTimersByTimeAsync(10);
+      expect(takeIdleToRunningFlight("s1"), "the deferred clear must never have fired").not.toBeNull();
+      vi.useRealTimers();
+    });
+    it("not cancelling lets the deferred clear fire after the tick", async () => {
+      vi.useFakeTimers();
+      document.body.innerHTML = '<form id="composer"></form>';
+      await armIdleToRunningFlight({ sessionId: "s1", question: "q", composerEl: document.getElementById("composer"), clearDeadline: Date.now() });
+      deferClearIdleToRunningFlight("s1");
+      await vi.advanceTimersByTimeAsync(10);
+      expect(takeIdleToRunningFlight("s1")).toBeNull();
+      vi.useRealTimers();
+    });
+    it("cancelling a different session's id never cancels this session's deferred clear", async () => {
+      vi.useFakeTimers();
+      document.body.innerHTML = '<form id="composer"></form>';
+      await armIdleToRunningFlight({ sessionId: "s1", question: "q", composerEl: document.getElementById("composer"), clearDeadline: Date.now() });
+      deferClearIdleToRunningFlight("s1");
+      cancelDeferredClearIdleToRunningFlight("s2"); // a different session's remount — must not save s1's flight
+      await vi.advanceTimersByTimeAsync(10);
+      expect(takeIdleToRunningFlight("s1")).toBeNull();
+      vi.useRealTimers();
+    });
   });
 });
 
