@@ -811,17 +811,18 @@ JSON, preceded by its id and event type:
 ```text
 id: 1
 event: graph.node.started
-data: {"event_type":"graph.node.started","source":"graph.planner","message":"Node planner started.","timestamp":"...","metadata":{"node":"planner","iteration":0}}
+data: {"event_type":"graph.node.started","source":"graph.planner","message":"Node planner started.","timestamp":"...","metadata":{"node":"planner","iteration":0},"event_id":"bdb32a61e5d5408491933a6062d2e379"}
 
 ```
 
-A subscriber that connects late replays the session's retained events from
-id one, then follows live progress; the stream ends when the session
-reaches a terminal state. The report endpoint returns the authoritative
-Markdown body with `Content-Type: text/markdown` once the session is
-finished. The trace endpoint returns `session_id`, `trace_url`, and
-`metadata` carrying the `session_id`, the route template, and the current
-`status`.
+Every event carries its own `event_id`; the SSE `id:` line is the frame's
+position in this subscriber's replay. A subscriber that connects late replays
+the session's retained events from id one, then follows live progress; the
+stream ends when the session reaches a terminal state. The report endpoint
+returns the authoritative Markdown body with `Content-Type: text/markdown`
+once the session is finished. The trace endpoint returns `session_id`,
+`trace_url`, and `metadata` carrying the `session_id`, the route template, and
+the current `status`.
 
 Errors are structured and safe:
 

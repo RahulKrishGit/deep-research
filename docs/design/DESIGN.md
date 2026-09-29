@@ -1524,7 +1524,8 @@ the failed stage's skipped rows from `graph.node.skipped` and its Publishing row
 from `graph.session.completed`.
 
 **Delivery is live.** Each event reaches the stream as it happens: `graph.node.started`
-when a node starts, and each agent's progress events as the agent builds them — the
+is published live when an agent node starts (the reviewer, Publishing and the two hop
+nodes keep snapshot publication), and each agent's progress events as the agent builds them — the
 researcher's `researcher.sub_topic.started`, `researcher.tool_call` (built when its
 step's observation is recorded) and `researcher.sub_topic.completed` while its topics
 run, concurrently. Events that are not published live — the graph's route, review,
@@ -1586,7 +1587,7 @@ Full detail, with the request shape each gap implies, is in
 | Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
 | Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
 | Submitted | nothing beyond Idle |
-| Running | no token usage; no terminal frame; the halting vocabulary is a client copy; shutdown leaves `running` |
+| Running | no token usage; no terminal frame; no `Last-Event-ID` resume (events carry an `event_id`, but a reconnect replays from event 1); the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
 | Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
 | Sidebar | no `GET /research`; no result summary per row; no durable store |
@@ -1689,11 +1690,16 @@ and `09-running-extra-pass.png`: that one is captured at 1252×1300, taller
 than the rest, so the whole pipeline card — Reviewing, the full settled arc and
 the counters block — sits inside the frame instead of running off the bottom.
 
+These renders and `docs/design/prototype/` predate live briefs Phase 1
+(2026-09-28) and were not re-captured. They still show the running stage's
+counters block (removed from that stage, D13; §5.8) and the composer's
+`extra passes` pill (removed, D15; §3.0): the app's running stage and composer no longer draw them.
+
 One layout fact differs from the 2026-09-16 renders by design: at ≤ 900px the
-composer bar hides its `thinking` pill (`#pillThinking`) and holds `model` and
-`extra passes` on one row as before, thinking staying visible in the settings
-panel and the settings strip. On the report stage the `Report | Evidence`
-toggle takes the right end of the head bar; `#reportMeta` is the element that
+composer bar hides its `thinking` pill (`#pillThinking`) and keeps only the
+`model` pill (the renders also hold `extra passes` on that row, see above),
+thinking staying visible in the settings panel and the settings strip. On the
+report stage the `Report | Evidence` toggle takes the right end of the head bar; `#reportMeta` is the element that
 shrinks and wraps to make room (`flex:1 1 240px;min-width:0`), so the toggle
 and the two action buttons stay on the bar's one row and the question block
 starts within a few pixels of its 2026-09-16 position.
