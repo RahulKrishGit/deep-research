@@ -4,6 +4,11 @@
 
 Everything in this document and in `cloud-session/` is for the cloud session only. None of it applies to, or is loaded by, the owner's local sessions.
 
+> **Time is of the essence, and accurate results matter just as much.**
+> - **Keep moving.** Don't pause between tasks for confirmation. Batch independent reads. Don't re-verify what a passing test already proves.
+> - **Never trade correctness for speed.** Every review loop runs to clean, every "Expected" output is checked, and every capture is looked at.
+> - **Be honest in reports.** If something fails or was skipped, say so plainly.
+
 ## Step 0: set up the session (do this first)
 
 1. From the repo root, run `bash cloud-session/setup.sh`. It is a no-op unless `CLAUDE_CODE_REMOTE=true`. In the cloud it:

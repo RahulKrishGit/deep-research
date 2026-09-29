@@ -23,6 +23,7 @@ When `writing-plans` or `brainstorming` would plan, use `spec-plan-author`, and 
 
 ## Working rules
 
+- **Time is of the essence, and accurate results matter just as much.** Move without unnecessary pauses, but never skip a review, a verification step or a visual check to save time. Report failures plainly.
 - **Review loop:** review → fix → re-review until clean. Never skip a re-review. Use no external or GPT models.
 - **Push as you go:** after every commit, `git push` the working branch. Never push to `main`, never force-push, never skip hooks, never open or merge a PR unless asked.
 - **Secrets:** never read, create, print or commit `.env` or any `.env.*` file, and never run live or paid model calls. Tests run with pytest and the API in `--mode replay`.
