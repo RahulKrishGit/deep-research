@@ -50,7 +50,8 @@ This spec delivers three things, in three phases. Each phase gets its own implem
 | D8 | **Notes (pick 6A).** A quiet, borderless line at the foot of the pipeline card, with the placeholder **"Add a note — something to focus on, leave out or change"**. It sends with Enter or with a neutral icon button (not the purple primary). |
 | D9 | **Notes are interpreted and acknowledged.** A fast model classifies each note. The running step shows a line restating the interpretation, not echoing the raw text. The later of two conflicting notes wins, and its acknowledgement says which note it replaces. |
 | D10 | **Verification is never affected by a note.** |
-| D11 | **Every note the review finds uncovered gets exactly one targeted research pass**, outside the extra-pass budget, with **no cap on the number of notes or note passes**. The guard is per note: one pass each. The run's request-attempt budget still applies (`request_budget.py:131-157`, i.e. `src/deep_research/request_budget.py`). |
+| D11 | **Every note the review finds uncovered gets exactly one targeted research pass**, outside the extra-pass budget. The guard is per note: one pass each. The run's request-attempt budget still applies (`request_budget.py:131-157`, i.e. `src/deep_research/request_budget.py`). |
+| D11a | **At most 10 notes per run** (amended by the human after first review, 2026-09-28; this replaces "no cap"). The UI does not mention the limit. After the 10th accepted note, the note line is disabled, with no message. |
 | D12 | **The "Now" header is removed** from the running stage. The expanded row replaces it. |
 | D13 | **The running stage's counters block ("counted from the event stream") is removed.** Each row's live subtitle and outcome line carry its counts. |
 | D14 | **The pass counter is removed** from the running stage and the status chip. A row that reopens says why it reopened. The internal `iteration` stays in the API and trace. |
@@ -359,7 +360,8 @@ The prompt tells the model to ask **only** about dimensions whose answer would c
 
 **Route.** `POST /research/{id}/notes` with body `{ "text": "…" }` (1–500 characters after trim).
 - Returns **202** with `{ "note_id": "n1", "status": "received" }`.
-- **409** `notes_closed` when the session is `needs_input` or terminal, or once `finalize_report` has started. **404** unknown session. **422** empty or too long.
+- **409** `notes_closed` when the session is `needs_input` or terminal, or once `finalize_report` has started. **409** `note_limit_reached` when the run already has `MAX_NOTES_PER_RUN = 10` accepted notes (D11a); rejected POSTs do not count. **404** unknown session. **422** empty or too long.
+- The session response gains `notes_remaining: int` (10 minus accepted notes), so the web app knows when to disable the line without a failed POST.
 
 **Interpretation.** `api/notes.py` defines `NoteInterpreter`, injected into `create_app` like the checker. It uses the same provider path, with timeout `note_interpret_timeout_s`.
 
@@ -399,7 +401,7 @@ If the call fails, the note is kept with `kinds: ["emphasis"]` and `restatement`
 1. **`note_pass`** when any note has the review disposition `no_evidence` and `passed == false`. `new_angle` notes are not given to running loops (see the table above), so the review normally marks them `no_evidence` and they get their pass through this same rule.
 2. **Note redraft** when any note is `ignored_with_evidence` with `redrafted == false`, or when any note has `reviewed == false` because it arrived after the review input was built. This routes to the existing `writer_redraft` node and **does not count against `MAX_WRITER_REDRAFTS`**.
 
-Each note is marked `passed` or `redrafted` when its route is taken, so **each note triggers at most one pass and one redraft**. That per-note guard is D11's only bound. Everything after the two note checks is unchanged. A note that is still uncovered after its pass ends in the report as "Couldn't find evidence for your note: …".
+Each note is marked `passed` or `redrafted` when its route is taken, so **each note triggers at most one pass and one redraft**. With at most 10 notes (D11a), a run takes at most 10 note passes and 10 note redrafts. Everything after the two note checks is unchanged. A note that is still uncovered after its pass ends in the report as "Couldn't find evidence for your note: …".
 
 **`note_pass` node.**
 1. Builds one appended `SubTopic` per note that needs research. Its title is "Your note: {restatement}". Its `evidence_targets` are built from `new_questions`, with scope applied and `required = true`. The `coverage_id` is `note-{note_id}`.
@@ -407,7 +409,7 @@ Each note is marked `passed` or `redrafted` when its route is taken, so **each n
 3. Increments `note_passes`, not `iteration`.
 4. Edges to `researcher`, which on a note pass researches only the `note-*` sub-topics, mirroring the extra-pass restriction.
 
-`graph_recursion_limit` becomes `(max_extra_passes + 1) * len(NODE_NAMES) + NOTE_PASS_RECURSION_ALLOWANCE + margin`, with the allowance set to 1000 supersteps (roughly 120 note passes). That keeps LangGraph's limit finite without imposing a practical cap. Hitting it halts with the existing error.
+`graph_recursion_limit` becomes `(max_extra_passes + 1) * len(NODE_NAMES) + MAX_NOTES_PER_RUN * (len(NODE_NAMES) + NOTE_REDRAFT_STEPS) + margin`, where `NOTE_REDRAFT_STEPS` is the superstep count of one writer→reviewer redraft loop. This is the exact worst case of D11a, so the limit is never reached by notes.
 
 **Status response.** `ResearchSessionResponse` (`api/models.py:122-174`) gains:
 - `notes: [{note_id, text, restatement, outcome: "covered"|"not_found"|"pending"}]`
@@ -420,7 +422,8 @@ Each note is marked `passed` or `redrafted` when its route is taken, so **each n
 - a borderless `input` (`.tx`, `--text-sm`), with the placeholder "Add a note — something to focus on, leave out or change";
 - a neutral `.icon-btn` send with an up-arrow and `span.sr` "Add note";
 - Enter sends.
-- While the POST is in flight, the input is read-only. On 409 the line is replaced by a `.cap` "Notes are closed — the report is being published" (I). It is hidden in terminal stages.
+- While the POST is in flight, the input is read-only. On 409 `notes_closed`, the line is replaced by a `.cap` "Notes are closed — the report is being published" (I). It is hidden in terminal stages.
+- When `notes_remaining` reaches 0, or on 409 `note_limit_reached`, the input and send button become `disabled`. There is no message, and the placeholder is unchanged (D11a).
 
 **Acknowledgements (D9).** At the top of the active row's brief, one `.ack` line per note: a muted dot, then text, fading in over 200 ms.
 
@@ -461,6 +464,7 @@ It renders only when `notes` is non-empty. It is not a separate `.card` and is o
 | Reload during `needs_input` | The stream replays `session.clarification.requested` and the card rebuilds from the stream (burst-safe). |
 | Note interpreter fails | Fallback note (§4.6). |
 | Note sent while a note POST is in flight | The input is read-only until the 202 arrives. |
+| 10 notes already accepted | 409 `note_limit_reached`; the note line is disabled with no message (D11a). |
 | Two notes conflict | The later one wins; `replaces` is shown in the acknowledgement; only the later one is rendered to agents. |
 | A note arrives during Reviewing | `reviewed = false` leads to a note redraft (§4.6), and the review checks it. |
 | A note arrives after `finalize_report` starts | 409 `notes_closed`. |
@@ -512,7 +516,7 @@ It renders only when `notes` is non-empty. It is not a separate `.card` and is o
 - **AC17.** A note whose review disposition is `no_evidence` routes exactly once to `note_pass`. The researcher then researches only `note-*` sub-topics. `iteration` does not change. `note_passes` increments.
 - **AC18.** A note `ignored_with_evidence` routes exactly once to a redraft that does not consume `MAX_WRITER_REDRAFTS`.
 - **AC19.** Notes after `finalize_report` starts return 409. The status response lists every note with its outcome, and the report shows "Your notes" above the prose.
-- **AC20.** Twenty notes, each triggering a pass (in a stub-agent graph test), complete without hitting the recursion limit.
+- **AC20.** Ten notes, each triggering one pass and one redraft (in a stub-agent graph test), complete without hitting the recursion limit. An 11th note POST returns 409 `note_limit_reached`, and the web note line is `disabled` with no added text.
 
 ---
 
@@ -521,7 +525,7 @@ It renders only when `notes` is non-empty. It is not a separate `.card` and is o
 | Layer | Tests |
 |---|---|
 | pytest: events | `event_id` default and uniqueness; checkpoint load; `publish_live` no-op without a sink; `test_live_sink_reaches_nodes`; exactly-once publication with the live and snapshot paths mixed; tool_call timing; planner titles metadata. |
-| pytest: API | `needs_input` lifecycle (answer, skip, timeout, check failure); the answers route 202/404/409/422; notes route 202/404/409/422; interpreter fallback; response fields; `X-Replay-Clarify` gating; the proxy forwards the new header. |
+| pytest: API | `needs_input` lifecycle (answer, skip, timeout, check failure); the answers route 202/404/409/422; notes route 202/404/409 (closed and limit)/422; `notes_remaining`; interpreter fallback; response fields; `X-Replay-Clarify` gating; the proxy forwards the new header. |
 | pytest: engine | `derive_answer_contract` with answers; `# Reader answers` in plan and plan-review messages; `# Reader notes` in every consumer and **absent from the verifier** (AC16); `note_dispositions` parsing; `graph_route` note ordering and per-note guards; `note_pass` node; recursion allowance (AC20); the full replay suite unchanged when there are no answers or notes. |
 | Vitest | run-state handlers (the new keys; exact-keys assertion updated); checklist and outcome derivation from fixtures (regenerated with `capture-replay-events.mjs`); Spine open/close/aria; `ClarifyStage` (Other…, Back, Skip, Just start, countdown text); note line and acks; report notes block; chip texts; composer `buildRequest` without `max_iterations`. |
 | Playwright (replay) | Running with briefs, hand-off recording and connector geometry (AC6, AC7); the check flow with `X-Replay-Clarify: on`; note flow and ack; reduced motion; phone layout; report notes block. |
@@ -537,6 +541,6 @@ It renders only when `notes` is non-empty. It is not a separate `.card` and is o
 | R1 | LangGraph context propagation for the live sink ([INFERENCE] in E2). | Tested first in Phase 1. If it fails, fall back to passing the sink through the `Tracker` the agents already hold (`agents/base.py:325`). |
 | R2 | Adding `event_id` changes `ResearchEvent` equality in any test that compares events built separately ([INFERENCE]). | The Phase 1 plan greps and updates such tests. |
 | R3 | The researcher's tool_call restructuring could change event order inside a sub-topic. | Order within a sub-topic stays the step order. Tests pin it. |
-| R4 | Uncapped note passes lengthen runs. | Human decision D11. The request-attempt budget remains the spending stop. |
+| R4 | Note passes lengthen runs. | Bounded by D11a (10 notes, one pass and one redraft each). The request-attempt budget remains the spending stop. |
 | R5 | A reviewer that wrongly reports `no_evidence` triggers passes that find nothing. | The per-note guard bounds it to one pass per note, and the report states the gap. |
 | R6 | The canvas's Researching copy ("topic 3 of 5", "N so far") assumed topics run one at a time. | Corrected in §4.3 to concurrent-topic wording. The structure of pick 2C is unchanged. |
