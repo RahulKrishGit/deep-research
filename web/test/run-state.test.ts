@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ResearchEvent, ResearchSessionResponse } from "../lib/api";
-import { AGENT_ORDER, EVENT_HANDLERS, STAGES, applyEvent, chipStep, failedMarks, newRunState, replayRun, stepLabel, toRunEvent, type RunState } from "../lib/run-state";
+import { AGENT_ORDER, EVENT_HANDLERS, STAGES, applyEvent, chipStep, countPhrase, failedMarks, newRunState, plural, replayRun, stepLabel, toRunEvent, toggleOpen, type RunState } from "../lib/run-state";
 
 interface Capture { case_id: string; status: ResearchSessionResponse; events: ResearchEvent[] }
 const load = (caseId: string): Capture =>
@@ -26,14 +26,15 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 const P = (c: Capture) => (c.events[0].metadata.max_extra_passes as number) + 1;
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the sixteen handlers", () => {
+  it("has the seven rows and the seventeen handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
       "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
       "graph.node.started", "graph.report.redraft_requested", "graph.report.reviewed", "graph.route.decided",
       "graph.session.completed", "graph.session.started", "planner.planning.completed", "report_writer.report.written",
-      "researcher.research.completed", "researcher.sub_topic.completed", "researcher.tool_call", "source_evaluator.evaluation.completed",
+      "researcher.research.completed", "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
+      "source_evaluator.evaluation.completed",
     ]);
   });
 });
@@ -155,4 +156,113 @@ describe("the chip's step (live-briefs spec §4.2)", () => {
     applyEvent(halted, { type: "graph.session.completed", metadata: { status: "failed", iteration: 0, error_count: 1, has_report: false } });
     expect(chipStep(halted)).toBe("researcher");
   });
+});
+
+/* live-briefs spec §4.3: the step briefs' state, proven on the regenerated live captures. */
+type Planned = { coverage_id: string; title: string };
+const md = <T,>(e: ResearchEvent, key: string) => e.metadata[key] as T;
+
+describe("(f) the Researching checklist follows the live topic events", () => {
+  for (const capture of [extraPass, redraft]) {
+    const events = capture.events;
+    const snaps = snapshots(events, P(capture));
+    const planned = at(events, (e) => e.event_type === "planner.planning.completed");
+    it(`${capture.case_id}: the plan lists every sub-topic title, each waiting`, () => {
+      const titles = md<Planned[]>(events[planned], "sub_topics");
+      expect(titles.length).toBeGreaterThan(0);
+      const s = snaps[planned];
+      expect(s.plan).toEqual(titles.map((t) => ({ coverageId: t.coverage_id, title: t.title })));
+      expect(s.topics.map((t) => [t.coverageId, t.title, t.state, t.findings])).toEqual(titles.map((t) => [t.coverage_id, t.title, "waiting", null]));
+      expect(s.outcomes.planner).toBe(plural(titles.length, "sub-topic", "sub-topics"));
+    });
+    it(`${capture.case_id}: a topic runs from its started event and is done, with its findings, from its completed event`, () => {
+      events.forEach((e, k) => {
+        const topic = () => snaps[k].topics.find((t) => t.coverageId === md<string>(e, "coverage_id"));
+        if (e.event_type === "researcher.sub_topic.started") expect(topic()?.state).toBe("running");
+        if (e.event_type === "researcher.sub_topic.completed") {
+          expect(topic()?.state).toBe("done");
+          expect(topic()?.findings).toBe(md<number>(e, "findings_retained"));
+        }
+      });
+    });
+    it(`${capture.case_id}: pages read and findings sum the completed topics, then take the research total`, () => {
+      let pages = 0, kept = 0;
+      events.forEach((e, k) => {
+        if (e.event_type === "graph.route.decided" && md<string>(e, "destination") === "extra_pass") { pages = 0; kept = 0; }
+        if (e.event_type === "researcher.sub_topic.completed") {
+          pages += md<number>(e, "successful_reads"); kept += md<number>(e, "findings_retained");
+          expect(snaps[k].pagesRead).toBe(pages);
+          expect(snaps[k].findingsSoFar).toBe(kept);
+        }
+        if (e.event_type === "researcher.research.completed") {
+          expect(kept).toBe(md<number>(e, "findings")); // the spec's topic-findings-sum inference, on the stream
+          expect(snaps[k].findingsSoFar).toBe(md<number>(e, "findings"));
+          expect(snaps[k].passFindings).toBe(md<number>(e, "findings"));
+          expect(snaps[k].outcomes.researcher).toBe([
+            countPhrase(md<number>(e, "sub_topics_researched"), "topic", "topics"),
+            countPhrase(pages, "page read", "pages read"),
+            countPhrase(md<number>(e, "findings"), "finding", "findings"),
+          ].join(" · "));
+        }
+      });
+    });
+  }
+});
+
+describe("(g) loops reopen rows with the reason", () => {
+  it("the extra pass empties the checklist at the route decision, names the gaps, and lists only the topics it re-runs", () => {
+    const events = extraPass.events;
+    const snaps = snapshots(events, P(extraPass));
+    const decided = at(events, (e) => e.event_type === "graph.route.decided" && e.metadata.destination === "extra_pass");
+    const hop = at(events, (e) => e.event_type === "graph.extra_pass.started", decided);
+    const rerun = at(events, (e) => e.event_type === "researcher.sub_topic.started", hop);
+    expect(snaps[decided].topics).toEqual([]);
+    expect(snaps[decided].outcomes.report_reviewer).toBe("Sent back to fill 1 gap");
+    expect(snaps[hop].reopen.researcher).toEqual({ kind: "extra_pass", text: "Going back to research 1 gap the review found" });
+    const title = md<Planned[]>(events[at(events, (e) => e.event_type === "planner.planning.completed")], "sub_topics")
+      .find((t) => t.coverage_id === md<string>(events[rerun], "coverage_id"))!.title;
+    expect(snaps[rerun].topics).toEqual([{ coverageId: md<string>(events[rerun], "coverage_id"), title, state: "running", findings: null }]);
+  });
+  it("the redraft reopens Writing with the number of issues", () => {
+    const events = redraft.events;
+    const snaps = snapshots(events, P(redraft));
+    const requested = at(events, (e) => e.event_type === "graph.report.redraft_requested");
+    expect(snaps[requested].reopen.report_writer).toEqual({ kind: "redraft", text: "Rewriting to fix 1 issue the review found" });
+    expect(snaps[requested].reopen.researcher).toBeUndefined();
+  });
+  it("re-armed rows lose a reader's reopen", () => {
+    const run = newRunState(2);
+    run.marks = { planner: "done", researcher: "done", source_evaluator: "done" };
+    toggleOpen(run, "researcher");
+    toggleOpen(run, "planner");
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", missing_required_target_ids: ["topic-01-target-01"] } });
+    expect([...run.open]).toEqual(["planner"]);
+  });
+});
+
+describe("(h) every row's outcome line", () => {
+  it("reads the spec's templates at the end of each capture", () => {
+    for (const capture of [extraPass, redraft]) {
+      const events = capture.events;
+      const run = replayRun(events, P(capture));
+      const last = (type: string) => events.filter((e) => e.event_type === type).at(-1)!;
+      const reviewed = last("graph.report.reviewed");
+      expect(run.outcomes.source_evaluator).toBe(plural(md<number>(last("source_evaluator.evaluation.completed"), "source_count"), "source rated", "sources rated"));
+      const v = last("evidence_verifier.verification.completed");
+      expect(run.outcomes.evidence_verifier).toBe(`${md<number>(v, "verified")} verified · ${md<number>(v, "verified_corrected")} corrected · ${md<number>(v, "dropped")} dropped`);
+      const w = last("report_writer.report.written");
+      expect(run.outcomes.report_writer).toBe(`Report drafted · ${md<number>(w, "statements")} sentences · ${md<number>(w, "citations")} citations`);
+      expect(run.outcomes.report_reviewer).toBe(`Accepted · ${md<number>(reviewed, "mean_score").toFixed(2)}`);
+      expect(run.outcomes.finalize_report).toBe("Published");
+    }
+  });
+});
+
+describe("(i) burst-safety: a late subscriber paints the same briefs", () => {
+  for (const capture of [extraPass, redraft]) {
+    it(capture.case_id, () => {
+      const snaps = snapshots(capture.events, P(capture));
+      capture.events.forEach((_, k) => expect(replayRun(capture.events.slice(0, k + 1), P(capture))).toEqual(snaps[k]));
+    });
+  }
 });
