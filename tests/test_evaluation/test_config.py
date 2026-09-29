@@ -986,7 +986,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # live. Module code only; no prompt string changed and agents.prompts was
     # untouched, so the other four target pins and the Judge pin are
     # unchanged. Moved `9c5745683d9b` -> `d40ffac43845`.
-    "planner": "d40ffac43845",
+    # Live briefs Phase 2 (live-briefs spec §4.4, 2026-09-29): the planner
+    # reads the reader's answers to the one-time check into the answer
+    # contract and, only when there are answers, into a # Reader answers
+    # section of the plan and plan-review requests. Without answers every
+    # request is byte-identical; agents.prompts was untouched, so the other
+    # four target pins and the Judge pin are unchanged. Moved `d40ffac43845`
+    # -> `e9b74316ad14`.
+    "planner": "e9b74316ad14",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

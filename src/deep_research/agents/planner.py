@@ -63,6 +63,7 @@ from deep_research.utils.types import (
     EvidenceTarget,
     FigureKind,
     MemorySnapshot,
+    ReaderAnswer,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -1298,6 +1299,7 @@ def derive_answer_contract(
     question: str,
     now: datetime,
     requested_word_limit: int | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> AnswerContract:
     """Freeze the question, its scope, its as-of date, and its answer form.
 
@@ -1323,6 +1325,12 @@ def derive_answer_contract(
     2026-09-16, not as of 2026-12-31. Freezing a future date into the contract
     would put a date nobody has lived through into every target's binding
     obligation — the very defect class this contract exists to remove.
+
+    ``reader_answers`` are the reader's answers to the one-time check
+    (live-briefs spec §4.4), applied after the question's own reading: a
+    ``geography`` answer sets the scope, a ``period`` answer sets the evidence
+    period, and every answer adds one assumption line. With none, the contract
+    is exactly the one the question alone yields.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError(
@@ -1372,6 +1380,9 @@ def derive_answer_contract(
         future_years=future_years,
         asks_for_currency=asks_for_currency,
     )
+    scope, period, assumptions = _with_reader_answers(
+        scope, period, assumptions, reader_answers
+    )
     scope_statement = (
         f"{question.strip()} — answered for {scope} as of {as_of_date}, as a "
         f"{kind} answer; evidence period: {period}."
@@ -1385,6 +1396,37 @@ def derive_answer_contract(
         assumptions=assumptions,
         answer_kind=kind,
         requested_word_limit=limit,
+    )
+
+
+def _with_reader_answers(
+    scope: str,
+    period: str,
+    assumptions: list[str],
+    reader_answers: Sequence[ReaderAnswer],
+) -> tuple[str, str, list[str]]:
+    """Apply the reader's answers to the question's own scope, period and assumptions.
+
+    The last ``geography`` answer becomes the scope, and the "names no
+    geography" assumption goes with the unspecified scope it explained; the
+    last ``period`` answer becomes the evidence period. Every answer adds
+    ``Reader said: {short} = {value}``, or ``Assumed (best guess): {short} =
+    {value}`` for one the reader did not give (live-briefs spec §4.4).
+    """
+    geography = [a.value for a in reader_answers if a.dimension == "geography"]
+    periods = [a.value for a in reader_answers if a.dimension == "period"]
+    # ``geographic_scope_for`` returns an assumption only for an unspecified
+    # scope, and it explains exactly that scope.
+    lines = [] if geography and scope == "unspecified" else list(assumptions)
+    lines += [
+        f"{'Assumed (best guess)' if a.source == 'best_guess' else 'Reader said'}: "
+        f"{a.short} = {a.value}"
+        for a in reader_answers
+    ]
+    return (
+        geography[-1] if geography else scope,
+        periods[-1] if periods else period,
+        lines,
     )
 
 
@@ -2634,6 +2676,28 @@ def render_answer_contract(contract: AnswerContract) -> str:
     )
 
 
+def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
+    """Print the reader's answers to the one-time check (live-briefs spec §4.4).
+
+    One line per question, saying whether the reader gave the answer or the
+    check assumed it. Rendered only when there are answers, so a request
+    without them is byte-identical to one built before the check existed.
+    """
+    lines = [
+        "Before planning, the reader answered a short check about what the "
+        "question leaves open. Plan within these answers: a narrowing the "
+        "reader asked for is not a missing part of the question."
+    ]
+    for answer in reader_answers:
+        said = (
+            "a best guess; the reader did not answer"
+            if answer.source == "best_guess"
+            else "the reader's answer"
+        )
+        lines.append(f"- {answer.text} {answer.value} ({said})")
+    return "\n".join(lines)
+
+
 def plan_messages(
     task: AgentTask,
     run: ReActRun,
@@ -2641,6 +2705,7 @@ def plan_messages(
     contract: AnswerContract | None = None,
     repair: str | None = None,
     plan_under_repair: Sequence[SubTopic] = (),
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft.
 
@@ -2651,6 +2716,8 @@ def plan_messages(
     ``contract`` is the frozen answer contract. The planner always passes
     one; a caller that omits it gets the plan requirements without a frozen
     scope, which is what a replay of an older prompt looks like.
+    ``reader_answers`` add a ``# Reader answers`` section after the contract,
+    only when there are any (live-briefs spec §4.4).
     """
     static = [
         f"# Plan requirements\n{PLAN_INSTRUCTION}",
@@ -2659,6 +2726,8 @@ def plan_messages(
     material = [f"# Research question\n{task.instruction}"]
     if contract is not None:
         material.append(f"# Answer contract\n{render_answer_contract(contract)}")
+    if reader_answers:
+        material.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
     if task.guidance.strip():
         material.append(f"# Context\n{task.guidance}")
     material.append(f"# Scoping notes\n{_render_notes(run)}")
@@ -2777,11 +2846,21 @@ def plan_review_messages(
     sub_topics: Sequence[SubTopic],
     *,
     repair: str | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> list[ChatMessage]:
-    """Build the one tool-free request that reviews a plan's meaning."""
+    """Build the one tool-free request that reviews a plan's meaning.
+
+    ``reader_answers`` add the same ``# Reader answers`` section the plan
+    request carries, only when there are any, so the review does not flag a
+    narrowing the reader asked for as a missing dimension (spec §4.4).
+    """
     sections = [
         f"# Original question (frozen)\n{contract.question}",
         f"# Answer contract\n{render_answer_contract(contract)}",
+    ]
+    if reader_answers:
+        sections.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
+    sections += [
         f"# Plan under review\n{render_plan_for_review(sub_topics)}",
         f"# Review requirements\n{PLAN_REVIEW_INSTRUCTION}",
     ]
@@ -3051,6 +3130,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         # handed: the contract this session already froze, if any.
         self._frozen_contract: AnswerContract | None = None
         # Set for the duration of one run by ``run`` from the state it was
+        # handed: the reader's answers to the one-time check, if any.
+        self._reader_answers: tuple[ReaderAnswer, ...] = ()
+        # Set for the duration of one run by ``run`` from the state it was
         # handed: the coverage ids this session already planned, so a later
         # non-extension pass cannot re-emit one beside itself.
         self._planned_coverage_ids: frozenset[str] = frozenset()
@@ -3118,6 +3200,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             else None
         )
         self._frozen_contract = state.answer_contract
+        self._reader_answers = tuple(state.reader_answers)
         self._planned_coverage_ids = frozenset(
             sub_topic.coverage_id for sub_topic in state.sub_topics
         )
@@ -3155,7 +3238,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         later planning pass cannot re-anchor the as-of date, widen the scope,
         or fill a field the frozen question never asked for.
         """
-        derived = derive_answer_contract(question=question, now=self._clock())
+        derived = derive_answer_contract(
+            question=question,
+            now=self._clock(),
+            reader_answers=self._reader_answers,
+        )
         if self._frozen_contract is None:
             return derived
         return frozen_contract_for(self._frozen_contract, derived)
@@ -3178,6 +3265,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     contract=contract,
                     repair=repair,
                     plan_under_repair=plan_under_repair,
+                    reader_answers=self._reader_answers,
                 ),
                 ResearchPlanDraft,
                 operation="plan_draft",
@@ -3260,7 +3348,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         try:
             return await self._complete_plan_request(
                 plan_review_messages(
-                    contract, sub_topics, repair=already_requested
+                    contract,
+                    sub_topics,
+                    repair=already_requested,
+                    reader_answers=self._reader_answers,
                 ),
                 PlanReviewDraft,
                 operation="plan_review",
