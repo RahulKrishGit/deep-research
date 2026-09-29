@@ -98,7 +98,7 @@
   - The whole project: `npm run -s test:e2e`.
   - Captures: `VISUAL_CHECKPOINT=<name> npx playwright test --project=visual`, with the images in `web/visual/<name>/` (gitignored).
   - Chromium is installed under `$PLAYWRIGHT_BROWSERS_PATH` (`/opt/pw-browsers`). If a run reports a missing executable, run `npx playwright install chromium` once.
-  - Ports 8010, 3010 and 3011 must be free before a run: `ss -ltn | grep -E ':(8010|3010|3011) '` prints nothing. A leftover server makes the `webServer` start fail.
+  - Ports 8010, 3010 and 3011 must be free before a run. `for p in 8010 3010 3011; do (exec 3<>/dev/tcp/127.0.0.1/$p) 2>/dev/null && echo "port $p is in use"; done` must print nothing (`ss` is not installed on this VM). A leftover server makes the `webServer` start fail.
   - No step here keeps a server running across blocks. If one is ever started with `web/scripts/launch.mjs`, note that its `stop` uses Windows `taskkill`. On Linux, first end the recorded process group: `kill -- -"$(cat .launch-<name>.pid)"`. `stop` then only confirms that the port is closed.
 - **Edits.** Every edit is "replace this exact text with that text", and Task 1 has proved that each anchor occurs exactly once. If an anchor is not found when you reach it, stop and report it. Never improvise a nearby match.
 - **TDD boundary.** pytest and Vitest tests are written first and shown failing. Playwright specs are verification, written after the code they exercise.
@@ -4944,10 +4944,10 @@ Append to `web/app/globals.css`:
 
 ```bash
 cd web && npm run -s typecheck && npx vitest run test/components/clarify-stage.test.tsx 2>&1 | grep -E "Test Files|Tests  " && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && npm run -s check:css
-grep -nE "#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(" <(sed -n '/═══ 2026-09-29: the one-time check/,$p' web/app/globals.css) || echo "no colour literal"
+block=$(sed -n '/═══ 2026-09-29: the one-time check/,$p' app/globals.css); [ -n "$block" ] && { printf '%s\n' "$block" | grep -nE '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(' || echo "no colour literal"; }
 ```
 
-Expected: no `typecheck` output; `Test Files  1 passed (1)`, `Tests  10 passed (10)`; `Test Files  25 passed (25)`, `Tests  182 passed (182)`; `OK`; `no colour literal`.
+Expected: no `typecheck` output; `Test Files  1 passed (1)`, `Tests  10 passed (10)`; `Test Files  25 passed (25)`, `Tests  182 passed (182)`; `OK`; `no colour literal`. The last line runs inside `web/`, and prints nothing at all if the block's header comment is missing, which is also a failure.
 
 - [ ] **Step 5: Commit**
 
