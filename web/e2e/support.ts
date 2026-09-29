@@ -44,8 +44,9 @@ export async function submit(page: Page, question: string): Promise<string> {
   await page.waitForURL(/\/research\/[0-9a-f]+$/);
   return page.url().split("/").pop()!;
 }
+/* Terminal: neither running nor waiting for the reader's answers (needs_input, live-briefs spec §4.4). */
 export async function waitTerminal(request: APIRequestContext, sessionId: string): Promise<void> {
-  await expect.poll(async () => (await (await request.get(`${API}/research/${sessionId}/status`)).json()).status, { timeout: 60_000 }).not.toBe("running");
+  await expect.poll(async () => (await (await request.get(`${API}/research/${sessionId}/status`)).json()).status, { timeout: 60_000 }).toMatch(/^(completed|max_iterations|incomplete|failed)$/);
 }
 
 /* live-briefs spec AC6: for each pair of adjacent rows, how far the upper row's connector (its
@@ -108,3 +109,20 @@ export async function installMotionRecorder(page: Page): Promise<void> {
   });
 }
 export const motion = (page: Page) => page.evaluate(() => (window as unknown as { __drMotion: MotionRecord[] }).__drMotion);
+
+/* live-briefs spec §4.5: whether #stage-clarify was ever on the page, and every summary line the
+   check showed, recorded from before the page's scripts run — the summary can be on screen for a
+   fraction of a second before the planner starts and the running stage takes over. */
+export interface ClarifyRecord { stage: boolean; summaries: string[] }
+export async function installClarifyRecorder(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __drClarify: ClarifyRecord };
+    w.__drClarify = { stage: false, summaries: [] };
+    new MutationObserver(() => {
+      if (document.getElementById("stage-clarify")) w.__drClarify.stage = true;
+      const line = document.getElementById("clarifySummary")?.textContent ?? "";
+      if (line && w.__drClarify.summaries.at(-1) !== line) w.__drClarify.summaries.push(line);
+    }).observe(document, { childList: true, subtree: true, characterData: true });
+  });
+}
+export const clarifyRecord = (page: Page) => page.evaluate(() => (window as unknown as { __drClarify: ClarifyRecord }).__drClarify);

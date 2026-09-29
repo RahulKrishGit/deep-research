@@ -2,6 +2,7 @@
 import { Fragment } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { ResearchSessionResponse } from "@/lib/api";
+import { isLive } from "@/lib/format";
 import { useConsole } from "./ConsoleProvider";
 
 /* Today · Yesterday · Earlier by the local date of started_at; the API's order (newest first) is kept. */
@@ -45,12 +46,12 @@ export function Sidebar() {
           <Fragment key={group}>
             <li className="sb-group">{group}</li>
             {items.map((s) => {
-              const running = s.status === "running";
+              const running = isLive(s.status); // live-briefs spec §4.5: a session waiting for the reader counts as running
               /* A running session is the only one that carries a mark: no chips, counts or durations here (index.html:1871-1876). */
               return (
                 <li key={s.session_id}>
                   <button type="button" className="sb-item" data-session={s.session_id} data-run={running ? "1" : "0"} title={s.session_id}
-                    aria-current={active === s.session_id ? "true" : "false"} aria-label={running ? `${s.query} — running` : undefined}
+                    aria-current={active === s.session_id ? "true" : "false"} aria-label={running ? `${s.query} — ${s.status === "needs_input" ? "waiting for you" : "running"}` : undefined}
                     onClick={() => navigate(`/research/${s.session_id}`)}>
                     <span className="q">{s.query}</span><span className="sb-live" aria-hidden="true"></span>
                   </button>

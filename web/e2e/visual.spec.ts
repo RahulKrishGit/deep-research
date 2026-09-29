@@ -54,5 +54,15 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await expect(page.locator("#stage-failed")).toBeVisible({ timeout: 20_000 });
       await shoot(page, `05-failed${suffix}`);
     });
+
+    // live-briefs spec §6: the one-time check's card, on question 1 of 3 (pick 4B).
+    test(`10-clarify${suffix}`, async ({ page, request, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await expect(page.locator("#clarifyStep")).toHaveText("Question 1 of 3", { timeout: 10_000 });
+      await shoot(page, `10-clarify${suffix}`);
+      await page.locator("#clarifyCard").getByRole("button", { name: "Just start" }).click();
+      await waitTerminal(request, id);
+    });
   });
 }

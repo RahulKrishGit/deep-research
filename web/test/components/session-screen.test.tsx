@@ -247,3 +247,47 @@ describe("SessionScreen — re-review item 4: no false Running chip on the not-i
     expect(document.querySelector("#topbarStatus .chip")).toBeNull();
   });
 });
+
+describe("SessionScreen — the one-time check (live-briefs spec §4.5)", () => {
+  const QUESTIONS = [{ id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], best_guess: "Global" }];
+  const WAITING: ResearchSessionResponse = { ...RUNNING, status: "needs_input" };
+  const requested = () => frame(1, "session.clarification.requested", { questions: QUESTIONS, deadline_at: new Date(Date.now() + 60_000).toISOString() });
+  const answered = frame(2, "session.clarification.answered", { reason: "timed_out", answers: [{ question_id: "q1", value: "Global", source: "best_guess" }] });
+  const serve = (status: ResearchSessionResponse, frames: () => string, onStream: () => void = () => {}) => vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/stream")) { onStream(); return sse(frames()); }
+    if (url.includes("/status")) return json(200, status);
+    return json(200, { sessions: [] });
+  });
+
+  it("a session waiting for the reader shows the check in the pipeline card's place, under the waiting chip", async () => {
+    vi.stubGlobal("fetch", serve(WAITING, requested));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifyStep")?.textContent).toBe("Question 1 of 1"));
+    expect(document.getElementById("stage-clarify")!.className).toBe("stage is-on no-enter is-arriving");
+    expect(document.getElementById("stage-running")).toBeNull();
+    expect(document.getElementById("stage-report")).toBeNull();
+    expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Waiting for you · a few quick questions");
+    expect(document.querySelector("#topbarStatus .chip .dot")!.className).toContain("dot-warn");
+  });
+  it("shows what the run starts with once answered, then gives way to the pipeline when the planner starts", async () => {
+    let planner = false;
+    vi.stubGlobal("fetch", serve(RUNNING, () => requested() + answered + (planner ? frame(3, "graph.node.started", { node: "planner", iteration: 0 }) : "")));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifySummary")?.textContent).toBe("Starting research with: Region: Global (best guess)"));
+    expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toMatch(/^Running · /);
+    expect(document.querySelector("#topbarStatus .chip .dot")!.className).toContain("dot-live");
+    planner = true;
+    await waitFor(() => expect(document.getElementById("stage-running")).toBeTruthy(), { timeout: 3_000 });
+    expect(document.getElementById("stage-clarify")).toBeNull();
+  });
+  it("keeps the stream open while the session waits: an ended stream reconnects, as for a running one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    vi.stubGlobal("fetch", serve(WAITING, requested, () => { streamCalls++; }));
+    render(<ConsoleProvider><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifyCard")).toBeTruthy());
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
+  });
+});

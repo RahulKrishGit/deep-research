@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
 import { Sidebar, groupByDay } from "../../components/Sidebar";
@@ -21,7 +21,7 @@ describe("groupByDay", () => {
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }), useParams: () => ({}) }));
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("Sidebar session count", () => {
   it("shows no count before the session list has loaded, then 0 once loaded empty (never an invented 0)", async () => {
@@ -32,5 +32,21 @@ describe("Sidebar session count", () => {
     expect(document.getElementById("sbCount")!.textContent).toBe("");
     release();
     await waitFor(() => expect(document.getElementById("sbCount")!.textContent).toBe("0"));
+  });
+});
+
+describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)", () => {
+  it("carries the live mark and says it is waiting for you; the list keeps polling every 5 s", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let listCalls = 0;
+    const now = new Date().toISOString();
+    vi.stubGlobal("fetch", vi.fn(async () => { listCalls++; return json(200, { sessions: [{ ...session("a", now), status: "needs_input" }, session("b", now)] }); }));
+    render(<ConsoleProvider><Sidebar /></ConsoleProvider>);
+    await waitFor(() => expect(document.querySelector('[data-session="a"]')?.getAttribute("data-run")).toBe("1"));
+    expect(document.querySelector('[data-session="a"]')!.getAttribute("aria-label")).toBe("q a — waiting for you");
+    expect(document.querySelector('[data-session="b"]')!.getAttribute("data-run")).toBe("0");
+    const before = listCalls;
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(listCalls).toBe(before + 1);
   });
 });

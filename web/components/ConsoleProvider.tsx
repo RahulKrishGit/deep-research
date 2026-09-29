@@ -1,7 +1,7 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ApiUnreachableError, listSessions, type ApiMode, type ResearchSessionResponse } from "@/lib/api";
-import type { SessionView } from "@/lib/format";
+import { isLive, type SessionView } from "@/lib/format";
 
 type SidebarMode = "expanded" | "collapsed";
 interface Unreachable { target: string; retry: () => void }
@@ -69,7 +69,7 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     }
   }, [noteMode, noteUnreachable, clearUnreachable]);
   useEffect(() => { void refreshSessions(); }, [refreshSessions]);
-  const anyRunning = sessions.some((s) => s.status === "running");
+  const anyRunning = sessions.some((s) => isLive(s.status)); // needs_input too (live-briefs spec §4.5): its mark must clear when the run ends
   useEffect(() => {
     if (!anyRunning) return;
     const timer = setInterval(() => void refreshSessions(), 5000);
