@@ -45,6 +45,7 @@ from deep_research.agents.errors import (
 )
 from deep_research.agents.events import (
     agent_event,
+    publish_live,
 )
 from deep_research.agents.evidence import (
     ANCHOR_FIELDS,
@@ -395,6 +396,7 @@ from deep_research.agents.researcher import (
     sub_topic_completed_event,
     sub_topic_skipped_error,
     sub_topic_started_event,
+    tool_call_event,
     tool_call_events,
 )
 from deep_research.agents.source_evaluator import (
@@ -535,6 +537,7 @@ __all__ = [
     "agent_provider_failure_details",
     "planning_provider_error",
     "agent_event",
+    "publish_live",
     "ANCHOR_FIELDS",
     "DEFAULT_DOSSIER_EXCERPT_CHARS",
     "DEFAULT_DOSSIER_EXCERPTS",
@@ -861,6 +864,7 @@ __all__ = [
     "sub_topic_completed_event",
     "sub_topic_skipped_error",
     "sub_topic_started_event",
+    "tool_call_event",
     "tool_call_events",
     "AUTHORITY_WEIGHT",
     "DEFAULT_BATCH_SIZE",

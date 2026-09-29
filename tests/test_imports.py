@@ -1,5 +1,12 @@
 """Verify all packages import correctly."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
 import deep_research
 from deep_research import (
     agents,
@@ -621,3 +628,27 @@ def test_the_agent_names_match_the_graph_node_names() -> None:
     from deep_research.runtime import AGENT_NAMES
 
     assert AGENT_NAMES == NODE_NAMES[:5]
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "deep_research.agents",
+        "deep_research.agents.planner",
+        "deep_research.agents.researcher",
+        "deep_research.graph",
+        "deep_research.api.app",
+    ],
+)
+def test_either_side_of_the_live_import_cycle_can_be_imported_first(module: str) -> None:
+    """live-briefs spec E2/E3: agents publish through ``deep_research.graph.live``, and
+    ``deep_research.graph`` imports every agent while its package initialises, so a
+    module-level import from an agent module would break whichever order a fresh
+    process imports in. Each module here is imported first, in a fresh interpreter."""
+    src = Path(deep_research.__file__).resolve().parents[1]
+    env = {**os.environ, "PYTHONPATH": str(src), "PYTHONDONTWRITEBYTECODE": "1"}
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]

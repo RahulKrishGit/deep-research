@@ -1125,7 +1125,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the extraction subject rule and the
     # shared prompts module; reviews, Fable prompt review GREEN at 6424075).
     # Moved `580bec83c9a1` -> `a0691eedc3b2`.
-    "researcher": "a0691eedc3b2",
+    # Live briefs (live-briefs spec E3, 2026-09-28): the topic events carry
+    # their coverage_id, each researcher.tool_call is built as its step is
+    # recorded (tool_call_event), and the three topic events are published
+    # live. Module code only; no prompt string changed and agents.prompts was
+    # untouched, so the other four target pins and the Judge pin are
+    # unchanged. Moved `a0691eedc3b2` -> `de7506bed63e`.
+    "researcher": "de7506bed63e",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

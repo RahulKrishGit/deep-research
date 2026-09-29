@@ -35,7 +35,7 @@ from deep_research.agents.errors import (
     agent_error,
     agent_provider_failure_details,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import (
     _issuer_name_pattern,
     _quote_states,
@@ -2576,16 +2576,45 @@ def sub_topic_started_event(
     index: int,
     existing_sources: int,
 ) -> ResearchEvent:
-    """Announce that one sub-topic's loop is about to run."""
+    """Announce that one sub-topic's loop is about to run.
+
+    ``coverage_id`` lets a console match the topic to the plan's own list
+    (live-briefs spec E3).
+    """
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.sub_topic.started",
         message=f"Researching sub-topic {index}.",
         metadata={
             "sub_topic": summarize_text(sub_topic.title),
+            "coverage_id": sub_topic.coverage_id,
             "priority": sub_topic.priority,
             "index": index,
             "existing_sources": existing_sources,
+        },
+    )
+
+
+def tool_call_event(sub_topic: SubTopic, step: ReActStep) -> ResearchEvent | None:
+    """Report one tool call the sub-topic's loop made, or ``None`` for a step without one.
+
+    Built when the step's observation is recorded (live-briefs spec E3), so the
+    event is stamped at the call rather than when the sub-topic's loop ends.
+    """
+    observation = step.observation
+    if observation is None:
+        return None
+    return agent_event(
+        agent_name=RESEARCHER_NAME,
+        event_type="researcher.tool_call",
+        message=f"{observation.tool_name} call completed.",
+        metadata={
+            "sub_topic": summarize_text(sub_topic.title),
+            "tool": observation.tool_name,
+            "proposal_id": step.proposal_id,
+            "iteration": step.iteration,
+            "success": observation.success,
+            "error_type": observation.error_type,
         },
     )
 
@@ -2595,27 +2624,11 @@ def tool_call_events(
     run: ReActRun,
 ) -> list[ResearchEvent]:
     """Report one event per tool call the sub-topic's loop made."""
-    events: list[ResearchEvent] = []
-    for step in run.steps:
-        observation = step.observation
-        if observation is None:
-            continue
-        events.append(
-            agent_event(
-                agent_name=RESEARCHER_NAME,
-                event_type="researcher.tool_call",
-                message=f"{observation.tool_name} call completed.",
-                metadata={
-                    "sub_topic": summarize_text(sub_topic.title),
-                    "tool": observation.tool_name,
-                    "proposal_id": step.proposal_id,
-                    "iteration": step.iteration,
-                    "success": observation.success,
-                    "error_type": observation.error_type,
-                },
-            )
-        )
-    return events
+    return [
+        event
+        for step in run.steps
+        if (event := tool_call_event(sub_topic, step)) is not None
+    ]
 
 
 def sub_topic_completed_event(
@@ -2666,6 +2679,7 @@ def sub_topic_completed_event(
         message=f"Sub-topic {index} complete.",
         metadata={
             "sub_topic": summarize_text(sub_topic.title),
+            "coverage_id": sub_topic.coverage_id,
             "index": index,
             "stop_reason": run.stop_reason,
             "iterations": run.iterations,
@@ -2925,6 +2939,9 @@ class _LoopWithExtraction(NamedTuple):
     extraction_tasks: dict[str, "asyncio.Task[_PageExtraction]"]
     admitted_read_order: list[str]
     extraction_gate: asyncio.Semaphore
+    tool_calls: list[ResearchEvent]
+    """The loop's ``researcher.tool_call`` events, in step order, each built and
+    published live as its step was recorded (live-briefs spec E3)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -4375,8 +4392,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 scratchpad=scratchpad,
             )
 
+        tool_calls: list[ResearchEvent] = []
+
         async def record(step: ReActStep) -> None:
             await self._record_step(step, scratchpad=scratchpad)
+            event = tool_call_event(task.sub_topic, step)
+            if event is not None:
+                publish_live(event)
+                tool_calls.append(event)
 
         try:
             react = await run_react_loop(
@@ -4410,6 +4433,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             extraction_tasks=extraction_tasks,
             admitted_read_order=admitted_read_order,
             extraction_gate=extraction_gate,
+            tool_calls=tool_calls,
         )
 
     async def _research_one(
@@ -4421,16 +4445,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Run one sub-topic's loop and extraction inside its own agent span.
 
         Nothing here writes to the agent: the loop's findings, errors, events
-        and counters are returned for ``run`` to fold in plan order.
+        and counters are returned for ``run`` to fold in plan order. The topic's
+        events are also published live as they happen (live-briefs spec E3): the
+        started event as the loop begins, each tool call as its step is
+        recorded, the completed event once extraction settles -- the very
+        objects this outcome returns.
         """
         sub_topic = task.sub_topic
-        events = [
-            sub_topic_started_event(
-                sub_topic,
-                index=index,
-                existing_sources=len(task.existing_sources),
-            )
-        ]
+        started = sub_topic_started_event(
+            sub_topic,
+            index=index,
+            existing_sources=len(task.existing_sources),
+        )
+        publish_live(started)
+        events = [started]
         scratchpad = ScratchpadMemory(
             session_id=self._scratchpad.session_id,
             agent_name=self._scratchpad.agent_name,
@@ -4452,6 +4480,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     task, policy, scratchpad, tool_lock
                 )
                 react = loop_result.react
+                tool_calls = loop_result.tool_calls
                 elapsed_s = round(perf_counter() - started_at, 1)
                 (
                     sub_findings,
@@ -4533,27 +4562,27 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # Reported after the loop's own errors and before the completed
             # event, exactly where the sequential fold reported it.
             errors.append(no_findings_error(sub_topic, react))
-        events.extend(tool_call_events(sub_topic, react))
-        events.append(
-            sub_topic_completed_event(
-                sub_topic,
-                react,
-                index=index,
-                findings=len(bounded.retained),
-                dropped_duplicate=bounded.dropped_duplicate,
-                dropped_cap=bounded.dropped_cap,
-                sources_retained=bounded.sources_retained,
-                publishers_retained=bounded.publishers_retained,
-                source_urls_retained=bounded.source_urls_retained,
-                findings_retained=bounded.findings_retained,
-                works_retained=bounded.works_retained,
-                successful_reads=successful_reads,
-                useful_evidence_yield=useful_evidence_yield,
-                acquired_work_count=acquired_work_count,
-                target_obligation_completed=target_obligation_completed,
-                elapsed_s=elapsed_s,
-            )
+        events.extend(tool_calls)
+        completed = sub_topic_completed_event(
+            sub_topic,
+            react,
+            index=index,
+            findings=len(bounded.retained),
+            dropped_duplicate=bounded.dropped_duplicate,
+            dropped_cap=bounded.dropped_cap,
+            sources_retained=bounded.sources_retained,
+            publishers_retained=bounded.publishers_retained,
+            source_urls_retained=bounded.source_urls_retained,
+            findings_retained=bounded.findings_retained,
+            works_retained=bounded.works_retained,
+            successful_reads=successful_reads,
+            useful_evidence_yield=useful_evidence_yield,
+            acquired_work_count=acquired_work_count,
+            target_obligation_completed=target_obligation_completed,
+            elapsed_s=elapsed_s,
         )
+        publish_live(completed)
+        events.append(completed)
         return _SubTopicOutcome(
             react=react,
             findings=bounded.retained,
