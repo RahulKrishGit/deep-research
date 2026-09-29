@@ -27,7 +27,7 @@ has three destinations after the review rather than two.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
@@ -79,6 +79,7 @@ from deep_research.graph.state import (
 from deep_research.observability import RunTelemetryCollector, Tracker
 from deep_research.utils.types import (
     MemorySnapshot,
+    ReaderAnswer,
     ResearchEvent,
     ResearchState,
     merge_research_state,
@@ -439,8 +440,13 @@ async def run_research_graph(
     max_extra_passes: int = DEFAULT_MAX_EXTRA_PASSES,
     memory_context: MemorySnapshot | None = None,
     event_handler: ProgressHandler | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> GraphRun:
     """Run one research session from the question to a final status.
+
+    ``reader_answers`` are the reader's answers to the one-time check
+    (live-briefs spec §4.4); they start in the initial state, so the planner
+    reads them, and a run without them starts exactly as before.
 
     ``session_started_event`` is written into the initial state *before* the
     graph runs, so it is checkpointed with everything else.
@@ -464,6 +470,7 @@ async def run_research_graph(
             question=question,
             max_extra_passes=max_extra_passes,
             memory_context=memory_context,
+            reader_answers=reader_answers,
         )
     )
     state = merge_research_state(

@@ -20,6 +20,7 @@ release. Primitives sidestep that entirely and keep checkpoints readable.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TypedDict
 
 from pydantic import JsonValue
@@ -30,6 +31,7 @@ from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     MemorySnapshot,
+    ReaderAnswer,
     ResearchState,
 )
 
@@ -192,12 +194,15 @@ def initial_graph_state(
     question: str,
     max_extra_passes: int = DEFAULT_MAX_EXTRA_PASSES,
     memory_context: MemorySnapshot | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> ResearchGraphState:
     """Build the channel one research session starts from.
 
     ``memory_context`` is supplied by the caller. The graph performs no
     recall of its own: that touches ChromaDB and an embedding provider,
-    which orchestration has no business owning.
+    which orchestration has no business owning. ``reader_answers`` are the
+    reader's answers to the one-time check (live-briefs spec §4.4), empty
+    when nothing was asked.
 
     A new run stamps the current evidence contract. The read and evidence
     registries start empty on purpose: this session has read nothing yet, and
@@ -210,6 +215,7 @@ def initial_graph_state(
             original_question=question,
             max_extra_passes=max_extra_passes,
             memory_context=memory_context or MemorySnapshot(),
+            reader_answers=list(reader_answers),
             quality_contract_version=QUALITY_CONTRACT_VERSION,
         )
     )

@@ -1809,6 +1809,29 @@ class BottomLineDraft(ContractModel):
     sentences: list[WriterPointDraft] = Field(default_factory=list)
 
 
+# The one-time check (live-briefs spec §4.4): the dimensions a check question may
+# ask about, and where each answer came from.
+ClarityDimension: TypeAlias = Literal["geography", "period", "purpose", "scope"]
+ReaderAnswerSource: TypeAlias = Literal["chosen", "typed", "best_guess"]
+
+
+class ReaderAnswer(ContractModel):
+    """One answer to the one-time check, as the planner reads it (live-briefs spec §4.4).
+
+    ``text`` is the question the reader was asked and ``short`` its one- or
+    two-word label ("Region"). ``source`` says where ``value`` came from: an
+    option the reader chose, text the reader typed, or the check's own best
+    guess for a question the reader skipped, left, or let time out on.
+    """
+
+    question_id: str = Field(min_length=1)
+    dimension: ClarityDimension
+    text: str = Field(min_length=1)
+    short: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    source: ReaderAnswerSource
+
+
 class ResearchState(ContractModel):
     session_id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
@@ -1968,6 +1991,14 @@ class ResearchState(ContractModel):
     state that says the re-run was spent rather than drafting again.
     """
     memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
+    reader_answers: list[ReaderAnswer] = Field(default_factory=list)
+    """The reader's answers to the one-time check, best guesses included, or ``[]``.
+
+    Set once, when the run starts, and replaced on every write (live-briefs
+    spec §4.4). Empty when the check asked nothing, was turned off, or failed:
+    every consumer renders its reader-answers section only when this is
+    non-empty, so a run without answers builds the same requests as before.
+    """
     events: list[ResearchEvent] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
 
@@ -2007,6 +2038,7 @@ class ResearchStateUpdate(TypedDict, total=False):
     extra_pass_target_ids: list[str]
     writer_redrafts: int
     memory_context: MemorySnapshot
+    reader_answers: list[ReaderAnswer]
     events: list[ResearchEvent]
     errors: list[ResearchError]
 

@@ -25,7 +25,7 @@ from deep_research.request_budget import RequestBudget, RequestBudgetUpdate
 from deep_research.runtime.assembly import ResearchRuntime
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import ReaderAnswer, ResearchEvent
 from tests.graph_fakes import (
     REVIEW_DIMENSIONS,
     FakeAgent,
@@ -915,3 +915,36 @@ async def test_run_research_skips_the_loop_lag_monitor_with_no_collector(
     )
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_reader_answers_start_in_the_state_the_planner_is_handed(
+    config_file, tracker
+) -> None:
+    """live-briefs spec §4.4: the reader's answers start in the run's state, so
+    the planner reads them, and the finished state still holds them."""
+    answer = ReaderAnswer(
+        question_id="q1", dimension="geography", text="Which region should this cover?",
+        short="Region", value="Global", source="best_guess",
+    )
+    planner = FakeAgent("planner", [{"sub_topics": [fake_sub_topic(targets=[fake_target()])]}])
+
+    outcome = await run_research(
+        QUESTION,
+        config_path=config_file,
+        runtime_builder=fake_builder(tracker, agents=fake_research_agents(planner=planner)),
+        reader_answers=[answer],
+    )
+
+    assert outcome.status == "completed"
+    assert planner.calls[0].reader_answers == [answer]
+    assert outcome.state.reader_answers == [answer]
+
+
+@pytest.mark.asyncio
+async def test_a_run_given_no_reader_answers_starts_with_none(config_file, tracker) -> None:
+    outcome = await run_research(
+        QUESTION, config_path=config_file, runtime_builder=fake_builder(tracker)
+    )
+
+    assert outcome.state.reader_answers == []

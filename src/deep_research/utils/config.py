@@ -424,6 +424,24 @@ class GraphConfig(BaseModel):
     checkpointing_enabled: bool = False
 
 
+class HitlConfig(BaseModel):
+    """The reader-in-the-loop timings (live-briefs spec §4.4), in seconds.
+
+    ``check_timeout_s`` bounds the one-time check's provider call: a check that
+    fails or runs out of time asks nothing and the run starts. ``answer_wait_s``
+    is how long a session waits in ``needs_input`` before it starts on the
+    check's best guesses (D6). ``note_interpret_timeout_s`` bounds one reader
+    note's interpretation (reader notes, live-briefs Phase 3). Request-scoped
+    ``config_overrides`` may set each; nothing reads them from the environment.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    check_timeout_s: float = Field(default=20.0, gt=0)
+    answer_wait_s: float = Field(default=60.0, gt=0)
+    note_interpret_timeout_s: float = Field(default=15.0, gt=0)
+
+
 class OutputConfig(BaseModel):
     """Output settings."""
 
@@ -547,6 +565,7 @@ class ConfigSettings(BaseModel):
     memory: MemoryConfig = MemoryConfig()
     agents: AgentRuntimeConfig = AgentRuntimeConfig()
     graph: GraphConfig = GraphConfig()
+    hitl: HitlConfig = HitlConfig()
     output: OutputConfig = OutputConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
     request_budget: RequestBudgetConfig = RequestBudgetConfig()
