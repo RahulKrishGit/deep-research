@@ -76,6 +76,13 @@ export function SettingsPopover({ open, settings, onChange, onClose, anchor }: P
         <label className="lbl" htmlFor="outputDir">Output directory</label>
         <input className="input mono-in" id="outputDir" value={settings.outputDir} onChange={(e) => onChange({ ...settings, outputDir: e.target.value })} />
       </div>
+      {/* live-briefs spec §4.5 (D16): in the slot the extra-passes stepper left; on by default. */}
+      <div className="pop-row">
+        <span className="lbl" id="lblAsk">Ask me when the question is unclear</span>
+        <div className="seg" role="group" aria-labelledby="lblAsk" id="segAsk">
+          {([["on", true], ["off", false]] as const).map(([key, on]) => <button key={key} type="button" data-ask={key} {...seg(settings.askWhenUnclear === on)} onClick={() => onChange({ ...settings, askWhenUnclear: on })}>{on ? "On" : "Off"}</button>)}
+        </div>
+      </div>
     </div>
   );
 }

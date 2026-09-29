@@ -4,7 +4,7 @@ import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getStatus, reportUr
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-const request = { query: "q", output_format: "markdown" as const, config_overrides: {} };
+const request = { query: "q", output_format: "markdown" as const, config_overrides: {}, ask_clarifying_questions: true };
 
 afterEach(() => vi.unstubAllGlobals());
 

@@ -18,14 +18,15 @@ export const STARTERS = [
   "Does congestion pricing reduce particulate pollution?",
   "How reliable are consumer-grade air quality sensors?",
 ];
-export const DEFAULT_SETTINGS: SubmittedSettings = { model: "deepseek-flash", thinking: "enabled", outputDir: "output/" };
+export const DEFAULT_SETTINGS: SubmittedSettings = { model: "deepseek-flash", thinking: "enabled", outputDir: "output/", askWhenUnclear: true };
 
 /* The body the design specifies, with no max_iterations: the API applies the configured
-   extra-pass budget (live-briefs spec §4.2, D15). */
+   extra-pass budget (live-briefs spec §4.2, D15). The one-time check is asked for unless the
+   reader turned it off (D16). */
 export function buildRequest(question: string, s: SubmittedSettings): ResearchRequest {
   const config_overrides: Record<string, unknown> = { llm: { model: s.model, thinking_mode: s.thinking } };
   if (s.outputDir.trim()) config_overrides.output = { directory: s.outputDir.trim() };
-  return { query: question.trim(), output_format: "markdown", config_overrides };
+  return { query: question.trim(), output_format: "markdown", config_overrides, ask_clarifying_questions: s.askWhenUnclear };
 }
 
 /* K19 (governing rule, spec §4.4): an unavailable value is never invented — a configuration error

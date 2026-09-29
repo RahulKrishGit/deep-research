@@ -4,11 +4,13 @@ export type SessionStatus = "running" | "needs_input" | "completed" | "max_itera
 export type ApiMode = "live" | "replay";
 
 /* No `max_iterations`: the console never sends one, so the API uses the configured extra-pass
-   budget (live-briefs spec §4.2, D15). The API itself still accepts the field. */
+   budget (live-briefs spec §4.2, D15). The API itself still accepts the field.
+   `ask_clarifying_questions` is the settings row "Ask me when the question is unclear" (D16). */
 export interface ResearchRequest {
   query: string;
   output_format: "markdown";
   config_overrides: Record<string, unknown>;
+  ask_clarifying_questions: boolean;
 }
 export interface ResearchError {
   error_type: string; source: string; message: string; recoverable: boolean; timestamp: string;
