@@ -1331,3 +1331,37 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .mk .dotc{transform:none !important}
   [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
 }
+
+/* ═══ 2026-09-29: the one-time check (live-briefs spec §4.5; pick 4B, docs/design/running-stage-picks/Hitl1.dc.html column B) ═══ */
+/* One card in the pipeline card's place: a step line with dots, one question, its answers stacked
+   full width, a hairline footer. No purple at rest (D17): the answers and the footer's buttons are
+   neutral; the text field alone shows the app's focus ring while it has focus. */
+#clarifyCard{display:flex;flex-direction:column;gap:var(--space-4)}
+#clarifyCard .ck-top{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)}
+.step-dots{display:flex;gap:6px;align-items:center}
+.step-dots i{width:6px;height:6px;border-radius:50%;background:var(--border);transition:background var(--motion-base) var(--ease-standard)}
+.step-dots i[data-on="1"]{background:var(--fg)}
+#clarifyCard .ck-q{display:flex;flex-direction:column;gap:var(--space-4);animation:enter var(--motion-base) var(--ease-entrance) both}
+.choices{display:flex;flex-direction:column;gap:var(--space-2)}
+.choice{display:flex;width:100%;min-height:44px;align-items:center;justify-content:space-between;gap:var(--space-2);padding:8px var(--space-4);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);color:var(--muted);font-size:var(--text-sm);text-align:left;transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
+.choice:hover{background:var(--border-soft);border-color:var(--muted);color:var(--fg)}
+.choice[aria-pressed="true"]{background:var(--border-soft);border-color:var(--fg);color:var(--fg)}
+.choice .cap{flex:none}
+/* Text entry that reads as text (theme.css .tx): transparent, a soft ground on hover, the ring on focus.
+   Its box and its text line up with the answers above it (same padding, an invisible 1px border). */
+.tx{flex:1;min-width:0;display:block;min-height:44px;background:transparent;border:1px solid transparent;outline:none;color:var(--fg);font:inherit;font-size:var(--text-sm);padding:8px var(--space-4);border-radius:var(--radius-md);transition:background var(--motion-fast) var(--ease-standard)}
+.tx:hover{background:var(--border-soft)}
+.tx:focus{background:transparent;box-shadow:var(--focus-ring)}
+.tx::placeholder{color:var(--meta)}
+#clarifyCard .ck-other{display:flex;align-items:center;gap:var(--space-3)}
+#clarifyCard .ic-foot{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;padding-top:var(--space-4);border-top:1px solid var(--border-soft)}
+#clarifyCard .ic-btns{display:flex;gap:var(--space-2)}
+#clarifyCard .ck-back{margin-left:calc(-1 * var(--space-4))}
+#clarifyCard .ck-summary{color:var(--fg);animation:enter var(--motion-base) var(--ease-entrance) both}
+/* Focus is moved to the question and to the line that replaces the buttons, so a keyboard or
+   screen-reader user keeps their place; neither is a control, so neither draws a ring (D17). */
+#clarifyCard [tabindex="-1"]:focus{outline:none}
+@media (prefers-reduced-motion:reduce){
+  /* the next question and the summary fade in place, with no travel (spec §4.3, §4.8) */
+  #clarifyCard .ck-q,#clarifyCard .ck-summary{animation-duration:160ms !important}
+}
