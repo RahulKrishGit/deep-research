@@ -5,9 +5,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 from deep_research.utils.config import ConfigSettings, apply_config_overrides
+from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
     FigureAttribution,
     FigureDropReason,
@@ -18,8 +26,12 @@ from deep_research.utils.types import (
     SourceEvaluationStatus,
 )
 
+# ``needs_input`` is the one waiting status (live-briefs spec §4.4): the one-time
+# check is waiting for the reader's answers. It is not terminal, and it returns to
+# ``running`` when the answers arrive, the reader skips, or the wait times out.
 SessionStatus = Literal[
     "running",
+    "needs_input",
     "completed",
     "max_iterations",
     "incomplete",
@@ -50,12 +62,17 @@ class ResearchRequest(ApiModel):
     ceiling on *extra* research passes: zero is a legitimate request — a run
     that may buy no extra pass for a missing required target — so the bound is
     ``>= 0`` rather than ``>= 1``.
+
+    ``ask_clarifying_questions`` turns the one-time check on (live-briefs spec
+    §4.4, D16): before planning, a question that leaves something material open
+    gets up to three questions for the reader. Off, no check call is made.
     """
 
     query: str = Field(min_length=1)
     max_iterations: int | None = Field(default=None, ge=0)
     output_format: Literal["markdown"] = "markdown"
     config_overrides: dict[str, JsonValue] = Field(default_factory=dict)
+    ask_clarifying_questions: bool = True
 
     @field_validator("config_overrides")
     @classmethod
@@ -70,6 +87,42 @@ class ResearchRequest(ApiModel):
         """
         apply_config_overrides(ConfigSettings(), value)
         return value
+
+
+class ClarificationAnswer(ApiModel):
+    """One answer to the one-time check: an offered option, or the reader's own text.
+
+    ``question_id`` and ``choice`` are capped at what a check can ask (``q1``..``q3``,
+    options of at most 80 characters). ``text`` is collapsed to one single-spaced
+    line before its length is checked, so a typed answer can never start a new
+    line in the planner's ``# Reader answers`` section.
+    """
+
+    question_id: str = Field(min_length=1, max_length=8)
+    choice: str | None = Field(default=None, min_length=1, max_length=80)
+    text: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def exactly_one_answer(self) -> ClarificationAnswer:
+        if (self.choice is None) == (self.text is None):
+            raise ValueError("an answer carries exactly one of choice or text")
+        return self
+
+
+class ClarificationAnswersRequest(ApiModel):
+    """``POST /research/{id}/answers``: the reader's answers, once (spec §4.4).
+
+    A question left out takes its best guess. ``skip`` records that the reader
+    chose to start now ("Just start") with whatever they had answered.
+    """
+
+    answers: list[ClarificationAnswer] = Field(default_factory=list, max_length=3)
+    skip: bool = False
 
 
 class CoverageProgressResponse(ApiModel):
