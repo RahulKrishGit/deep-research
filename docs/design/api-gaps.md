@@ -10,7 +10,7 @@ or a disabled control.**
 
 The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
 3 Running, 4 Report, 5 Failed) and a collapsible session sidebar, so gaps are
-keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2 and 3.7 are closed
+keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2, 3.1 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the
 Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 
@@ -81,6 +81,7 @@ Kept as a record, one line each.
 | 1.2 | `GET /research` | the session list, newest first, `?limit=` 1–200 (default 20); process-local memory, as SB.2 records |
 | — | `/status.iteration` store fix | `ResearchSession.publish` copies `iteration` from `graph.*` events only (`api/sessions.py`), so `researcher.tool_call`'s ReAct step index never moves the pass |
 | 3.7 | live per-event delivery | closed 2026-09-28 (live-briefs spec E1–E3): every `ResearchEvent` carries an `event_id`; `agent_node` and the agents publish progress live through the run's sink (`graph/live.py`), and the snapshot loop skips ids already published, so each event is delivered once (`graph/orchestrator.py`) |
+| 3.1 | `max_iterations` echo | obsolete 2026-09-28: the console no longer shows a pass ceiling or sends a budget (live-briefs D14, D15); `max_extra_passes` stays on the stream at `graph.session.started` |
 
 ---
 
@@ -106,7 +107,6 @@ Kept as a record, one line each.
 
 | # | Needed | Why | Where it exists today | Honest workaround | Suggested shape |
 |---|---|---|---|---|---|
-| 3.1 | **`max_iterations` echo, partially closed** [1.7] | The ceiling `P` in `pass p of P` comes from `graph.session.started.max_extra_passes` while the stream is open, but `/status` never carries it, so a reload after the stream closes falls back to the client's submitted budget. | `ResearchState.max_extra_passes`; on the stream at `graph.session.started` | Read it from the stream; fall back to the submitted value, used consistently | Include `max_extra_passes` on the response |
 | 3.2 | **Token usage, absent on every stage** [2.1] | "Cost and usage" wants token totals and the client cannot derive them; they are absent while running and after the run alike. | `ResearchOutcome.token_usage`, from `TokenUsageMetric`s accumulated in the tracker | `Not recorded`, with the reason stated | A `usage` block on the status response, or cumulative totals on `graph.node.completed` metadata |
 | 3.3 | **A terminal frame on the stream** [2.3] | The stream ends when the session reaches a terminal state, but the final frame is an ordinary event. The console learns *that* the run ended and must then call `GET /status` to learn *how* — and the stage transition depends on knowing how. | `graph.session.completed` carries `status`, `iteration`, `error_count`, `has_report`, but the store returns without synthesising a frame | On stream close, re-read `/status` and transition from it | One terminal `api.session.closed` frame carrying the final snapshot |
 | 3.4 | **Event identity / `Last-Event-ID`** [2.6] | SSE `id` is per-subscriber and starts at 1, so it is a stream position rather than an event identity. A reconnect cannot ask for "everything after what I saw". | `ResearchSession.events` list index | Re-derive the running stage from the full replay — every rule is idempotent over events 1..k | A monotonic `sequence` on `ResearchEvent`, plus `Last-Event-ID` support |
