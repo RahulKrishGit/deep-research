@@ -147,14 +147,16 @@ brief (§3.4).
 
 ## 3. Screen inventory
 
-One page, five stages. The session is the page: `/` and `/research/[session_id]`
+One page, five stages, and a one-time check (2a) that can come between the second
+and the third. The session is the page: `/` and `/research/[session_id]`
 are the same UI, and the stage is derived from the session's status rather than
 chosen by the operator.
 
 | # | Stage | Server state that selects it | What it shows | Transition out |
 |---|---|---|---|---|
 | 1 | **Idle** | no active session | Composer only | Operator submits → `202` → stage 2 |
-| 2 | **Submitted** | `status == "running"`, first beat | The question read back and the four-chip settings strip (`model · thinking · effort · out`) — and nothing else | Held ~2.2s → stage 3 |
+| 2 | **Submitted** | `status == "running"` or `"needs_input"`, first beat | The question read back and the four-chip settings strip (`model · thinking · effort · out`) — and nothing else | Held ~2.2s → stage 2a or 3 |
+| 2a | **Check** | `status == "needs_input"`, or the stream's `session.clarification.requested` until the planner's `graph.node.started` | One question at a time in the pipeline card's place, under the eyebrow `Before we start`, the locked question and the settings strip (pick 4B): the answers, the best guess marked, **Other…**, then Back · Skip this one · Just start and the countdown; after the answers, the one summary line `Starting research with: …` | The planner starts → stage 3 |
 | 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it | Server status leaves `running` → stage 4 or 5 |
 | 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
@@ -167,6 +169,21 @@ are the two things the operator had already asked to have taken off the other st
 prose is the same "text where state would do" that §3.2 and §3.5 keep running into. The beat
 has one job — hold the question still for a moment before the pipeline takes the screen — so
 it now shows the question, the settings in force, and the eyebrow that names the beat.
+
+**Stage 2a, the one-time check, asks once and only when it matters** (live-briefs D4–D7,
+D16, 2026-09-29). With "Ask me when the question is unclear" on (§3.2), the session
+first asks the configured model whether the question leaves something material open —
+geography, period, purpose or scope. Usually it does not, and the run starts as before.
+Otherwise the session waits (`needs_input`) and the check takes the pipeline card's
+place below the locked question and its settings strip: one question at a time, at most
+three, two to four answers each with one marked `best guess`, and **Other…** for the
+reader's own words. A tapped answer moves on after 240ms. The footer offers Back, Skip
+this one and Just start, and its cap counts down to the start on best guesses (60s, D6).
+The answers are shown once, in the summary line, and never again: there is no
+assumptions UI (D7). No purple on the card: nothing on it is the page's primary action.
+There is no `checking` status (pending open issue O2 of the Phase 2 plan): while the
+check call runs, for up to `hitl.check_timeout_s` (20s), `/status` reads `running` and
+the page shows stage 3; if questions come back, stage 2a replaces the pipeline card.
 
 **The composer exists on stage 1 only.** Once a question is sent, the text box is
 gone for the rest of that session's life: stages 2, 3 and 4 show the locked-in
@@ -224,7 +241,8 @@ collaboration affordance, and no billing — single local operator, no auth.
 Every stage after submission carries the same four facts, in the same order, as
 a mono chip row: **model, thinking, effort, out** — `model deepseek-flash` ·
 `thinking enabled` · `effort per agent` · `out output/`. There is no extra-passes
-chip (live-briefs D15; §3.2). They are rendered from the session's own copy, not from the live
+chip (live-briefs D15; §3.2), and none for the one-time check's setting (D16): whether
+the check ran is visible as stage 2a itself. They are rendered from the session's own copy, not from the live
 composer state, because a session's settings are fixed when it is created — the
 override dict is read once by `prepare_research_settings` — and the API echoes
 nothing back (api-gaps 1.3). When thinking is `disabled` the strip reads `effort
@@ -464,7 +482,7 @@ viewport-relative half keeps working without the script knowing anything about i
 composer also moves the control row the run-settings panel is anchored to, so that panel
 is re-placed while it is open rather than left pointing at where the row used to be.
 
-What the composer sends — the three knobs it exposes, and the one line it only
+What the composer sends — the four knobs it exposes, and the one line it only
 states:
 
 | Control | Sent as | Constraint the UI enforces |
@@ -473,13 +491,15 @@ states:
 | Thinking | `config_overrides.llm.thinking_mode` | `enabled` or `disabled` |
 | Effort | nothing | **read-only line**: `effort per agent: planner max · reviewer max · others high`, or `effort: not sent (thinking disabled)` |
 | Output directory | `config_overrides.output.directory` | Free text |
+| Ask me when the question is unclear | top-level `ask_clarifying_questions` | **On** or **Off**, default **On** (live-briefs D16), in the slot the extra-passes stepper left; Off makes no check (stage 2a) |
 
 The request body, exactly:
 
 ```json
 {"query": "…", "output_format": "markdown",
  "config_overrides": {"llm": {"model": "deepseek-flash", "thinking_mode": "enabled"},
-                      "output": {"directory": "output/"}}}
+                      "output": {"directory": "output/"}},
+ "ask_clarifying_questions": true}
 ```
 
 Effort is not a control, and the reasons are recorded here rather than in the
@@ -896,13 +916,15 @@ own threshold, and the status text beside the meter says which outcome the run h
 
 ## 4. Status mapping
 
-The API's `SessionStatus` is a five-value literal (`api/models.py:13-19`). The
-interface shows five statuses. This table is the contract between them, and it is
+The API's `SessionStatus` is a six-value literal (`api/models.py:32-39`;
+`needs_input` joined it with the one-time check, live-briefs 2026-09-29). The
+interface shows six statuses. This table is the contract between them, and it is
 exhaustive: no status may be invented and none may be dropped.
 
 | Interface status | API `status` | Also read | Token role | Copy shown to the operator |
 |---|---|---|---|---|
 | **Running** | `running` | the active row from the stream (§3.5) | `--fg` label, `--success` live dot (the one non-text use) | `Running · {step}`, e.g. `Running · Researching` |
+| **Waiting for you** | `needs_input` | the check's phase from the stream (`session.clarification.*`, stage 2a), which outranks a `/status` read taken just before it | `--fg` label, `--warn` dot | `Waiting for you · a few quick questions` |
 | **Completed** | `completed` | `semantic_review_score`, `coverage.not_found_target_ids` | `--fg` label, `--success` dot | `Completed · review accepted · {score}` + the not-found clause |
 | **Partially completed** | `max_iterations` | `coverage` | `--fg` label, `--warn` dot | `Partially completed · extra passes used` + the not-found clause |
 | **Partially completed** | `incomplete` with `semantic_review_status == "scored"` | `semantic_review_score` | `--fg` label, `--warn` dot | `Partially completed · not accepted · {score}` |
@@ -945,9 +967,11 @@ Rules that follow from the table:
 5. **Status is never carried by colour alone.** Every status has a text label at
    `--text-sm` minimum; the dot is redundant reinforcement, and a duplicated
    colour-vision simulation of the chips is in `states.html`.
-6. **`waiting` does not exist.** Before the first frame, or between
-   `POST /research` and the first event, the screen is *Running* with stage
-   `starting`. There is no sixth status.
+6. **The only waiting status is the reader's.** Before the first frame, or
+   between `POST /research` and the first event, the screen is *Running* with
+   stage `starting`. `needs_input` means the one-time check is waiting for the
+   reader's answers (live-briefs D5, D6), shown as *Waiting for you*; nothing
+   else waits, and a slow service never reads as waiting.
 7. **The chip can shrink on a narrow viewport; its note cannot wrap.** Below the
    width the full clause needs, the topbar chip's note truncates with an
    ellipsis instead of wrapping or overflowing — the topbar's own height never
@@ -1336,6 +1360,12 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   fades (200ms); counts tween to their new value over 400ms. **Under reduced
   motion** heights change at once, lines fade over 160ms with no stagger and no
   rise, the ✓ appears without drawing, counts jump and the halos are pinned at rest.
+- **The one-time check moves once per question** (live-briefs pick 4B, 2026-09-29).
+  Its card arrives as the pipeline card does (`.is-arriving`); a tapped answer shows
+  as chosen for 240ms, then the next question fades and rises in (`enter`,
+  `--motion-base`), and the summary line arrives the same way. The step dots change
+  colour, never size. **Under reduced motion** the next question and the summary fade
+  in place over 160ms, with no rise.
 - **One decorative loop, and it is not load-bearing.** `halo` runs at
   `--motion-halo: 2200ms` on the running node, on each running topic's dot and on the header status dot. It stops
   under reduced motion, and §3.4's table is identical either way — no state on this
@@ -1525,16 +1555,17 @@ from `graph.session.completed`.
 
 **Delivery is live.** Each event reaches the stream as it happens: `graph.node.started`
 is published live when an agent node starts (the reviewer, Publishing and the two hop
-nodes keep snapshot publication), and each agent's progress events as the agent builds them — the
-researcher's `researcher.sub_topic.started`, `researcher.tool_call` (built when its
-step's observation is recorded) and `researcher.sub_topic.completed` while its topics
-run, concurrently. Events that are not published live — the graph's route, review,
-hop and completion events, and `researcher.research.completed` — arrive with their
-node's snapshot, and an id already published live is never published twice
-(`graph/live.py`, `graph/orchestrator.py`; api-gaps 3.7, closed). The screen therefore
-moves within a node: the Researching checklist ticks topics off as they finish. Every
-derivation above is still written so the state after event *k* depends only on events
-1..*k*: a live run, a 100-event replay and a reconnect's burst paint the same screen.
+nodes keep snapshot publication); each agent's progress events are published as the
+agent builds them — the researcher's `researcher.sub_topic.started`,
+`researcher.tool_call` (built when its step's observation is recorded) and
+`researcher.sub_topic.completed` while its topics run, concurrently. Events that are not
+published live — the graph's route, review, hop and completion events, and
+`researcher.research.completed` — arrive with their node's snapshot, and an id already
+published live is never published twice (`graph/live.py`, `graph/orchestrator.py`;
+api-gaps 3.7, closed). The screen therefore moves within a node: the Researching
+checklist ticks topics off as they finish. Every derivation above is still written so
+the state after event *k* depends only on events 1..*k*: a live run, a 100-event replay
+and a reconnect's burst paint the same screen.
 
 This is a product judgement, stated so it can be overruled: a run emits well over
 100 events, the operator's question is "is it progressing and what has it found",
@@ -1587,6 +1618,7 @@ Full detail, with the request shape each gap implies, is in
 | Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
 | Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
 | Submitted | nothing beyond Idle |
+| Check | nothing: `needs_input`, the two `session.clarification.*` events and `POST /research/{id}/answers` serve it (live-briefs Phase 2) |
 | Running | no token usage; no terminal frame; no `Last-Event-ID` resume (events carry an `event_id`, but a reconnect replays from event 1); the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
 | Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
@@ -1693,7 +1725,7 @@ the counters block — sits inside the frame instead of running off the bottom.
 These renders and `docs/design/prototype/` predate live briefs Phase 1
 (2026-09-28) and were not re-captured. They still show the running stage's
 counters block (removed from that stage, D13; §5.8) and the composer's
-`extra passes` pill (removed, D15; §3.0): the app's running stage and composer no longer draw them.
+`extra passes` pill (removed, D15; §3.2): the app's running stage and composer no longer draw them.
 
 One layout fact differs from the 2026-09-16 renders by design: at ≤ 900px the
 composer bar hides its `thinking` pill (`#pillThinking`) and keeps only the

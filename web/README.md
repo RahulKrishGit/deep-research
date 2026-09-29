@@ -20,7 +20,7 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   (three servers: the API on 8010, the app on 3010, an app on 3011 pointed at a closed
   port). Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter
   (`…/deep-research/.venv/Scripts/python.exe`); `npx playwright install chromium` once.
-- `npm run capture:visual` — the fourteen full-page captures (7 stages/views × 1252 and
+- `npm run capture:visual` — the sixteen full-page captures (8 stages/views × 1252 and
   390 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
 - `npm run capture:events -- <case-id>` — records a replay session's frames into
   `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
@@ -29,6 +29,11 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
 
 ## Notes
 
+- The one-time check (live-briefs spec §4.4-§4.5): the composer sends
+  `ask_clarifying_questions` (the settings row "Ask me when the question is unclear", on by
+  default). In replay mode the check asks nothing unless `POST /research` carries
+  `X-Replay-Clarify: on` — the proxy forwards it — and then asks a fixed set of three
+  questions (Region, Period, For); `e2e/clarify.spec.ts` and the `10-clarify` capture use it.
 - Replay mode's `duration_seconds` is the unpaced span (about 0.2 s), so the report head
   bar reads `0m 00s` there; a dropped finding is labelled `X01`; not-found targets read
   `topic-01-target-01`. All three are the engine's own values.
