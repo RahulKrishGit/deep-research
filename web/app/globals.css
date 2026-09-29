@@ -1218,4 +1218,12 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 @media (min-width:1121px){
   .report-main{grid-template-columns:minmax(0,var(--report-card-w)) var(--rail);max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
   #stage-report .report-head{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
+  /* Fix round 1, Minor #1 (controller ruling): the Evidence view is the other content this same
+     head sits above, toggled in place (data-view on #stage-report) rather than a separate stage —
+     without this its own .with-rail grid (unmodified: minmax(0,1fr) var(--rail)) still spanned the
+     full width, so switching Report/Evidence moved the head under it. max-width is enough on its
+     own: capping the container's own width leaves 1fr nothing to grow into beyond report-card-w,
+     the same value .report-main's own left column is capped to, so the two frames agree without
+     also overriding evidence-view's grid-template-columns. */
+  .evidence-view{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
 }

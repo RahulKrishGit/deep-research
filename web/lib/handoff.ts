@@ -62,17 +62,26 @@ export function submittedBeatBudgetMs(): number {
 export interface PendingFlight { sessionId: string; question: string; from: FlightRect; box: HTMLElement | null }
 
 let pendingFlight: PendingFlight | null = null;
+// The box currently on screen, tracked separately from pendingFlight (the prototype's own
+// `flightBox`, index.html:1936): pendingFlight is nulled the instant SubmittedStage takes it
+// (:133), well before the box itself is done animating, so clearIdleToRunningFlight — called on
+// every abandonment, not just a failed POST — has to be able to find and remove the box even
+// after the hand-off, or it is orphaned on whatever page the operator has since moved to.
+let liveFlightBox: HTMLElement | null = null;
 // setTimeout resolves to NodeJS.Timeout in this project (@types/node is present and its globals
 // take the browser's setTimeout overload), not the DOM lib's `number` — named here rather than
 // read off ReturnType<typeof setTimeout>, since every handle in this module is one of these.
 let flightTimers: NodeJS.Timeout[] = [];
 
 /* clearFlight, ported (index.html:1941-1950): cancel every pending timer and remove the box, so
-   nothing is ever left mid-flight or dropped onto a page it was never aimed at. */
+   nothing is ever left mid-flight or dropped onto a page it was never aimed at. Removes
+   liveFlightBox — not pendingFlight.box — since a flight already handed to SubmittedStage
+   (pendingFlight === null) still has a box animating on screen that this must still find. */
 export function clearIdleToRunningFlight(): void {
   flightTimers.forEach((t) => clearTimeout(t));
   flightTimers = [];
-  if (pendingFlight?.box?.parentNode) pendingFlight.box.parentNode.removeChild(pendingFlight.box);
+  if (liveFlightBox?.parentNode) liveFlightBox.parentNode.removeChild(liveFlightBox);
+  liveFlightBox = null;
   pendingFlight = null;
 }
 
@@ -119,6 +128,7 @@ export async function armIdleToRunningFlight(opts: { sessionId: string; question
   box.style.width = `${from.width}px`;
   box.style.height = `${from.height}px`;
   document.body.appendChild(box);
+  liveFlightBox = box;
   opts.composerEl.classList.add("is-handing-off");
   pendingFlight = { sessionId: opts.sessionId, question: opts.question, from, box };
 }
@@ -170,7 +180,10 @@ export function runIdleToRunningLift(flight: PendingFlight, toEl: Element, onLan
   flightTimers.push(setTimeout(() => {
     box.classList.add("is-gone");
     onLanded();
-    flightTimers.push(setTimeout(() => { if (box.parentNode) box.parentNode.removeChild(box); }, dissolveMs));
+    flightTimers.push(setTimeout(() => {
+      if (box.parentNode) box.parentNode.removeChild(box);
+      if (liveFlightBox === box) liveFlightBox = null;
+    }, dissolveMs));
   }, liftMs));
 }
 
@@ -188,7 +201,8 @@ export function noteRunningLayout(sessionId: string, questionEl: Element, optsEl
   runningLayout = { sessionId, question: rectOf(questionEl), opts: rectOf(optsEl) };
 }
 export function takeRunningLayout(sessionId: string): RunningLayout | null {
-  if (!runningLayout || runningLayout.sessionId !== sessionId) return null;
+  if (!runningLayout) return null;
+  if (runningLayout.sessionId !== sessionId) { runningLayout = null; return null; } // never hand a different session's stale rects to this one
   const layout = runningLayout;
   runningLayout = null;
   return layout;

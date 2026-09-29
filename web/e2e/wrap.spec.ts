@@ -2,7 +2,8 @@
 // measured on a live 136-char question, the dashed box spanned 572-1292 but the text ended at
 // 1057, ~215px short. Cause: the global `h1{text-wrap:balance}` rule (globals.css:64, verbatim
 // from the prototype) balances the two wrapped lines to similar widths instead of filling the
-// frame. Fix: `.ask-q,.report-q{text-wrap:pretty}` in the app-only block.
+// frame. `.report-q` already carried `text-wrap:pretty` (verbatim, prototype line 893); fix:
+// `.ask-q{text-wrap:pretty}` in the app-only block.
 //
 // The replay middleware rewrites every submitted query to the chosen case's own question
 // (src/deep_research/api/replay.py:136-193), so a long question cannot be driven through the

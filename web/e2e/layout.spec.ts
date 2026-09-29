@@ -164,6 +164,23 @@ for (const width of [1252, 1568, 1920]) {
   });
 }
 
+// Review fix round 1, Minor #1 (controller ruling): the Evidence view shares the report head, so
+// it must share the head's frame too — otherwise toggling Report/Evidence moves the head under it.
+test.describe("report stage at 1568px — Evidence view shares the report group's frame", () => {
+  test.use({ viewport: { width: 1568, height: 853 }, reducedMotion: "reduce" });
+  test("the head's and the evidence grid's left and right edges are equal", async ({ page, request }) => {
+    const id = await submit(page, "q");
+    await waitTerminal(request, id);
+    await expect(page.locator("#stage-report .prose h2").first()).toBeVisible({ timeout: 20_000 });
+    const head = (await page.locator(".report-head").boundingBox())!;
+    await page.locator("#segView button[data-view='evidence']").click();
+    await expect(page.locator(".ev-row").first()).toBeVisible();
+    const evidenceGrid = (await page.locator(".evidence-view").boundingBox())!;
+    expect(Math.abs(head.x - evidenceGrid.x)).toBeLessThanOrEqual(2);
+    expect(Math.abs(head.x + head.width - (evidenceGrid.x + evidenceGrid.width))).toBeLessThanOrEqual(2);
+  });
+});
+
 test.describe("Evidence view — long refused-citation list and a long source URL (live-run fix)", () => {
   // AC21 found this: replay data never produces a refused item with a long finding_labels list,
   // so no existing capture or test exercised it. Real replay E1 JSON, mutated with the two shapes

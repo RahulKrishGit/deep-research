@@ -72,3 +72,24 @@ test("opening a finished session from the sidebar does not slide the header", as
   expect(style.transform).toBe(""); // never given an inline offset to release
   expect(["none", "matrix(1, 0, 0, 1, 0, 0)"]).toContain(style.computed); // never mid-transition either
 });
+
+test("a session watched running earlier, then reached again via the sidebar after opening a different finished session in between, does not slide (review fix round 1, Important #2)", async ({ page, request }) => {
+  const s0 = await submit(page, "s0 question");
+  await waitTerminal(request, s0);
+  await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 }); // s0: the older, already-finished session
+
+  const s1 = await submit(page, "s1 question");
+  await expect(page.locator("#running-h")).toBeVisible({ timeout: 10_000 }); // watch s1 run: noteRunningLayout fires for s1
+
+  await page.locator(`.sb-item[data-session="${s0}"]`).click(); // open the older finished session in between
+  await expect(page.locator("#stage-report")).toBeVisible({ timeout: 10_000 });
+
+  await waitTerminal(request, s1); // s1 finishes in the background while s0 is on screen
+
+  await page.locator(`.sb-item[data-session="${s1}"]`).click(); // back to s1, now finished, via the sidebar
+  await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 });
+  await page.waitForTimeout(500);
+  const el = page.locator("#report-h");
+  const style = await el.evaluate((e) => (e as HTMLElement).style.transform);
+  expect(style).toBe("");
+});

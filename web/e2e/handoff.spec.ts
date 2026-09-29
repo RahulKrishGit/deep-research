@@ -80,3 +80,50 @@ test.describe("idle → running: the question flies from the composer to the loc
     await expect(page.locator("#stage-idle")).not.toHaveClass(/is-clearing/);
   });
 });
+
+test.describe("abandonment cleanup (review fix round 1, Important #1): the flight box is never stranded", () => {
+  test("the first /status 404s (session not in memory): no .q-flight left behind", async ({ page, context }) => {
+    let first = true;
+    await context.route(/\/api\/research\/[^/]+\/status$/, (route) => {
+      if (!first) return route.continue();
+      first = false;
+      return route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: { code: "session_not_found", message: "Session not found.", reason: null, issues: [] } }) });
+    });
+    await page.goto("/");
+    await page.getByLabel("Research question").fill("q");
+    await page.getByRole("button", { name: "Start research" }).click();
+    await page.waitForURL(/\/research\/[0-9a-f]+$/);
+    // exact: true — the sidebar's persistent "New Research" button also matches by substring.
+    await expect(page.getByRole("button", { name: "New research", exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator(".q-flight")).toHaveCount(0);
+  });
+
+  test("/status resolves after the submitted beat has already expired: no .q-flight left behind", async ({ page, context }) => {
+    let first = true;
+    await context.route(/\/api\/research\/[^/]+\/status$/, async (route) => {
+      if (first) { first = false; const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 2_800); await promise; } // > the 2170ms with-motion budget
+      return route.continue();
+    });
+    await page.goto("/");
+    // Installed before navigation and read afterwards: robust against the box appearing and
+    // being (or not being) removed before a later point-in-time check would catch it.
+    await page.evaluate(() => {
+      const w = window as unknown as { __everSeenFlight: boolean };
+      w.__everSeenFlight = false;
+      new MutationObserver(() => { if (document.querySelector(".q-flight")) w.__everSeenFlight = true; }).observe(document.documentElement, { childList: true, subtree: true });
+    });
+    await page.getByLabel("Research question").fill("q");
+    await page.getByRole("button", { name: "Start research" }).click();
+    await page.waitForURL(/\/research\/[0-9a-f]+$/);
+    // Straight to Running, never Submitted: the beat had already elapsed by the time status landed.
+    await expect(page.locator("#running-h")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#stage-submitted")).toHaveCount(0);
+    // The box legitimately exists — it was created on the origin page before navigation, the
+    // normal first half of the flight — the bug is that nothing ever removes it once Submitted
+    // is skipped. That is what the wait below and the final count actually prove.
+    const everSeenFlight = await page.evaluate(() => (window as unknown as { __everSeenFlight: boolean }).__everSeenFlight);
+    expect(everSeenFlight, "the box should have existed at some point (created before navigation)").toBe(true);
+    await page.waitForTimeout(1_500); // past any lift/dissolve timing a stray box might still be mid-way through
+    await expect(page.locator(".q-flight")).toHaveCount(0);
+  });
+});

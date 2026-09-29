@@ -1482,11 +1482,14 @@ Four things make that work and all four are load-bearing:
   cancelled and re-armed on every entry, and each pair is reset before it is measured, so a
   second handoff can never inherit an offset from an abandoned first one.
 
-**Under reduced motion** neither handoff's *journey* runs. No flight box is created,
-page 1 is not drained (`is-clearing` is never applied), the composer keeps its own
-frame (no `is-handing-off`), and page 2 is never held back with `is-preparing`. What
-does still run is the page change itself: `showStage` cross-fades the pair in both
-motion modes, and under the preference that cross-fade is opacity-only.
+**Under reduced motion** neither handoff's *journey* runs. No flight box is created and the
+composer keeps its own frame (no `is-handing-off`); the report slide never applies a new offset.
+What does still run, in both handoffs, is the surrounding beat: page 1 is still drained
+(`is-clearing` still applies, on its own `--motion-clear` timing — see "the submitted beat" above,
+320 + 200 + 750 = 1270ms with no lift) and page 2 is still held back with `is-preparing` until that
+beat ends, the same as with motion. Only the *travel* is what the preference removes, not the
+beats either handoff is built from; `showStage` cross-fades the pair in both motion modes, and
+under the preference that cross-fade is opacity-only.
 
 Gating the cross-fade in script was the mistake. `if (prev && !reducedMotion())` meant
 that for anyone whose system asks for reduced motion, *every* stage change in the
