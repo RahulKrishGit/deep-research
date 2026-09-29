@@ -1226,8 +1226,8 @@ These are declared once in the prototype's `:root` and referenced everywhere els
 layout carries no repeated magic numbers. There is no `--shell-max` and no `--spine`: the shell
 is a two-column grid sized by `--sidebar` and whatever remains, and the running stage's spine is
 a grid track rather than a named width. The Evidence view reuses the same `--rail`
-track for its detail pane, and the running stage has no rail at all — its counters
-sit inside the pipeline card — so this revision added no custom property.
+track for its detail pane, and the running stage has no rail at all, so this revision
+added no custom property.
 
 `--reading-max` is the design system's answer-column figure, and §3.3 records that at 15px it
 runs to about 96 characters — past the system's 55–70 guidance. That trade was made
