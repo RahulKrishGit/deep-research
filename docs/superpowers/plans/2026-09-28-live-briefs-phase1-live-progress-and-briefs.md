@@ -28,7 +28,7 @@
 ### Conventions every task uses
 
 - **Shell.** Every block runs in the agent's bash tool from the repository root (a POSIX shell with `node`, `npm`, `npx`, `git`, `grep`, `sed` — Git Bash on Windows, bash on Linux). The harness keeps no shell state between calls: every block that runs Python or Playwright sets `PY` first, every `web/` block starts with `cd web`. Paths contain spaces: quote them. No step runs `bash <file>`.
-- **Python.** Every block that runs Python starts with the Windows line `PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"`. **On Linux**, create the venv once — `python3.11 -m venv .venv && .venv/bin/pip install -e ".[dev]"` (Python ≥ 3.11, `pyproject.toml:9`) — and use `PY="$PWD/.venv/bin/python"` in place of that line (blocks start at the repository root). The pytest line is the same everywhere: `PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest <files> -q`. Baseline at `7afb21de`: `4726 passed, 1 deselected` (`-m 'not live'`, `pyproject.toml:45`) in about 80 s. One existing test, `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, needs provider keys from an untracked `.env` that only the Windows main checkout has; wherever no `.env` exists — a `.worktrees/*` tree, the Linux cloud checkout — it fails with `MissingSecretsError: Missing required environment variables in strict mode: …` (observed in planning). That failure is environmental: there, add `--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config` to every full-suite run and expect one fewer passed and `2 deselected` (e.g. `4784 passed, 2 deselected` at the end of Task 6). Never read, copy or create `.env`.
+- **Python.** Every block that runs Python starts with the Windows line `PY="C:/Users/Rahul Krishnamoorthy/OneDrive/Documents/Python Scripts/deep-research/.venv/Scripts/python.exe"`. **On Linux**, the cloud session has already run `bash cloud-session/setup.sh`, which creates `.venv` (Python ≥ 3.11, `pyproject.toml:9`) with the dev extras; if `.venv/bin/python` is missing, create it the same way — `[ -x .venv/bin/python ] || "$(command -v python3.12 || command -v python3.11 || command -v python3)" -m venv .venv && .venv/bin/pip install -e ".[dev]"` — never over an existing venv, and use `PY="$PWD/.venv/bin/python"` in place of that line (blocks start at the repository root). The pytest line is the same everywhere: `PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest <files> -q`. Baseline at `7afb21de`: `4726 passed, 1 deselected` (`-m 'not live'`, `pyproject.toml:45`) in about 80 s. One existing test, `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, needs provider keys from an untracked `.env` that only the Windows main checkout has; wherever no `.env` exists — a `.worktrees/*` tree, the Linux cloud checkout — it fails with `MissingSecretsError: Missing required environment variables in strict mode: …` (observed in planning). That failure is environmental: there, add `--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config` to every full-suite run and expect one fewer passed and `2 deselected` (e.g. `4784 passed, 2 deselected` at the end of Task 6). Never read, copy or create `.env`.
 - **Web unit tests.** `cd web && npx vitest run [files]`; `cd web && npm run -s typecheck` (tests are type-checked too: `tsconfig.json` includes `**/*.ts(x)`); `cd web && npm run -s check:css`. Baseline: `Test Files 19 passed (19)`, `Tests 117 passed (117)` — under full-suite load one pre-existing race (the C1 test in `session-screen.test.tsx`) can fail it; Task 7 fixes that race.
 - **Playwright.** The API runs in replay mode as a Playwright `webServer` (`web/playwright.config.ts`, which sets `cwd` to the repository root and `PYTHONPATH=src`, so it serves the checkout's own backend). `DEEP_RESEARCH_PYTHON="$PY"` is required everywhere but the Windows main checkout (the config's fallback is the Windows venv path), and every block below sets it. On Linux run `cd web && npm ci && npx playwright install --with-deps chromium` once before Task 7. A scoped run builds first and puts the spec files **before** the project flag — `--project chromium` placed first swallows the file arguments as project names (observed in planning): `cd web && npm run -s build && DEEP_RESEARCH_PYTHON="$PY" npx playwright test e2e/a.spec.ts --project=chromium`. The whole project: `cd web && DEEP_RESEARCH_PYTHON="$PY" npm run -s test:e2e` (build + `chromium`; baseline `39 passed`). Captures: `cd web && npm run -s build && VISUAL_CHECKPOINT=<name> DEEP_RESEARCH_PYTHON="$PY" npx playwright test --project=visual` → `8 passed`, images in `web/visual/<name>/` (gitignored).
 - **Background servers across calls** start and stop only through `web/scripts/launch.mjs` (`start <name> <port> <ready-path> "<command>"`, `stop <name> <port>`; the API's ready path is `/research`). Its `stop` kills with `taskkill` (`launch.mjs:45`), which exists only on Windows; on Linux the step first ends the recorded process group itself (`start` spawns it detached, so its pid leads the group) and `stop` then only confirms the port is closed.
@@ -3848,6 +3848,9 @@ export function BriefSpine({ marks, run, onToggle }: Props) {
   }
   useEffect(() => {
     if (!handoff) return;
+    // An awaited hand-off (a route decision ahead of the row's own completion) waits for that
+    // completion however long it takes; only the roles themselves time out.
+    if (handoff.awaiting && handoff.from === null) return;
     const timer = setTimeout(() => setHandoff(null), HANDOFF_HOLD_MS);
     return () => clearTimeout(timer);
   }, [handoff]);
@@ -4685,7 +4688,10 @@ In §5.6 replace `\`--motion-fluid: 420ms\` for the row surface and the progress
   its height closes (at 100ms), its subtitle cross-fades to its outcome (200ms, at
   260ms) and the connector below it fills (`--fill-line`, at 180ms); the next row's
   node fills and its height opens at 600ms and its lines rise from 900ms, so the
-  next row opens while the line is still filling (about 1.3s in all). A finished
+  next row opens while the line is still filling (about 1.3s in all). When a route
+  decision arrives ahead of the finishing row's own completion (Reviewing), the next
+  row starts its opening at the decision and the row it left stays open until its
+  completion, then folds with the same finishing-row timings. A finished
   topic draws its ✓ (`stroke-dashoffset` 14 → 0 over 360ms after 80ms) as its dot
   fades (200ms); counts tween to their new value over 400ms. **Under reduced
   motion** heights change at once, lines fade over 160ms with no stagger and no
@@ -4904,3 +4910,13 @@ Verdict APPROVED WITH CHANGES, no P1. Every change below is applied in the tasks
 - On Linux (the cloud checkout), apply the Conventions throughout: `PY="$PWD/.venv/bin/python"`, the `--deselect` of the `.env`-dependent test in every full-suite run, and the process-group `kill` before `launch.mjs stop` (Task 6 Step 2 carries it). The canvas picks and the design brief are in `docs/design/running-stage-picks/`.
 - If Task 2's R1 test fails, the implementer applies Contingency C inside Task 2 and says so; later tasks are unaffected (every call site still calls `publish_live`).
 - Open issue O1 goes to the human with the Task 12 summary; it does not block any task.
+
+## Review round 2: findings and how each was resolved
+
+Fable 5.1 re-review of `03453dec`: **APPROVED**. Four P3s, applied by the orchestrator:
+
+- **P3-A — Linux venv line.** The Conventions no longer hard-code `python3.11 -m venv`. They defer to `cloud-session/setup.sh` (which picks `python3.12 || python3.11 || python3`) and only create `.venv` when `.venv/bin/python` is missing.
+- **P3-B — the awaited hand-off lapsing with the hold timer.** `BriefSpine`'s `[handoff]` effect now skips the timeout while `handoff.awaiting && handoff.from === null`. The awaited row therefore gets `from` however long its completion takes (for example with a large `--replay-delay-ms`). The Task 9 tests are unaffected: their awaited case completes within the hold, and the timeout still clears the roles once `from` is set.
+- **P3-C — two rows `data-state="active"` for one paced event.** No change. Today's locators (`web/e2e/running.spec.ts:18`, `:35`) sample during Researching. New tests that need "the active row" should use `[aria-current="step"]`.
+- **P3-D — DESIGN.md §5.6.** Task 11's hand-off bullet now records the two-moment case: a route decision leads, and the row it leaves stays open until its own completion, then folds with the `from` timings.
+
