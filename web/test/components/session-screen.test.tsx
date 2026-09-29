@@ -117,6 +117,9 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done"));
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+    // live-briefs spec §4.3: the active row is open on its brief; the done row is closed on its outcome.
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
+    expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-open")).toBe("0");
     // Drive the loop through the outage: the stream ends, the follow-up /status answers 502
     // (raising the banner), the ladder sleeps, and the reconnect attempt itself also fails. Before
     // C2, the loop reset `run.current` to a fresh RunState before *every* attempt — including this
@@ -125,6 +128,7 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
     expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done");
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
   });
 });
 
@@ -175,7 +179,7 @@ describe("SessionScreen — re-review item 4: no false Running chip on the not-i
     await waitFor(() => expect(document.querySelector("#topbarStatus .chip")).toBeTruthy());
     await waitFor(() => expect(document.getElementById("stage-not-found")).toBeTruthy());
     // Before this fix: `stopped` is false (finished_at is null on the stale RUNNING record), so
-    // the chip kept reading the old status — "Running · pass 1 of 2" — over a page that itself
+    // the chip kept reading the old status — "Running · Planning" — over a page that itself
     // says the session isn't in memory.
     expect(document.querySelector("#topbarStatus .chip")).toBeNull();
   });

@@ -7,6 +7,7 @@ const CHECKPOINT = process.env.VISUAL_CHECKPOINT ?? "C4";
 const dir = path.join("visual", CHECKPOINT);
 mkdirSync(dir, { recursive: true });
 const shoot = async (page: Page, name: string) => {
+  await page.mouse.move(0, 0); // no hover state in a capture: a finished row highlights under the pointer
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
   const width = await page.evaluate(() => [document.scrollingElement!.scrollWidth, window.innerWidth]);
@@ -28,7 +29,8 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
-      await expect(page.locator('#spine li[data-stage="researcher"][data-state="active"]')).toBeVisible({ timeout: 10_000 });
+      // live-briefs spec §6: 03-running is taken with the Researching brief open and a topic done.
+      await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"] .ps-topics [data-topic="done"]').first()).toBeVisible({ timeout: 10_000 });
       await shoot(page, `03-running${suffix}`);
       await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
       await shoot(page, `09-running-extra-pass${suffix}`);

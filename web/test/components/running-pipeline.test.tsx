@@ -8,7 +8,7 @@ describe("RunningPipeline — the removals (live-briefs spec §4.2, AC3)", () =>
     const run = newRunState(2);
     run.active = "researcher";
     run.marks = { planner: "done" };
-    const { container } = render(<RunningPipeline sessionId="s1" run={run} question="q" strip={null} startedAt="2026-09-27T00:00:00+00:00" />);
+    const { container } = render(<RunningPipeline sessionId="s1" run={run} question="q" strip={null} startedAt="2026-09-27T00:00:00+00:00" onToggleRow={() => {}} />);
     for (const gone of [".pipe-now", "#runNow", "#runPasses", "#runLoopTag", "#runTrack", "#runCounters", ".counters"]) expect(container.querySelector(gone)).toBeNull();
     expect(container.querySelector("#stage-running")!.textContent).not.toMatch(/\bpass\b/i);
     expect(container.querySelectorAll("#spine li[data-stage]")).toHaveLength(7);

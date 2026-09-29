@@ -2,13 +2,13 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { fmtElapsed, qFitClass } from "@/lib/format";
 import { noteRunningLayout } from "@/lib/handoff";
-import { marksFor, type RunState } from "@/lib/run-state";
-import { Spine } from "./Spine";
+import { marksFor, type NodeId, type RunState } from "@/lib/run-state";
+import { BriefSpine } from "./BriefSpine";
 
 /* live-briefs spec §4.2 (D12, D13, D14): no "Now" header, no counters block and no pass counter —
-   the pipeline card holds the spine alone. The row's accessible name (" (in progress)") stays the
-   non-colour state signal. */
-export function RunningPipeline({ sessionId, run, question, strip, startedAt }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string }) {
+   the pipeline card holds the spine alone, whose active row is open on its live brief (§4.3). The
+   row's accessible name (" (in progress)") and aria-current="step" are the non-colour state signals. */
+export function RunningPipeline({ sessionId, run, question, strip, startedAt, onToggleRow }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; onToggleRow(id: NodeId): void }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
@@ -37,7 +37,7 @@ export function RunningPipeline({ sessionId, run, question, strip, startedAt }: 
           <div className="ask-meta"><span className="avail-mono" id="runElapsed">{fmtElapsed(elapsed)} elapsed</span></div>
         </div>
         <div className="card stack" style={{ gap: "var(--space-5)" }}>
-          <Spine marks={marksFor(run, run.active)} run={run} withArcs />
+          <BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggleRow} />
         </div>
       </div>
     </section>

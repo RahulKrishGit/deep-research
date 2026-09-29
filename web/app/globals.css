@@ -1227,3 +1227,80 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
      also overriding evidence-view's grid-template-columns. */
   .evidence-view{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
 }
+
+/* ═══ 2026-09-28: live step briefs (live-briefs spec §4.3; picks 1A, 2C) ═══
+   Scoped to the running stage's spine (`ol.spine-lg.briefs`, BriefSpine.tsx); the Failed and
+   Stopped stages keep the compact rows above. Rows align to the top, so an open row keeps its node
+   beside its name, and the connector is drawn by the upper row from its own node centre to the next
+   one — it stretches with the row instead of assuming equal row heights. `--node-c` is a node's
+   centre measured from its row's padding box: the row's padding plus half the 33 px node. */
+.spine-lg.briefs{--node-c:calc(var(--space-3) + 16.5px)}
+.spine-lg.briefs > li{align-items:start;transition:background var(--motion-fluid) var(--ease-entrance) var(--d-tint,0ms)}
+.spine-lg.briefs > li + li::before,
+.spine-lg.briefs > li + li::after{content:none}
+/* To the next node's centre: the list gap, the two rows' 1px borders, then that row's `--node-c`. */
+.spine-lg.briefs > li:not(:last-child)::before,
+.spine-lg.briefs > li:not(:last-child)::after{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);width:1px;height:auto;
+  top:var(--node-c);bottom:calc(-1 * (var(--space-2) + 2px + var(--node-c)));background:var(--border);
+}
+.spine-lg.briefs > li:not(:last-child)::after{
+  background:var(--status-ok);transform-origin:top;transform:scaleY(0);
+  transition:transform var(--fill-line) var(--ease-entrance) var(--d-line,0ms);
+}
+.spine-lg.briefs > li[data-state="done"]:not(:last-child)::after,
+.spine-lg.briefs > li[data-state="loop"]:not(:last-child)::after{transform:scaleY(1)}
+.spine-lg.briefs .bullet{
+  transition:background var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),
+             border-color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),box-shadow var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms);
+}
+.spine-lg.briefs .stage-name{transition:color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms)}
+.spine-lg.briefs .ps-body{min-width:0}
+.spine-lg.briefs .ps-head{position:relative;min-height:33px}
+.spine-lg.briefs .ps-toggle{position:absolute;inset:0;width:100%;padding:0;border-radius:var(--radius-sm)}
+.spine-lg.briefs > li[data-toggle]:hover{background:var(--border-soft)}
+/* The subtitle is two stacked lines that cross-fade: the live line until the row is done, then its outcome. */
+.spine-lg.briefs .stage-meta.xf{display:grid;font-variant-numeric:tabular-nums}
+.spine-lg.briefs .stage-meta.xf > span{grid-area:1/1;min-width:0;transition:opacity var(--motion-base) var(--ease-standard) var(--d-out,0ms)}
+.spine-lg.briefs .m-out{opacity:0}
+.spine-lg.briefs > li[data-state="done"] .m-live,.spine-lg.briefs > li[data-state="loop"] .m-live{opacity:0}
+.spine-lg.briefs > li[data-state="done"] .m-out,.spine-lg.briefs > li[data-state="loop"] .m-out{opacity:1}
+/* The brief (pick 1A): the height opens by the 0fr → 1fr technique, then its lines rise 4px and fade
+   in 60ms apart; closing fades the lines out, then closes the height. */
+.spine-lg.briefs .ps-x{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--motion-fluid) var(--ease-entrance) var(--d-h,0ms)}
+.spine-lg.briefs > li[data-open="1"] .ps-x{grid-template-rows:1fr}
+.spine-lg.briefs > li[data-open="0"]{--d-h:160ms}
+.spine-lg.briefs .ps-xi{min-height:0;overflow:hidden}
+.spine-lg.briefs .ps-brief{padding-top:var(--space-3);display:flex;flex-direction:column;gap:var(--space-2)}
+.spine-lg.briefs .ln{transition:opacity var(--dur-c,240ms) var(--ease-entrance) var(--d-c,0ms),transform var(--dur-c,240ms) var(--ease-entrance) var(--d-c,0ms)}
+.spine-lg.briefs > li[data-open="0"] .ln{opacity:0;transform:translateY(4px);--dur-c:160ms;--d-c:0ms}
+.spine-lg.briefs > li[data-open="1"] .ln{--d-c:calc(280ms + var(--i,0) * 60ms)}
+.spine-lg.briefs .b-line,.spine-lg.briefs .b-why{font-size:var(--text-sm);line-height:1.5}
+.spine-lg.briefs .b-line{color:var(--fg)}
+.spine-lg.briefs .b-why{color:var(--muted)}
+.spine-lg.briefs .b-why[data-kind="extra_pass"]{color:var(--status-warn)}
+/* Researching's checklist (pick 2C): mark · number · title · fact, hairlines between topics. Divs, not
+   list items: the verbatim `.spine-lg li` rules would otherwise style every topic as a pipeline row. */
+.ps-topics,.ps-titles{display:flex;flex-direction:column}
+.ps-topics > .ln{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:6px 0;font-size:var(--text-sm);color:var(--muted)}
+.ps-titles > .ln{display:grid;grid-template-columns:18px minmax(0,1fr);gap:var(--space-3);padding:6px 0;font-size:var(--text-sm);color:var(--fg)}
+.ps-topics > .ln + .ln,.ps-titles > .ln + .ln{border-top:1px solid var(--border-soft)}
+.ps-topics > [data-topic="running"],.ps-topics > [data-topic="done"]{color:var(--fg)}
+.ps-topics .tn,.ps-titles .tn{font-family:var(--font-mono);color:var(--muted);margin-right:6px}
+.ps-topics .tt{min-width:0;overflow-wrap:anywhere}
+.ps-topics .tf{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ps-topics > [data-topic="running"] .tf{color:var(--status-ok)}
+/* ✓ drawn, ● running, ○ waiting — one 14px slot, so the column never shifts. Scoped to the checklist:
+   the bare `.mk` is also the note head's tag ("stopped", "halt", "gone"), which must keep its own box. */
+.ps-topics .mk{width:14px;height:14px;position:relative;display:grid;place-items:center}
+.ps-topics .mk .ring{position:absolute;inset:2px;border-radius:50%;border:1px solid var(--border);transition:opacity var(--motion-base) var(--ease-standard)}
+.ps-topics .mk .dotc{position:absolute;inset:4px;border-radius:50%;background:var(--status-ok);opacity:0;transform:scale(.4);transition:opacity var(--motion-base) var(--ease-entrance),transform var(--motion-fluid) var(--ease-entrance)}
+.ps-topics .mk svg{position:absolute;inset:0;width:14px;height:14px;overflow:visible}
+.ps-topics .mk svg path{fill:none;stroke:var(--status-ok);stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;transition:stroke-dashoffset 360ms var(--ease-entrance) 80ms}
+[data-topic="running"] > .mk .dotc{opacity:1;transform:none;animation:halo var(--motion-halo) var(--ease-entrance) infinite}
+[data-topic="running"] > .mk .ring,[data-topic="done"] > .mk .ring{opacity:0}
+[data-topic="done"] > .mk svg path{stroke-dashoffset:0}
+@media (max-width:480px){
+  .ps-topics > .ln{grid-template-columns:18px minmax(0,1fr);row-gap:0}
+  .ps-topics .tf{grid-column:2}
+}

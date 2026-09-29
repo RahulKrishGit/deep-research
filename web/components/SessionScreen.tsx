@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, getStatus, streamUrl, type ResearchSessionResponse } from "@/lib/api";
 import { qFitClass, toSessionView, type SessionView } from "@/lib/format";
 import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
-import { applyEvent, chipStep, marksFor, newRunState, stepLabel, toRunEvent, type RunState } from "@/lib/run-state";
+import { applyEvent, chipStep, marksFor, newRunState, stepLabel, toRunEvent, toggleOpen, type NodeId, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
 import { useConsole } from "./ConsoleProvider";
@@ -32,6 +32,8 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   const wake = useRef<(() => void) | null>(null);
   const delaysRef = useRef(backoffDelaysMs());
   const [version, bump] = useReducer((n: number) => n + 1, 0);
+  // A done row reopened or closed by the reader (live-briefs spec §4.3): reader state on the run.
+  const toggleRow = useCallback((id: NodeId) => { toggleOpen(run.current, id); bump(); }, []);
 
   // Facts only this tab has (sessionStorage): read after mount so the server render never disagrees.
   useEffect(() => {
@@ -173,7 +175,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   if (stopped) return <StoppedStage status={status} run={run.current} strip={strip} onNew={() => router.push("/")} />;
   if (status.status === "running") {
     if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
-    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} onToggleRow={toggleRow} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} id="reportOpts" />} />;

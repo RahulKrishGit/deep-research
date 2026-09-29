@@ -47,3 +47,18 @@ export async function submit(page: Page, question: string): Promise<string> {
 export async function waitTerminal(request: APIRequestContext, sessionId: string): Promise<void> {
   await expect.poll(async () => (await (await request.get(`${API}/research/${sessionId}/status`)).json()).status, { timeout: 60_000 }).not.toBe("running");
 }
+
+/* live-briefs spec AC6: for each pair of adjacent rows, how far the upper row's connector (its
+   ::before, measured from its padding box) starts from its own node's centre and ends from the next
+   node's centre, in px. */
+export const connectorOffsets = (page: Page) => page.evaluate(() => {
+  const rows = [...document.querySelectorAll<HTMLElement>("#spine > li[data-stage]")];
+  return rows.slice(0, -1).map((li, i) => {
+    const r = li.getBoundingClientRect();
+    const cs = getComputedStyle(li), line = getComputedStyle(li, "::before");
+    const top = r.top + parseFloat(cs.borderTopWidth) + parseFloat(line.top);
+    const bottom = r.bottom - parseFloat(cs.borderBottomWidth) - parseFloat(line.bottom);
+    const a = li.querySelector(".bullet")!.getBoundingClientRect(), b = rows[i + 1].querySelector(".bullet")!.getBoundingClientRect();
+    return { pair: li.dataset.stage + ">" + rows[i + 1].dataset.stage, top: top - (a.top + a.height / 2), bottom: bottom - (b.top + b.height / 2) };
+  });
+});
