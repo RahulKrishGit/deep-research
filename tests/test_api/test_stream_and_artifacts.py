@@ -93,6 +93,27 @@ def test_stream_returns_typed_progress_as_sse() -> None:
     assert ResearchEvent.model_validate(payload) == event
 
 
+def test_the_sse_payload_carries_the_event_id() -> None:
+    """live-briefs spec E1: the payload is the event's own JSON, so its ``event_id``
+    travels unchanged; the SSE ``id:`` line stays the per-subscriber position."""
+    event = ResearchEvent(
+        event_type="graph.node.started",
+        source="graph.planner",
+        message="Node planner started.",
+        metadata={"node": "planner", "iteration": 0},
+    )
+    app = create_app(runner=ScriptedRunner(events=[event]), preflight=valid_preflight)
+
+    with TestClient(app) as client:
+        created = client.post("/research", json={"query": "Question"}).json()
+        with client.stream("GET", f"/research/{created['session_id']}/stream") as response:
+            body = "".join(response.iter_text())
+
+    data_line = next(line for line in body.splitlines() if line.startswith("data: "))
+    assert json.loads(data_line.removeprefix("data: "))["event_id"] == event.event_id
+    assert "id: 1\n" in body
+
+
 def test_report_returns_authoritative_markdown() -> None:
     app = create_app(
         runner=ScriptedRunner(report="# Final report\n\nEvidence."),

@@ -52,6 +52,7 @@ from deep_research.utils.types import (
     ReportQualitySnapshot,
     ReportReview,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ReviewDefect,
     SubTopic,
@@ -824,3 +825,29 @@ def test_an_extra_pass_runs_only_the_topics_that_own_a_missing_target() -> None:
     other = state.model_copy(update={"extra_pass_target_ids": ["topic-01-target-01"]})
 
     assert [topic.coverage_id for topic in select_sub_topics(other)] == ["topic-01"]
+
+
+def test_a_checkpoint_written_before_event_ids_loads_with_fresh_distinct_ids() -> None:
+    """live-briefs spec E1: an event recorded before ``event_id`` existed loads with a
+    fresh id, and that id then survives every later dump and load, so the
+    orchestrator's once-only rule holds across a resume."""
+    channel = initial_graph_state(session_id="session-1", question="Why?")
+    channel["state"]["events"] = [
+        ResearchEvent(
+            event_type="graph.node.started", source="graph.planner",
+            message="Node planner started.", metadata={"node": "planner", "iteration": 0},
+        ).model_dump(mode="json"),
+        ResearchEvent(
+            event_type="graph.node.completed", source="graph.planner",
+            message="Node planner completed.", metadata={"node": "planner", "iteration": 0},
+        ).model_dump(mode="json"),
+    ]
+    for event in channel["state"]["events"]:
+        del event["event_id"]
+
+    state = load_state(channel)
+    ids = [event.event_id for event in state.events]
+
+    assert all(len(event_id) == 32 for event_id in ids)
+    assert len(set(ids)) == 2
+    assert [event.event_id for event in load_state(dump_state(state)).events] == ids

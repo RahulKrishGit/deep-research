@@ -9,6 +9,7 @@ from math import isfinite
 import re
 from typing import Annotated, Literal, TypeAlias, TypedDict
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from pydantic import (
     AfterValidator,
@@ -33,6 +34,11 @@ def _validate_aware_iso8601(value: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _new_event_id() -> str:
+    """A fresh identity for one progress event: 32 lowercase hex characters."""
+    return uuid4().hex
 
 
 def _validate_finite_json(value: JsonValue) -> JsonValue:
@@ -1340,6 +1346,11 @@ class ResearchEvent(ContractModel):
     message: str = Field(min_length=1)
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
     metadata: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
+    event_id: str = Field(default_factory=_new_event_id, min_length=1)
+    """This event's identity (live-briefs spec E1). One event object can reach the
+    stream twice — published live, then again inside its node's snapshot — and the
+    orchestrator publishes each id once. Fresh per construction and kept by every
+    copy and dump; an event dumped before this field existed loads with a fresh id."""
 
 
 class ResearchError(ContractModel):
