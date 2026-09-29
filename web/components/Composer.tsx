@@ -2,9 +2,13 @@
 import { useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, startResearch, type ResearchRequest } from "@/lib/api";
+import { armIdleToRunningFlight, beginIdleToRunningClear, cancelIdleToRunningClear, submittedBeatBudgetMs } from "@/lib/handoff";
 import { recordSubmission, type SubmittedSettings } from "@/lib/session-store";
 import { useConsole } from "./ConsoleProvider";
 import { SettingsPopover, shortModel } from "./SettingsPopover";
+
+// page.tsx's <section id="stage-idle">: the host the Clear beat drains (DESIGN.md:1371-1377).
+const IDLE_STAGE_ID = "stage-idle";
 
 export const STARTERS = [
   "What are the current constraints on grid-scale battery storage deployment?",
@@ -67,14 +71,25 @@ export function Composer() {
     }
     if (busy) return;
     setBusy(true); setError(null); setInvalid(false);
+    // Beat one (DESIGN.md:1371-1377): drain page 1 around the composer now, in parallel with the
+    // POST below — the deadline is what beat two waits out, whichever finishes last.
+    const clearDeadline = beginIdleToRunningClear(IDLE_STAGE_ID);
     try {
       const result = await startResearch(buildRequest(text, settings)); // one fetch; never retried
       noteMode(result.mode);
       clearUnreachable("composer");
-      recordSubmission(result.data.session_id, settings);
+      recordSubmission(result.data.session_id, settings, submittedBeatBudgetMs());
       void refreshSessions();
+      // result.data.query, not `text`: replay's ReplayCaseMiddleware rewrites the request body's
+      // query before the handler ever sees it, so the POST response already carries whatever
+      // #submitted-h will end up showing — using the locally-typed text here would show the flight
+      // box a different question than the one it lands on.
+      await armIdleToRunningFlight({ sessionId: result.data.session_id, question: result.data.query, composerEl: document.getElementById("composer"), clearDeadline });
       router.push(`/research/${result.data.session_id}`);
     } catch (e) {
+      // A failed POST restores the composer intact, with its error shown — nothing was ever handed
+      // off to a flight that a route change would strand.
+      cancelIdleToRunningClear(IDLE_STAGE_ID);
       // C1: "composer" is this tab's own key. Retry never re-POSTs (M2) — it only re-checks
       // reachability via the sidebar's own read; once that succeeds, this key clears too, so the
       // banner doesn't outlive the outage it reported just because a resubmit never happened.
@@ -88,7 +103,6 @@ export function Composer() {
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void submit(question); };
   // index.html:2381-2385 — any error (the empty-required message included) clears on the next keystroke.
   const onQuestionChange = (value: string) => { setQuestion(value); setError(null); setInvalid(false); };
-
   return (
     <>
       <div className="composer-wrap" id="composerIdleHost">

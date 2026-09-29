@@ -1,0 +1,82 @@
+// Issue 2A — idle→running, three beats (DESIGN.md:1359-1451; prototype clearFlight :1941,
+// flyQuestionToLock :2009, holdBeat :2069). Ported across the composer's route (`/`) and the
+// destination route (`/research/[id]`) via lib/handoff.ts, since the prototype's single-page
+// `.stage` siblings have no route boundary to cross.
+import { expect, test, type Page } from "@playwright/test";
+import { API } from "./support";
+
+async function submitCountingPosts(page: Page, question: string): Promise<{ id: string; posts: number }> {
+  let posts = 0;
+  page.on("request", (req) => { if (req.method() === "POST" && /\/api\/research$/.test(req.url())) posts++; });
+  await page.goto("/");
+  await page.getByLabel("Research question").fill(question);
+  await page.getByRole("button", { name: "Start research" }).click();
+  await page.waitForURL(/\/research\/[0-9a-f]+$/);
+  return { id: page.url().split("/").pop()!, posts };
+}
+
+test.describe("idle → running: the question flies from the composer to the locked record", () => {
+  test("the .q-flight box exists, is fixed, moves monotonically upward, lands within 2px, and is gone after settle; exactly one POST", async ({ page }) => {
+    const { posts } = await submitCountingPosts(page, "How mature is quantum error correction?");
+    // Sampled entirely inside the page (no per-sample round trip, nothing that can hang waiting
+    // for an element Playwright expects but the animation has already removed): every ~25ms for
+    // up to 2s, record the box's rect while it exists, and the first tick it lands within 2px of
+    // #submitted-h (measured on the same tick, since the target's own rect never moves) and the
+    // first tick it is gone. Long enough to cover the box appearing, the 900ms lift and the
+    // 200ms dissolve, however the clear beat's own timing landed relative to navigation.
+    const result = await page.evaluate(async () => {
+      const samples: Array<{ t: number; top: number; left: number; position: string; ariaHidden: string | null }> = [];
+      let convergedAt: number | null = null;
+      let removedAt: number | null = null;
+      const start = performance.now();
+      while (performance.now() - start < 2_000) {
+        const t = performance.now() - start;
+        const el = document.querySelector(".q-flight") as HTMLElement | null;
+        if (el) {
+          const r = el.getBoundingClientRect();
+          samples.push({ t, top: r.top, left: r.left, position: getComputedStyle(el).position, ariaHidden: el.getAttribute("aria-hidden") });
+          const target = document.getElementById("submitted-h");
+          const tr = target?.getBoundingClientRect();
+          if (convergedAt === null && tr && Math.abs(r.top - tr.top) <= 2 && Math.abs(r.left - tr.left) <= 2) convergedAt = t;
+        } else if (samples.length && removedAt === null) {
+          removedAt = t;
+        }
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 25);
+        await promise;
+      }
+      return { samples, convergedAt, removedAt };
+    });
+    const { samples, convergedAt, removedAt } = result;
+    expect(samples.length, "the box must have existed for at least one sample").toBeGreaterThan(0);
+    expect(samples.every((s) => s.position === "fixed")).toBe(true);
+    expect(samples.every((s) => s.ariaHidden === "true")).toBe(true);
+    // Monotonically upward: consecutive samples never move back down by more than rounding noise.
+    for (let i = 1; i < samples.length; i++) expect(samples[i].top).toBeLessThanOrEqual(samples[i - 1].top + 1);
+    expect(samples[0].top - samples[samples.length - 1].top).toBeGreaterThan(10); // real travel, not jitter
+    expect(convergedAt, "must land within 2px of #submitted-h before disappearing").not.toBeNull();
+    expect(removedAt, "must be removed after settling, not left in the DOM").not.toBeNull();
+    expect(removedAt!).toBeGreaterThanOrEqual(convergedAt!); // never removed while still short of the target
+    // The idle page's own composer is gone: this is a different route, not an overlay — one box
+    // on screen for the whole journey (DESIGN.md:1407-1422), never a real composer beside it.
+    await expect(page.locator("#composer")).toHaveCount(0);
+    expect(posts).toBe(1);
+  });
+
+  test("a failed POST leaves the composer visible and editable with the error shown, and no stray .q-flight", async ({ page, context }) => {
+    await context.route(/\/api\/research$/, (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      return route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: API } }) });
+    });
+    await page.goto("/");
+    const question = page.getByLabel("Research question");
+    await question.fill("q");
+    await page.getByRole("button", { name: "Start research" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "Research service not reachable at" })).toBeVisible();
+    await expect(question).toBeVisible();
+    await expect(question).toBeEditable();
+    await expect(question).toHaveValue("q");
+    await expect(page.locator(".q-flight")).toHaveCount(0);
+    await expect(page.locator("#stage-idle")).not.toHaveClass(/is-clearing/);
+  });
+});
