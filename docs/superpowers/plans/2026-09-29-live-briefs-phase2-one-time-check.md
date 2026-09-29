@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-28-live-briefs-and-reader-notes-design.md` — Phase 2 only: §4.4, §4.5, the Phase-2 rows of §4.8 and §4.9, AC10–AC14 and the Phase-2 parts of §6. Decisions D4–D7, D16 and D17 are closed; nothing here reopens them. §7 lists no risk that concerns Phase 2 (R1–R3 and R6 are Phase 1's, R4–R5 Phase 3's); this plan's own risks are in Review Focus and Open issues. Phase 3 (reader notes) is **not** planned here: `hitl.note_interpret_timeout_s` is added only because §4.4 puts it in the same config block.
 
-**Starting point: the end of Phase 1.** This plan runs after `docs/superpowers/plans/2026-09-28-live-briefs-phase1-live-progress-and-briefs.md` is complete. For files Phase 1 edits, the anchors below are the text Phase 1 writes, and each such edit is marked "(anchor as written by Phase 1 Task N)". By the time this plan was finished, Phase 1 Tasks 1–11 and a first review fix were committed, at `3565397`. That commit is the state every anchor, line number and baseline below was checked against; Phase 1 Task 12 is verification only. Task 1 checks every anchor again before anything is edited, in case a later Phase 1 fix moves one.
+**Starting point: the end of Phase 1.** This plan runs after `docs/superpowers/plans/2026-09-28-live-briefs-phase1-live-progress-and-briefs.md` is complete. For files Phase 1 edits, the anchors below are the text Phase 1 writes, and each such edit is marked "(anchor as written by Phase 1 Task N)". When this plan was first written, Phase 1 Tasks 1–11 and a first review fix were committed, at `3565397`. By review round 1, Phase 1's final-review fixes had landed too (`3e2ff79`, `ba15a25`, `fc2771e`). Every anchor, line number and baseline below was checked against `fc2771e`; Phase 1 Task 12 is verification only. Task 1 checks every anchor again, and records the baselines, before anything is edited, in case a later Phase 1 fix moves one.
 
 **Evidence.** Planning dry-ran every task on 2026-09-29, in scratch exports, applying each edit by its anchor with a script that stops unless the anchor occurs exactly once:
 - **Backend, Tasks 2–5**, step by step, on an export of `eecc67a` (Phase 1 Tasks 1–8). Its backend is exactly `3565397`'s: `git diff --stat eecc67a 3565397 -- src tests config.yaml` is empty. Every fail-first and pass step was run and its Expected line observed, ending at `4831 passed, 6 skipped, 12 deselected` from a baseline of `4768 passed, 6 skipped, 12 deselected`.
@@ -20,10 +20,15 @@
   - Both Playwright runs used ports moved off the shared ones, so the Phase 1 agents' own runs were not disturbed.
 - **Docs, Tasks 5 and 10**, against HEAD, and against a copy of `DESIGN.md` carrying Phase 1 Task 11's edits.
 - **This document, at the end of Phase 1.** Planning parsed this document's own edit blocks, exactly as an implementer reads them, and ran them on an export of `3565397`.
-  - Task 1 Step 2's check printed `anchors: 141 exactly once; creates: 11 absent; appends: 8 present`.
-  - Applying every block in order, with Task 3's re-pin snippet, gave `planner: d40ffac43845 -> e9b74316ad14`, `4831 passed, 6 skipped, 12 deselected`, a clean `tsc`, Vitest `25` files and `186` tests, and `check:css` `OK`.
-  - It also gave Playwright `chromium` `55 passed` and `visual` `10 passed`. Planning reviewed `10-clarify` and `10-clarify-phone` full height, and saw that `01-idle` and `03-running` are unchanged from Phase 1.
-  - Its eleven new files are byte-identical to the step-by-step dry run's.
+  - Before review round 1, the anchor check printed `anchors: 141 exactly once`.
+  - Applying every block in order, with Task 3's re-pin snippet, gave `planner: d40ffac43845 -> e9b74316ad14`, `4831 passed`, a clean `tsc`, Vitest `186`, `check:css` `OK`, Playwright `chromium` `55 passed` and `visual` `10 passed`.
+  - Planning reviewed `10-clarify` and `10-clarify-phone` full height, and saw that `01-idle` and `03-running` are unchanged from Phase 1.
+- **Review round 1 (2026-09-29)**, first step by step on an export of `1cb57d6` (whose files are `3565397`'s), then again on `fc2771e` after Phase 1's final-review fixes landed.
+  - On `1cb57d6`, every fail-first and pass step of Tasks 2–10 was observed with the round's changes. The run ended at `4833 passed, 6 skipped, 12 deselected`, Vitest `25` files and `187` tests, `check:css` `OK`, chromium `55 passed` and visual `10 passed`. The AC12 test also passed three times in a row under `--repeat-each=3`.
+  - On `fc2771e`, Task 1 Step 2's check prints `anchors: 147 exactly once; creates: 11 absent; appends: 8 present`, and the baselines are those Task 1 now states.
+  - On `fc2771e`, the web fail-first counts of Tasks 6, 7 and 9 were re-observed. Applying this document's blocks as written, with Task 3's re-pin (`planner: d40ffac43845 -> e9b74316ad14`), gave `4833 passed, 6 skipped, 12 deselected`, a clean `tsc`, Vitest `25` files and `190` tests, `check:css` `OK`, chromium `55 passed` (9.0 min) and visual `10 passed`.
+  - Parsing this document and applying its blocks reproduces the step-by-step tree file for file.
+  - The findings and how each was resolved are at the end of this document.
 
 ## Global Constraints
 
@@ -110,7 +115,7 @@
 2. **A checker that hangs, fails or answers nonsense** — provider down or slow, invalid JSON, a best guess that is not an option, four questions. The run must start with no questions and never wait longer than `check_timeout_s` (AC14). → Task 4 `test_an_invalid_draft_asks_nothing_at_all` (7 cases); Task 5 `test_a_check_that_hangs_delays_the_run_by_at_most_check_timeout_s`, `test_a_failed_or_empty_check_starts_the_run_exactly_as_before`.
 3. **The stream ending while the session waits.** `needs_input` is not terminal. Code that reads "not `running`" as "finished" would stop reconnecting and never see the run start; the e2e helper `waitTerminal` had exactly that bug. → Task 9 `keeps the stream open while the session waits: an ended stream reconnects, as for a running one`, plus the `waitTerminal` fix and the AC11/AC12 e2e.
 4. **A reload, or a late subscriber, during the check.** The card must rebuild from the stream alone, with no Submitted beat replayed and no stale summary. → Task 6 `(j) … is burst-safe`; Task 9 e2e `a reload while the check waits rebuilds the card from the stream (§4.8)`.
-5. **Typed answers at the edges** — spaces only, over 200 characters, both a choice and text, an answer to a question that was never asked. → Task 4 `test_an_answer_carries_exactly_one_of_choice_or_text` (5 cases) and `test_answers_that_do_not_fit_the_questions_name_each_problem`; Task 5 `test_answers_that_do_not_fit_are_a_safe_422_and_the_session_keeps_waiting` (5 cases); Task 8 `opens Other… on a text field; Next waits for text; Enter moves on`.
+5. **Typed answers at the edges** — spaces only, interior new lines, over 200 characters, both a choice and text, an over-long id or choice, an answer to a question that was never asked. → Task 4 `test_an_answer_carries_exactly_one_of_choice_or_text` (5 cases), `test_an_answer_is_one_bounded_line` and `test_answers_that_do_not_fit_the_questions_name_each_problem`; Task 5 `test_answers_that_do_not_fit_are_a_safe_422_and_the_session_keeps_waiting` (6 cases); Task 8 `opens Other… on a text field; Next waits for text; Enter moves on`.
 
 ## Spec ambiguities resolved here
 
@@ -139,7 +144,7 @@
 9. **A session cancelled during the wait** (service shutdown) ends as `running` with `finished_at` set: the existing "service stopped" reading. It never ends as `needs_input` with `finished_at`.
 10. **The runner receives `reader_answers` only when questions were asked.** Otherwise it is called exactly as before, so every existing runner fake and every replay packet is untouched.
 11. **The 422 issue types.**
-    - Shape errors keep pydantic's own types: neither or both of `choice` and `text`, blank text, text over 200 characters, more than three answers.
+    - Shape errors keep pydantic's own types: neither or both of `choice` and `text`, blank text, text over 200 characters (after it is collapsed to one line), an id over 8 or a choice over 80 characters (ambiguity 32), more than three answers.
     - Fit errors get three types of this plan's, each located at `body.answers.{i}.question_id` or `body.answers.{i}.choice`: `unknown_question`, `duplicate_question` and `choice_not_offered`.
     - The session keeps waiting after a 422.
 12. **What the planner does with the answers** (§4.4 table):
@@ -180,6 +185,22 @@
 25. **The settings strip gets no chip for the new setting.** DESIGN.md §3.0 lists exactly four facts after Phase 1, and D16 names only the settings row.
 26. **The focus ring on Other…'s field.** §4.5 asks for "the focus ring on focus", and the picks' theme rule 4 says the same: "The edit affordance appears only on hover (a `--border-soft` background) or on focus (the standard focus ring)" (`docs/design/running-stage-picks/BRIEF.md:109-125`). The theme's only ring is `--focus-ring`, which is accent (pick `theme.css:188`). D17's "purple only on the primary button" is therefore read as "at rest": the card carries no purple unless the field has focus.
 27. **Hover and pressed colours change over `--motion-fast`.** The answers do this exactly as the prototype's `.btn` does (`web/app/globals.css:659`) and as the pick's own `.choice` does (`theme.css:270`). Theme rule 6 ("animate only transform, opacity and `grid-template-rows`") is read as governing movement. The only movement on the card is the next question's and the summary's fade-in (`enter`: opacity and a 6px rise, opacity only under reduced motion).
+28. **The countdown reads the browser's clock** (review P3-6: kept). The spec says "from `deadline_at`", and `secondsLeft(deadline_at, Date.now())` follows it, so a browser clock that is off by N seconds shifts the countdown by N seconds.
+    - The API's own timer governs: an answer sent after the real deadline gets the 409 face, and the stream moves the stage on either way.
+    - A skew-free countdown needs the server's time on every read, because after a reload the replayed `requested` event arrives long after it was sent. Neither the event nor `/status` carries a server time today, so it would widen the API beyond the spec.
+29. **Focus targets draw no ring, and "best guess" stays in the option's name** (review P3-5).
+    - The question heading and the line that replaces the buttons (summary, late or failed) take `tabindex=-1` focus, so keyboard and screen-reader users keep their place.
+    - Neither is a control, so `#clarifyCard [tabindex="-1"]:focus` has no outline. That also keeps accent off the card (D17).
+    - The best-guess cap stays inside its option's button, so the button's accessible name is "Global best guess". The fact belongs to the option; `aria-describedby` would announce it only after the role and the pressed state.
+30. **A stream reconnect keeps the card** (review P3-3). `SessionScreen`'s `onOpen` installs a fresh `RunState` before the replay arrives, so `run.clarify` is briefly `null`.
+    - `ClarifyStage` renders from the last non-null check it saw: kept in a ref, which an effect updates.
+    - The card, and the reader's step and picks, survive; the replayed `requested` event brings the same questions back.
+    - The API still takes answers only once, so correctness never depends on this.
+31. **The sidebar's words for a waiting session** (review P3-8). A `needs_input` session carries the live mark, as §4.5 asks, and its label reads `{query} — waiting for you` instead of `— running`.
+32. **Answers are bounded, one-line input** (review P3-4).
+    - `question_id` has at most 8 characters and `choice` at most 80: the most a check can ask.
+    - `text` is collapsed to one single-spaced line (`utils/text.collapse_whitespace`) before its 200-character check, so reader text can never start a new line in the planner's `# Reader answers` section or in the answer contract's period.
+    - An over-long id or choice is a pydantic `string_too_long`, located like the other shape errors.
 
 ## Open issues (for the human)
 
@@ -188,10 +209,10 @@
   - `/status` is `running` and the stream carries nothing, so the page shows the running stage with Planning active;
   - if questions come back, the card replaces the pipeline card.
 
-  A "checking" status or event would avoid the flash, but §4.4 defines only the two events and `needs_input`. Replay's checker answers at once, so no test sees the flash. The least surprising reading of the spec is kept.
+  A "checking" status or event would avoid the flash, but §4.4 defines only the two events and `needs_input`. Replay's checker answers at once, so no test sees the flash. The least surprising reading of the spec is kept. The design record says so until the human rules: DESIGN.md §3's stage-2a paragraph (Task 10) and a new api-gaps gap 3.8 (Task 5), so no review reads the transient as a defect.
 - **O3 — AC12's literal "60 s + 2 s" is proven in parts.**
   - The default is pinned: `ConfigSettings().hitl.answer_wait_s == 60.0` (Task 2).
-  - The timeout path is tested with short waits in pytest (Task 5) and with `answer_wait_s: 4` end to end (Task 9).
+  - The timeout path is tested with short waits in pytest (Task 5) and with `answer_wait_s: 8` end to end (Task 9).
 
   No test waits a real minute.
 - **O4 — The live structured call is [INFERENCE].** `ClarityCheckDraft` goes through the configured provider's structured-output path, like every agent's draft. The DeepSeek adapter sends `schema.model_json_schema()` (`providers/deepseek_provider.py:1964`), and agent drafts already carry list defaults (`ReportReviewDraft.defects`, `agents/report_reviewer.py:1098`). No test may call a provider, though.
@@ -236,7 +257,7 @@
 
 **Interfaces:**
 - Consumes: Phase 1 complete, i.e. its Tasks 1–12 done and committed.
-- Produces: the proof that every anchor in Tasks 2–10 occurs exactly once, and the baseline counts that later tasks add to.
+- Produces: the proof that every anchor in Tasks 2–10 occurs exactly once, and the baseline counts (whole suites and six per-file counts) that later tasks add to.
 
 - [ ] **Step 1: Confirm the starting point**
 
@@ -274,7 +295,7 @@ print("\n".join(problems) or f"anchors: {len(edits)} exactly once; creates: {len
 EOF
 ```
 
-Expected: `anchors: 141 exactly once; creates: 11 absent; appends: 8 present`.
+Expected: `anchors: 147 exactly once; creates: 11 absent; appends: 8 present`.
 
 Anything else is a line per problem (`-1` means that the file is missing). Then:
 - Stop, and edit nothing.
@@ -290,41 +311,70 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT
 ```
 
-Expected: `4768 passed, 6 skipped, 12 deselected` (observed in planning at `eecc67a`; `git diff --stat eecc67a 3565397 -- src tests config.yaml` is empty, so Phase 1's later tasks add no Python test).
+Expected: `4768 passed, 6 skipped, 12 deselected` (observed in planning at `eecc67a` and again at `fc2771e`, the latest Phase 1 fix).
 
 ```bash
 cd web && npm run -s typecheck && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && npm run -s check:css
 ```
 
-Expected: no `typecheck` output; `Test Files  23 passed (23)`, `Tests  155 passed (155)`; `OK` (observed in planning at `3565397`).
+Expected: no `typecheck` output; `Test Files  23 passed (23)`, `Tests  158 passed (158)`; `OK` (observed in planning at `fc2771e`; `155` before Phase 1's final fixes).
 
 ```bash
 export DEEP_RESEARCH_PYTHON="$PWD/.venv/bin/python"
 cd web && npm run -s test:e2e
 ```
 
-Expected: `47 passed`. That is Phase 1 Task 12's count, and at `3565397` `npx playwright test --list --project=chromium` lists exactly 47 tests.
+Expected: `47 passed`. That is Phase 1 Task 12's count, and at `fc2771e` `npx playwright test --list --project=chromium` lists exactly 47 tests.
 
-If a count differs because Phase 1 review fixes added or removed tests, record the observed count in the task summary and use it as the baseline. Every later Expected count is the baseline plus the increment this plan states:
+- [ ] **Step 4: Record the per-file baselines that the scoped runs build on**
+
+```bash
+PY="$PWD/.venv/bin/python"
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_config.py tests/test_runtime/test_run_research.py -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config | tail -1
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_agents/test_planner.py -q | tail -1
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api -q | tail -1
+cd web && npx vitest run test/run-state.test.ts test/format.test.ts test/api.test.ts test/proxy.test.ts test/components/status-chip.test.tsx 2>&1 | grep -E "Tests  "
+npx vitest run test/components/composer.test.tsx test/api.test.ts 2>&1 | grep -E "Tests  "
+npx vitest run test/components/session-screen.test.tsx test/components/sidebar.test.tsx 2>&1 | grep -E "Tests  "
+```
+
+Expected, one line each (observed in planning at `fc2771e`):
+- `174 passed, 1 deselected`, the base for Task 2;
+- `289 passed`, for Task 3;
+- `131 passed`, for Tasks 4 and 5;
+- `Tests  54 passed (54)`, for Task 6;
+- `Tests  14 passed (14)`, for Task 7;
+- `Tests  9 passed (9)`, for Task 9.
+
+Record all six in the task summary.
+
+- [ ] **Step 5: Use the recorded counts in later tasks**
+
+The final review of Phase 1 may still add tests, for example to `web/test/run-state.test.ts` or `web/test/components/session-screen.test.tsx`. So every count in this plan is stated twice: as the number planning observed, and as a recorded baseline plus an increment.
+
+- If a baseline differs from the Expected above, record the observed value and use it. Every later count is then shifted by the same amount.
+- What must hold is that the named new tests pass (or, in a fail-first step, fail) and that nothing else fails.
+
+The increments for the whole suites are:
 
 | Suite | Increments by task |
 |---|---|
-| Backend | +8 (Task 2), +9 (Task 3), +23 (Task 4), +23 (Task 5) |
-| Vitest | +16 (Task 6), +1 (Task 7), +10 (Task 8), +4 (Task 9) |
+| Backend | +8 (Task 2), +9 (Task 3), +24 (Task 4), +24 (Task 5) |
+| Vitest | +16 (Task 6), +1 (Task 7), +11 (Task 8), +4 (Task 9) |
 | Chromium | +1 (Task 7), +7 (Task 9) |
 | Visual | +2 (Task 9) |
 
 If a baseline run **fails**, stop and report it: Phase 2 starts from a green Phase 1.
 
-- [ ] **Step 4: No commit**
+- [ ] **Step 6: No commit**
 
-Nothing changed. Task 1's summary lists the anchor line and the three baselines.
+Nothing changed. Task 1's summary lists the anchor line, the three suite baselines and the six per-file baselines.
 
 ---
 
 ### Task 2: The `hitl` settings and the reader's answers in the engine's state (spec §4.4 Config, Engine)
 
-**Files** (line numbers are those at `3565397`, the end of Phase 1, and only locate the anchors):
+**Files** (line numbers are those at `fc2771e`, the latest Phase 1 fix, and only locate the anchors):
 - Modify: `config.yaml:214` (a `hitl:` block before `output:`); `src/deep_research/utils/config.py:427` (`HitlConfig` before `OutputConfig`), `:549` (`ConfigSettings.hitl`); `src/deep_research/utils/types.py:1812` (the new types before `ResearchState`), `:1970`, `:2009-2010` (the state and update fields); `src/deep_research/graph/state.py:23`, `:32-34`, `:194-212` (`initial_graph_state`); `src/deep_research/graph/orchestrator.py:30`, `:81-82`, `:441-468` (`run_research_graph`); `src/deep_research/main.py:19`, `:45`, `:200-202`, `:347-349` (`run_research`)
 - Create: `tests/test_graph/test_reader_answers.py`
 - Test: `tests/test_config.py` (import at `:19-20`, three tests appended), `tests/test_runtime/test_run_research.py` (import at `:28`, two tests appended)
@@ -856,7 +906,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_config.py tests/test_graph/test_reader_answers.py tests/test_runtime/test_run_research.py -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config
 ```
 
-Expected: `182 passed, 1 deselected` (observed in planning).
+Expected: `182 passed, 1 deselected` (observed in planning). That is Task 1's `174` for the two existing files, plus these `8`.
 
 - [ ] **Step 5: Commit**
 
@@ -869,7 +919,7 @@ git commit -m "feat(engine): hitl settings, and the reader's answers carried fro
 
 ### Task 3: The planner plans within the reader's answers (spec §4.4 Engine table; AC11's packet)
 
-**Files** (line numbers at `3565397`):
+**Files** (line numbers at `fc2771e`):
 - Modify: `src/deep_research/agents/planner.py`:
   - `:65-67`: the import;
   - `:1300-1391`: `derive_answer_contract` and the new `_with_reader_answers`;
@@ -1458,7 +1508,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_agents/test_planner_reader_answers.py tests/test_agents/test_planner.py -q
 ```
 
-Expected: `298 passed` (observed in planning; the new file contributes `9`). The `langsmith` `DeprecationWarning` was there before this plan.
+Expected: `298 passed` (observed in planning): Task 1's `289` for `test_planner.py`, plus the new file's `9`. The `langsmith` `DeprecationWarning` was there before this plan.
 
 - [ ] **Step 5: See the planner's pin move**
 
@@ -1525,7 +1575,7 @@ git commit -m "feat(planner): plan within the reader's answers to the one-time c
 
 **Files:**
 - Create: `src/deep_research/api/clarify.py`, `tests/test_api/test_clarify.py`
-- Modify: `src/deep_research/api/models.py:8` (import), `:21-22` (`SessionStatus`), `:52-60` (`ResearchRequest`), `:75` (two new models before `CoverageProgressResponse`)
+- Modify: `src/deep_research/api/models.py:8`, `:10` (imports), `:21-22` (`SessionStatus`), `:52-60` (`ResearchRequest`), `:75` (two new models before `CoverageProgressResponse`)
 
 **Interfaces:**
 - Consumes: Task 2's `ReaderAnswer`, `ClarityDimension`, `ConfigSettings`, `LLMConfig`.
@@ -1554,7 +1604,7 @@ git commit -m "feat(planner): plan within the reader's answers to the one-time c
 - Produces, in `deep_research.api.models`:
   - `SessionStatus` with `"needs_input"`;
   - `ResearchRequest.ask_clarifying_questions: bool = True`;
-  - `ClarificationAnswer(question_id, choice: str | None, text: str | None)`, which takes exactly one of `choice` and `text`; `text` has 1–200 characters and is whitespace-stripped, like every `ApiModel` string;
+  - `ClarificationAnswer(question_id, choice: str | None, text: str | None)`, which takes exactly one of `choice` and `text`. `question_id` has at most 8 characters and `choice` at most 80 (review P3-4). `text` is collapsed to one single-spaced line (`utils/text.collapse_whitespace`) before its 1–200 character check, so a typed answer can never start a new line in a planner request;
   - `ClarificationAnswersRequest(answers: list[ClarificationAnswer] (≤ 3), skip: bool = False)`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1791,6 +1841,17 @@ def test_an_answer_carries_exactly_one_of_choice_or_text(body: dict[str, str]) -
     with pytest.raises(ValueError):
         ClarificationAnswer.model_validate(body)
     assert ClarificationAnswer(question_id="q1", text=" x" * 100).text == ("x " * 99) + "x"
+
+
+def test_an_answer_is_one_bounded_line() -> None:
+    """A typed answer is collapsed to one single-spaced line before its length is
+    checked, so it can never start a new line in the planner's # Reader answers
+    section; ids and choices are capped at what a check can ask."""
+    assert ClarificationAnswer(question_id="q1", text="since\n\n2021\t (roughly)\r\n").text == "since 2021 (roughly)"
+    assert ClarificationAnswer(question_id="q1", text="a" + " " * 300 + "b").text == "a b"
+    for body in ({"question_id": "q" * 9, "choice": "Global"}, {"question_id": "q1", "choice": "x" * 81}):
+        with pytest.raises(ValueError):
+            ClarificationAnswer.model_validate(body)
 ```
 
 - [ ] **Step 2: Run them to see them fail**
@@ -2180,6 +2241,19 @@ from pydantic import (
 `src/deep_research/api/models.py` — replace
 
 ```python
+from deep_research.utils.config import ConfigSettings, apply_config_overrides
+```
+
+with
+
+```python
+from deep_research.utils.config import ConfigSettings, apply_config_overrides
+from deep_research.utils.text import collapse_whitespace
+```
+
+`src/deep_research/api/models.py` — replace
+
+```python
 SessionStatus = Literal[
     "running",
 ```
@@ -2240,11 +2314,22 @@ with
 
 ```python
 class ClarificationAnswer(ApiModel):
-    """One answer to the one-time check: an offered option, or the reader's own text."""
+    """One answer to the one-time check: an offered option, or the reader's own text.
 
-    question_id: str = Field(min_length=1)
-    choice: str | None = Field(default=None, min_length=1)
+    ``question_id`` and ``choice`` are capped at what a check can ask (``q1``..``q3``,
+    options of at most 80 characters). ``text`` is collapsed to one single-spaced
+    line before its length is checked, so a typed answer can never start a new
+    line in the planner's ``# Reader answers`` section.
+    """
+
+    question_id: str = Field(min_length=1, max_length=8)
+    choice: str | None = Field(default=None, min_length=1, max_length=80)
     text: str | None = Field(default=None, min_length=1, max_length=200)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        return collapse_whitespace(value) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def exactly_one_answer(self) -> ClarificationAnswer:
@@ -2275,7 +2360,7 @@ PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api/test_cla
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api -q
 ```
 
-Expected: `23 passed`, then `154 passed` (the API package: the existing 131 and these 23; observed in planning).
+Expected: `24 passed`, then `155 passed` (observed in planning): Task 1's `131` for the API package, plus these `24`.
 
 - [ ] **Step 5: Commit**
 
@@ -2288,7 +2373,7 @@ git commit -m "feat(api): the one-time check's contract, checkers, answers and e
 
 ### Task 5: `needs_input`, the answers route and the replay header (spec §4.4 Lifecycle, Route; §4.8 rows; AC10, AC12–AC14; §4.9 API docs)
 
-**Files** (line numbers at `3565397`):
+**Files** (line numbers at `fc2771e`):
 - Modify: `src/deep_research/api/sessions.py`:
   - `:6-27`: docstring tail and imports;
   - `:33`: types;
@@ -2306,7 +2391,7 @@ git commit -m "feat(api): the one-time check's contract, checkers, answers and e
   - `:10`, `:21`, `:28`, `:40`: docstring and imports;
   - `:76-111`: `ReplayRunner.__call__`;
   - `:161`: `ReplayCaseMiddleware`.
-- Modify: `README.md` ("FastAPI Interface" `:757-832`, "Run the app" `:864-865`) and `docs/design/api-gaps.md:11-12`, `:29`, `:40-41`, `:48`, `:64`.
+- Modify: `README.md` ("FastAPI Interface" `:757-833`, "Run the app" `:865-866`) and `docs/design/api-gaps.md:11-12`, `:29`, `:40-41`, `:48`, `:64`, `:114` (a new gap 3.8 after 3.6: the missing `checking` state, open issue O2).
 - Create: `tests/test_api/conftest.py`, `tests/test_api/test_clarification.py`.
 - Test: `tests/test_api/test_app.py:19-25` (`valid_preflight`).
 
@@ -2695,8 +2780,9 @@ def test_the_answers_route_takes_answers_once_and_the_run_starts() -> None:
         ({"answers": [{"question_id": "q1", "choice": "Global"}, {"question_id": "q1", "choice": "Global"}]}, ("body.answers.1.question_id", "duplicate_question")),
         ({"answers": [{"question_id": "q2", "text": "x" * 201}]}, ("body.answers.0.text", "string_too_long")),
         ({"answers": [{"question_id": "q2", "text": "x", "choice": "Global"}]}, ("body.answers.0", "value_error")),
+        ({"answers": [{"question_id": "q1", "choice": "x" * 81}]}, ("body.answers.0.choice", "string_too_long")),
     ],
-    ids=["unknown_question", "choice_not_offered", "duplicate", "text_over_200", "choice_and_text"],
+    ids=["unknown_question", "choice_not_offered", "duplicate", "text_over_200", "choice_and_text", "choice_over_80"],
 )
 def test_answers_that_do_not_fit_are_a_safe_422_and_the_session_keeps_waiting(body: dict[str, Any], issue: tuple[str, str]) -> None:
     app = create_app(runner=ScriptedRunner(), preflight=valid_preflight, clarity_checker=Checker())
@@ -3440,7 +3526,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api -q
 ```
 
-Expected: `177 passed` (observed in planning; `test_clarification.py` contributes `23`).
+Expected: `179 passed` (observed in planning): Task 1's `131`, plus Task 4's `24`, plus `test_clarification.py`'s `24`.
 
 - [ ] **Step 5: The API's documentation (spec §4.9: README "Run the app", api-gaps' route list)**
 
@@ -3602,6 +3688,19 @@ timings are the `hitl` config section); overrides are
 `docs/design/api-gaps.md` — replace
 
 ```markdown
+| The terminal frame from 3.3, or an explicit status |
+```
+
+with
+
+```markdown
+| The terminal frame from 3.3, or an explicit status |
+| 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
+```
+
+`docs/design/api-gaps.md` — replace
+
+```markdown
 burst-safe: the state after event *k* depends only on events 1..*k*.
 ```
 
@@ -3621,7 +3720,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT
 ```
 
-Expected: `4831 passed, 6 skipped, 12 deselected` (observed in planning: the baseline + 63).
+Expected: `4833 passed, 6 skipped, 12 deselected` (observed in planning: the baseline + 65).
 
 - [ ] **Step 7: Commit**
 
@@ -3634,8 +3733,8 @@ git commit -m "feat(api): needs_input, the answers route and the replay header f
 
 ### Task 6: The web client's model of the check (spec §4.5 RunState, chip, proxy header; §4.8 reload row)
 
-**Files** (line numbers at `3565397`):
-- Modify: `web/lib/api.ts:2` (`SessionStatus`), `:34` (answer types), `:110-113` (`submitAnswers` after `getEvidence`); `web/lib/format.ts:25`, `:29-30` (`STATUS`, `isLive`), `:63` (`statusNote`); `web/lib/run-state.ts:52` (types), `:72`, `:92` (the field), `:155` (shape guards), `:274-279` (two handlers); ``web/app/api/[...path]/route.ts:8``
+**Files** (line numbers at `fc2771e`):
+- Modify: `web/lib/api.ts:2` (`SessionStatus`), `:34` (answer types), `:110-113` (`submitAnswers` after `getEvidence`); `web/lib/format.ts:25`, `:29-30` (`STATUS`, `isLive`), `:63` (`statusNote`); `web/lib/run-state.ts:52` (types), `:72`, `:92` (the field), `:157` (shape guards), `:276-281` (two handlers); ``web/app/api/[...path]/route.ts:8``
 - Create: `web/lib/clarify.ts`, `web/test/clarify.test.ts`
 - Test: `web/test/run-state.test.ts:29`, `:36-38` (exact keys) and `(j)` appended; `web/test/format.test.ts:3`, `:37-39`, `:42`; `web/test/api.test.ts:3`, `:56`; `web/test/proxy.test.ts:74`; `web/test/components/status-chip.test.tsx:21-22`
 
@@ -3982,7 +4081,7 @@ with
 cd web && npx vitest run test/clarify.test.ts test/run-state.test.ts test/format.test.ts test/api.test.ts test/proxy.test.ts test/components/status-chip.test.tsx 2>&1 | grep -E "Test Files|Tests  |Cannot find module"
 ```
 
-Expected: `Error: Cannot find module '../lib/clarify'`, `Test Files  6 failed (6)`, `Tests  9 failed | 52 passed (61)` (observed in planning). `clarify.test.ts` cannot load, so its 8 tests are not counted yet.
+Expected: `Error: Cannot find module '../lib/clarify'`, `Test Files  6 failed (6)`, `Tests  9 failed | 53 passed (62)` (observed in planning at `fc2771e`). The 62 are Task 1's `54` for the five existing files plus the 8 new tests in them. `clarify.test.ts` cannot load, so its 8 tests are not counted yet. The 9 failures are 7 new tests and the 2 updated ones (the exact-keys test and the status chip).
 
 - [ ] **Step 3: Add the status, the client call, the run state, the derivations and the header**
 
@@ -4262,7 +4361,7 @@ const REQUEST_HEADERS = ["accept", "content-type", "x-replay-case", "x-replay-cl
 cd web && npm run -s typecheck && npx vitest run test/clarify.test.ts test/run-state.test.ts test/format.test.ts test/api.test.ts test/proxy.test.ts test/components/status-chip.test.tsx 2>&1 | grep -E "Test Files|Tests  " && npx vitest run 2>&1 | grep -E "Test Files|Tests  "
 ```
 
-Expected: no `typecheck` output; `Test Files  6 passed (6)`, `Tests  69 passed (69)`; then the whole suite, `Test Files  24 passed (24)`, `Tests  171 passed (171)` (observed in planning: the baseline + 16).
+Expected: no `typecheck` output; `Test Files  6 passed (6)`, `Tests  70 passed (70)` (Task 1's `54` + 16); then the whole suite, `Test Files  24 passed (24)`, `Tests  174 passed (174)` (the baseline + 16; observed in planning at `fc2771e`).
 
 - [ ] **Step 5: Commit**
 
@@ -4371,7 +4470,7 @@ const request = { query: "q", output_format: "markdown" as const, config_overrid
 cd web && npx vitest run test/components/composer.test.tsx test/api.test.ts 2>&1 | grep -E "Test Files|Tests  |×"
 ```
 
-Expected: `Test Files  1 failed | 1 passed (2)`, `Tests  2 failed | 15 passed (17)`. The failures are `builds the request the design specifies, with no max_iterations (live-briefs spec §4.2, AC8)` (the body has no `ask_clarifying_questions`) and `offers 'Ask me when the question is unclear' as On/Off, on by default, and sends the choice (live-briefs spec D16)` (no `#lblAsk`).
+Expected: `Test Files  1 failed | 1 passed (2)`, `Tests  2 failed | 15 passed (17)`: Task 1's `14`, plus Task 6's 2 client tests, plus this task's 1. The failures are `builds the request the design specifies, with no max_iterations (live-briefs spec §4.2, AC8)` (the body has no `ask_clarifying_questions`) and `offers 'Ask me when the question is unclear' as On/Off, on by default, and sends the choice (live-briefs spec D16)` (no `#lblAsk`).
 
 - [ ] **Step 3: Add the setting, the request field and the row**
 
@@ -4473,11 +4572,11 @@ with
 cd web && npm run -s typecheck && npx vitest run test/components/composer.test.tsx test/api.test.ts 2>&1 | grep -E "Test Files|Tests  " && npx vitest run 2>&1 | grep -E "Test Files|Tests  "
 ```
 
-Expected: no `typecheck` output; `Test Files  2 passed (2)`, `Tests  17 passed (17)`; then `Test Files  24 passed (24)`, `Tests  172 passed (172)`.
+Expected: no `typecheck` output; `Test Files  2 passed (2)`, `Tests  17 passed (17)` (Task 1's `14` + 3); then `Test Files  24 passed (24)`, `Tests  175 passed (175)` (the baseline + 17).
 
 - [ ] **Step 5: The e2e (verification)**
 
-Check with the setting off and `X-Replay-Clarify: on`. Replay's checker would ask whenever it is called, so a missing card proves that no call was made (AC13; pytest `test_with_the_setting_off_no_check_call_is_made` proves the same at the store).
+Check with the setting off and `X-Replay-Clarify: on`. Replay's checker would ask whenever it is called, so a missing card proves that no call was made (AC13; pytest `test_with_the_setting_off_no_check_call_is_made` proves the same at the store). The same test asserts that the new row is fully visible in the open popover at 1252×853 (`toBeInViewport({ ratio: 1 })`), because no capture opens the popover.
 
 `web/e2e/settings.spec.ts` (anchor as written by Phase 1 Task 7) — replace
 
@@ -4515,6 +4614,8 @@ test("with 'Ask me when the question is unclear' off, no check is made (AC13)", 
   await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   await page.goto("/");
   await page.locator("#plusBtn").click();
+  // The row sits in the slot the extra-passes stepper left, and the panel still shows all of it at 1252×853.
+  await expect(page.locator("#segAsk")).toBeInViewport({ ratio: 1 });
   await expect(page.locator('#segAsk button[data-ask="on"]')).toHaveAttribute("aria-pressed", "true");
   await page.locator('#segAsk button[data-ask="off"]').click();
   await expect(page.locator('#segAsk button[data-ask="off"]')).toHaveAttribute("aria-pressed", "true");
@@ -4558,12 +4659,12 @@ git commit -m "feat(web): the 'Ask me when the question is unclear' setting, sen
 - Consumes: Task 6's `submitAnswers`, `ApiError`, `RunState.clarify`, `ClarifyQuestion`, `ClarifyState`, `answersBody`, `resolvedAnswers`, `summaryText`, `secondsLeft`, `countdownText`, `CheckPhase` and `Pick`; `qFitClass` (`web/lib/format.ts`).
 - Produces: ``ClarifyStage({ sessionId: string; run: RunState; phase: CheckPhase; question: string; strip: ReactNode })`` and `CHOICE_ADVANCE_MS = 240`. The DOM, which Task 9's e2e reads:
   - The stage: `section#stage-clarify.stage.is-on.no-enter.is-arriving`. Inside `.run-wrap`, an `.ask-head` holds the eyebrow, `h1#clarify-h.ask-q.ask-locked[aria-describedby=runningOpts]` and the strip.
-  - The card: `div.card#clarifyCard[data-face="asking"|"summary"|"late"|"failed"]`. It is rendered only once the stream has delivered questions.
+  - The card: `div.card#clarifyCard[data-face="asking"|"summary"|"late"|"failed"]`. It is rendered once the stream has delivered questions, and it stays mounted, with the reader's place in it, through a stream reconnect: the stage keeps the last check the stream told while a fresh run state waits for the replay (review P3-3).
   - Asking face, top: `span.cap#clarifyStep`; `.step-dots > i[data-on]`; `h3.card-title#clarifyQ[tabindex=-1]` (focused after the reader moves).
   - Asking face, answers: `.choices[role=group] > button.choice[aria-pressed]`, where the best guess carries `span.cap` `best guess`, and `button.choice#clarifyOtherBtn` comes last.
   - Asking face, Other…: `.ck-other#clarifyOtherRow`, holding `input.tx#clarifyOther` and a `Next` button.
   - Asking face, footer: `.ic-foot`, holding `Back` · `Skip this one` · `Just start`, then `p.cap#clarifyCountdown`.
-  - Summary face: `p.sm.ck-summary#clarifySummary`.
+  - Summary face: `p.sm.ck-summary#clarifySummary[tabindex=-1]`. The late and failed faces use the same `p.sm.ck-summary[tabindex=-1]` without the id. Once the reader has posted, focus moves to that line (review P3-5).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -4670,6 +4771,7 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
       "Starting research with: Region: United States (you said) · Period: since 2021 (you said) · For: General understanding (best guess)",
     );
     expect(card().getAttribute("data-face")).toBe("summary");
+    expect(document.activeElement).toBe(document.getElementById("clarifySummary"));
   });
 
   it("Just start posts what was answered so far with skip, once", async () => {
@@ -4684,6 +4786,7 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     expect(document.getElementById("clarifySummary")!.textContent).toBe(
       "Starting research with: Region: Global (you said) · Period: Since 2023 (best guess) · For: General understanding (best guess)",
     );
+    expect(document.activeElement).toBe(document.getElementById("clarifySummary"));
   });
 
   it("an answer the API refuses as late reads 'Already started with best guesses'", async () => {
@@ -4692,6 +4795,7 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     show();
     await act(async () => { fireEvent.click(option("Just start")); });
     expect(card().textContent).toBe("Already started with best guesses");
+    expect(document.activeElement).toBe(card().querySelector(".ck-summary"));
   });
 
   it("any other failure says the answers were not sent, and never posts again", async () => {
@@ -4701,6 +4805,7 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     show();
     await act(async () => { fireEvent.click(option("Just start")); });
     expect(card().textContent).toBe("Your answers could not be sent; the run starts with best guesses.");
+    expect(document.activeElement).toBe(card().querySelector(".ck-summary"));
     expect(posts(fetchMock)).toHaveLength(1);
   });
 
@@ -4711,6 +4816,20 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     expect(document.getElementById("clarifySummary")!.textContent).toBe(
       "Starting research with: Region: Global (best guess) · Period: Since 2023 (best guess) · For: General understanding (best guess)",
     );
+  });
+
+  it("keeps the reader's place when a reconnect swaps in a fresh run state before the replay", () => {
+    vi.useFakeTimers({ now: NOW });
+    const { rerender } = show();
+    tap("United States");
+    expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
+    const props = { sessionId: "s1", phase: "asking" as const, question: "What limits grid-scale battery storage?", strip: null };
+    rerender(<ClarifyStage {...props} run={newRunState(null)} />);
+    expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
+    rerender(<ClarifyStage {...props} run={asking()} />);
+    expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
+    fireEvent.click(option("Back"));
+    expect(option("United States").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("holds the header alone until the stream delivers the questions", () => {
@@ -4735,6 +4854,8 @@ The stage behaves as follows:
 - It holds the header still and changes only the card below it.
 - A tapped answer shows as chosen for 240 ms, then the next question arrives.
 - Answers are sent exactly once (`posted`), never retried. A 409 reads as late; anything else reads as not sent (ambiguities 14 and 17).
+- Focus follows the reader: to the next question's heading when they move, and to the line that replaces the buttons once they have posted. Neither target draws a ring (ambiguity 29).
+- A stream reconnect does not reset the card: the stage renders from the last check the stream told until the replay brings it back (ambiguity 30).
 - The countdown re-reads the clock once a second, from the stream's `deadline_at`.
 - Once the stream says the check was answered, the summary reads the stream's answers. Before that, it reads the reader's local picks.
 
@@ -4759,7 +4880,12 @@ type Sent = "idle" | "sending" | "sent" | "late" | "failed";
    the settings strip — so when the planner starts only the card below it changes. The card arrives
    once the stream has delivered the questions (.is-arriving, like the pipeline card). */
 export function ClarifyStage({ sessionId, run, phase, question, strip }: { sessionId: string; run: RunState; phase: CheckPhase; question: string; strip: ReactNode }) {
-  const check = run.clarify;
+  // A stream reconnect swaps in a fresh RunState before the replay arrives (SessionScreen's onOpen),
+  // so run.clarify is null for a render or two: the last check the stream told keeps the card, and
+  // the reader's place in it, mounted until the replayed request arrives.
+  const kept = useRef<ClarifyState | null>(null);
+  useEffect(() => { if (run.clarify) kept.current = run.clarify; });
+  const check = run.clarify ?? kept.current;
   return (
     <section className="stage is-on no-enter is-arriving" id="stage-clarify" aria-labelledby="clarify-h">
       <div className="run-wrap">
@@ -4785,13 +4911,16 @@ function CheckCard({ sessionId, check, phase }: { sessionId: string; check: Clar
   const posted = useRef(false);
   const advancing = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const face = useRef<HTMLParagraphElement>(null);
   const moved = useRef(false);
   useEffect(() => {
     const tick = setInterval(() => setNow(Date.now()), 1000);
     return () => { clearInterval(tick); if (advancing.current) clearTimeout(advancing.current); };
   }, []);
-  // Focus follows the reader's own move to another question, never the first render.
+  // Focus follows the reader's own move to another question, never the first render; once the
+  // reader has sent the answers, it follows to the line that replaced the buttons they pressed.
   useEffect(() => { if (moved.current) heading.current?.focus(); }, [step]);
+  useEffect(() => { if (posted.current) face.current?.focus(); }, [sent]);
 
   const q: ClarifyQuestion = questions[Math.min(step, questions.length - 1)];
   const pick = picks[q.id];
@@ -4851,14 +4980,14 @@ function CheckCard({ sessionId, check, phase }: { sessionId: string; check: Clar
   }
 
   if (sent === "late") {
-    return <div className="card" id="clarifyCard" data-face="late"><p className="sm ck-summary">Already started with best guesses</p></div>;
+    return <div className="card" id="clarifyCard" data-face="late"><p className="sm ck-summary" tabIndex={-1} ref={face}>Already started with best guesses</p></div>;
   }
   if (sent === "failed" && phase === "asking") {
-    return <div className="card" id="clarifyCard" data-face="failed"><p className="sm ck-summary">Your answers could not be sent; the run starts with best guesses.</p></div>;
+    return <div className="card" id="clarifyCard" data-face="failed"><p className="sm ck-summary" tabIndex={-1} ref={face}>Your answers could not be sent; the run starts with best guesses.</p></div>;
   }
   if (phase === "starting" || sent === "sending" || sent === "sent") {
     const answers = check.answered ? check.answered.answers : resolvedAnswers(questions, picks);
-    return <div className="card" id="clarifyCard" data-face="summary"><p className="sm ck-summary" id="clarifySummary">{summaryText(questions, answers)}</p></div>;
+    return <div className="card" id="clarifyCard" data-face="summary"><p className="sm ck-summary" id="clarifySummary" tabIndex={-1} ref={face}>{summaryText(questions, answers)}</p></div>;
   }
   const chosen = pick && "choice" in pick ? pick.choice : null;
   const typed = pick && "text" in pick ? pick.text : null;
@@ -4934,6 +5063,9 @@ Append to `web/app/globals.css`:
 #clarifyCard .ic-btns{display:flex;gap:var(--space-2)}
 #clarifyCard .ck-back{margin-left:calc(-1 * var(--space-4))}
 #clarifyCard .ck-summary{color:var(--fg);animation:enter var(--motion-base) var(--ease-entrance) both}
+/* Focus is moved to the question and to the line that replaces the buttons, so a keyboard or
+   screen-reader user keeps their place; neither is a control, so neither draws a ring (D17). */
+#clarifyCard [tabindex="-1"]:focus{outline:none}
 @media (prefers-reduced-motion:reduce){
   /* the next question and the summary fade in place, with no travel (spec §4.3, §4.8) */
   #clarifyCard .ck-q,#clarifyCard .ck-summary{animation-duration:160ms !important}
@@ -4947,7 +5079,7 @@ cd web && npm run -s typecheck && npx vitest run test/components/clarify-stage.t
 block=$(sed -n '/═══ 2026-09-29: the one-time check/,$p' app/globals.css); [ -n "$block" ] && { printf '%s\n' "$block" | grep -nE '#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(|oklch\(' || echo "no colour literal"; }
 ```
 
-Expected: no `typecheck` output; `Test Files  1 passed (1)`, `Tests  10 passed (10)`; `Test Files  25 passed (25)`, `Tests  182 passed (182)`; `OK`; `no colour literal`. The last line runs inside `web/`, and prints nothing at all if the block's header comment is missing, which is also a failure.
+Expected: no `typecheck` output; `Test Files  1 passed (1)`, `Tests  11 passed (11)`; `Test Files  25 passed (25)`, `Tests  186 passed (186)` (the baseline + 28); `OK`; `no colour literal`. The last line runs inside `web/`, and prints nothing at all if the block's header comment is missing, which is also a failure.
 
 - [ ] **Step 5: Commit**
 
@@ -4964,11 +5096,11 @@ git commit -m "feat(web): the one-time check's stage — one question at a time,
 - Modify: `web/components/SessionScreen.tsx`:
   - `:4-5` and `:10`: imports;
   - `:20-22`: the header comment;
-  - `:118`: the reconnect condition;
-  - `:138-142` (anchor as written by Phase 1 Task 7): `live`, `stopped`, `phase`, the chip;
-  - `:153`: the flight guard;
-  - `:176-179` (anchor as written by Phase 1 Task 9): the stage switch.
-- Modify: `web/components/Sidebar.tsx:4`, `:48`; `web/components/ConsoleProvider.tsx:4`, `:72`.
+  - `:130`: the reconnect condition;
+  - `:150-154` (anchor as written by Phase 1 Task 7): `live`, `stopped`, `phase`, the chip;
+  - `:165`: the flight guard;
+  - `:188-191` (anchor as written by Phase 1 Task 9): the stage switch.
+- Modify: `web/components/Sidebar.tsx:4`, `:48`, `:53` (the live mark and its words); `web/components/ConsoleProvider.tsx:4`, `:72`; `web/scripts/capture-replay-events.mjs:10`, `:28`, `:31` (the fixture recorder's terminal test, review P3-7).
 - Test: `web/test/components/session-screen.test.tsx` (a block appended); `web/test/components/sidebar.test.tsx:1`, `:24`, and a block appended.
 - E2E: `web/e2e/support.ts:47-49` (`waitTerminal`) and a recorder appended; `web/e2e/clarify.spec.ts` (create); `web/e2e/visual.spec.ts:55-58` (the `10-clarify` capture, after `05-failed`).
 
@@ -4978,6 +5110,7 @@ git commit -m "feat(web): the one-time check's stage — one question at a time,
   - `waitTerminal` now waits for a terminal status: `completed`, `max_iterations`, `incomplete` or `failed`;
   - `installClarifyRecorder(page)`;
   - `clarifyRecord(page): Promise<ClarifyRecord>`, where `interface ClarifyRecord { stage: boolean; summaries: string[] }`.
+- Also produces: the sidebar's label for a waiting session, `{query} — waiting for you` (`— running` for a running one); `capture-replay-events.mjs` waits for a terminal status, so a fixture captured with the check on is not cut short at `needs_input`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -5059,14 +5192,14 @@ Append to `web/test/components/sidebar.test.tsx`:
 ```tsx
 
 describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)", () => {
-  it("carries the running mark, and the list keeps polling every 5 s", async () => {
+  it("carries the live mark and says it is waiting for you; the list keeps polling every 5 s", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let listCalls = 0;
     const now = new Date().toISOString();
     vi.stubGlobal("fetch", vi.fn(async () => { listCalls++; return json(200, { sessions: [{ ...session("a", now), status: "needs_input" }, session("b", now)] }); }));
     render(<ConsoleProvider><Sidebar /></ConsoleProvider>);
     await waitFor(() => expect(document.querySelector('[data-session="a"]')?.getAttribute("data-run")).toBe("1"));
-    expect(document.querySelector('[data-session="a"]')!.getAttribute("aria-label")).toBe("q a — running");
+    expect(document.querySelector('[data-session="a"]')!.getAttribute("aria-label")).toBe("q a — waiting for you");
     expect(document.querySelector('[data-session="b"]')!.getAttribute("data-run")).toBe("0");
     const before = listCalls;
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
@@ -5081,8 +5214,8 @@ describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)"
 cd web && npx vitest run test/components/session-screen.test.tsx test/components/sidebar.test.tsx 2>&1 | grep -E "Test Files|Tests  |×"
 ```
 
-Expected: `Test Files  2 failed (2)`, `Tests  4 failed | 7 passed (11)`. The four failures are:
-- `carries the running mark, and the list keeps polling every 5 s`;
+Expected: `Test Files  2 failed (2)`, `Tests  4 failed | 9 passed (13)` (observed in planning at `fc2771e`): Task 1's `9` pass, and the four new tests fail. They are:
+- `carries the live mark and says it is waiting for you; the list keeps polling every 5 s`;
 - `a session waiting for the reader shows the check in the pipeline card's place, under the waiting chip`;
 - `shows what the run starts with once answered, then gives way to the pipeline when the planner starts`;
 - `keeps the stream open while the session waits: an ended stream reconnects, as for a running one`.
@@ -5234,6 +5367,18 @@ with
               const running = isLive(s.status); // live-briefs spec §4.5: a session waiting for the reader counts as running
 ```
 
+`web/components/Sidebar.tsx` — replace
+
+```tsx
+aria-label={running ? `${s.query} — running` : undefined}
+```
+
+with
+
+```tsx
+aria-label={running ? `${s.query} — ${s.status === "needs_input" ? "waiting for you" : "running"}` : undefined}
+```
+
 `web/components/ConsoleProvider.tsx` — replace
 
 ```tsx
@@ -5264,7 +5409,7 @@ with
 cd web && npm run -s typecheck && npx vitest run test/components/session-screen.test.tsx test/components/sidebar.test.tsx 2>&1 | grep -E "Test Files|Tests  " && npx vitest run 2>&1 | grep -E "Test Files|Tests  "
 ```
 
-Expected: no `typecheck` output; `Test Files  2 passed (2)`, `Tests  11 passed (11)`; then `Test Files  25 passed (25)`, `Tests  186 passed (186)`.
+Expected: no `typecheck` output; `Test Files  2 passed (2)`, `Tests  13 passed (13)` (Task 1's `9` + 4); then `Test Files  25 passed (25)`, `Tests  190 passed (190)` (the baseline + 32).
 
 - [ ] **Step 5: The e2e specs (verification)**
 
@@ -5275,7 +5420,7 @@ Expected: no `typecheck` output; `Test Files  2 passed (2)`, `Tests  11 passed (
 - reduced motion;
 - the phone layout.
 
-The `10-clarify` capture shows question 1 of 3 at both widths.
+The `10-clarify` capture shows question 1 of 3 at both widths. The AC12 test sets `answer_wait_s: 8` and warms the app before its POST, so the card is still asking when the page arrives (review P2-1). `capture-replay-events.mjs` gets the same terminal test as `waitTerminal`: it is not run in this plan, but a fixture captured with the check on would otherwise stop at `needs_input`.
 
 `web/e2e/support.ts` — replace
 
@@ -5371,11 +5516,14 @@ test("the check asks one question at a time, posts the answers once and the run 
 
 test("with no answer the check starts on best guesses when its wait ends (AC12)", async ({ page, request }) => {
   await installClarifyRecorder(page);
-  const created = await request.post(`${API}/research`, { headers: { "X-Replay-Clarify": "on" }, data: { query: "q", config_overrides: { hitl: { answer_wait_s: 4 } } } });
+  // The wait starts when the POST lands, so the app is warmed first: the card must still be asking
+  // when the page gets there. 8 s leaves several seconds of margin on a slow VM.
+  await page.goto("/");
+  const created = await request.post(`${API}/research`, { headers: { "X-Replay-Clarify": "on" }, data: { query: "q", config_overrides: { hitl: { answer_wait_s: 8 } } } });
   const id = ((await created.json()) as { session_id: string }).session_id;
   await page.goto(`/research/${id}`);
-  await expect(page.locator("#clarifyCountdown")).toHaveText(/^Starts with best guesses in 0:0[0-4] if you don't answer$/, { timeout: 10_000 });
-  await expect(page.locator("#stage-running")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#clarifyCountdown")).toHaveText(/^Starts with best guesses in 0:0[0-8] if you don't answer$/, { timeout: 10_000 });
+  await expect(page.locator("#stage-running")).toBeVisible({ timeout: 20_000 });
   expect((await clarifyRecord(page)).summaries.at(-1)).toBe(ALL_BEST_GUESSES);
   await waitTerminal(request, id);
   expect(await streamText(request, id)).toContain('"reason":"timed_out"');
@@ -5457,6 +5605,44 @@ test.describe("390×844", () => {
 });
 ```
 
+`web/scripts/capture-replay-events.mjs` — replace
+
+```js
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+```
+
+with
+
+```js
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A session waiting for the reader (needs_input, live-briefs spec §4.4) has not finished either.
+const TERMINAL = /^(completed|max_iterations|incomplete|failed)$/;
+```
+
+`web/scripts/capture-replay-events.mjs` — replace
+
+```js
+    if (status.status !== "running") break;
+```
+
+with
+
+```js
+    if (TERMINAL.test(status.status)) break;
+```
+
+`web/scripts/capture-replay-events.mjs` — replace
+
+```js
+  if (!status || status.status === "running") throw new Error(`${caseId}: the session did not finish`);
+```
+
+with
+
+```js
+  if (!status || !TERMINAL.test(status.status)) throw new Error(`${caseId}: the session did not finish`);
+```
+
 `web/e2e/visual.spec.ts` — replace
 
 ```ts
@@ -5487,10 +5673,10 @@ with
 
 ```bash
 export DEEP_RESEARCH_PYTHON="$PWD/.venv/bin/python"
-cd web && npm run -s build && npx playwright test e2e/clarify.spec.ts --project=chromium && npm run -s test:e2e
+cd web && node --check scripts/capture-replay-events.mjs && npm run -s build && npx playwright test e2e/clarify.spec.ts --project=chromium && npm run -s test:e2e
 ```
 
-Expected: `7 passed` (each about 14 s), then the whole project `55 passed` (about 9 min): Phase 1's `47`, plus `settings.spec.ts`'s new test, plus these `7`. Both were observed in planning at `3565397`.
+Expected: no output from `node --check`; `7 passed` (about 15 s each, the AC12 test about 20 s), then the whole project `55 passed` (about 9 min): Phase 1's `47`, plus `settings.spec.ts`'s new test, plus these `7`. Both counts were observed in planning at `1cb57d6` and again at `fc2771e`.
 
 - [ ] **Step 6: Captures and the visual review**
 
@@ -5512,12 +5698,12 @@ Where the pick differs, the spec wins, and these differences are expected:
 - the footer carries the countdown (column B has none);
 - the summary is one line, with no Start over.
 
-Every other capture must match `web/visual/P1-T12-final/` if this checkout has it. If it does not, confirm that none of those captures shows a check card or the waiting chip. Attach the two images and a one-paragraph verdict to the task summary.
+Every other capture must match `web/visual/P1-T12-final/` if this checkout has it. If it does not, confirm that none of those captures shows a check card or the waiting chip. No capture opens the settings popover; `settings.spec.ts` asserts that the new row is fully visible in it at 1252×853 (Task 7). Attach the two images and a one-paragraph verdict to the task summary.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add web/components/SessionScreen.tsx web/components/Sidebar.tsx web/components/ConsoleProvider.tsx web/test/components/session-screen.test.tsx web/test/components/sidebar.test.tsx web/e2e/support.ts web/e2e/clarify.spec.ts web/e2e/visual.spec.ts
+git add web/components/SessionScreen.tsx web/components/Sidebar.tsx web/components/ConsoleProvider.tsx web/test/components/session-screen.test.tsx web/test/components/sidebar.test.tsx web/e2e/support.ts web/e2e/clarify.spec.ts web/e2e/visual.spec.ts web/scripts/capture-replay-events.mjs
 git commit -m "feat(web): the check between the Submitted beat and the running stage; needs_input is live everywhere"
 ```
 
@@ -5526,13 +5712,13 @@ git commit -m "feat(web): the check between the Submitted beat and the running s
 ### Task 10: The design record for the check (spec §4.9 Phase-2 rows; DESIGN.md's status contract)
 
 **Files:**
-- Modify: `docs/design/DESIGN.md` (line numbers at `3565397`):
+- Modify: `docs/design/DESIGN.md` (line numbers at `fc2771e`):
   - §3: the opening sentence (`:150`), the stage table (rows 2, 2a and 3, `:157-158`), and a paragraph before "The composer exists on stage 1 only" (`:171`);
   - §3.0: the sentence Phase 1 Task 11 wrote about the strip (`:227`);
   - §3.2: the composer table and the request body, as Phase 1 Task 11 left them (`:467`, `:475`, `:480-482`);
   - §4: the literal's sentence (`:899-900`), a `needs_input` row after the Running row as Phase 1 Task 11 wrote it (`:905`), and rule 6 (`:948-950`);
   - §5.6: a bullet before "One decorative loop" (`:1339`);
-  - §6: a Check row (`:1588`).
+  - §6: a Check row (`:1589`).
 - Modify: `web/README.md`: the capture count (`:23-24`), and a Notes bullet (`:30-32`).
 
 **Interfaces:**
@@ -5541,7 +5727,7 @@ git commit -m "feat(web): the check between the Submitted beat and the running s
 
 - [ ] **Step 1: Record the check in DESIGN.md and web/README.md**
 
-The line numbers are those at `3565397`. If a later fix moves DESIGN.md's lines again, the section names still locate each anchor.
+The line numbers are those at `fc2771e`. If a later fix moves DESIGN.md's lines again, the section names still locate each anchor.
 
 `docs/design/DESIGN.md` — replace
 
@@ -5613,6 +5799,9 @@ A tapped answer moves on after 240ms. The footer offers Back, Skip this one and 
 start, and its cap counts down to the start on best guesses (60s, D6). The answers are
 shown once, in the summary line, and never again: there is no assumptions UI (D7). No
 purple on the card: nothing on it is the page's primary action.
+There is no `checking` status (pending open issue O2 of the Phase 2 plan): while the check
+call runs, for up to `hitl.check_timeout_s` (20s), `/status` reads `running` and the page
+shows stage 3; if questions come back, stage 2a replaces the pipeline card.
 
 **The composer exists on stage 1 only.**
 ```
@@ -5797,7 +5986,7 @@ want = ["| 2a | **Check** |", "**Stage 2a, the one-time check, asks once and onl
         "| Ask me when the question is unclear | top-level `ask_clarifying_questions` |",
         '"ask_clarifying_questions": true}', "| **Waiting for you** | `needs_input` |",
         "**The only waiting status is the reader's.**", "**The one-time check moves once per question**",
-        "| Check | nothing:"]
+        "| Check | nothing:", "There is no `checking` status (pending open issue O2 of the Phase 2 plan)"]
 print({"left": [s for s in gone if s in d], "missing": [s for s in want if s not in d],
        "readme": [s for s in ("sixteen full-page captures", "X-Replay-Clarify: on") if s not in w]})
 EOF
@@ -5830,7 +6019,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT
 ```
 
-Expected: `4831 passed, 6 skipped, 12 deselected` (Task 1's baseline + 63).
+Expected: `4833 passed, 6 skipped, 12 deselected` (Task 1's baseline + 65).
 
 - [ ] **Step 2: The web unit layer**
 
@@ -5838,7 +6027,7 @@ Expected: `4831 passed, 6 skipped, 12 deselected` (Task 1's baseline + 63).
 cd web && npm run -s typecheck && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && npm run -s check:css
 ```
 
-Expected: no `typecheck` output; `Test Files  25 passed (25)`, `Tests  186 passed (186)`; `OK`.
+Expected: no `typecheck` output; `Test Files  25 passed (25)`, `Tests  190 passed (190)` (the baseline + 32); `OK`.
 
 - [ ] **Step 3: Playwright and the captures**
 
@@ -5847,7 +6036,7 @@ export DEEP_RESEARCH_PYTHON="$PWD/.venv/bin/python"
 cd web && npm run -s test:e2e && VISUAL_CHECKPOINT=P2-T11-final npx playwright test --project=visual
 ```
 
-Expected: `55 passed`, then `10 passed` (both observed in planning at `3565397`).
+Expected: `55 passed`, then `10 passed` (both observed in planning at `3565397`, `1cb57d6` and `fc2771e`).
 
 - [ ] **Step 4: The final visual review**
 
@@ -5860,6 +6049,7 @@ Open all sixteen images in `web/visual/P2-T11-final/` with the Read tool, full h
 Per capture:
 - **`01-idle`, `07-idle-phone`.** The composer is unchanged: two pills, six starters, and no pill for the new setting.
 - **`02-submitted`, `03-running`, `09-running-extra-pass`, `04-report`, `05-failed`, `08-evidence`** (and their phone captures). Identical to `web/visual/P2-T09-clarify/`: Task 10 changed documentation only. None shows the check card or the waiting chip.
+- **The settings popover** (not captured). Its new row is asserted fully visible at 1252×853 by `settings.spec.ts` (Task 7).
 - **`10-clarify`, `10-clarify-phone`.** Everything Task 9 Step 6 lists, compared once more with `docs/design/running-stage-picks/Hitl1.dc.html` column B, `docs/design/running-stage-picks/theme.css:186-188`, `:269-285`, and spec §4.5. The spec wins where they differ.
 
 Attach the images and a one-paragraph verdict per capture to the task summary.
@@ -5883,7 +6073,7 @@ Expected: `git status --short` prints nothing. The newest commits are the nine o
 | **AC11** The status goes `needs_input`, the card shows "Question 1 of n", the chip reads "Waiting for you · a few quick questions" | 5, 6, 9 | e2e `the check asks one question at a time, …` (the status read, `#clarifyStep`, chip text and `.dot-warn`); Vitest `needs_input → Waiting for you · …`, the status-chip test |
 | **AC11** Answers, including an "Other…" typed answer, POST once, and the summary shows "(you said)" and "(best guess)" | 8, 9 | Vitest `posts the answers once after the last question and shows the summary`; e2e AC11 (one POST, its exact body, the recorded summary, `reason: answered`) |
 | **AC11** The planner's packet contains `# Reader answers` | 3, 5 | pytest `test_the_readers_answers_reach_the_planners_packets`, `test_replay_with_the_header_asks_then_plans_with_the_readers_answers` |
-| **AC12** With no interaction the run starts within 60 s + 2 s, every answer `best_guess`, `reason == "timed_out"` | 2, 5, 9 | pytest `test_the_hitl_timings_default_to_the_spec_values` (60 s), `test_no_answer_starts_the_run_on_best_guesses_when_the_wait_ends`; e2e `with no answer the check starts on best guesses when its wait ends (AC12)` (a 4 s wait); see O3 |
+| **AC12** With no interaction the run starts within 60 s + 2 s, every answer `best_guess`, `reason == "timed_out"` | 2, 5, 9 | pytest `test_the_hitl_timings_default_to_the_spec_values` (60 s), `test_no_answer_starts_the_run_on_best_guesses_when_the_wait_ends`; e2e `with no answer the check starts on best guesses when its wait ends (AC12)` (an 8 s wait, after warming the app); see O3 |
 | **AC13** With the setting off, no check call is made | 5, 7 | pytest `test_with_the_setting_off_no_check_call_is_made`, `test_the_request_flag_defaults_on_and_off_makes_no_check_call`; e2e `with 'Ask me when the question is unclear' off, no check is made (AC13)` |
 | **AC14** A check failure never delays the run by more than `check_timeout_s` | 4, 5 | pytest `test_a_check_that_hangs_delays_the_run_by_at_most_check_timeout_s`, `test_a_failed_or_empty_check_starts_the_run_exactly_as_before[check_failed]`, `test_an_invalid_draft_asks_nothing_at_all`, `test_a_live_check_whose_reply_breaks_the_contract_asks_nothing` |
 | §4.8 The check call fails or times out → no questions | 4, 5 | as AC14 |
@@ -5892,7 +6082,7 @@ Expected: `git status --short` prints nothing. The newest commits are the nine o
 | §4.8 Replay mode: the scripted checker, header-gated | 4, 5, 6 | pytest `test_the_replay_checker_asks_the_fixed_set_only_when_the_header_asked`, `test_a_replay_mode_app_checks_with_the_scripted_checker`; Vitest `forwards x-replay-clarify, …` |
 | §4.8 Reduced motion | 8, 9 | e2e `the next question fades in place, with no travel (§4.8)` |
 | §4.8 Phone: the card and its answers full width, no horizontal scroll | 8, 9 | e2e `the card and its answers are full width, with no sideways scroll (§4.8)`; `visual.spec.ts`'s `shoot` asserts no sideways scroll |
-| §6 pytest API: lifecycle (answer, skip, timeout, check failure); the route's 202/404/409/422; `X-Replay-Clarify` gating | 4, 5 | `tests/test_api/test_clarify.py` (23), `tests/test_api/test_clarification.py` (23) |
+| §6 pytest API: lifecycle (answer, skip, timeout, check failure); the route's 202/404/409/422; `X-Replay-Clarify` gating | 4, 5 | `tests/test_api/test_clarify.py` (24), `tests/test_api/test_clarification.py` (24) |
 | §6 The proxy forwards the new header | 6 | Vitest `forwards x-replay-clarify, so replay's scripted check can be asked for (live-briefs spec §4.4)` |
 | §6 pytest engine: `derive_answer_contract` with answers; `# Reader answers` in plan and plan-review messages; the full replay suite unchanged without answers | 2, 3 | `tests/test_agents/test_planner_reader_answers.py` (9, `PINNED_PACKETS` included); `tests/test_graph/test_reader_answers.py`; the full suite |
 | §6 Vitest: run-state handlers with the exact-keys assertion; `ClarifyStage` (Other…, Back, Skip, Just start, countdown text); chip texts | 6, 8 | `run-state.test.ts` (nineteen handlers, `(j)`), `clarify.test.ts`, `clarify-stage.test.tsx`, `format.test.ts`, `status-chip.test.tsx` |
@@ -5900,7 +6090,7 @@ Expected: `git status --short` prints nothing. The newest commits are the nine o
 | §6 Captures `10-clarify(-phone)`, a new checkpoint each time, reviewed full height against the picks | 9, 11 | `P2-T09-clarify`, `P2-T11-final` |
 | §4.9 Phase-2 rows: api-gaps' route list; README / web README "Run the app" mention the check and `X-Replay-Clarify` | 5, 10 | the doc edits; Task 10 Step 2's check |
 | §4.5 Settings row "Ask me when the question is unclear", On/Off, sent as `ask_clarifying_questions` (D16) | 7 | Vitest `offers 'Ask me when the question is unclear' as On/Off, …`; e2e `settings.spec.ts` (both tests) |
-| §4.5 Sidebar: a `needs_input` session counts as running for the live mark | 9 | Vitest `carries the running mark, and the list keeps polling every 5 s`; e2e AC11 (`data-run="1"`) |
+| §4.5 Sidebar: a `needs_input` session counts as running for the live mark | 9 | Vitest `carries the live mark and says it is waiting for you; the list keeps polling every 5 s`; e2e AC11 (`data-run="1"`) |
 
 ## Self-review
 
@@ -5933,7 +6123,7 @@ Expected: `git status --short` prints nothing. The newest commits are the nine o
 
 **2. Placeholder scan.** There is no "TBD", "TODO", "similar to" or "handle edge cases".
 - Every code step shows the code, and every check shows its command and expected output.
-- Every expected count was observed in the planning dry run. The whole-project Playwright counts (`55`, `10`) were observed at the end of Phase 1, `3565397`.
+- Every expected count was observed in the planning dry run. The latest observation was at `fc2771e`, after Phase 1's final-review fixes, with review round 1's changes; the whole-project Playwright counts (`55`, `10`) were also observed at `3565397` and `1cb57d6`. Every scoped count is also stated as a Task 1 baseline plus an increment (Task 1 Step 5).
 - The only [INFERENCE] is O4, which no permitted test can settle.
 
 **3. Type consistency.**
@@ -5960,5 +6150,67 @@ Expected: `git status --short` prints nothing. The newest commits are the nine o
   - Tasks 1–5 need only the venv.
   - Tasks 6–11 need `web/node_modules` (`cd web && npm ci` if absent) and Chromium (`/opt/pw-browsers`).
   - Playwright needs ports 8010, 3010 and 3011 free. No other session may run Playwright in this checkout at the same time.
-- **Time.** The full backend suite takes about 150 s. A scoped Playwright file takes about 2 min with its build. The whole chromium project takes about 12 min, and the visual project about 2 min.
+- **Time.** The full backend suite takes about 150 s. A scoped Playwright file takes about 2 min with its build. The whole chromium project takes about 9 min, and the visual project about 2 min.
 - **If Task 1 reports an anchor problem,** amend this plan before Task 2. Every anchor is checked up front on purpose, so that no task discovers a stale anchor halfway through its edits.
+
+## Review round 1 (2026-09-29): findings and how each was resolved
+
+The review (`.superpowers/sdd/phase2-plan-review-r1.md`, spec-plan-reviewer) approved the plan with changes. Every finding is resolved below. The round's changes were dry-run as described under Evidence.
+
+- **P2-1 — the AC12 e2e's 4 s wait was too thin to rely on.** Applied as suggested, plus the optional warm-up.
+  - The test now warms the app with `page.goto("/")` before its POST.
+  - It sets `answer_wait_s: 8`, expects `^Starts with best guesses in 0:0[0-8] if you don't answer$`, and waits 20 s for `#stage-running`. The `summaries.at(-1)` and `"reason":"timed_out"` assertions are unchanged.
+  - Observed: the test takes about 20 s, passed 3 of 3 under `--repeat-each=3`, and the whole project still gives `55 passed`.
+- **P3-1 — scoped counts were absolute.** Applied.
+  - Task 1 gains Step 4, which records six per-file baselines (observed at `fc2771e`: `174 passed, 1 deselected`, `289 passed`, `131 passed`; Vitest `54`, `14`, `9`), and Step 5, which states the rule and the increments.
+  - The rule was exercised for real: Phase 1's final-review fixes added one Vitest test to `run-state.test.ts` and two to `session-screen.test.tsx` while this round was being written. Every scoped count moved by exactly those deltas (observed).
+  - Every scoped Expected line in Tasks 2–9 now names its baseline plus its increment, alongside the observed number.
+- **P3-2 — the design record contradicted live behaviour while O2 is open.** Applied.
+  - DESIGN.md's stage-2a paragraph (Task 10) gains the sentence "There is no `checking` status (pending open issue O2 …)", and Task 10 Step 2's check requires it.
+  - api-gaps gains gap 3.8 in "Stage 3 — Running" (Task 5), with the same facts and a suggested `session.clarification.started` event or `checking` status.
+  - O2 names both.
+- **P3-3 — `CheckCard` lost its state on a stream reconnect.** Fixed in the plan's code (Task 8).
+  - `ClarifyStage` renders from the last non-null check it saw, kept in a ref that an effect updates, so the card stays mounted through the render in which `onOpen` has installed a fresh `RunState`.
+  - New Vitest: `keeps the reader's place when a reconnect swaps in a fresh run state before the replay`. It fails without the change (observed).
+  - Ambiguity 30.
+- **P3-4 — the answers route took unbounded ids and choices, and multi-line text.** Applied (Task 4).
+  - `question_id` has `max_length=8` and `choice` has `max_length=80`.
+  - `text` is collapsed by `collapse_whitespace` in a `mode="before"` validator, so the 200-character cap applies to the collapsed line. The helper lives in `utils/text.py`, not `utils/types.py`.
+  - New tests: pytest `test_an_answer_is_one_bounded_line`, and a `choice_over_80` case in the route's 422 test (`string_too_long` at `body.answers.0.choice`).
+  - Ambiguity 32.
+- **P3-5 — focus fell to `<body>` after posting.** Applied (Task 8).
+  - The summary, late and failed lines take `tabIndex={-1}`, and focus moves to them once the reader has posted.
+  - Four existing Vitest tests now assert `document.activeElement`, and they fail without the change (observed).
+  - `#clarifyCard [tabindex="-1"]:focus{outline:none}` keeps a ring off these non-controls.
+  - The `aria-describedby` suggestion is declined: "best guess" belongs to the option's name, and a description would be announced only after the role and state (ambiguity 29).
+- **P3-6 — the countdown trusts the client clock.** Recorded, not changed.
+  - The spec says "from `deadline_at`". A skew-free countdown needs the server's time on every read, because a replayed `requested` arrives long after it was sent, so it would widen the API.
+  - The API's own timer governs, and the 409 face covers a late answer (ambiguity 28).
+- **P3-7 — `capture-replay-events.mjs` treated "not `running`" as finished.** Applied (Task 9).
+  - The script uses the same terminal test as `waitTerminal`.
+  - Step 5 runs `node --check` on it.
+- **P3-8 — the sidebar said "running" for a waiting session.** Applied (Task 9).
+  - The label reads `{query} — waiting for you` for `needs_input`.
+  - The sidebar Vitest asserts it and is renamed `carries the live mark and says it is waiting for you; the list keeps polling every 5 s`.
+  - Ambiguity 31.
+- **P3-9 — nits.**
+  - (a) The execution notes now say the chromium project takes about 9 min, matching Task 9 (observed 8.9 min).
+  - (b) Checked: after Task 5, the new route spans `api/app.py:265-294` (decorator at 265, `return` at 294), so api-gaps' citation stands.
+  - (c) `settings.spec.ts`'s AC13 test asserts that `#segAsk` is fully visible in the open popover at 1252×853 (`toBeInViewport({ ratio: 1 })`), and Task 9 Step 6 and Task 11 Step 4 point to it.
+
+**Count changes from this round:**
+
+| What | Before | After |
+|---|---|---|
+| Task 4 | +23 | +24 |
+| Task 5 | +23 | +24 |
+| Backend final | `4831` | `4833` |
+| `tests/test_api` after Task 4 | `154` | `155` |
+| `tests/test_api` after Task 5 | `177` | `179` |
+| Task 8 Vitest | `10` | `11` |
+| Vitest after Task 8 | `182` | `186` |
+| Vitest final | `186` | `190` |
+| Anchors | `141` | `147` (a models import, the api-gaps row, the sidebar label, three capture-script lines) |
+| Task 1 steps | 4 | 6 (the per-file baselines) |
+
+Chromium (`55`) and visual (`10`) are unchanged. Of the Vitest moves, this round adds only Task 8's one test. The rest comes from Phase 1's final-review fixes, which raised the baseline from `155` to `158` (one test in `run-state.test.ts`, two in `session-screen.test.tsx`); Task 1 Steps 4–5 absorb exactly this kind of shift.
