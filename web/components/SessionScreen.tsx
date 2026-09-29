@@ -3,6 +3,7 @@ import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } 
 import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, getStatus, streamUrl, type ResearchSessionResponse } from "@/lib/api";
 import { qFitClass, toSessionView, type SessionView } from "@/lib/format";
+import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
 import { applyEvent, marksFor, newRunState, toRunEvent, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
@@ -143,13 +144,40 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   if (view && status?.status === "running" && streaming) { view.iteration = run.current.pass - 1; view.passes = passes; }
   useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, passes, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Review fix round 1 (Important #1): a pending idle→running flight is only ever consumed by
+  // SubmittedStage. Every other resolution — not found, a stopped/failed/finished session, or the
+  // beat already having expired by the time status arrives — must drop it here, or the box is
+  // stranded (fixed, opaque, at the composer's old position) over whatever renders instead.
+  useEffect(() => {
+    if (notFound) { clearIdleToRunningFlight(); return; }
+    if (!status) return; // still loading: give the pending flight a chance to reach SubmittedStage
+    if (stopped) { clearIdleToRunningFlight(); return; }
+    if (status.status === "running" && beat) return; // this is the SubmittedStage branch
+    clearIdleToRunningFlight();
+  }, [notFound, status, stopped, beat]);
+  // Abandoning this page (a sidebar click, New Research) mid-flight must not leave the box
+  // animating over whatever the operator navigates to next. Deferred (fix round 2): React
+  // StrictMode (next dev) mounts, cleans up and remounts this effect synchronously on first
+  // mount, so an immediate clear here would kill a flight that had only just landed — deferring
+  // it and letting the remount's own body cancel it (below) survives that, while a real unmount
+  // or a genuine sessionId change still clears, since nothing cancels it there.
+  useEffect(() => {
+    cancelDeferredClearIdleToRunningFlight(sessionId);
+    return () => deferClearIdleToRunningFlight(sessionId);
+  }, [sessionId]);
+  // Review fix round 1 (Important #2): a running-stage layout this tab noted (for this session or
+  // an earlier one it watched run) must not survive past this page — otherwise a later visit to
+  // this same session's now-finished report, reached without passing through RunningPipeline
+  // again (e.g. a sidebar click), can consume a stale rect and slide when it should not.
+  useEffect(() => () => clearRunningLayout(), [sessionId]);
+
   if (notFound) return <SessionNotFound onNew={() => router.push("/")} />;
   if (!status) return <section className="stage is-on" id="stage-loading"><div className="run-wrap"><p className="avail">loading session</p></div></section>;
   const strip = <SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="runningOpts" />;
   if (stopped) return <StoppedStage status={status} run={run.current} strip={strip} onNew={() => router.push("/")} />;
   if (status.status === "running") {
-    if (beat) return <SubmittedStage question={status.query} strip={strip} />;
-    return <RunningPipeline run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
+    if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;
