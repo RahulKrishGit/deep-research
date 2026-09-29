@@ -980,7 +980,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the why/how optional-target rule and
     # the shared prompts module's evaluator rules; reviews, Fable prompt review
     # GREEN at 6424075). Moved `a61d2797efd7` -> `9c5745683d9b`.
-    "planner": "9c5745683d9b",
+    # Live briefs (live-briefs spec E3 and AC2, 2026-09-28):
+    # planner.planning.completed lists each sub-topic's coverage_id and title
+    # (at most 160 characters), and the three planner events are published
+    # live. Module code only; no prompt string changed and agents.prompts was
+    # untouched, so the other four target pins and the Judge pin are
+    # unchanged. Moved `9c5745683d9b` -> `d40ffac43845`.
+    "planner": "d40ffac43845",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

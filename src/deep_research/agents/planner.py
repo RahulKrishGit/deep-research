@@ -34,7 +34,7 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
     planning_provider_error,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
@@ -2824,7 +2824,12 @@ def memory_recalled_event(memory_context: MemorySnapshot) -> ResearchEvent:
 
 
 def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent:
-    """Report the finished plan's size and how the scoping loop stopped."""
+    """Report the finished plan's size, its sub-topics and how the scoping loop stopped.
+
+    ``sub_topics`` lists each planned sub-topic's ``coverage_id`` and title, the
+    title capped at 160 characters (live-briefs spec AC2): plan content a console
+    shows the reader, never provider error text (``agents/events.py``).
+    """
     plan = outcome.result
     return agent_event(
         agent_name=PLANNER_NAME,
@@ -2832,6 +2837,15 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
         message="Planning complete.",
         metadata={
             "sub_topic_count": 0 if plan is None else len(plan.sub_topics),
+            "sub_topics": []
+            if plan is None
+            else [
+                {
+                    "coverage_id": sub_topic.coverage_id,
+                    "title": summarize_text(sub_topic.title, limit=160),
+                }
+                for sub_topic in plan.sub_topics
+            ],
             "repair_attempted": False if plan is None else plan.repair_attempted,
             "stop_reason": outcome.react.stop_reason,
             "iterations": outcome.react.iterations,
@@ -3112,13 +3126,18 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
+        # Published live (live-briefs spec E3); the same objects are returned below.
+        for event in events:
+            publish_live(event)
         try:
             outcome = await super().run(state)
         except ProviderError as error:
             raise planning_provider_error("react_decision") from error
         finally:
             self._restricted_toolset = None
-        events.append(planning_completed_event(outcome))
+        completed = planning_completed_event(outcome)
+        publish_live(completed)
+        events.append(completed)
         return AgentRun(
             agent_name=outcome.agent_name,
             result=outcome.result,
