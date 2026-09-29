@@ -39,6 +39,7 @@ from deep_research.graph.events import (
     session_completed_event,
     session_started_event,
 )
+from deep_research.graph.live import bind_live_sink
 from deep_research.graph.nodes import (
     ReportPublisher,
     ReportReviewerLike,
@@ -309,13 +310,19 @@ async def _stream_graph_result(
     event_handler: ProgressHandler,
     terminal_checkpoint: ResearchState | None = None,
 ) -> ResearchGraphState:
-    """Run the graph in values mode, publishing only newly appended events.
+    """Run the graph in values mode, publishing every event exactly once.
 
-    Each ``stream_mode="values"`` snapshot is the cumulative channel, so the
-    slice after the last published index is exactly the events this superstep
-    appended — nothing is published twice, and order within a snapshot is the
-    order the graph recorded it. On a resume the first snapshot carries the
-    checkpointed events, so a fresh handler still sees the whole session.
+    Events reach the handler by two paths (live-briefs spec E2). An agent or node
+    publishes an event *live* the moment it builds it, through the sink bound here
+    for the stream's duration (``graph/live.py``); the sink records its
+    ``event_id``. Each ``stream_mode="values"`` snapshot is the cumulative channel,
+    so the slice after the last published index is exactly the events this
+    superstep appended; they are published in state order, skipping any id the live
+    path already delivered. So nothing is published twice, a live event can arrive
+    ahead of events its node recorded earlier in state order, and a node that halts
+    after publishing live has delivered those events although its halted state keeps
+    none of them. On a resume the first snapshot carries the checkpointed events, so
+    a fresh handler still sees the whole session.
 
     A terminal checkpoint has no pending nodes, so its resumed stream can be
     empty and there is no first snapshot to carry the checkpointed events.
@@ -327,6 +334,11 @@ async def _stream_graph_result(
     """
     latest: ResearchGraphState | None = None
     published = 0
+    published_ids: set[str] = set()
+
+    def live(event: ResearchEvent) -> None:
+        event_handler(event)
+        published_ids.add(event.event_id)
 
     if channel is not None:
         initial = load_state(channel)
@@ -334,16 +346,18 @@ async def _stream_graph_result(
             event_handler(event)
         published = len(initial.events)
 
-    async for snapshot in graph.astream(
-        channel,
-        config,
-        stream_mode="values",
-    ):
-        latest = snapshot
-        state = load_state(snapshot)
-        for event in state.events[published:]:
-            event_handler(event)
-        published = len(state.events)
+    with bind_live_sink(live):
+        async for snapshot in graph.astream(
+            channel,
+            config,
+            stream_mode="values",
+        ):
+            latest = snapshot
+            state = load_state(snapshot)
+            for event in state.events[published:]:
+                if event.event_id not in published_ids:
+                    event_handler(event)
+            published = len(state.events)
 
     if latest is None:
         if terminal_checkpoint is None:

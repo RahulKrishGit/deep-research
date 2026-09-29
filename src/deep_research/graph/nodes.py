@@ -76,6 +76,7 @@ from deep_research.graph.events import (
     report_review_completed_event,
     route_decided_event,
 )
+from deep_research.graph.live import publish_live
 from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
@@ -206,10 +207,11 @@ def agent_node(
         if is_halted(state):
             return _skipped(state, name)
 
-        started = merge_research_state(
-            state,
-            {"events": [node_started_event(name, iteration=state.iteration)]},
-        )
+        started_event = node_started_event(name, iteration=state.iteration)
+        started = merge_research_state(state, {"events": [started_event]})
+        # Published live (live-briefs spec E3): the object merged here is the one
+        # this node's snapshot carries, so the orchestrator delivers it once.
+        publish_live(started_event)
         try:
             outcome = await agent.run(started)
         except RequestAttemptLimitError as error:

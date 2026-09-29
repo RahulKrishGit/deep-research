@@ -485,7 +485,7 @@ def test_graph_submodule_public_names_all_reach_all() -> None:
     import deep_research.graph as graph_pkg
 
     graph_dir = Path(graph_pkg.__file__).parent
-    submodules = ["errors", "events", "nodes", "orchestrator", "state"]
+    submodules = ["errors", "events", "live", "nodes", "orchestrator", "state"]
 
     missing: list[str] = []
     for module_name in submodules:

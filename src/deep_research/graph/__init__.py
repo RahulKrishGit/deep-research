@@ -34,6 +34,7 @@ from deep_research.graph.events import (
     session_completed_event,
     session_started_event,
 )
+from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
 from deep_research.graph.nodes import (
     GraphNode,
     ReportPublisher,
@@ -124,6 +125,7 @@ __all__ = [
     "GraphNode",
     "GraphResumeError",
     "GraphRun",
+    "LiveSink",
     "ProgressHandler",
     "ReportPublisher",
     "ReportReviewerLike",
@@ -132,6 +134,7 @@ __all__ = [
     "ResearchGraphState",
     "agent_configuration_error",
     "agent_node",
+    "bind_live_sink",
     "build_checkpointer",
     "build_research_graph",
     "compile_research_graph",
@@ -160,6 +163,7 @@ __all__ = [
     "provider_configuration_error",
     "publication_unavailable_error",
     "publication_write_error",
+    "publish_live",
     "quality_assessed_event",
     "report_published_event",
     "report_review_completed_event",
