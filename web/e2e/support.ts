@@ -62,3 +62,49 @@ export const connectorOffsets = (page: Page) => page.evaluate(() => {
     return { pair: li.dataset.stage + ">" + rows[i + 1].dataset.stage, top: top - (a.top + a.height / 2), bottom: bottom - (b.top + b.height / 2) };
   });
 });
+
+/* live-briefs spec AC7: every CSS transition the running spine starts, with the delay and duration it
+   was started with — read from the element's computed transition lists at transitionrun, the moment
+   a transition is created (its delay phase included). `part` names what moved; `handoff`/`open` are
+   the row's roles at that moment. */
+export interface MotionRecord { stage: string | null; handoff: string | null; open: string | null; part: string; prop: string; delay: number; duration: number }
+export async function installMotionRecorder(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __drMotion: MotionRecord[] };
+    w.__drMotion = [];
+    const ms = (v: string) => (v.trim().endsWith("ms") ? parseFloat(v) : parseFloat(v) * 1000);
+    const partOf = (el: Element, pseudo: string): string => {
+      if (pseudo) return "connector";
+      if (el.classList.contains("ps-x")) return "ps-x";
+      if (el.classList.contains("ln")) return "line";
+      if (el.classList.contains("bullet")) return "bullet";
+      if (el.classList.contains("m-live")) return "m-live";
+      if (el.classList.contains("m-out")) return "m-out";
+      if (el.classList.contains("dotc")) return "dot";
+      if (el.tagName.toLowerCase() === "path" && el.closest(".mk")) return "check";
+      if (el.matches("li[data-stage]")) return "row";
+      return el.tagName.toLowerCase();
+    };
+    document.addEventListener("transitionrun", (event) => {
+      const e = event as TransitionEvent;
+      const el = e.target as Element;
+      const row = el.closest("#spine > li[data-stage]");
+      if (!row) return;
+      const style = getComputedStyle(el, e.pseudoElement || null);
+      const props = style.transitionProperty.split(",").map((p) => p.trim());
+      const delays = style.transitionDelay.split(","), durations = style.transitionDuration.split(",");
+      // A shorthand in the list starts its transitions on longhands: background → background-color,
+      // border-color → border-top-color and its three siblings. A property the list does not name at
+      // all records -1/-1, so no assertion can match it by borrowing another property's timing.
+      const shorthand = e.propertyName === "background-color" ? "background"
+        : /^border-(top|right|bottom|left)-color$/.test(e.propertyName) ? "border-color" : e.propertyName;
+      let i = props.indexOf(e.propertyName);
+      if (i < 0) i = props.indexOf(shorthand);
+      if (i < 0) i = props.indexOf("all");
+      w.__drMotion.push({ stage: row.getAttribute("data-stage"), handoff: row.getAttribute("data-handoff"), open: row.getAttribute("data-open"),
+        part: partOf(el, e.pseudoElement), prop: e.propertyName,
+        delay: i < 0 ? -1 : ms(delays[i % delays.length]), duration: i < 0 ? -1 : ms(durations[i % durations.length]) });
+    }, true);
+  });
+}
+export const motion = (page: Page) => page.evaluate(() => (window as unknown as { __drMotion: MotionRecord[] }).__drMotion);

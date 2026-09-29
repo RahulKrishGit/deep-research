@@ -1304,3 +1304,26 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .ps-topics > .ln{grid-template-columns:18px minmax(0,1fr);row-gap:0}
   .ps-topics .tf{grid-column:2}
 }
+
+/* ═══ 2026-09-28: the hand-off between steps (pick 3B, overlapped; live-briefs spec §4.3) ═══
+   Timed from the render in which row k is marked done and row k+1 becomes active; BriefSpine holds
+   the two roles (data-handoff) for HANDOFF_HOLD_MS. Row k: its lines fade out at 0 (180ms), its
+   height closes at 100ms, its subtitle cross-fades to the outcome at 260ms and the connector below it
+   fills at 180ms (--fill-line). Row k+1: its node fills at 600ms, its height opens at 600ms and its
+   lines rise at 900ms + i × 60ms — so the next row opens while the line is still filling. The
+   running node's halo waits the same 600ms, so it starts once the node has filled. */
+.spine-lg.briefs > li[data-handoff="from"]{--d-h:100ms;--d-out:260ms;--d-tint:260ms;--d-line:180ms}
+.spine-lg.briefs > li[data-handoff="from"] .ln{transform:none;--dur-c:180ms;--d-c:0ms}
+.spine-lg.briefs > li[data-handoff="to"]{--d-node:600ms;--d-tint:600ms;--d-h:600ms}
+.spine-lg.briefs > li[data-handoff="to"] .ln{--d-c:calc(900ms + var(--i,0) * 60ms)}
+.spine-lg.briefs > li[data-state="active"] .bullet{animation-delay:600ms}
+@media (prefers-reduced-motion:reduce){
+  /* Heights change at once; lines fade over 160ms with no stagger and no travel; the ✓ appears
+     without drawing; the dot does not scale; halos rest at a pinned radius, as the node's does. */
+  .spine-lg.briefs .ps-x{transition:none !important}
+  .spine-lg.briefs .ln{transform:none !important;transition-property:opacity !important;transition-duration:160ms !important;transition-delay:0ms !important}
+  .spine-lg.briefs > li::after{transition:none !important}
+  .mk svg path{transition:none !important}
+  .mk .dotc{transform:none !important}
+  [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
+}
