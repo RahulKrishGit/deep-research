@@ -22,13 +22,13 @@
 - Phase 2's final review left notes for this phase; the section "Phase 2's final-review notes" below says where each is met.
 
 **Evidence.** Planning implemented every task on 2026-09-29, then executed this document itself, step by step, on a fresh export of `539d51f`:
-- A script parsed this document's blocks as an implementer reads them. For each step it applied that step's blocks in order, stopping unless every anchor occurs exactly once, and then ran the step's command blocks. Every Expected line of Tasks 1–10 and 12–14 is the value that run printed. Only the `git` blocks were skipped; Task 14 Step 2's other lines were run by hand, and its two `git diff` lines checked by comparing the files with `539d51f`'s. Task 1 Step 2 printed `anchors: 217 exactly once; creates: 18 absent; appends: 3 onto files present`.
+- A script parsed this document's blocks as an implementer reads them. For each step it applied that step's blocks in order, stopping unless every anchor occurs exactly once, and then ran the step's command blocks. Every Expected line of Tasks 1–10 and 12–14 is the value that run printed. Only the `git` blocks were skipped; Task 14 Step 2's other lines were run by hand, and its two `git diff` lines checked by comparing the files with `539d51f`'s. Task 1 Step 2 printed `anchors: 280 exactly once; creates: 18 absent; appends: 3 onto files present`. Two command blocks were corrected after that run and re-run by hand: Task 13 Step 4's `grep` (its first version also searched the tests, and matched the new test's own words), and the re-pin snippet's pattern in Tasks 4 and 5 (now built without an f-string; it pins the same values).
 - Playwright then ran on the tree that run left, with its ports moved to 8110, 3110 and 3111 so as not to disturb other agents' servers on the shared ports: {{PLAYWRIGHT_EVIDENCE}}. Task 1's `55 passed` was observed on `539d51f` itself, the same way. Planning read the four new captures, and the running and report captures they sit beside, full height.
 - Earlier runs of the same kind — on the Phase 2 plan's own end state (its blocks applied to `fc2771e`) and on `dfef7ee` — gave every increment below; their counts are lower by the tests Phase 2's execution and fixes added.
 
 ## Global Constraints
 
-- **Where.** Branch `feat/live-briefs-and-reader-notes`, the Linux cloud checkout; every path is relative to the repository root. Tasks run **strictly in order 1 → 14**, one at a time. Commit after every task that changes files (Task 1 changes none).
+- **Where.** Branch `feat/live-briefs-and-reader-notes`, the Linux cloud checkout; every path is relative to the repository root. Tasks run **strictly in order 1 → 14**, one at a time. Commit after every task that changes files (Tasks 1 and 14 change none).
 - **No live model, no secrets.** Never run the live CLI, the API in `--mode live`, or anything that calls a model provider. Never read, create, print or commit `.env` or any `.env.*` file. Python runs are pytest or the API in `--mode replay`.
   - The live interpreter is exercised only through a recording completer (`tests/test_api/test_notes.py`, Task 7).
   - Every API test replaces it with a recording fake (`tests/test_api/conftest.py`, Task 8).
@@ -75,7 +75,7 @@
   - No purple at rest: the note's send is the neutral `.icon-btn`, never `.btn-primary`; the field shows the theme's focus ring only while it has focus (Phase 2 ambiguity 26's reading of D17).
   - One surface per region: the note line is a hairline row of the pipeline card, and "Your notes" is a hairline block of the report card; neither is a box. Text entry looks like text: the field is the borderless `.tx`.
 - **Viewports.** `1252 × 853` desktop, `390 × 844` phone; captures are `fullPage: true`.
-- **Out of Phase 3.** No change to the one-time check, the verifier, `agents/prompts.py`, the quality JSON, the request-attempt budget or the replay runner's pacing; no new session status; no pass counter.
+- **Out of Phase 3.** No change to the one-time check's behaviour (Task 8 only caps its two timings, with the notes', at ten minutes: M6), the verifier, `agents/prompts.py`, the quality JSON, the request-attempt budget or the replay runner's pacing; no new session status; no pass counter.
 
 ### Conventions every task uses
 
@@ -152,7 +152,7 @@
 | R3 | `.tx` is global and sized for the check card | Task 10: `.note-line .tx` overrides the size (ambiguity 29) |
 | R4 | the live clarity checker is the template for the interpreter | Task 7: `live_note_interpreter` (ambiguity 1) |
 | M6 | the three `HitlConfig` timings accept `inf` and huge values (`1e12` overflows the deadline, so the session fails instead of the request) | Task 8: each is finite and at most `HITL_TIMING_MAX_S = 600`; `tests/test_config.py` and a `422` through the route |
-| R6 | the dead `RunState` fields `tag`, `blurbs`, `maxPasses`, `BLURB` and `LoopTag` | Task 13, after every other web task |
+| R6 | the dead `RunState` fields `tag`, `blurbs`, `maxPasses`, `BLURB` and `LoopTag` | Task 13, after every other web task; with them go the `graph.session.started` handler and the `passes` argument of `newRunState` and `replayRun`, which only fed `maxPasses` |
 | O2 | live mode shows Planning for up to `check_timeout_s` before the check's card | Left to the human, as asked: nothing here changes it |
 
 ## Open issues (for the human)
@@ -255,7 +255,7 @@ print("\n".join(problems) or f"anchors: {counts['edit']} exactly once; creates: 
 EOF
 ```
 
-Expected: `anchors: 217 exactly once; creates: 18 absent; appends: 3 onto files present`.
+Expected: `anchors: 280 exactly once; creates: 18 absent; appends: 3 onto files present`.
 
 Anything else is a line per problem (`-1` means that the file is missing). Then:
 - Stop, and edit nothing.
@@ -337,7 +337,7 @@ If a baseline differs from the Expected above — because Phase 2's verification
 
 | Suite | Increments by task |
 |---|---|
-| Backend | +17 (Task 2), +13 (Task 3), +5 (Task 4), +3 (Task 5), +7 (Task 6), +20 (Task 7), +13 (Task 8): 78 in all |
+| Backend | +17 (Task 2), +13 (Task 3), +5 (Task 4), +3 (Task 5), +7 (Task 6), +20 (Task 7), +28 (Task 8): 93 in all |
 | Vitest | +10 (Task 9), +12 (Task 10), +1 (Task 13) |
 | Chromium | +6 (Task 11) |
 | Visual | +2 (Task 11) |
@@ -4205,7 +4205,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | grep -E "^E +\{|passed|failed"
 ```
 
-Expected: `1 failed, 10 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'planner': 'd1ba46ce147f'} != {'planner': 'e9b74316ad14'}` and `{'researcher': '50eac8f9a47e'} != {'researcher': 'de7506bed63e'}` (the two lines come in either order): the modules' code changed, and `agents/prompts.py` did not.
+Expected: `1 failed, 10 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'planner': 'd1ba46ce147f'} != {'planner': 'e9b74316ad14'}` and `{'researcher': '4995fd442e1d'} != {'researcher': 'de7506bed63e'}` (the two lines come in either order): the modules' code changed, and `agents/prompts.py` did not.
 
 - [ ] **Step 6: Re-pin the planner and the researcher (module code only)**
 
@@ -4225,7 +4225,7 @@ path = Path("tests/test_evaluation/test_config.py")
 args = sys.argv[1:]
 for agent, reason in zip(args[::2], args[1::2]):
     text = path.read_text(encoding="utf-8")
-    pins = re.findall(rf'(?m)^    "{agent}": "([0-9a-f]{{12}})",$', text)
+    pins = re.findall('(?m)^    "' + agent + '": "([0-9a-f]{12})",$', text)
     assert len(pins) == 1, f"pin for {agent} found {len(pins)} times"
     old, new = pins[0], agent_prompt_fingerprint(agent)
     anchor = f'    "{agent}": "{old}",\n'
@@ -4239,7 +4239,7 @@ EOF
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | tail -1
 ```
 
-Expected: `planner: e9b74316ad14 -> d1ba46ce147f`, `researcher: de7506bed63e -> 50eac8f9a47e`, then `11 passed, 67 deselected`.
+Expected: `planner: e9b74316ad14 -> d1ba46ce147f`, `researcher: de7506bed63e -> 4995fd442e1d`, then `11 passed, 67 deselected`.
 
 The snippet reads the current pin, so it works whatever value Phase 2 left, and it writes the comment above the pin in the file's existing ``Moved `old` -> `new`.`` style. The new values are the ones planning produced from exactly this task's text. A different value is acceptable when `git diff -- src/deep_research/agents/planner.py src/deep_research/agents/researcher.py` shows only this task's edits and every test in this task passes: the snippet pins whatever the modules now hash to, so do not hunt for single characters.
 
@@ -4688,7 +4688,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | grep -E "^E +\{|passed|failed"
 ```
 
-Expected: `2 failed, 9 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'report_writer': 'f12ce388263e'} != {'report_writer': '0dcd4a41a378'}` and `{'source_evaluator': 'd80250801868'} != {'source_evaluator': 'fb7f60d73873'}`, in either order; `test_the_target_fingerprint_covers_the_shared_prompt_module` fails too, because it compares the writer's fingerprint with its pin.
+Expected: `2 failed, 9 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'report_writer': '6e1aedc2888e'} != {'report_writer': '0dcd4a41a378'}` and `{'source_evaluator': '24809aa975a3'} != {'source_evaluator': 'fb7f60d73873'}`, in either order; `test_the_target_fingerprint_covers_the_shared_prompt_module` fails too, because it compares the writer's fingerprint with its pin.
 
 - [ ] **Step 6: Re-pin the source evaluator and the writer (module code only)**
 
@@ -4708,7 +4708,7 @@ path = Path("tests/test_evaluation/test_config.py")
 args = sys.argv[1:]
 for agent, reason in zip(args[::2], args[1::2]):
     text = path.read_text(encoding="utf-8")
-    pins = re.findall(rf'(?m)^    "{agent}": "([0-9a-f]{{12}})",$', text)
+    pins = re.findall('(?m)^    "' + agent + '": "([0-9a-f]{12})",$', text)
     assert len(pins) == 1, f"pin for {agent} found {len(pins)} times"
     old, new = pins[0], agent_prompt_fingerprint(agent)
     anchor = f'    "{agent}": "{old}",\n'
@@ -4722,7 +4722,7 @@ EOF
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | tail -1
 ```
 
-Expected: `source_evaluator: fb7f60d73873 -> d80250801868`, `report_writer: 0dcd4a41a378 -> f12ce388263e`, then `11 passed, 67 deselected`. As in Task 4 Step 6, a different value is acceptable when `git diff -- src/deep_research/agents/source_evaluator.py src/deep_research/agents/report_writer.py` shows only this task's edits and every test in this task passes. `agents/report.py` is not part of any agent's fingerprint.
+Expected: `source_evaluator: fb7f60d73873 -> 24809aa975a3`, `report_writer: 0dcd4a41a378 -> 6e1aedc2888e`, then `11 passed, 67 deselected`. As in Task 4 Step 6, a different value is acceptable when `git diff -- src/deep_research/agents/source_evaluator.py src/deep_research/agents/report_writer.py` shows only this task's edits and every test in this task passes. `agents/report.py` is not part of any agent's fingerprint.
 
 - [ ] **Step 7: Run the full suite**
 
@@ -7094,7 +7094,7 @@ PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api/test_not
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_config.py -q 2>&1 | tail -3
 ```
 
-Expected: `ERROR tests/test_api/test_note_route.py`, `Interrupted: 1 error during collection`, then `1 error in …`: `cannot import name 'NotesClosed' from 'deep_research.api.sessions'`.
+Expected: first `ERROR tests/test_api/test_note_route.py`, `Interrupted: 1 error during collection`, `1 error in …` (`cannot import name 'NotesClosed' from 'deep_research.api.sessions'`); then `ERROR tests/test_config.py`, `Interrupted: 1 error during collection`, `1 error in …` (`cannot import name 'HITL_TIMING_MAX_S' from 'deep_research.utils.config'`).
 
 - [ ] **Step 3: Implement the session's notes and the route**
 
@@ -7750,7 +7750,7 @@ PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_api -q 2>&1 
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_config.py -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config 2>&1 | tail -1
 ```
 
-Expected: {{PASS:8}}
+Expected: `215 passed` (Task 7's `200`, plus the new file's `15`), then `154 passed, 1 deselected` (the config tests, `13` of them new; the deselected one needs a `.env`). Every existing API test passes unchanged with the guard in place.
 
 - [ ] **Step 5: Document the route**
 
@@ -7919,7 +7919,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4912 passed, 6 skipped, 12 deselected` (+13): the backend's final count.
+Expected: `4927 passed, 6 skipped, 12 deselected` (+28): the backend's final count.
 
 - [ ] **Step 7: Commit**
 
@@ -8616,7 +8616,7 @@ Expected: no `typecheck` output; `Test Files  3 passed (3)`, `Tests  46 passed (
 cd web && npx vitest run 2>&1 | grep -E "Test Files|Tests  "
 ```
 
-Expected: `Test Files  26 passed (26)`, `Tests  201 passed (201)` (Task 1's `191` + 10).
+Expected: `Test Files  26 passed (26)`, `Tests  204 passed (204)` (Task 1's `194` + 10).
 
 - [ ] **Step 6: Commit**
 
@@ -9168,7 +9168,7 @@ with
 cd web && npm run -s typecheck && npx vitest run test/components 2>&1 | grep -E "Test Files|Tests  " && npm run -s check:css
 ```
 
-Expected: no `typecheck` output; `Test Files  18 passed (18)`, `Tests  94 passed (94)` — Task 1's `85`, plus the two new files' `12`; then `OK`.
+Expected: no `typecheck` output; `Test Files  18 passed (18)`, `Tests  97 passed (97)` — Task 1's `85`, plus the two new files' `12`; then `OK`.
 
 - [ ] **Step 5: Run every Vitest file**
 
@@ -9176,7 +9176,7 @@ Expected: no `typecheck` output; `Test Files  18 passed (18)`, `Tests  94 passed
 cd web && npx vitest run 2>&1 | grep -E "Test Files|Tests  "
 ```
 
-Expected: `Test Files  28 passed (28)`, `Tests  213 passed (213)` (Task 1's `191` + 22).
+Expected: `Test Files  28 passed (28)`, `Tests  216 passed (216)` (Task 1's `194` + 22).
 
 - [ ] **Step 6: Commit**
 
@@ -9873,7 +9873,7 @@ grep -F "POST /research/{id}/notes" docs/design/DESIGN.md | wc -l
 cd web && npm run -s check:css
 ```
 
-Expected: `10`, `1`, `1`, `1`; then `OK`.
+Expected: `11`, `1`, `1`, `1`, `0`, `2`; then `OK`.
 
 - [ ] **Step 3: Commit**
 
@@ -10778,7 +10778,7 @@ with
 cd web && npx vitest run test/run-state.test.ts 2>&1 | grep -E "FAIL|Test Files|Tests  " | head -6
 ```
 
-Expected: {{FAIL:13}}
+Expected: two `FAIL` lines, then `Test Files  1 failed (1)` and `Tests  2 failed | 28 passed (30)`: the new test (`the run state holds only what the page reads …`: its keys still include `blurbs`, `maxPasses` and `tag`), and `has the seven rows and the twenty-two handlers`, which no longer lists `graph.session.started`.
 
 - [ ] **Step 3: Remove the fields, the handler and the argument**
 
@@ -11006,10 +11006,10 @@ with
 - [ ] **Step 4: Type-check, run every Vitest file, and look for anything left**
 
 ```bash
-cd web && npm run -s typecheck && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && ! grep -rnwE "maxPasses|blurbs|BLURB|LoopTag" lib components app test && ! grep -rnE "\b(run|s)\.tag\b" lib components test && echo "no dead field left"
+cd web && npm run -s typecheck && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && ! grep -rnwE "maxPasses|blurbs|BLURB|LoopTag" lib components app && ! grep -rnE "\brun\.tag\b" lib components && echo "no dead field left"
 ```
 
-Expected: no `typecheck` output (a call that still passed `passes` would fail it here); {{SUITE:13}}; `no dead field left`.
+Expected: no `typecheck` output; `Test Files  28 passed (28)`, `Tests  217 passed (217)` (Task 10's `216` + 1); `no dead field left`. The type check covers the tests: a call that still passed `passes`, or a test that still read `tag` or `maxPasses`, would fail it. The two `grep`s cover the app's own code (the new test names `BLURB` to assert that it is gone).
 
 - [ ] **Step 5: Commit**
 
@@ -11036,7 +11036,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: {{BACKEND_FINAL}}: Task 1's baseline plus the {{BACKEND_NEW}} new tests of Task 1 Step 5's increments.
+Expected: `4927 passed, 6 skipped, 12 deselected`: Task 1's baseline plus the 93 new tests of Task 1 Step 5's increments.
 
 - [ ] **Step 2: What must not have moved**
 
@@ -11059,7 +11059,7 @@ Expected: `4a3d56fab932` (the verifier's pin, D10); nothing from the `--stat` (t
 cd web && npm run -s typecheck && npx vitest run 2>&1 | grep -E "Test Files|Tests  " && npm run -s check:css
 ```
 
-Expected: no `typecheck` output; {{SUITE:13}}; `OK`.
+Expected: no `typecheck` output; `Test Files  28 passed (28)`, `Tests  217 passed (217)` (Task 10's `216` + 1); `OK`.
 
 - [ ] **Step 4: Playwright, whole, and the captures**
 
