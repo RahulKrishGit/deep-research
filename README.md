@@ -755,8 +755,9 @@ The `graph.route.decided` fragment is always the router's own enumerated reason
 ## FastAPI Interface
 
 The in-process API exposes one research start endpoint, a session list
-endpoint, and five session-scoped read endpoints (`status`, `stream`,
-`report`, `evidence`, `trace`), all served by a process-local `SessionStore`:
+endpoint, five session-scoped read endpoints (`status`, `stream`,
+`report`, `evidence`, `trace`) and one session-scoped answers endpoint for the
+one-time check, all served by a process-local `SessionStore`:
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -767,6 +768,7 @@ endpoint, and five session-scoped read endpoints (`status`, `stream`,
 | `GET` | `/research/{session_id}/report` | `200` `text/markdown` |
 | `GET` | `/research/{session_id}/evidence` | `200` JSON (the findings, their verification and sources, the not-found targets, the refused sentences); `?format=markdown` → the evidence log as `text/markdown` |
 | `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
+| `POST` | `/research/{session_id}/answers` | `202` `ResearchSessionResponse` (the one-time check's answers, below) |
 
 Start a session:
 
@@ -790,6 +792,28 @@ The `202` response carries the session snapshot: `session_id`, `query`, `status`
 `status` is `running` until the run reaches `completed`, `max_iterations`,
 `incomplete`, or `failed`. Poll `status` or subscribe to the stream —
 nothing blocks on research work.
+
+**The one-time check** (live-briefs spec §4.4). Unless the request sets
+`"ask_clarifying_questions": false`, the session first asks the configured model,
+with thinking disabled and within `hitl.check_timeout_s` (20 s), whether the
+question leaves something material open. With no questions — the usual answer,
+and the answer to any failure or timeout — the run starts at once. With up to
+three, `status` reads `needs_input` and the stream carries
+`session.clarification.requested`: the questions, each with two to four options
+and a best guess, and a `deadline_at`. The answers are sent once:
+
+```bash
+curl -X POST http://localhost:8000/research/<session_id>/answers \
+  -H "Content-Type: application/json" \
+  -d '{"answers": [{"question_id": "q1", "choice": "Global"},
+                   {"question_id": "q2", "text": "since 2021"}], "skip": false}'
+```
+
+A question left out takes its best guess; with no answers at all the run starts on
+best guesses after `hitl.answer_wait_s` (60 s). Either way
+`session.clarification.answered` records the answers and why (`answered`,
+`skipped` or `timed_out`), `status` returns to `running`, and the planner plans
+within the answers.
 
 A finished session's snapshot also carries the outcome's own readings, added
 to the response without changing any existing field: `evidence_path` and
@@ -828,9 +852,9 @@ Errors are structured and safe:
 
 | Status | Meaning |
 | --- | --- |
-| `422` | Invalid request body or override shape; the error body lists field locations and types only, never rejected values |
-| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence` and `/trace` |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`) |
+| `422` | Invalid request body or override shape, or answers that do not fit the session's questions (an unknown or repeated `question_id`, a `choice` that was not offered); the error body lists field locations and types only, never rejected values |
+| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace` and `/answers` |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
 
 Every response carries `X-Deep-Research-Mode: live` or `replay` (see *Run the app*).
@@ -863,7 +887,10 @@ Replay mode wraps the whole server in the e2e harness's `offline_credentials()` 
 a session costs nothing and finishes in seconds (`--replay-delay-ms` paces the stream so the
 running stage can be watched). A `POST /research` may name the case with the header
 `X-Replay-Case: <case id>` (the ids of `e2e_evaluation/replay_matrix.py`); the session
-records the case's own question. In replay mode the topbar shows a muted `replay mode` chip.
+records the case's own question. The one-time check asks nothing in replay mode unless the
+`POST /research` also carries `X-Replay-Clarify: on`; then it asks a fixed set of three
+questions (Region, Period, For), so the check can be exercised offline. In replay mode the topbar
+shows a muted `replay mode` chip.
 Sessions are held in the API process's memory: the sidebar's list empties when the API
 restarts.
 

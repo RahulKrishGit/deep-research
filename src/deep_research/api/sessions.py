@@ -4,33 +4,66 @@ The HTTP routes stay thin by owning nothing: ``SessionStore`` starts one
 background task per session, records every ``ResearchEvent`` the runner
 publishes into an append-only per-session list, and exposes replayable
 iteration and safe terminal state. Nothing here touches the network, the
-file system, or a provider.
+file system, or a provider: the one-time check reaches a provider only through
+the injected ``ClarityChecker``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import TypeAlias
+from datetime import datetime, timedelta, timezone
+from typing import Any, TypeAlias
 
 from pydantic import JsonValue
 
+from deep_research.api.clarify import (
+    ClarityChecker,
+    ClarityQuestion,
+    clarification_answered_event,
+    clarification_requested_event,
+    resolve_answers,
+)
 from deep_research.api.models import (
+    ClarificationAnswersRequest,
     CoverageProgressResponse,
     EvidenceCountsResponse,
     SessionStatus,
 )
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.outcome import ResearchOutcome
-from deep_research.utils.types import ResearchError, ResearchEvent
+from deep_research.utils.config import HitlConfig
+from deep_research.utils.types import ReaderAnswer, ResearchError, ResearchEvent
 
 TERMINAL_STATUSES = frozenset(
     {"completed", "max_iterations", "incomplete", "failed"}
 )
 
 ResearchRunner: TypeAlias = Callable[..., Awaitable[ResearchOutcome]]
+_log = logging.getLogger(__name__)
+
+
+class NotWaitingForInput(Exception):
+    """Answers arrived for a session that is not waiting for them (a 409)."""
+
+
+@dataclass(frozen=True, slots=True)
+class ClarificationSubmission:
+    """The reader's resolved answers, and whether they chose to start now."""
+
+    answers: tuple[ReaderAnswer, ...]
+    skipped: bool
+
+
+@dataclass(slots=True)
+class PendingClarification:
+    """The one-time check a ``needs_input`` session is waiting on (spec §4.4)."""
+
+    questions: tuple[ClarityQuestion, ...]
+    deadline_at: datetime
+    submitted: asyncio.Future[ClarificationSubmission]
 
 
 @dataclass(slots=True)
@@ -57,6 +90,8 @@ class ResearchSession:
     outcome: ResearchOutcome | None = None
     task: asyncio.Task[None] | None = None
     changed: asyncio.Event = field(default_factory=asyncio.Event)
+    clarification: PendingClarification | None = None
+    """The check this session waits on while ``needs_input``, else ``None``."""
 
     def publish(self, event: ResearchEvent) -> None:
         """Record one progress event and update the live status fields."""
@@ -133,8 +168,14 @@ def outcome_response_fields(
 class SessionStore:
     """Own one process's research sessions and their background tasks."""
 
-    def __init__(self, *, runner: ResearchRunner) -> None:
+    def __init__(
+        self,
+        *,
+        runner: ResearchRunner,
+        clarity_checker: ClarityChecker | None = None,
+    ) -> None:
         self._runner = runner
+        self._clarity_checker = clarity_checker
         self._sessions: dict[str, ResearchSession] = {}
 
     def start(
@@ -146,8 +187,15 @@ class SessionStore:
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
+        ask_clarifying_questions: bool = False,
+        settings: Any = None,
+        hitl: HitlConfig | None = None,
     ) -> ResearchSession:
         """Register a running session synchronously and schedule its run.
+
+        ``ask_clarifying_questions`` runs the one-time check before the runner
+        (live-briefs spec §4.4) when the store has a ``clarity_checker``;
+        ``settings`` is what the checker reads and ``hitl`` holds its timings.
 
         The record is visible (and its status is ``running``) before the
         background task gets its first chance to execute, so a caller can
@@ -174,6 +222,9 @@ class SessionStore:
                 output_format=output_format,
                 config_overrides=config_overrides,
                 config_path=config_path,
+                ask_clarifying_questions=ask_clarifying_questions,
+                settings=settings,
+                hitl=hitl or HitlConfig(),
             )
         )
         return session
@@ -196,6 +247,32 @@ class SessionStore:
             newest_registered_first, key=lambda s: s.started_at, reverse=True
         )
         return ordered[:limit]
+
+    def submit_answers(
+        self, session_id: str, request: ClarificationAnswersRequest
+    ) -> ResearchSession:
+        """Hand the reader's answers to a session waiting in ``needs_input``.
+
+        Raises ``KeyError`` for an unknown session, ``NotWaitingForInput`` when
+        the session is not waiting (never asked, already answered, or past its
+        deadline), and ``AnswerValidationError`` when an answer does not fit the
+        questions asked. Answers are accepted once; the session's own task
+        publishes them and starts the run.
+        """
+        session = self.require(session_id)
+        pending = session.clarification
+        if (
+            session.status != "needs_input"
+            or pending is None
+            or pending.submitted.done()
+            or datetime.now(timezone.utc) >= pending.deadline_at
+        ):
+            raise NotWaitingForInput(session_id)
+        answers = resolve_answers(pending.questions, request.answers)
+        pending.submitted.set_result(
+            ClarificationSubmission(answers=answers, skipped=request.skip)
+        )
+        return session
 
     async def iter_events(
         self, session_id: str
@@ -252,15 +329,30 @@ class SessionStore:
         output_format: str,
         config_overrides: dict[str, JsonValue],
         config_path: str,
+        ask_clarifying_questions: bool = False,
+        settings: Any = None,
+        hitl: HitlConfig | None = None,
     ) -> None:
         """Drive one runner call and fold its result into the session.
 
         Failures become status ``failed`` with safe enumerated records —
         never exception text, provider text, or request values. Cancellation
         is not a failure and always propagates; the ``finally`` still closes
-        the session out so subscribers wake and readers see timestamps.
+        the session out so subscribers wake and readers see timestamps. A run
+        cancelled while it waited for answers reads ``running`` with
+        ``finished_at`` set, like any other interrupted run.
+
+        With the one-time check on and questions asked, the runner is called
+        with ``reader_answers``; otherwise it is called exactly as before.
         """
         try:
+            extra: dict[str, Any] = {}
+            if ask_clarifying_questions and self._clarity_checker is not None:
+                answers = await self._clarify(
+                    session, query=query, settings=settings, hitl=hitl or HitlConfig()
+                )
+                if answers is not None:
+                    extra["reader_answers"] = answers
             outcome = await self._runner(
                 question=query,
                 session_id=session.session_id,
@@ -269,6 +361,7 @@ class SessionStore:
                 config_overrides=config_overrides,
                 config_path=config_path,
                 event_handler=session.publish,
+                **extra,
             )
         except ResearchConfigurationError as error:
             _record_failure(
@@ -296,9 +389,60 @@ class SessionStore:
             ]
             session.outcome = outcome
         finally:
+            if session.status == "needs_input":
+                session.status = "running"
+            session.clarification = None
             session.finished_at = datetime.now(timezone.utc)
             session.current_agent = None
             session.changed.set()
+
+    async def _clarify(
+        self,
+        session: ResearchSession,
+        *,
+        query: str,
+        settings: Any,
+        hitl: HitlConfig,
+    ) -> tuple[ReaderAnswer, ...] | None:
+        """The one-time check (spec §4.4): the answers, or ``None`` if none were asked.
+
+        The check call gets ``hitl.check_timeout_s``; any failure, a timeout
+        included, asks nothing. With questions, the session waits in
+        ``needs_input`` for at most ``hitl.answer_wait_s``; whatever the reader
+        left unanswered takes its best guess.
+        """
+        assert self._clarity_checker is not None
+        try:
+            async with asyncio.timeout(hitl.check_timeout_s):
+                check = await self._clarity_checker(query, settings)
+            questions = tuple(check.questions)
+        except Exception as error:  # noqa: BLE001 - the check never blocks a run
+            _log.warning("one-time check skipped: %s", type(error).__name__)
+            return None
+        if not questions:
+            return None
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=hitl.answer_wait_s)
+        pending = PendingClarification(
+            questions=questions,
+            deadline_at=deadline,
+            submitted=asyncio.get_running_loop().create_future(),
+        )
+        session.clarification = pending
+        session.status = "needs_input"
+        session.publish(clarification_requested_event(questions, deadline))
+        await asyncio.wait({pending.submitted}, timeout=hitl.answer_wait_s)
+        session.clarification = None
+        if pending.submitted.done():
+            submission = pending.submitted.result()
+            answers = submission.answers
+            reason = "skipped" if submission.skipped else "answered"
+        else:
+            pending.submitted.cancel()
+            answers = resolve_answers(questions)
+            reason = "timed_out"
+        session.status = "running"
+        session.publish(clarification_answered_event(answers, reason))
+        return answers
 
 
 def _record_failure(

@@ -17,12 +17,18 @@ from fastapi.testclient import TestClient
 from deep_research.api.app import create_app
 from deep_research.observability import ApiMetric
 from deep_research.runtime.errors import configuration_error
+from deep_research.utils.config import ConfigSettings
 from tests.test_api.fakes import GateRunner, ScriptedRunner
 
 
-def valid_preflight(**kwargs: Any) -> object:
-    """Preflight double that never refuses a request."""
-    return object()
+def valid_preflight(**kwargs: Any) -> ConfigSettings:
+    """Preflight double that never refuses a request: the default settings.
+
+    The route reads the one-time check's timings from them (``settings.hitl``,
+    live-briefs spec §4.4); the checker itself is replaced by the package's
+    ``live_check_calls`` fixture (``tests/test_api/conftest.py``).
+    """
+    return ConfigSettings()
 
 
 def wait_until_terminal(

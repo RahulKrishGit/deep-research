@@ -9,7 +9,8 @@ interface says so in muted text. It never renders `0`, `—`, `null`, a placehol
 or a disabled control.**
 
 The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
-3 Running, 4 Report, 5 Failed) and a collapsible session sidebar, so gaps are
+3 Running, 4 Report, 5 Failed), a one-time check that can come between 2 and 3
+(2a, live-briefs Phase 2) and a collapsible session sidebar, so gaps are
 keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2, 3.1 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the
 Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
@@ -27,6 +28,7 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | `GET` | `/research/{id}/report` | `200` `text/markdown`, or `409` `session_not_complete` / `report_unavailable` (`:238-263`) |
 | `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`:313-338`) |
 | `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:265-269`) |
+| `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:265-294`, `api/sessions.py` `submit_answers`) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
 `api/sessions.py:73-128`), 18 fields: `session_id`, `query`, `status`,
@@ -37,7 +39,8 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 (`required_targets`, `answered_targets`, `missing_required_target_ids`,
 `not_found_target_ids`) and `evidence_counts` (fifteen counts; `null`
 unless the run left both a composition and a quality snapshot,
-`runtime/outcome.py:525`). `status` is one of `running`, `completed`,
+`runtime/outcome.py:525`). `status` is one of `running`, `needs_input` (the
+one-time check waiting for the reader; not terminal), `completed`,
 `max_iterations`, `incomplete`, `failed`. Not on the response:
 `quality_status`, `max_iterations`/`max_extra_passes`, token usage,
 tool-call totals, any report structure.
@@ -45,7 +48,9 @@ tool-call totals, any report structure.
 Every response carries `X-Deep-Research-Mode: live|replay`.
 
 `ResearchRequest` accepts `query`, `max_iterations` (`int | None`, `ge=0`,
-default → config), `output_format` and `config_overrides`; overrides are
+default → config), `output_format`, `config_overrides` and
+`ask_clarifying_questions` (`bool`, default `true`; the one-time check, whose
+timings are the `hitl` config section); overrides are
 validated against `ConfigSettings()`, so an unknown path is a `422` before a
 session exists.
 
@@ -61,7 +66,9 @@ in state order, skipping any `event_id` already published live
 once; a live event can arrive ahead of events its node recorded earlier; a node that
 halts after publishing live has delivered those events although its halted state
 keeps none of them. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays
-burst-safe: the state after event *k* depends only on events 1..*k*.
+burst-safe: the state after event *k* depends only on events 1..*k*. The one-time
+check's `session.clarification.requested` and `.answered` are published by the
+session itself (`api/sessions.py`, `_clarify`), before the graph starts.
 
 ---
 
@@ -112,6 +119,7 @@ Kept as a record, one line each.
 | 3.4 | **Resume / `Last-Event-ID`** [2.6] | SSE `id` is per-subscriber and starts at 1, so it is a stream position, not a resume token. Every event now carries an `event_id` (live-briefs spec E1), which gives identity but not order, so a reconnect still cannot ask for "everything after what I saw". | `ResearchSession.events` list index; `ResearchEvent.event_id` (an unordered uuid4 hex) | Re-derive the running stage from the full replay — every rule is idempotent over events 1..k | A monotonic `sequence` on `ResearchEvent`, plus `Last-Event-ID` support |
 | 3.5 | **Halting-type vocabulary** [2.5] | The failed stage headlines the halting type in plain words and the rail groups recoverable errors, but the client keeps its own copy of `HALTING_ERROR_TYPES` to know which is which. | `HALTING_ERROR_TYPES` in `graph/state.py:141-150` | Client copy, small and stable | `halting: bool` on `ResearchError`, or publish the enumerated set |
 | 3.6 | **Shutdown while running** [2.7] | On cancellation the store sets `finished_at` and leaves `status` as `running`, then the stream ends. The console sees a closed stream with a non-terminal status. | Deliberate: *"cancellation stays cancellation"* | On stream close, re-read `/status`; a closed stream with `finished_at` set and `status == "running"` means the service stopped | The terminal frame from 3.3, or an explicit status |
+| 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
 
 ---
 

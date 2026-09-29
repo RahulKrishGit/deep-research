@@ -19,11 +19,18 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from deep_research.api.clarify import (
+    AnswerValidationError,
+    ClarityChecker,
+    live_clarity_check,
+    scripted_clarity_check,
+)
 from deep_research.api.events import api_error_event, encode_sse
 from deep_research.api.evidence import build_evidence_response
 from deep_research.api.models import (
     ApiErrorBody,
     ApiErrorResponse,
+    ClarificationAnswersRequest,
     ResearchRequest,
     ResearchSessionResponse,
     SessionListResponse,
@@ -32,6 +39,7 @@ from deep_research.api.models import (
     ValidationIssue,
 )
 from deep_research.api.sessions import (
+    NotWaitingForInput,
     ResearchRunner,
     ResearchSession,
     SessionStore,
@@ -56,6 +64,7 @@ _SAFE_MESSAGES = {
     "session_not_complete": "Research session has not produced a report yet.",
     "report_unavailable": "Research session finished without a report.",
     "evidence_unavailable": "Research session finished without an evidence log.",
+    "not_waiting_for_input": "Research session is not waiting for answers.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -170,8 +179,19 @@ def create_app(
     preflight: PreflightHandler = prepare_research_settings,
     tracker: Tracker | None = None,
     mode: Literal["live", "replay"] = "live",
+    clarity_checker: ClarityChecker | None = None,
 ) -> FastAPI:
-    """Build the local FastAPI interface around one process's session store."""
+    """Build the local FastAPI interface around one process's session store.
+
+    ``clarity_checker`` decides the one-time check's questions (live-briefs
+    spec §4.4). Left ``None`` it follows ``mode``: live mode asks the
+    configured provider, and replay mode uses the scripted checker, so a
+    replay server can never reach a provider for the check.
+    """
+    if clarity_checker is None:
+        clarity_checker = (
+            live_clarity_check if mode == "live" else scripted_clarity_check
+        )
     if tracker is None:
         tracker = Tracker(
             LangSmithRuntimeConfig(
@@ -180,7 +200,7 @@ def create_app(
                 api_key=None,
             )
         )
-    store = SessionStore(runner=runner)
+    store = SessionStore(runner=runner, clarity_checker=clarity_checker)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -218,7 +238,7 @@ def create_app(
         payload: ResearchRequest,
     ) -> ResearchSessionResponse:
         try:
-            preflight(
+            settings = preflight(
                 config_path=config_path,
                 output_format=payload.output_format,
                 config_overrides=payload.config_overrides,
@@ -236,7 +256,41 @@ def create_app(
             output_format=payload.output_format,
             config_overrides=payload.config_overrides,
             config_path=config_path,
+            ask_clarifying_questions=payload.ask_clarifying_questions,
+            settings=settings,
+            hitl=settings.hitl,
         )
+        return _session_response(session)
+
+    @router.post(
+        "/research/{session_id}/answers",
+        status_code=202,
+        response_model=ResearchSessionResponse,
+    )
+    async def answer_research(
+        request: Request,
+        payload: ClarificationAnswersRequest,
+    ) -> ResearchSessionResponse:
+        """Take the reader's answers to the one-time check, once (spec §4.4).
+
+        ``404`` for an unknown session, ``409 not_waiting_for_input`` when it is
+        not in ``needs_input`` (never asked, already answered, or past its
+        deadline), ``422`` when an answer names an unknown question, repeats
+        one, or picks a choice that was not offered. Questions left out take
+        their best guess. The response is taken as the answers are accepted:
+        its ``status`` still reads ``needs_input`` until the session's own task
+        applies them, an instant later.
+        """
+        try:
+            session = store.submit_answers(request.state.session_id, payload)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        except NotWaitingForInput:
+            raise ApiProblem(
+                code="not_waiting_for_input", status_code=409
+            ) from None
+        except AnswerValidationError as error:
+            raise RequestValidationError(error.errors()) from None
         return _session_response(session)
 
     @router.get(
