@@ -101,11 +101,13 @@ function CheckCard({ sessionId, check, phase }: { sessionId: string; check: Clar
     delete final[q.id];
     advance(final);
   }
-  /* "Just start": whatever the reader has answered, best guesses for the rest (reason "skipped"). */
+  /* "Just start": whatever the reader has answered, best guesses for the rest (reason "skipped").
+     Words typed into the open Other… field are an answer too, so they go with it. */
   function justStart() {
     if (posted.current) return;
     if (advancing.current) { clearTimeout(advancing.current); advancing.current = null; }
-    void send(picks, true);
+    const text = otherOpen ? (drafts[q.id] ?? "").trim() : "";
+    void send(text ? { ...picks, [q.id]: { text } } : picks, true);
   }
   function back() {
     if (busy() || step === 0) return;
@@ -142,7 +144,7 @@ function CheckCard({ sessionId, check, phase }: { sessionId: string; check: Clar
               <span>{option}</span>{option === q.bestGuess ? <span className="cap">best guess</span> : null}
             </button>
           ))}
-          <button type="button" className="choice" id="clarifyOtherBtn" aria-pressed={otherOpen || typed !== null} aria-expanded={otherOpen} aria-controls="clarifyOtherRow"
+          <button type="button" className="choice" id="clarifyOtherBtn" aria-pressed={typed !== null} aria-expanded={otherOpen} aria-controls="clarifyOtherRow"
             onClick={() => { if (!busy()) setOtherOpen((open) => !open); }}>
             <span>Other…</span>
           </button>

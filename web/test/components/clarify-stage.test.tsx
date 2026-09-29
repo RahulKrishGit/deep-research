@@ -65,6 +65,24 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     expect(option("European Union").getAttribute("aria-pressed")).toBe("true");
   });
 
+  it("Other… is pressed only once it holds the reader's own words, never beside a chosen answer", () => {
+    vi.useFakeTimers({ now: NOW });
+    show();
+    tap("United States");
+    fireEvent.click(option("Back"));
+    fireEvent.click(option("Other…"));
+    // .choice[aria-pressed="true"] is the only style that marks a chosen answer (globals.css), so the
+    // attribute is the whole visual state: exactly one answer reads chosen, and it is the tapped one.
+    expect([...card().querySelectorAll('.choices .choice[aria-pressed="true"]')].map((b) => b.textContent)).toEqual(["United States"]);
+    expect(option("Other…").getAttribute("aria-pressed")).toBe("false");
+    expect(option("Other…").getAttribute("aria-expanded")).toBe("true");
+    // Words typed into Other… make it the chosen answer, and only it, when the reader comes back to it.
+    fireEvent.change(screen.getByLabelText("Your own answer"), { target: { value: "Canada" } });
+    fireEvent.click(option("Next"));
+    fireEvent.click(option("Back"));
+    expect([...card().querySelectorAll('.choices .choice[aria-pressed="true"]')].map((b) => b.textContent)).toEqual(["Other…"]);
+  });
+
   it("opens Other… on a text field; Next waits for text; Enter moves on", () => {
     vi.useFakeTimers({ now: NOW });
     show();
@@ -114,6 +132,36 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
       "Starting research with: Region: Global (you said) · Period: Since 2023 (best guess) · For: General understanding (best guess)",
     );
     expect(document.activeElement).toBe(document.getElementById("clarifySummary"));
+  });
+
+  it("Just start keeps the words typed into the open Other… field for the question in view", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const fetchMock = vi.fn(async () => json(202, { session_id: "s1", status: "needs_input" }));
+    vi.stubGlobal("fetch", fetchMock);
+    show();
+    tap("Global");
+    fireEvent.click(option("Other…"));
+    fireEvent.change(screen.getByLabelText("Your own answer"), { target: { value: "  since 2021 " } });
+    await act(async () => { fireEvent.click(option("Just start")); });
+    expect(posts(fetchMock)).toHaveLength(1);
+    expect(JSON.parse((posts(fetchMock)[0][1] as RequestInit).body as string)).toEqual({
+      answers: [{ question_id: "q1", choice: "Global" }, { question_id: "q2", text: "since 2021" }],
+      skip: true,
+    });
+    expect(document.getElementById("clarifySummary")!.textContent).toBe(
+      "Starting research with: Region: Global (you said) · Period: since 2021 (you said) · For: General understanding (best guess)",
+    );
+  });
+
+  it("Just start with an empty or closed Other… field sends only what was answered", async () => {
+    vi.useFakeTimers({ now: NOW });
+    const fetchMock = vi.fn(async () => json(202, { session_id: "s1", status: "needs_input" }));
+    vi.stubGlobal("fetch", fetchMock);
+    show();
+    fireEvent.click(option("Other…"));
+    fireEvent.change(screen.getByLabelText("Your own answer"), { target: { value: "  " } });
+    await act(async () => { fireEvent.click(option("Just start")); });
+    expect(JSON.parse((posts(fetchMock)[0][1] as RequestInit).body as string)).toEqual({ answers: [], skip: true });
   });
 
   it("an answer the API refuses as late reads 'Already started with best guesses'", async () => {
