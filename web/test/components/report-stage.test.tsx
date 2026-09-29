@@ -43,7 +43,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       return json(409, { error: { code: "evidence_unavailable", message: "no evidence", reason: null, issues: [] } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
     expect(mockConsole.clearUnreachable).not.toHaveBeenCalledWith("report");
     expect(document.querySelector("article.card p.avail")!.textContent).toBe("loading report"); // not stuck silently — the banner also fired above
@@ -67,7 +67,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       return evidenceCalls === 1 ? unreachable : json(200, { session_id: "s1", iteration: 0, findings: [], not_found: [], refused: [] });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
     await waitFor(() => expect(reportCalls).toBe(1));
     await waitFor(() => expect(evidenceCalls).toBe(1));
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
@@ -96,7 +96,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       return json(404, { error: { code: "session_not_found", message: "not found", reason: null, issues: [] } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
     await waitFor(() => expect(document.querySelector("article.card p.avail")!.textContent).toBe("Not published"));
     expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
   });
@@ -108,7 +108,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       return json(409, { error: { code: "evidence_unavailable", message: "no evidence", reason: null, issues: [] } });
     });
     vi.stubGlobal("fetch", fetchMock);
-    render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
     await waitFor(() => expect(document.querySelector("article.card p.avail")!.textContent).toBe("Not published"));
     expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
   });
@@ -116,7 +116,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
   it("NB1: unmounting while report and evidence are both stuck unreachable clears both keys", async () => {
     const unreachable502 = () => json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
     vi.stubGlobal("fetch", vi.fn(async () => unreachable502()));
-    const { unmount } = render(<ReportStage sessionId="s1" status={STATUS} strip={null} passes={2} />);
+    const { unmount } = render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("evidence", "http://127.0.0.1:8010", expect.any(Function)));
     mockConsole.clearUnreachable.mockClear();
@@ -128,11 +128,21 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
   });
 });
 
+describe("ReportStage — the head bar states the passes in plain words (live-briefs spec §4.2, D15)", () => {
+  it("ends the meta line with the pass fact, never a pass counter", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } })));
+    render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
+    const meta = document.getElementById("reportMeta")!.textContent!;
+    expect(meta.endsWith(" · Went back once to fill gaps")).toBe(true);
+    expect(meta).not.toMatch(/\bpass\b/);
+  });
+});
+
 describe("ReportStage — q-center (controller ruling 1)", () => {
   it("centres #report-h for a question at or under 80 characters, following the report-q + qFitClass pattern", async () => {
     const fetchMock = vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } }));
     vi.stubGlobal("fetch", fetchMock);
-    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: "Short question" }} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: "Short question" }} strip={null} />);
     const h1 = document.getElementById("report-h")!;
     expect(h1.className).toBe("report-q q-center");
     expect(h1.className).not.toContain("ask-q");
@@ -141,7 +151,7 @@ describe("ReportStage — q-center (controller ruling 1)", () => {
     const fetchMock = vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } }));
     vi.stubGlobal("fetch", fetchMock);
     const long = "A".repeat(81);
-    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: long }} strip={null} passes={2} />);
+    render(<ReportStage sessionId="s1" status={{ ...STATUS, query: long }} strip={null} />);
     expect(document.getElementById("report-h")!.className).toBe("report-q");
   });
 });

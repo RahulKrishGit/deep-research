@@ -1,22 +1,23 @@
 // The prototype's display helpers, ported from docs/design/prototype/index.html:1704-1784,
 // :3267-3270, :3483-3485, :3708-3717. Bodies unchanged; types added; toSessionView adapts the
-// API's flat fields to the prototype's session shape so statusNote/passText keep their bodies.
+// API's flat fields to the prototype's session shape so statusNote keeps its body.
 import type { CoverageProgress, ResearchSessionResponse, SessionStatus } from "./api";
 
 export interface SessionView {
   status: SessionStatus;
   iteration: number;
-  passes: number | null;
+  /* The running row's label (live-briefs spec §4.2: "Running · {step}"); null when not known. */
+  step: string | null;
   review: { status: string | null; score: number | null } | null;
   coverage: CoverageProgress | null;
 }
 
-export function toSessionView(s: ResearchSessionResponse, passes: number | null): SessionView {
+export function toSessionView(s: ResearchSessionResponse, step: string | null = null): SessionView {
   const review =
     s.semantic_review_status === null && s.semantic_review_score === null
       ? null
       : { status: s.semantic_review_status, score: s.semantic_review_score };
-  return { status: s.status, iteration: s.iteration, passes, review, coverage: s.coverage };
+  return { status: s.status, iteration: s.iteration, step, review, coverage: s.coverage };
 }
 
 /* Label and dot per API status (api/models.py:13-19). The second clause is built by statusNote(). */
@@ -28,26 +29,19 @@ export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "d
   failed: { label: "Failed", dot: "dot-danger" },
 };
 
-/* `iteration` is the API's zero-based value; the interface counts passes from 1. This is the only
-   place the offset lives. */
-export function passNumber(iteration: unknown): number {
-  const n = Number(iteration);
-  return (Number.isFinite(n) ? n : 0) + 1;
-}
-/* The ceiling: 1 + max_extra_passes. A session that has none drops the "of P" clause. */
-export function passTotal(s: { passes: number | null }): number | null {
-  const n = Number(s && s.passes);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
 /* index.html:1795-1811 (setQuestionFit) / DESIGN.md:401-405 — a short question sits in the middle
    of the frame; the .ask-locked.q-center CSS rule (globals.css) does the actual centring. */
 export const Q_CENTER_MAX = 80;
 export function qFitClass(q: string): string {
   return (q || "").length <= Q_CENTER_MAX ? " q-center" : "";
 }
-export function passText(s: SessionView): string {
-  const total = passTotal(s);
-  return "pass " + passNumber(s.iteration) + (total === null ? "" : " of " + total);
+/* The report's pass fact in plain words (live-briefs spec §4.2, D15): the extra research passes the
+   run took (`iteration`, zero-based), then the passes it took for the reader's notes (`note_passes`,
+   added in Phase 3 — 0 until then). */
+const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : n + " times");
+export function passFact(iteration: number, notePasses = 0): string {
+  const research = iteration > 0 ? "Went back " + times(iteration) + " to fill gaps" : "One research round";
+  return notePasses > 0 ? research + " · went back " + times(notePasses) + " for your notes" : research;
 }
 /* Scores print with two decimals; null is "no score", never 0. */
 export function fmtScore(v: unknown): string | null {
@@ -67,7 +61,7 @@ export function statusNote(s: SessionView): string {
     case "max_iterations": return "extra passes used" + notFoundClause(s);
     case "incomplete": return s.review && s.review.status === "scored" && score !== null ? "not accepted · " + score : "review unavailable";
     case "failed": return "halted";
-    default: return passText(s);
+    default: return s.step ?? "starting";
   }
 }
 export function fmtDur(a: string | null, b: string | null): string | null {

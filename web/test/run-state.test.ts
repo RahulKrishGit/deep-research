@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ResearchEvent, ResearchSessionResponse } from "../lib/api";
-import { AGENT_ORDER, EVENT_HANDLERS, STAGES, applyEvent, failedMarks, newRunState, replayRun, toRunEvent, type RunState } from "../lib/run-state";
+import { AGENT_ORDER, EVENT_HANDLERS, STAGES, applyEvent, chipStep, failedMarks, newRunState, replayRun, stepLabel, toRunEvent, type RunState } from "../lib/run-state";
 
 interface Capture { case_id: string; status: ResearchSessionResponse; events: ResearchEvent[] }
 const load = (caseId: string): Capture =>
@@ -132,5 +132,27 @@ describe("(e) the halted run (the prototype's HALTED_EVENTS, index.html:2829-283
     applyEvent(run, halted[1]);
     expect(failedMarks(run, "failed").finalize_report).toBe("skipped");
     expect(failedMarks(run, "running").finalize_report).toBeUndefined();
+  });
+});
+
+describe("the chip's step (live-briefs spec §4.2)", () => {
+  it("stepLabel names the row a node runs on; hops read as the row they lead back to", () => {
+    expect(stepLabel("researcher")).toBe("Researching");
+    expect(stepLabel("finalize_report")).toBe("Publishing");
+    expect(stepLabel("extra_pass")).toBe("Researching");
+    expect(stepLabel("writer_redraft")).toBe("Writing report");
+    expect(stepLabel("graph")).toBeNull();
+    expect(stepLabel(null)).toBeNull();
+  });
+  it("chipStep follows the active row, then the row the run ended on", () => {
+    expect(chipStep(newRunState(2))).toBe("planner");
+    const ended = replayRun(extraPass.events, P(extraPass));
+    expect(ended.active).toBeNull();
+    expect(chipStep(ended)).toBe("finalize_report");
+    const halted = newRunState(2);
+    applyEvent(halted, { type: "graph.node.started", metadata: { node: "researcher", iteration: 0 } });
+    applyEvent(halted, { type: "graph.node.skipped", metadata: { node: "researcher", iteration: 0, reason: "halted" } });
+    applyEvent(halted, { type: "graph.session.completed", metadata: { status: "failed", iteration: 0, error_count: 1, has_report: false } });
+    expect(chipStep(halted)).toBe("researcher");
   });
 });

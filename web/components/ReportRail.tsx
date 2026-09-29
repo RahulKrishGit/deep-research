@@ -1,6 +1,6 @@
 "use client";
 import type { EvidenceResponse, ResearchSessionResponse } from "@/lib/api";
-import { fmtScore, meterClass, passText, statusNote, toSessionView } from "@/lib/format";
+import { fmtScore, meterClass, passFact, statusNote, toSessionView } from "@/lib/format";
 
 const ratio = (a: number, b: number) => (Number.isFinite(a) && b > 0 ? a / b : null);
 function Meter({ id, label, value, absent, gate }: { id: string; label: string; value: number | null; absent: string; gate?: boolean }) {
@@ -13,8 +13,8 @@ function Meter({ id, label, value, absent, gate }: { id: string; label: string; 
   );
 }
 
-export function ReportRail({ status, evidence, passes }: { status: ResearchSessionResponse; evidence: EvidenceResponse | null; passes: number | null }) {
-  const view = toSessionView(status, passes);
+export function ReportRail({ status, evidence }: { status: ResearchSessionResponse; evidence: EvidenceResponse | null }) {
+  const view = toSessionView(status);
   const ec = status.evidence_counts;
   const cited = ec ? ratio(ec.cited_assessed_sources, ec.assessed_sources) : null;
   const cov = status.coverage;
@@ -51,7 +51,7 @@ export function ReportRail({ status, evidence, passes }: { status: ResearchSessi
         <h2 className="card-title">Session facts</h2>
         <dl className="kv">
           <dt>status</dt><dd id="repFactStatus">{status.status}</dd>
-          <dt>pass</dt><dd id="repFactPass">{passText(view)}</dd>
+          <dt>pass</dt><dd id="repFactPass">{passFact(status.iteration)}</dd>
           <dt>started_at</dt><dd id="repFactStarted">{status.started_at}</dd>
           <dt>finished_at</dt><dd id="repFactFinished" className={status.finished_at ? undefined : "avail"}>{status.finished_at ?? "not recorded"}</dd>
           <dt>duration_seconds</dt><dd id="repFactDuration" className={status.duration_seconds === null ? "avail" : undefined}>{status.duration_seconds === null ? "not recorded" : String(status.duration_seconds)}</dd>

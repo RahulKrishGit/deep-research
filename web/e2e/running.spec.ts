@@ -17,7 +17,11 @@ test("submit → Submitted beat → Running; the sidebar shows the case's questi
   expect(firstRender?.find((s) => s.stage === "planner")?.state).toBe("done");
   const active = await page.locator("li[data-stage][data-state='active']").getAttribute("data-stage");
   expect(["researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]).toContain(active);
-  await expect(page.locator("#topbarStatus .chip")).toContainText("Running · pass 1 of 2");
+  // live-briefs spec §4.2 (AC3): the chip names the step; the running stage has no Now header,
+  // no counters block and no pass text.
+  await expect(page.locator("#topbarStatus .chip")).toHaveText(/^Running · (Planning|Researching|Evaluating sources|Verifying evidence|Writing report|Reviewing|Publishing)$/);
+  for (const gone of [".pipe-now", "#runNow", "#runPasses", "#runLoopTag", "#runCounters"]) await expect(page.locator(`#stage-running ${gone}`)).toHaveCount(0);
+  expect(await page.locator("#stage-running").textContent()).not.toMatch(/\bpass\b/i);
   await expect(page.locator(`.sb-item[data-session="${id}"] .q`)).toHaveText(ACME);
   await expect(page.locator("#runElapsed")).toContainText("elapsed");
   await waitTerminal(request, id);
@@ -26,7 +30,7 @@ test("submit → Submitted beat → Running; the sidebar shows the case's questi
 
 test("a reload mid-run rebuilds the running stage from the replay", async ({ page, request }) => {
   const id = await submit(page, "q");
-  await expect(page.locator("#runNow")).toHaveText("Researching", { timeout: 10_000 });
+  await expect(page.locator('#spine li[data-stage="researcher"][data-state="active"]')).toBeVisible({ timeout: 10_000 });
   const before = await page.locator("#runElapsed").textContent();
   await page.reload();
   await expect(page.locator("#stage-running")).toBeVisible();

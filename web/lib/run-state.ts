@@ -86,6 +86,22 @@ function rearm(run: RunState, fromIndex: number): void {
   delete run.marks.finalize_report;
 }
 export function plural(n: number, one: string, many: string): string { return n + " " + (n === 1 ? one : many); }
+/* The label of the row a node runs on, for the chip's "Running · {step}" (live-briefs spec §4.2).
+   The two hops lead back into a row, so they read as that row; anything else is not a row. */
+const HOP_ROW: Readonly<Record<string, NodeId>> = { extra_pass: "researcher", writer_redraft: "report_writer" };
+export function stepLabel(node: string | null | undefined): string | null {
+  if (!node) return null;
+  const id = HOP_ROW[node] ?? node;
+  return STAGES.find((s) => s.id === id)?.label ?? null;
+}
+/* The node the chip names while the stream is open: the active row; once graph.session.completed
+   has arrived (and until /status turns terminal), the row the run ended on — Publishing, or the
+   node that halted. */
+export function chipStep(run: RunState): string | null {
+  if (run.active) return run.active;
+  if (run.finalStatus === null || run.finalStatus === "failed") return run.openNode;
+  return "finalize_report";
+}
 
 /* Keyed by event type; each handler reads only `md` (the event's metadata). */
 export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {

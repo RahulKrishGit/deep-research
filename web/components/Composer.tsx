@@ -18,13 +18,14 @@ export const STARTERS = [
   "Does congestion pricing reduce particulate pollution?",
   "How reliable are consumer-grade air quality sensors?",
 ];
-export const DEFAULT_SETTINGS: SubmittedSettings = { model: "deepseek-flash", thinking: "enabled", extraPasses: 1, outputDir: "output/" };
+export const DEFAULT_SETTINGS: SubmittedSettings = { model: "deepseek-flash", thinking: "enabled", outputDir: "output/" };
 
-/* Exactly the body the design specifies: max_iterations always present (0 included). */
+/* The body the design specifies, with no max_iterations: the API applies the configured
+   extra-pass budget (live-briefs spec §4.2, D15). */
 export function buildRequest(question: string, s: SubmittedSettings): ResearchRequest {
   const config_overrides: Record<string, unknown> = { llm: { model: s.model, thinking_mode: s.thinking } };
   if (s.outputDir.trim()) config_overrides.output = { directory: s.outputDir.trim() };
-  return { query: question.trim(), max_iterations: s.extraPasses, output_format: "markdown", config_overrides };
+  return { query: question.trim(), output_format: "markdown", config_overrides };
 }
 
 /* K19 (governing rule, spec §4.4): an unavailable value is never invented — a configuration error
@@ -121,7 +122,6 @@ export function Composer() {
             </span>
             <span className="setting-pill" id="pillModel"><span className="v" id="pillModelV">{shortModel(settings.model)}</span></span>
             <span className="setting-pill" id="pillThinking"><span className="k">thinking</span><span className="v" id="pillThinkingV">{settings.thinking}</span></span>
-            <span className="setting-pill" id="pillExtra"><span className="k">extra passes</span><span className="v" id="pillExtraV">{settings.extraPasses}</span></span>
             <span className="spacer"></span>
             <button className="send" id="sendBtn" type="submit">
               <span className="sr">Start research</span>

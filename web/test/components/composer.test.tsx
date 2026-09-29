@@ -9,13 +9,22 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Composer", () => {
-  it("builds the request the design specifies", () => {
-    expect(buildRequest("  q  ", DEFAULT_SETTINGS)).toEqual({
-      query: "q", max_iterations: 1, output_format: "markdown",
+  it("builds the request the design specifies, with no max_iterations (live-briefs spec §4.2, AC8)", () => {
+    const body = buildRequest("  q  ", DEFAULT_SETTINGS);
+    expect(body).toEqual({
+      query: "q", output_format: "markdown",
       config_overrides: { llm: { model: "deepseek-flash", thinking_mode: "enabled" }, output: { directory: "output/" } },
     });
-    expect(buildRequest("q", { ...DEFAULT_SETTINGS, extraPasses: 0, outputDir: "" }).max_iterations).toBe(0);
+    expect("max_iterations" in body).toBe(false);
     expect(buildRequest("q", { ...DEFAULT_SETTINGS, outputDir: "" }).config_overrides).toEqual({ llm: { model: "deepseek-flash", thinking_mode: "enabled" } });
+  });
+  it("offers no extra-passes control: no pill and no stepper in the popover (AC8)", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    const { container } = render(<ConsoleProvider><Composer /></ConsoleProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
+    expect(container.querySelector("#pillExtra")).toBeNull();
+    expect(document.querySelector("#stepExtra")).toBeNull();
+    expect(document.querySelector("#settingsPop")!.textContent).not.toMatch(/extra pass/i);
   });
   it("shows the 422 issues under the box, keeps the question and posts exactly once", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

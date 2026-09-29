@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, getStatus, streamUrl, type ResearchSessionResponse } from "@/lib/api";
 import { qFitClass, toSessionView, type SessionView } from "@/lib/format";
 import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
-import { applyEvent, marksFor, newRunState, toRunEvent, type RunState } from "@/lib/run-state";
+import { applyEvent, chipStep, marksFor, newRunState, stepLabel, toRunEvent, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
 import { useConsole } from "./ConsoleProvider";
@@ -29,7 +29,6 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   const [beat, setBeat] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const run = useRef<RunState>(newRunState(null));
-  const ceilingFromStream = useRef<number | null>(null);
   const wake = useRef<(() => void) | null>(null);
   const delaysRef = useRef(backoffDelaysMs());
   const [version, bump] = useReducer((n: number) => n + 1, 0);
@@ -82,8 +81,6 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; wake.current?.(); };
   }, [status, notFound, load]);
 
-  const ceiling = useCallback(() => ceilingFromStream.current ?? (submission ? submission.settings.extraPasses + 1 : null), [submission]);
-
   // The stream: opened for every known session (a finished one replays and closes); reconnect on
   // the ladder while the session is still running with no finished_at. K7: a service-stopped
   // session (running with finished_at set) also streams once — the server still replays its
@@ -105,9 +102,8 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
           // "Planning" pipeline the run never actually re-entered. I1: the ladder also resets here
           // (not only once at effect start), so a long-lived run's periodic ~300 s idle drop keeps
           // reconnecting after 1 s, never inheriting a stale 30 s cadence from an earlier gap.
-          onOpen: (mode) => { noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs(); run.current = newRunState(ceiling()); bump(); setStreaming(true); },
+          onOpen: (mode) => { noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs(); run.current = newRunState(null); bump(); setStreaming(true); },
           onEvent: (event) => {
-            if (event.event_type === "graph.session.started" && typeof event.metadata.max_extra_passes === "number") ceilingFromStream.current = (event.metadata.max_extra_passes as number) + 1;
             applyEvent(run.current, toRunEvent(event));
             bump();
           },
@@ -137,12 +133,12 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   // can leave a stale "running" `status` on screen while the ladder's next /status lands a 404 —
   // `notFound` must blank the chip too, or the not-in-memory page keeps showing "Running · pass…"
   // over a session the page itself just said isn't in memory.
-  const passes = ceiling();
   const stopped = status !== null && status.status === "running" && status.finished_at !== null;
-  const view: SessionView | null = status ? toSessionView(status, passes) : null;
-  // M4: the known ceiling, never run.current.maxPasses (which defaults to 1 before the ceiling is known).
-  if (view && status?.status === "running" && streaming) { view.iteration = run.current.pass - 1; view.passes = passes; }
-  useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, passes, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
+  // live-briefs spec §4.2: "Running · {active step label}" — the stream's active row while it is
+  // open (chipStep), the status snapshot's current_agent otherwise; no pass number anywhere.
+  const step = status?.status === "running" ? stepLabel((streaming ? chipStep(run.current) : null) ?? status.current_agent) : null;
+  const view: SessionView | null = status ? toSessionView(status, step) : null;
+  useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Review fix round 1 (Important #1): a pending idle→running flight is only ever consumed by
   // SubmittedStage. Every other resolution — not found, a stopped/failed/finished session, or the
@@ -173,14 +169,14 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
 
   if (notFound) return <SessionNotFound onNew={() => router.push("/")} />;
   if (!status) return <section className="stage is-on" id="stage-loading"><div className="run-wrap"><p className="avail">loading session</p></div></section>;
-  const strip = <SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="runningOpts" />;
+  const strip = <SettingsStrip settings={submission?.settings ?? null} id="runningOpts" />;
   if (stopped) return <StoppedStage status={status} run={run.current} strip={strip} onNew={() => router.push("/")} />;
   if (status.status === "running") {
     if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
-    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
-  return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;
+  return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} id="reportOpts" />} />;
 }
 
 /* S4: the service stopped while the run was in progress (running + finished_at). K7: the pipeline

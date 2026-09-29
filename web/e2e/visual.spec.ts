@@ -28,7 +28,7 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
-      await expect(page.locator("#runNow")).toHaveText("Researching", { timeout: 10_000 });
+      await expect(page.locator('#spine li[data-stage="researcher"][data-state="active"]')).toBeVisible({ timeout: 10_000 });
       await shoot(page, `03-running${suffix}`);
       await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
       await shoot(page, `09-running-extra-pass${suffix}`);

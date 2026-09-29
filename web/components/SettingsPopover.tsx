@@ -3,7 +3,6 @@ import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import type { SubmittedSettings } from "@/lib/session-store";
 
 export const MODELS = ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"] as const; // product data (the design's three buttons)
-export const EXTRA_MIN = 0, EXTRA_MAX = 2;
 export const shortModel = (m: string) => m.replace(/^deepseek-/, "");
 export const effortLine = (thinking: SubmittedSettings["thinking"]) =>
   thinking === "enabled" ? "effort per agent: planner max · reviewer max · others high" : "effort: not sent (thinking disabled)";
@@ -76,18 +75,6 @@ export function SettingsPopover({ open, settings, onChange, onClose, anchor }: P
       <div className="pop-row">
         <label className="lbl" htmlFor="outputDir">Output directory</label>
         <input className="input mono-in" id="outputDir" value={settings.outputDir} onChange={(e) => onChange({ ...settings, outputDir: e.target.value })} />
-      </div>
-      <div className="pop-row">
-        <span className="lbl" id="lblExtra">Extra passes</span>
-        <div className="stepper" role="group" aria-labelledby="lblExtra" id="stepExtra">
-          <button type="button" id="extraMinus" aria-label="Fewer extra passes" disabled={settings.extraPasses <= EXTRA_MIN} onClick={() => onChange({ ...settings, extraPasses: settings.extraPasses - 1 })}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" aria-hidden="true"><path d="M5 12h14" /></svg>
-          </button>
-          <span className="stepper-v mono" id="extraValue" role="status" aria-live="polite">{settings.extraPasses}</span>
-          <button type="button" id="extraPlus" aria-label="More extra passes" disabled={settings.extraPasses >= EXTRA_MAX} onClick={() => onChange({ ...settings, extraPasses: settings.extraPasses + 1 })}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="square" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-          </button>
-        </div>
       </div>
     </div>
   );

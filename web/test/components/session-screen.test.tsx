@@ -78,7 +78,8 @@ describe("SessionScreen — C1: the ladder retries getStatus before any status h
     vi.stubGlobal("fetch", fetchMock);
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.getElementById("stage-loading")).toBeTruthy());
-    expect(document.querySelector('[role="alert"]')).toBeTruthy();
+    // The banner follows the first 502 — waited for, not assumed to have landed in the same tick.
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
     // No click anywhere in this test: the ladder itself must keep retrying (1 s, then 2 s, …)
     // until the service answers.
     await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });

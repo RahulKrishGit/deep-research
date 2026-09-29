@@ -2,9 +2,10 @@
 export type SessionStatus = "running" | "completed" | "max_iterations" | "incomplete" | "failed";
 export type ApiMode = "live" | "replay";
 
+/* No `max_iterations`: the console never sends one, so the API uses the configured extra-pass
+   budget (live-briefs spec §4.2, D15). The API itself still accepts the field. */
 export interface ResearchRequest {
   query: string;
-  max_iterations: number | null;
   output_format: "markdown";
   config_overrides: Record<string, unknown>;
 }
@@ -31,8 +32,9 @@ export interface ResearchSessionResponse {
   coverage: CoverageProgress | null; evidence_counts: EvidenceCounts | null;
 }
 export interface SessionListResponse { sessions: ResearchSessionResponse[] }
+/* `event_id` is the event's identity (live-briefs spec E1); the web app does not read it yet. */
 export interface ResearchEvent {
-  event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>;
+  event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>; event_id: string;
 }
 export interface ValidationIssue { location: string; type: string }
 export interface ApiErrorBody {

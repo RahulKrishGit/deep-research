@@ -1,7 +1,7 @@
 // What only the submitting tab knows: that a session was just submitted (the Submitted beat) and
 // the settings it was submitted with (the strip). Memory first, sessionStorage under the
 // prototype's own prefix so a reload in the same tab keeps them.
-export interface SubmittedSettings { model: string; thinking: "enabled" | "disabled"; extraPasses: number; outputDir: string }
+export interface SubmittedSettings { model: string; thinking: "enabled" | "disabled"; outputDir: string }
 // beatMs: the submitted-beat budget computed at submit time (lib/handoff.ts's
 // submittedBeatBudgetMs — DESIGN.md:1330-1337, "the submitted beat"). Optional so a Submission
 // read back from an older sessionStorage entry (no field) still falls back to SUBMITTED_BEAT_MS.
