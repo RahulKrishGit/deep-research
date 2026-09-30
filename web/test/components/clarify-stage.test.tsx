@@ -12,7 +12,7 @@ const NOW = Date.parse("2026-09-29T10:00:00.000Z");
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 function asking(): RunState {
-  const run = newRunState(null);
+  const run = newRunState();
   applyEvent(run, { type: "session.clarification.requested", metadata: { questions: QUESTIONS, deadline_at: "2026-09-29T10:01:00.000Z" } });
   return run;
 }
@@ -199,7 +199,7 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
     tap("United States");
     expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
     const props = { sessionId: "s1", phase: "asking" as const, question: "What limits grid-scale battery storage?", strip: null };
-    rerender(<ClarifyStage {...props} run={newRunState(null)} />);
+    rerender(<ClarifyStage {...props} run={newRunState()} />);
     expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
     rerender(<ClarifyStage {...props} run={asking()} />);
     expect(document.getElementById("clarifyStep")!.textContent).toBe("Question 2 of 3");
@@ -208,13 +208,13 @@ describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
   });
 
   it("holds the header alone until the stream delivers the questions", () => {
-    show(newRunState(null));
+    show(newRunState());
     expect(document.getElementById("clarify-h")!.textContent).toBe("What limits grid-scale battery storage?");
     expect(document.getElementById("clarifyCard")).toBeNull();
   });
 
   it("renders no summary at all when the stream answered a check it never asked (no questions to summarise)", () => {
-    const run = newRunState(null);
+    const run = newRunState();
     applyEvent(run, { type: "session.clarification.answered", metadata: { reason: "skipped", answers: [] } });
     show(run, "starting");
     expect(document.getElementById("clarify-h")!.textContent).toBe("What limits grid-scale battery storage?");

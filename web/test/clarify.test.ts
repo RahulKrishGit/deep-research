@@ -12,7 +12,7 @@ const WIRE = [
 ];
 const DEADLINE = "2026-09-29T10:01:00.000Z";
 function asked(): RunState {
-  const run = newRunState(null);
+  const run = newRunState();
   applyEvent(run, { type: "session.clarification.requested", metadata: { questions: WIRE, deadline_at: DEADLINE } });
   return run;
 }
@@ -27,8 +27,8 @@ function answered(run: RunState): RunState {
 
 describe("checkPhase: which face the check shows (live-briefs spec §4.5)", () => {
   it("a needs_input status asks before the stream has delivered the questions; a running one shows no check", () => {
-    expect(checkPhase(newRunState(null), "needs_input")).toBe("asking");
-    expect(checkPhase(newRunState(null), "running")).toBeNull();
+    expect(checkPhase(newRunState(), "needs_input")).toBe("asking");
+    expect(checkPhase(newRunState(), "running")).toBeNull();
   });
   it("once the stream has told the check it decides: asking, then starting, then nothing once the planner starts", () => {
     const run = asked();

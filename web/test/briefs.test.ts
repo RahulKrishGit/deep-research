@@ -11,13 +11,13 @@ const load = (caseId: string): Capture =>
   JSON.parse(readFileSync(fileURLToPath(new URL(`./fixtures/events/${caseId}.json`, import.meta.url)), "utf8"));
 const captures = [load("missing-target-triggers-one-extra-pass"), load("scoped-redraft-after-a-named-defect")];
 function snapshots(events: ResearchEvent[]): RunState[] {
-  const run = newRunState((events[0].metadata.max_extra_passes as number) + 1);
+  const run = newRunState();
   return events.map((e) => { applyEvent(run, toRunEvent(e)); return structuredClone(run); });
 }
 
 describe("the Researching brief (spec §4.3, AC5)", () => {
   it("reads its static meta until topics are known, then '{n} topics · researching' until one is done", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     expect(subtitleText(rowBrief(run, "researcher", "active").subtitle)).toBe("search · scrape · read · memory");
     applyEvent(run, { type: "planner.planning.completed", metadata: { sub_topic_count: 2, sub_topics: [{ coverage_id: "topic-01", title: "Alpha" }, { coverage_id: "topic-02", title: "Beta" }] } });
     expect(subtitleText(rowBrief(run, "researcher", "active").subtitle)).toBe("2 topics · researching");
@@ -44,7 +44,7 @@ describe("the Researching brief (spec §4.3, AC5)", () => {
 
 describe("every other row", () => {
   it("shows its static meta as the subtitle and one plain sentence", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     for (const id of ["source_evaluator", "report_writer", "report_reviewer", "finalize_report"] as const) {
       const brief = rowBrief(run, id, "active");
       expect(brief.subtitle).toEqual({ kind: "text", text: STATIC_META[id] });
@@ -58,7 +58,7 @@ describe("every other row", () => {
     expect(verifyingSentence(0)).toBe("No findings to check");
     expect(verifyingSentence(1)).toBe("Checking 1 finding against its page");
     expect(verifyingSentence(4)).toBe("Checking 4 findings against their pages");
-    const run = newRunState(2);
+    const run = newRunState();
     applyEvent(run, { type: "researcher.research.completed", metadata: { sub_topics_researched: 3, sub_topics_skipped: 0, findings: 4 } });
     expect(rowBrief(run, "evidence_verifier", "active").sentence).toBe("Checking 4 findings against their pages");
   });
@@ -71,7 +71,7 @@ describe("every other row", () => {
     for (const id of AGENT_ORDER) expect(rowBrief(run, id, "done").outcome).toBe(run.outcomes[id]);
   });
   it("a looped row's first line is why it reopened", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     applyEvent(run, { type: "graph.extra_pass.started", metadata: { iteration: 1, max_extra_passes: 1, targets: ["topic-01-target-01", "topic-02-target-01"] } });
     expect(rowBrief(run, "researcher", "active").why).toEqual({ kind: "extra_pass", text: "Going back to research 2 gaps the review found" });
     applyEvent(run, { type: "graph.report.redraft_requested", metadata: { iteration: 1, redrafts: 1, material_defects: 3 } });

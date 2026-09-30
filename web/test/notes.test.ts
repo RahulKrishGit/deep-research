@@ -11,7 +11,7 @@ const interpreted = (id: string, restatement: string, extra: Record<string, unkn
 const started = (node: string, iteration = 0) => ev("graph.node.started", { node, iteration });
 const completed = (node: string, iteration = 0) => ev("graph.node.completed", { node, iteration, event_count: 1, error_count: 0 });
 function play(events: RunEvent[]): RunState {
-  const run = newRunState(2);
+  const run = newRunState();
   for (const e of events) applyEvent(run, e);
   return run;
 }
@@ -136,7 +136,7 @@ describe("run-state — the note events and the note routes (live-briefs spec §
 
   it("is burst-safe: the same events paint the same notes in one go or one at a time", () => {
     const events = [...toReviewing, received("n1", "a"), interpreted("n1", "fire safety"), received("n2", "b")];
-    const oneByOne = newRunState(2);
+    const oneByOne = newRunState();
     const snaps = events.map((e) => { applyEvent(oneByOne, e); return structuredClone(oneByOne); });
     expect(snaps[snaps.length - 1].notes).toEqual(play(events).notes);
   });

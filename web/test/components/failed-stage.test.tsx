@@ -13,7 +13,7 @@ const failed = (...errors: ResearchError[]): ResearchSessionResponse => ({
 describe("FailedStage", () => {
   it("headlines an API-level configuration failure with its enumerated reason and no download", () => {
     const status = failed({ error_type: "api.research.configuration_error", source: "api", message: "Research service configuration is unavailable.", recoverable: false, timestamp: "", details: { reason: "config_invalid" } });
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failedType")!.textContent).toBe("Service configuration error");
     expect(container.querySelector("#failedMessage")!.textContent).toBe("Research service configuration is unavailable.");
@@ -28,7 +28,7 @@ describe("FailedStage", () => {
   });
   it("headlines a graph halt in plain words and marks the halting row", () => {
     const status = failed({ error_type: "graph_provider_configuration_error", source: "graph", message: "The model provider is not configured, so the research run stopped.", recoverable: false, timestamp: "", details: { exception_type: "ValidationError" } });
-    const run = newRunState(2);
+    const run = newRunState();
     applyEvent(run, { type: "graph.session.started", metadata: { max_extra_passes: 1 } });
     applyEvent(run, { type: "graph.node.started", metadata: { node: "planner", iteration: 0 } });
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
@@ -38,7 +38,7 @@ describe("FailedStage", () => {
   });
   it("K19: omits the source fact row rather than inventing 'graph' when the record carries none", () => {
     const status = failed({ error_type: "graph_invalid_route", source: "", message: "The graph reached an unregistered route.", recoverable: false, timestamp: "", details: {} });
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failFactSource")).toBeNull();
     expect([...container.querySelectorAll("dd")].some((dd) => dd.textContent === "graph")).toBe(false);
@@ -51,7 +51,7 @@ describe("FailedStage", () => {
     const survived: ResearchError = { error_type: "researcher_extraction_provider_error", source: "agent.researcher", message: "The extraction call could not reach the provider.", recoverable: false, timestamp: "", details: {} };
     const halt: ResearchError = { error_type: "graph_request_attempt_limit_exceeded", source: "graph.report_writer", message: "The request attempt limit was reached, so the research run stopped.", recoverable: false, timestamp: "", details: {} };
     const status = failed(survived, halt);
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failedType")!.textContent).toBe("Request attempt limit reached");
     expect(container.querySelector("#failedMessage")!.textContent).toBe("The request attempt limit was reached, so the research run stopped.");
@@ -61,7 +61,7 @@ describe("FailedStage", () => {
 
   it("fix round 1 #2: falls back to 'Research run failed' when no record's error_type is a recognised halt, keeping the raw type in the facts", () => {
     const status = failed({ error_type: "some_unmapped_error_type", source: "agent.report_writer", message: "", recoverable: false, timestamp: "", details: {} });
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failedType")!.textContent).toBe("Research run failed");
     expect(container.querySelector("#failFactType")!.textContent).toBe("some_unmapped_error_type");
@@ -69,7 +69,7 @@ describe("FailedStage", () => {
 
   it("fix round 1 #3: with no error record at all, shows only the true report facts — no invented error_type, source or recoverable", () => {
     const status = failed();
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failedType")!.textContent).toBe("Research run failed");
     expect(container.querySelector("#failedMessage")!.textContent).toBe("The run stopped on a non-recoverable error.");
@@ -85,7 +85,7 @@ describe("FailedStage", () => {
 
   it("M1: an API-level failure (source \"api\") reports the real 409 session_not_complete code, never the graph-halt report_unavailable", () => {
     const status = failed({ error_type: "api.research.failed", source: "api", message: "Research run failed unexpectedly.", recoverable: false, timestamp: "", details: {} });
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failFactReportCode")!.textContent).toBe("409 session_not_complete");
     expect(container.querySelector("p.avail")!.textContent).toContain("409 session_not_complete");
@@ -93,7 +93,7 @@ describe("FailedStage", () => {
   });
   it("a graph halt still reports the real 409 report_unavailable code", () => {
     const status = failed({ error_type: "graph_provider_configuration_error", source: "graph", message: "m", recoverable: false, timestamp: "", details: {} });
-    const run = newRunState(2);
+    const run = newRunState();
     const { container } = render(<FailedStage status={status} run={run} strip={null} />);
     expect(container.querySelector("#failFactReportCode")!.textContent).toBe("409 report_unavailable");
   });

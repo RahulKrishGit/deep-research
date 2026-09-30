@@ -5,7 +5,7 @@ import { newRunState } from "../../lib/run-state";
 
 describe("RunningPipeline — the removals (live-briefs spec §4.2, AC3)", () => {
   it("has no Now header, no counters block and no pass text; the card holds the spine", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     run.active = "researcher";
     run.marks = { planner: "done" };
     const { container } = render(<RunningPipeline sessionId="s1" run={run} question="q" strip={null} startedAt="2026-09-27T00:00:00+00:00" onToggleRow={() => {}} />);

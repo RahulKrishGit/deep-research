@@ -30,22 +30,11 @@ export const ARCS: Record<"extra_pass" | "redraft" | "note_pass", { from: NodeId
   redraft: { from: "report_reviewer", to: "report_writer" },
   note_pass: { from: "report_reviewer", to: "researcher" },
 };
-export const BLURB: Record<NodeId, string> = {
-  planner: "Turning the question into sub-topics and evidence targets.",
-  researcher: "Searching and reading; every finding keeps a verbatim snippet.",
-  source_evaluator: "Scoring every source behind the findings.",
-  evidence_verifier: "Checking each snippet is on its page, then each figure's context.",
-  report_writer: "Drafting from verified findings; every sentence is checked against what it cites.",
-  report_reviewer: "Scoring the report; accepted at a mean of 0.80 with no material defect.",
-  finalize_report: "Publishing the report, the evidence log and the quality record.",
-};
-
 export interface Counters {
   subTopicsDone: number | null; subTopicsResearched: number | null; subTopicsTotal: number | null; toolCalls: number | null;
   findings: number | null; sources: number | null; verified: number | null; corrected: number | null; dropped: number | null;
   statements: number | null; refused: number | null; reviewSeen: boolean; reviewScore: number | null;
 }
-export interface LoopTag { kind: "extra_pass" | "redraft"; label: string; text: string }
 /* The step briefs' state (live-briefs spec §4.3). A topic is one planned sub-topic in this pass's
    Researching checklist; "waiting" until its researcher.sub_topic.started, "running" until its
    researcher.sub_topic.completed. */
@@ -69,12 +58,11 @@ export interface RunState {
   marks: Partial<Record<NodeId, Mark>>;   /* node id → "done" | "loop" | "skipped"; the active row is derived */
   active: NodeId | null;                  /* the "Now" row: the successor of the last graph.node.completed */
   openNode: NodeId | null;                /* the last graph.node.started with no graph.node.completed — the halting row */
-  pass: number; maxPasses: number;
+  pass: number;
   loop: "off" | "flowing" | "settled"; arc: "extra_pass" | "redraft" | "note_pass" | null;
   loopPending: boolean;                   /* a loop was routed; the reviewer's own completion is inert */
-  tag: LoopTag | null;
   rearmed: Partial<Record<NodeId, true>>; rearmedFirst: NodeId | null;
-  captions: Partial<Record<NodeId, string>>; blurbs: Partial<Record<NodeId, string>>;
+  captions: Partial<Record<NodeId, string>>;
   counters: Counters; countersPass: number;
   finalStatus: string | null;
   plan: PlannedTopic[];                   /* planner.planning.completed.metadata.sub_topics, in plan order */
@@ -98,12 +86,12 @@ export function emptyCounters(): Counters {
     findings: null, sources: null, verified: null, corrected: null, dropped: null,
     statements: null, refused: null, reviewSeen: false, reviewScore: null };
 }
-export function newRunState(passes: number | null | undefined): RunState {
+export function newRunState(): RunState {
   return {
     marks: {}, active: "planner", openNode: null,
-    pass: 1, maxPasses: Math.max(1, Number(passes) || 1),
-    loop: "off", arc: null, loopPending: false, tag: null,
-    rearmed: {}, rearmedFirst: null, captions: {}, blurbs: {},
+    pass: 1,
+    loop: "off", arc: null, loopPending: false,
+    rearmed: {}, rearmedFirst: null, captions: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
     plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
     reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [],
@@ -187,9 +175,6 @@ function isClarifyAnswer(a: unknown): a is { question_id: string; value: string;
 
 /* Keyed by event type; each handler reads only `md` (the event's metadata). */
 export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
-  "graph.session.started": (run, md) => {
-    if (typeof md.max_extra_passes === "number") run.maxPasses = 1 + md.max_extra_passes;
-  },
   "graph.node.started": (run, md) => {
     run.openNode = md.node;
     /* the pass number is read here and from graph.extra_pass.started only */
@@ -264,7 +249,6 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     c.reviewScore = typeof md.mean_score === "number" ? md.mean_score : null;
   },
   "graph.route.decided": (run, md) => {
-    run.tag = null;
     run.loopPending = false;
     run.outcomes.report_reviewer = reviewOutcome(run, md);
     if (md.destination === "extra_pass") {
@@ -292,9 +276,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const n = (md.targets || []).length;
     if (typeof md.iteration === "number") run.pass = md.iteration + 1;
     run.loop = "settled";
-    run.tag = { kind: "extra_pass", label: "extra pass", text: plural(n, "required target had no verified finding", "required targets had no verified finding") };
     run.captions.researcher = plural(n, "missing target only", "missing targets only");
-    run.blurbs.researcher = "Researching the " + plural(n, "target", "targets") + " still missing a verified finding.";
     run.reopen.researcher = { kind: "extra_pass", text: "Going back to research " + plural(n, "gap", "gaps") + " the review found" };
     /* this-pass rows reset; whole-run and current-draft rows keep their values */
     const c = run.counters;
@@ -304,7 +286,6 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "graph.report.redraft_requested": (run, md) => {
     run.loop = "settled";
-    run.tag = { kind: "redraft", label: "redraft", text: "Reviewer named " + plural(md.material_defects, "material defect", "material defects") };
     run.reopen.report_writer = { kind: "redraft", text: "Rewriting to fix " + plural(count(md.material_defects), "issue", "issues") + " the review found" };
     /* current-draft rows and the review score reset */
     const c = run.counters;
@@ -333,7 +314,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "graph.session.completed": (run, md) => {
     run.finalStatus = md.status;
-    run.loop = "off"; run.arc = null; run.tag = null;
+    run.loop = "off"; run.arc = null;
     run.active = null;
   },
   /* live-briefs spec §4.4: the session asks before the graph starts; neither event moves a row. */
@@ -393,8 +374,8 @@ export const COUNTER_ROWS: readonly CounterRow[] = [
 
 /* The API's frame carries `event_type`; the prototype's scripts carried `type`. */
 export function toRunEvent(event: ResearchEvent): RunEvent { return { type: event.event_type, metadata: event.metadata }; }
-export function replayRun(events: readonly ResearchEvent[], passes: number | null | undefined): RunState {
-  const run = newRunState(passes);
+export function replayRun(events: readonly ResearchEvent[]): RunState {
+  const run = newRunState();
   for (const event of events) applyEvent(run, toRunEvent(event));
   return run;
 }

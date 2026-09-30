@@ -31,7 +31,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [beat, setBeat] = useState(false);
   const [streaming, setStreaming] = useState(false);
-  const run = useRef<RunState>(newRunState(null));
+  const run = useRef<RunState>(newRunState());
   const wake = useRef<(() => void) | null>(null);
   const delaysRef = useRef(backoffDelaysMs());
   const [version, bump] = useReducer((n: number) => n + 1, 0);
@@ -116,7 +116,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
             noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs();
             const reopened = streamed ? run.current.open : new Set<NodeId>();
             streamed = true;
-            run.current = newRunState(null);
+            run.current = newRunState();
             run.current.open = reopened;
             bump(); setStreaming(true);
           },

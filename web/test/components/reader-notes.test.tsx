@@ -8,7 +8,7 @@ import type { ResearchSessionResponse } from "../../lib/api";
 import { applyEvent, marksFor, newRunState, type RunState } from "../../lib/run-state";
 
 function researchingWithNotes(count: number): RunState {
-  const run = newRunState(2);
+  const run = newRunState();
   applyEvent(run, { type: "graph.node.started", metadata: { node: "planner", iteration: 0 } });
   applyEvent(run, { type: "graph.node.completed", metadata: { node: "planner" } });
   applyEvent(run, { type: "graph.node.started", metadata: { node: "researcher", iteration: 0 } });

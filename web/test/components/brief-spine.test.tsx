@@ -8,7 +8,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 const TITLES = [{ coverage_id: "topic-01", title: "Adoption rate" }, { coverage_id: "topic-02", title: "Widget funding" }, { coverage_id: "topic-03", title: "Widget exports" }];
 /* Planning done, Researching active with topic 2 done, topic 1 running, topic 3 waiting. */
 function researching(): RunState {
-  const run = newRunState(2);
+  const run = newRunState();
   for (const [type, metadata] of [
     ["graph.node.started", { node: "planner", iteration: 0 }],
     ["planner.planning.completed", { sub_topic_count: 3, sub_topics: TITLES }],
@@ -119,7 +119,7 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
   });
   it("awaits the row a route decision leaves until its own completion, then hands it off (Reviewing → Publishing)", () => {
     vi.useFakeTimers();
-    const run = newRunState(2);
+    const run = newRunState();
     for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
       applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
       applyEvent(run, { type: "graph.node.completed", metadata: { node } });
@@ -149,7 +149,7 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     expect(container.querySelector("[data-handoff]")).toBeNull();
   });
   it("never awaits a row a loop sends the run back from", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
       applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
       applyEvent(run, { type: "graph.node.completed", metadata: { node } });
