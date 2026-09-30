@@ -51,7 +51,7 @@ export function ReportRail({ status, evidence }: { status: ResearchSessionRespon
         <h2 className="card-title">Session facts</h2>
         <dl className="kv">
           <dt>status</dt><dd id="repFactStatus">{status.status}</dd>
-          <dt>pass</dt><dd id="repFactPass">{passFact(status.iteration)}</dd>
+          <dt>pass</dt><dd id="repFactPass">{passFact(status.iteration, status.note_passes ?? 0)}</dd>
           <dt>started_at</dt><dd id="repFactStarted">{status.started_at}</dd>
           <dt>finished_at</dt><dd id="repFactFinished" className={status.finished_at ? undefined : "avail"}>{status.finished_at ?? "not recorded"}</dd>
           <dt>duration_seconds</dt><dd id="repFactDuration" className={status.duration_seconds === null ? "avail" : undefined}>{status.duration_seconds === null ? "not recorded" : String(status.duration_seconds)}</dd>

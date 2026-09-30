@@ -1365,3 +1365,43 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   /* the next question and the summary fade in place, with no travel (spec §4.3, §4.8) */
   #clarifyCard .ck-q,#clarifyCard .ck-summary{animation-duration:160ms !important}
 }
+
+/* ═══ 2026-09-29: reader notes (live-briefs spec §4.7; pick 6A, docs/design/running-stage-picks/Hitl3.dc.html column A) ═══ */
+/* The note line: the pipeline card's last element, under a hairline — a borderless field that reads
+   as text (.tx, above) and a neutral icon send (D8). No purple at rest (D17): only the field's focus
+   ring, while it has focus. Disabled after the tenth note with nothing added (D11a). */
+.note-line{display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.note-line .tx{min-height:36px;padding:6px var(--space-2);margin-left:calc(-1 * var(--space-2));text-overflow:ellipsis}
+.note-line .tx[readonly]{color:var(--muted)}
+.note-line .tx:disabled{cursor:not-allowed}
+.note-line .tx:disabled:hover{background:transparent}
+.note-line .icon-btn svg{width:14px;height:14px}
+.note-line .icon-btn:disabled{color:var(--border);cursor:not-allowed}
+.note-line .icon-btn:disabled:hover{background:transparent;border-color:transparent}
+.note-line .cap{padding:6px 0}
+/* A send that failed for any reason but the two 409s: the text stays, and one caption under the
+   field says so until the next edit; the line wraps only then. */
+.note-line[data-failed="1"]{flex-wrap:wrap}
+.note-line #noteFailed{flex-basis:100%;padding:0}
+/* Each acknowledgement (D9): a muted dot, then the run's reading of the note in --fg and the rest
+   muted. A new one rises in from its starting style over 200ms: at once in a row that is already
+   open, and in its place in the stagger in the row a hand-off is opening. Under reduced motion the
+   brief's own rule keeps the fade and drops the travel. */
+.spine-lg.briefs .ack{display:grid;grid-template-columns:14px minmax(0,1fr);gap:var(--space-3);align-items:baseline;font-size:var(--text-sm);line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+.spine-lg.briefs .ack .d{width:6px;height:6px;border-radius:50%;background:var(--muted);justify-self:center;transform:translateY(-2px)}
+.spine-lg.briefs .ack .said{color:var(--fg)}
+.spine-lg.briefs > li[data-open="1"] .ack{--dur-c:200ms}
+.spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ack{--d-c:0ms}
+@starting-style{.spine-lg.briefs > li[data-open="1"] .ack{opacity:0;transform:translateY(4px)}}
+/* A note pass returns to Researching drawn with the redraft's stroke: a note pass is not a warning
+   (DESIGN.md §3.4, colour means status). */
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-base,
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-flow{stroke:var(--meta)}
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-head{fill:var(--meta)}
+/* The report's "Your notes": inside the report card and above the prose, no box of its own — an
+   eyebrow, one line per note with its outcome as a caption, and a hairline below. */
+.reader-notes{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-4);border-bottom:1px solid var(--border-soft);max-width:var(--reading-max)}
+.reader-notes h2{margin:0;font-weight:400}
+.reader-notes .rn-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1)}
+.reader-notes li{font-size:var(--text-sm);line-height:1.5;color:var(--fg);overflow-wrap:anywhere}
+.reader-notes li .cap{white-space:nowrap}

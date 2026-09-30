@@ -68,7 +68,7 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
     runReportSlide([{ from: layout.question, toEl: q }, { from: layout.opts, toEl: o }]);
   }, [sessionId]);
   const dur = fmtSeconds(status.duration_seconds);
-  const meta = `session ${status.session_id} · finished ${fmtClock(status.finished_at) ?? "not recorded"}${dur ? ` · ${dur}` : ""} · ${passFact(status.iteration)}`;
+  const meta = `session ${status.session_id} · finished ${fmtClock(status.finished_at) ?? "not recorded"}${dur ? ` · ${dur}` : ""} · ${passFact(status.iteration, status.note_passes ?? 0)}`;
   const evidenceLoaded = evidence.kind === "ready";
   return (
     <section className="stage is-on" id="stage-report" data-view={view} aria-labelledby="report-h">
@@ -94,7 +94,7 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
       {view === "report" ? (
         <div className="with-rail report-main">
           <div className="stack" style={{ gap: "var(--space-6)" }}>
-            {report.kind === "ready" ? <ReportBody markdown={report.value} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} />
+            {report.kind === "ready" ? <ReportBody markdown={report.value} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} notes={status.notes ?? []} />
               : <article className="card"><p className="avail">{report.kind === "unavailable" ? "Not published" : "loading report"}</p></article>}
           </div>
           <ReportRail status={status} evidence={evidenceLoaded ? evidence.value : null} />

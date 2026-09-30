@@ -5,6 +5,8 @@ import remarkGfm from "remark-gfm";
 // react-markdown/remark-gfm's own `@types/mdast` dependency, so AC19's "no new dependency" holds
 // without declaring `@types/mdast` in package.json.
 import type { Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
+import type { ReaderNoteRecord } from "@/lib/api";
+import { OUTCOME_TEXT } from "@/lib/notes";
 
 /* remarkCitationAnchors (spec §4.3 Report rendering): marks what the design adapts with
    hProperties the components below read — the evidence line, the caption after a table, the
@@ -85,9 +87,9 @@ export function remarkCitationAnchors() {
   };
 }
 
-interface Props { markdown: string; evidenceLoaded: boolean; onOpenEvidence(): void }
+interface Props { markdown: string; evidenceLoaded: boolean; onOpenEvidence(): void; notes?: readonly ReaderNoteRecord[] }
 
-export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence }: Props) {
+export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence, notes = [] }: Props) {
   const components: Components = {
     h1: () => null, // the question is the stage's own <h1>
     p: ({ node, children, ...rest }) => {
@@ -115,6 +117,18 @@ export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence }: Props) 
   };
   return (
     <article className="card stack" style={{ gap: "var(--space-5)" }}>
+      {/* live-briefs spec §4.7: "Your notes", inside the report card and above the prose — not a card
+          of its own, and outside .prose — with each note's outcome as a caption. */}
+      {notes.length > 0 ? (
+        <section className="reader-notes" id="readerNotes" aria-labelledby="readerNotesH">
+          <h2 className="eyebrow" id="readerNotesH">Your notes</h2>
+          <ul className="rn-list">
+            {notes.map((note) => (
+              <li key={note.note_id} data-outcome={note.outcome}><span className="rn-text">{note.text}</span> <span className="cap">{OUTCOME_TEXT[note.outcome]}</span></li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <div className="prose">
         <Markdown remarkPlugins={[remarkGfm, remarkCitationAnchors]} components={components}>{markdown}</Markdown>
       </div>

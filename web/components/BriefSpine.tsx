@@ -82,6 +82,19 @@ export function BriefSpine({ marks, run, onToggle }: Props) {
     let n = 0;
     const lines: ReactNode[] = [];
     if (brief.why) lines.push(<p key="why" className="ln b-why" data-kind={brief.why.kind} style={lineStyle(n++)}>{brief.why.text}</p>);
+    // live-briefs spec §4.7 (D9): the reader's notes, acknowledged at the top of the running row's
+    // brief — a muted dot, then the run's reading of the note, never the note echoed back. Each line
+    // is a polite live region: nothing moves focus, so a screen reader hears the line whole when
+    // "Reading your note…" becomes "Got it — …".
+    for (const ack of brief.acks) {
+      lines.push(
+        <p key={`ack-${ack.key}`} className="ln ack" data-ack={ack.key} aria-live="polite" aria-atomic="true" style={lineStyle(n++)}>
+          <span className="d" aria-hidden="true" />
+          <span>{ack.lead}{ack.said !== null ? <span className="said">{ack.said}</span> : null}{ack.rest}</span>
+        </p>,
+      );
+    }
+    if (brief.earlier) lines.push(<p key="ack-earlier" className="ln ack" style={lineStyle(n++)}><span className="d" aria-hidden="true" /><span>{brief.earlier}</span></p>);
     if (brief.sentence) lines.push(<p key="sentence" className="ln b-line" style={lineStyle(n++)}>{brief.sentence}</p>);
     if (brief.topics) {
       lines.push(

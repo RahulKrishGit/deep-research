@@ -2,13 +2,17 @@
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { fmtElapsed, qFitClass } from "@/lib/format";
 import { noteRunningLayout } from "@/lib/handoff";
+import { notesLeft } from "@/lib/notes";
 import { marksFor, type NodeId, type RunState } from "@/lib/run-state";
 import { BriefSpine } from "./BriefSpine";
+import { NoteLine } from "./NoteLine";
 
 /* live-briefs spec §4.2 (D12, D13, D14): no "Now" header, no counters block and no pass counter —
    the pipeline card holds the spine alone, whose active row is open on its live brief (§4.3). The
    row's accessible name (" (in progress)") and aria-current="step" are the non-colour state signals. */
-export function RunningPipeline({ sessionId, run, question, strip, startedAt, onToggleRow }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; onToggleRow(id: NodeId): void }) {
+/* live-briefs spec §4.7: the note line is the card's last element; `notesRemaining` is the last
+   /status's count, lowered by every note the stream has received since (lib/notes.ts notesLeft). */
+export function RunningPipeline({ sessionId, run, question, strip, startedAt, onToggleRow, notesRemaining }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; onToggleRow(id: NodeId): void; notesRemaining?: number }) {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
@@ -38,6 +42,7 @@ export function RunningPipeline({ sessionId, run, question, strip, startedAt, on
         </div>
         <div className="card stack" style={{ gap: "var(--space-5)" }}>
           <BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggleRow} />
+          <NoteLine sessionId={sessionId} remaining={notesLeft(notesRemaining, run.notes.length)} />
         </div>
       </div>
     </section>

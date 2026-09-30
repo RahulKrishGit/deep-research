@@ -199,7 +199,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
     // live-briefs spec §4.5: the check takes the pipeline card's place until the planner starts.
     if (phase !== null) return <ClarifyStage sessionId={sessionId} run={run.current} phase={phase} question={status.query} strip={strip} />;
-    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} onToggleRow={toggleRow} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} onToggleRow={toggleRow} notesRemaining={status.notes_remaining} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} id="reportOpts" />} />;
