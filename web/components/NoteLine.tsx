@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError, addNote } from "@/lib/api";
 import { NOTES_CLOSED, NOTE_FIELD_LABEL, NOTE_MAX_CHARS, NOTE_PLACEHOLDER, NOTE_SEND_FAILED, NOTE_SEND_LABEL } from "@/lib/notes";
 
@@ -8,9 +8,11 @@ import { NOTES_CLOSED, NOTE_FIELD_LABEL, NOTE_MAX_CHARS, NOTE_PLACEHOLDER, NOTE_
    neutral icon send, never the purple primary. Enter sends. While the POST is in flight the field is
    read-only. With no note left to take (`remaining` is 0, or a 409 note_limit_reached) the field and
    the button are disabled, with no message and the placeholder unchanged (D11a). Once
-   `finalize_report` has started (409 notes_closed) one caption takes the line's place. Any other
-   failure (a 5xx, a network error) keeps the text and shows one caption under the field,
-   "Couldn't send — try again", until the reader edits the note or sends it again. */
+   `finalize_report` has started (409 notes_closed) one caption, a status, takes the line's place;
+   if focus was on the line (the field, or the send button) it moves to the caption rather than
+   falling to the page, as the clarify card's does. Any other failure (a 5xx, a network error) keeps
+   the text and shows one caption under the field, "Couldn't send — try again", until the reader
+   edits the note or sends it again. */
 export function NoteLine({ sessionId, remaining }: { sessionId: string; remaining: number }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -18,7 +20,11 @@ export function NoteLine({ sessionId, remaining }: { sessionId: string; remainin
   const [full, setFull] = useState(false);
   const [failed, setFailed] = useState(false);
   const disabled = full || remaining <= 0;
-  if (closed) return <div className="note-line" id="noteLine" data-closed="1"><p className="cap" id="noteClosed">{NOTES_CLOSED}</p></div>;
+  const line = useRef<HTMLDivElement>(null);
+  const caption = useRef<HTMLParagraphElement>(null);
+  const hadFocus = useRef(false);
+  useEffect(() => { if (closed && hadFocus.current) caption.current?.focus(); }, [closed]);
+  if (closed) return <div className="note-line" id="noteLine" data-closed="1"><p className="cap" id="noteClosed" role="status" tabIndex={-1} ref={caption}>{NOTES_CLOSED}</p></div>;
   const send = async () => {
     const body = text.trim();
     if (!body || sending || disabled) return;
@@ -28,15 +34,17 @@ export function NoteLine({ sessionId, remaining }: { sessionId: string; remainin
       await addNote(sessionId, body);
       setText("");
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409 && error.body.code === "notes_closed") setClosed(true);
-      else if (error instanceof ApiError && error.status === 409 && error.body.code === "note_limit_reached") setFull(true);
+      if (error instanceof ApiError && error.status === 409 && error.body.code === "notes_closed") {
+        hadFocus.current = !!line.current?.contains(document.activeElement);
+        setClosed(true);
+      } else if (error instanceof ApiError && error.status === 409 && error.body.code === "note_limit_reached") setFull(true);
       else setFailed(true);
     } finally {
       setSending(false);
     }
   };
   return (
-    <div className="note-line" id="noteLine" data-failed={failed ? "1" : undefined}>
+    <div className="note-line" id="noteLine" data-failed={failed ? "1" : undefined} ref={line}>
       <input className="tx" id="noteInput" type="text" aria-label={NOTE_FIELD_LABEL} placeholder={NOTE_PLACEHOLDER} maxLength={NOTE_MAX_CHARS}
         value={text} readOnly={sending} disabled={disabled} autoComplete="off"
         onChange={(event) => { setText(event.target.value); setFailed(false); }}

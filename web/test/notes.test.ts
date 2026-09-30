@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { rowBrief } from "../lib/briefs";
 import { NOTE_LIMIT, OUTCOME_TEXT, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
-import { applyEvent, marksFor, newRunState, stepLabel, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
+import { COUNTER_ROWS, applyEvent, marksFor, newRunState, stepLabel, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
 
 const ev = (type: string, metadata: Record<string, unknown> = {}): RunEvent => ({ type, metadata });
 const received = (id: string, text: string) => ev("session.note.received", { note_id: id, text });
@@ -110,6 +110,32 @@ describe("run-state — the note events and the note routes (live-briefs spec §
     applyEvent(run, ev("researcher.sub_topic.completed", { coverage_id: "note-n1", findings_retained: 2, successful_reads: 3 }));
     expect(run.topics.map((t) => [t.coverageId, t.state, t.findings])).toEqual([["note-n1", "done", 2]]);
     expect(marksFor(run, run.active).researcher).toBe("active");
+  });
+
+  it("a note pass starts its own this-pass rows and drops the earlier pass's researching caption", () => {
+    const run = play([...toReviewing]);
+    for (const e of [
+      ev("graph.extra_pass.started", { iteration: 1, targets: ["t-1", "t-2"] }),
+      ev("researcher.tool_call", { iteration: 2 }),
+      ev("researcher.research.completed", { sub_topics_researched: 3, sub_topics_skipped: 1, findings: 12 }),
+      ev("source_evaluator.evaluation.completed", { source_count: 9 }),
+      ev("evidence_verifier.verification.completed", { verified: 10, verified_corrected: 1, dropped: 1 }),
+      ev("report_writer.report.written", { statements: 20, refused: 2 }),
+      ev("graph.report.reviewed", { mean_score: 0.9 }),
+    ]) applyEvent(run, e);
+    expect(run.captions.researcher).toBe("2 missing targets only");
+    expect(run.counters.findings).toBe(12);
+    applyEvent(run, ev("graph.route.decided", { destination: "note_pass", reason: "note_pass_requested", iteration: 1 }));
+    applyEvent(run, ev("graph.note_pass.started", { iteration: 1, note_passes: 1, note_ids: ["n1"], targets: ["note-n1-target-01"] }));
+
+    const rows = Object.fromEntries(COUNTER_ROWS.map((row) => [row.key, row.value(run.counters)]));
+    expect(rows).toEqual({
+      subTopics: null, toolCalls: "1", findings: null, sources: "9", verified: null, statements: "20 / 2", review: "0.90",
+    });
+    expect(run.captions.researcher).toBeUndefined();
+    /* the pass's own rows fill again from the note pass's events */
+    applyEvent(run, ev("researcher.sub_topic.completed", { coverage_id: "note-n1", findings_retained: 2, successful_reads: 3 }));
+    expect(COUNTER_ROWS.find((row) => row.key === "subTopics")!.value(run.counters)).toBe("1 this pass");
   });
 
   it("a note redraft re-arms Writing onward with its own first line and the review's outcome", () => {

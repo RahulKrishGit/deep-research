@@ -292,10 +292,16 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
   },
   /* live-briefs spec §4.7: the note pass researches only the notes' own sub-topics — "Your note: …" —
-     and its first line says which notes it is for. */
+     and its first line says which notes it is for. Like an extra pass it starts its own this-pass
+     rows and drops the earlier pass's researching caption; whole-run and current-draft rows keep
+     their values. */
   "graph.note_pass.started": (run, md) => {
     const ids: string[] = Array.isArray(md.note_ids) ? md.note_ids.filter(isText) : [];
     run.loop = "settled";
+    delete run.captions.researcher;
+    const c = run.counters;
+    c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
+    c.verified = null; c.corrected = null; c.dropped = null;
     run.reopen.researcher = { kind: "note_pass", text: notePassLine(ids, run.notes) };
     run.outcomes.report_reviewer = ids.length === 1 ? "Sent back to research your note" : "Sent back to research " + ids.length + " of your notes";
     run.topics = ids.map((id) => {

@@ -1383,6 +1383,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    field says so until the next edit; the line wraps only then. */
 .note-line[data-failed="1"]{flex-wrap:wrap}
 .note-line #noteFailed{flex-basis:100%;padding:0}
+/* Once notes close, focus moves to the caption that replaces the line (as the clarify card's does):
+   it is not a control, so it draws no ring (D17). */
+.note-line [tabindex="-1"]:focus{outline:none}
 /* Each acknowledgement (D9): a muted dot, then the run's reading of the note in --fg and the rest
    muted. A new one rises in from its starting style over 200ms: at once in a row that is already
    open, and in its place in the stagger in the row a hand-off is opening. Under reduced motion the

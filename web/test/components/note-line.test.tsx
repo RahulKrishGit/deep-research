@@ -68,6 +68,39 @@ describe("NoteLine — the quiet line at the foot of the pipeline card (live-bri
     expect(NOTES_CLOSED).toBe("Notes are closed — the report is being published");
   });
 
+  it("announces the closed caption as a status and moves focus to it only when the note line had focus", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => refusal("notes_closed")));
+    const first = render(<NoteLine sessionId="s1" remaining={10} />);
+    field().focus();
+    fireEvent.change(field(), { target: { value: "too late" } });
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await settle();
+    const caption = screen.getByRole("status");
+    expect([caption.id, caption.textContent]).toEqual(["noteClosed", NOTES_CLOSED]);
+    expect(caption.tabIndex).toBe(-1);
+    expect(document.activeElement).toBe(caption);
+    first.unmount();
+
+    /* the send button had focus: it goes with the line, and focus follows to the caption too */
+    const second = render(<NoteLine sessionId="s1" remaining={10} />);
+    fireEvent.change(field(), { target: { value: "too late" } });
+    send().focus();
+    fireEvent.click(send());
+    await settle();
+    expect(document.activeElement).toBe(screen.getByRole("status"));
+    second.unmount();
+
+    /* the reader has moved on to something else: the caption appears without taking their place */
+    const elsewhere = render(<><button type="button">Elsewhere</button><NoteLine sessionId="s1" remaining={10} /></>);
+    fireEvent.change(field(), { target: { value: "too late" } });
+    fireEvent.keyDown(field(), { key: "Enter" });
+    screen.getByRole("button", { name: "Elsewhere" }).focus();
+    await settle();
+    expect(screen.getByRole("status").textContent).toBe(NOTES_CLOSED);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Elsewhere" }));
+    elsewhere.unmount();
+  });
+
   it("disables the field and the send with no message and the same placeholder: none left, or a 409 note_limit_reached", async () => {
     const { container, unmount } = render(<NoteLine sessionId="s1" remaining={0} />);
     expect([field().disabled, send().disabled]).toEqual([true, true]);
