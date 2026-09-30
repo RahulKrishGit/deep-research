@@ -745,7 +745,7 @@ Researching's texts a measured zero reads in words (`no findings`).
 | `pending` | hollow, `--border`, muted digit | `--border` | none | not reached |
 | `active` | solid `--status-ok`, inverted digit, 5px halo at 16% | `--border` | `--status-ok` at 6% | running now |
 | `done` | solid `--status-ok`, inverted digit, 4px ring at 9% | `--status-ok` | none | finished this pass |
-| `loop` | as `done` | `--status-ok` | none | re-armed by an extra pass or a redraft, and completed again |
+| `loop` | as `done` | `--status-ok` | none | re-armed by an extra pass, a note pass or a redraft, and completed again |
 | `skipped` | `--status-danger` outline | `--border` | `--status-danger` at 9% | never ran: the run halted |
 
 **Why the running step does not blink.** An earlier pass blinked the active
@@ -1588,14 +1588,14 @@ reading time and the two fade beats are not.
 
 The stream is consumed, not rendered. The running stage shows what it derives
 from it — the spine's row states, the open row's live brief (§3.4), each finished
-row's outcome line and the two arcs — and nothing else. A raw log is deliberately
+row's outcome line and the arcs — and nothing else. A raw log is deliberately
 absent from the main region.
 
 What each surface derives, and from which events (`graph/events.py`,
 `agents/*.py`): the active row from `graph.node.completed` and
 `graph.route.decided`; the arcs from `graph.route.decided`,
-`graph.extra_pass.started` and `graph.report.redraft_requested`, which also give a
-reopened row its first line; Researching's checklist from
+`graph.extra_pass.started`, `graph.note_pass.started`, `graph.report.redraft_requested`
+and `graph.note_redraft.requested`, which also give a reopened row its first line; Researching's checklist from
 `planner.planning.completed.sub_topics` (titles, in plan order) and
 `researcher.sub_topic.started` / `.completed` (by `coverage_id`), and its live facts
 line from the completed topics' `successful_reads` and `findings_retained` until
@@ -1794,7 +1794,7 @@ starts within a few pixels of its 2026-09-16 position.
 **Three working behaviours are scripted rather than wired, and the UI no longer says so about
 all three.** The run is driven by an event sequence whose names and metadata keys are the
 engine's own (checked offline against two replayed runs, spec §4.6) rather than a live
-`EventSource`; the sidebar is a client ledger because there is no collection route (§3.1); and the
+`EventSource`; the sidebar is a client ledger because the prototype has no API behind it (the app lists `GET /research`, §3.1); and the
 report body is a hand re-composition in the consumer format, reused
 for every completed session.
 
