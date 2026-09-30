@@ -40,7 +40,7 @@
   - The full replay suite passes unchanged.
   - Four agent-fingerprint pins move because their modules' code changes, and each is re-pinned in the task that moves it: planner and researcher in Task 4, source evaluator and report writer in Task 5. The evidence verifier's pin stays `4a3d56fab932`; Task 14 checks it.
 - **API contract (spec §4.6), exactly:**
-  - `POST /research/{session_id}/notes` with body `{"text": "…"}`, 1–500 characters after trim. It returns `202` `{"note_id": "n1", "status": "received"}`; `404 session_not_found`; `409 notes_closed` while the session is `needs_input`, once it is terminal or stopped, and once publishing has begun; `409 note_limit_reached` past `MAX_NOTES_PER_RUN = 10` accepted notes; `422 validation_error` for empty or over-long text. A refused note is never counted.
+  - `POST /research/{session_id}/notes` with body `{"text": "…"}`, 1–500 characters after trim. It returns `202` `{"note_id": "n1", "status": "received"}`; `404 session_not_found`; `409 notes_closed` while the session is `needs_input`, once it is terminal or stopped, and once `finalize_report` has started (read as ambiguity 5 says: from the run's published decision to publish or end); `409 note_limit_reached` past `MAX_NOTES_PER_RUN = 10` accepted notes; `422 validation_error` for empty or over-long text. A refused note is never counted.
   - Events, both through `session.publish`: `session.note.received` `{note_id, text}` at once; `session.note.interpreted` `{note_id, restatement, kinds, replaces, fallback}` when the reading ends.
   - A reading: `kinds` 1–3 of `emphasis | exclude | scope | new_angle | about_reader`; `restatement` ≤ 120 characters; `scope` `{geography?, period?}` or null; `new_questions` ≤ 3; `replaces` an earlier note id or null. A failed, slow or invalid reading keeps the note with `kinds: ["emphasis"]`, `restatement` = the text, `fallback: true`.
   - `ResearchSessionResponse` gains `notes: [{note_id, text, restatement, outcome}]`, `notes_remaining: int` (10 minus accepted), `note_passes: int` and `clarification: {questions, answers} | null`.
@@ -56,6 +56,7 @@
   | Note field | placeholder `Add a note — something to focus on, leave out or change`; label `Add a note for this research` (the pick's) |
   | Send | a neutral `.icon-btn`, an up-arrow, `span.sr` `Add note` |
   | Closed | `.cap` `Notes are closed — the report is being published` |
+  | Send failed (I) | `.cap` `Couldn't send — try again`, under the field, until the next edit (any failure but the two 409s: a 5xx, a network error) |
   | Ack, not yet read | `Reading your note…` |
   | Ack, read | `Got it — {restatement}{where}` |
   | Ack, replacing | `Got it — {restatement}{where}, replacing your earlier note about {earlier restatement}` |
@@ -65,9 +66,9 @@
   | Note pass | Researching's first line `Researching your note: {restatement}` (`Researching your notes: {a}; {b}`); its checklist titles `Your note: {restatement}` |
   | Note redraft (I) | Writing's first line `Rewriting for your note: {restatement}` (`Rewriting for your notes: {a}; {b}`) |
   | Reviewing's outcome (I) | `Sent back to research your note` / `Sent back to research {k} of your notes`; `Sent back to the writer for your note` / `Sent back to the writer for {k} of your notes` |
-  | Report | eyebrow `Your notes`; captions `covered`, `couldn't find evidence`, `not checked` (I), `replaced by a later note` (I) |
+  | Report | eyebrow `Your notes`; captions `covered`, `couldn't find evidence`, `not addressed in the report` (I, O8), `not checked` (I), `replaced by a later note` (I) |
   | Pass fact | `{research}` then ` · went back once / twice / {k} times for your notes` (`web/lib/format.ts:48-51`, unchanged) |
-  | Report line | `Couldn't find evidence for your note: {restatement}` under "What we couldn't confirm" |
+  | Report line | `Couldn't find evidence for your note: {restatement}` under "What we couldn't confirm"; (I) `We found sources on your note but could not state a checked answer: {restatement}` for a note target a finding answers but no statement states |
 - **Theme (D17; `docs/design/running-stage-picks/BRIEF.md:109-125` "Theme rules").**
   - Tokens only.
   - `web/app/globals.css` lines 1–1131 stay the prototype's CSS verbatim: `cd web && npm run -s check:css` prints `OK`.
@@ -100,7 +101,7 @@
 
 ## Review Focus
 
-1. **A note that lands while the review runs, or while its reading is still in flight** (spec §4.8 "A note arrives during Reviewing"). The review node must wait for every received note to be read, take in the ones its input did not carry as unreviewed, and route each to its one redraft; a note the review did read must be marked `reviewed`. → Task 3 `test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_read`; the AC20 stub graph, where every note arrives during a review.
+1. **A note that lands while the review runs, or while its reading is still in flight** (spec §4.8 "A note arrives during Reviewing"). The review node must wait for every received note to be read, take in the ones its input did not carry as unreviewed, and route each to its one redraft; a note the review did read must be marked `reviewed`; and a reading that hangs must not hold the route past `_REVIEW_NOTES_WAIT_S`. → Task 3 `test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_read`, `test_the_review_waits_for_a_reading_no_longer_than_its_own_ceiling`; the AC20 stub graph, where every note arrives during a review.
 2. **The per-note guards and the route order.** Halted beats every note; a pass beats a redraft; a flag set by a hop is never bought twice; a note redraft never spends `MAX_WRITER_REDRAFTS`; a note's own targets never buy, spend or exhaust an extra pass; a replaced note routes nowhere. → Task 3's `graph_route` and hop tests, AC17, AC18 and AC20 on the compiled graph.
 3. **D10 and byte identity.** No evidence-verifier request may carry a note, whichever agent sends it, and a run without notes must send exactly the requests it sent before this plan. → Task 2 `test_without_notes_every_request_of_a_replay_run_is_byte_identical` (two whole runs pinned), Task 6 `test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does`, and the reviewer's own no-notes schema test.
 4. **The interpreter and the note window.** A reading that fails, hangs, answers nonsense or is missing keeps the note; the eleventh note and a note after publishing begins are refused and never counted; a service shutdown drops a note still being read without leaving anything waiting on it. → Task 7 `test_an_invalid_reading_is_refused_whole` (10 cases), Task 8 `test_a_failed_slow_or_missing_interpreter_keeps_the_note_as_written` (3 cases), `test_notes_close_while_the_session_waits_once_publishing_begins_and_once_it_ends`, `test_closing_the_store_drops_a_note_still_being_read`.
@@ -112,12 +113,12 @@
 
 1. **The interpreter's shape.** `NoteInterpreter = (text, question, earlier_notes, settings) -> NoteInterpretation`, with `settings` the request's own `ConfigSettings`, as Phase 2's checker receives them (its ambiguity 1). The live interpreter is Phase 2's `live_clarity_check` (`api/clarify.py:192-221`) over again: a fresh chat adapter per call from `clarity_llm_config(settings.llm)` (thinking disabled), a private `Tracker` with tracing disabled, `agent_name=None` and `max_tokens=2048`; it raises on an invalid reading so the store falls back, and the store, not the interpreter, owns the `asyncio.timeout`. Which interpreter runs is decided by the API mode, as the checker is: replay can never reach a provider.
 2. **Ids.** `n1`…`n10`, assigned at receipt in order; a refused note gets no id and is not counted (D11a).
-3. **A note is one line.** Its text is collapsed to single spaces before the 1–500 check, as Phase 2's answers are (its ambiguity 32), and every text field of a reading is collapsed too. A note kept as written becomes its own restatement, and a restatement is one line of an agent's request, so reader text can never start a line of its own there (spec §4.6: "Its lines never begin with the packet patterns the replay harness parses").
+3. **A note is one line.** Its text is collapsed to single spaces before the 1–500 check, as Phase 2's answers are (its ambiguity 32), and every text field of a reading is collapsed too. A note kept as written becomes its own restatement, and a restatement is printed as one line that the renderer starts with `- ` and ends with ` ({kinds})`, so reader text never starts a line of its own (spec §4.6: "Its lines never begin with the packet patterns the replay harness parses"). The harness's whole-line readers (`e2e_evaluation/replay.py:531`, `:544`, `:576`) therefore never match a note line. Two of its readers instead search the whole packet for `- target_id=` and take the first match (`replay.py:909`, `:1032`); both first matches stay the packet's own: a researcher decision turn prints its notes after the acquisition context that carries that line, and the extraction request prints `# Reader notes` last, after `# Retrieved evidence`, whose first line is that line (Task 4; review round 1, P3-2). One replay-only, adversarial case is left: `_planned_target_ids` (`replay.py:1117-1123`) collects every line shaped like a planned target wherever it stands, so a restatement written as `topic-02-target-09 [topic-02]: …` would add that id to replay's scripted findings, and the researcher then drops an id outside the plan's inventory and keeps the finding (`agents/researcher.py:2075-2078`).
 4. **An invalid reading is refused whole**: no kind, more than three, one outside the vocabulary or repeated; an empty restatement or one over 120 characters; more than three new questions, or one empty or over 200 characters; a scope field over 120 characters. A `replaces` that names no earlier note of this run is dropped instead, and the reading stands.
 5. **When notes close.** "Once `finalize_report` has started" is read from the session's own stream: the first `graph.route.decided` whose destination is `finalize` or `end` closes notes — the event that makes Publishing the running row. A loop decision (`note_pass`, `extra_pass`, `redraft`) keeps them open. `needs_input`, a terminal status and `finished_at` (a stopped run) close them too.
 6. **The board's lifetime.** One board per session, created with it and bound around the creation of the session's task, so the one-time check, the runner and every node see the same board. A note sent while the check waits is refused (`needs_input`); one sent during the live check call (status `running`) is taken, and the planner plans with it.
 7. **How a node takes in the board.** `agent_node` merges only the board's notes the state does not hold yet, not `board.snapshot()` wholesale as §4.6 writes it: the board carries none of the graph's flags (`reviewed`, `passed`, `redrafted`), and a wholesale replace would erase them.
-8. **The review node** is not an `agent_node`, so it merges the board itself. After the review it waits until no note is still being read (`NoteBoard.settled`), marks every active note its input carried `reviewed`, and adds the notes that arrived meanwhile unreviewed — which is what buys a note sent during Reviewing its redraft.
+8. **The review node** is not an `agent_node`, so it merges the board itself. After the review it waits until no note is still being read (`NoteBoard.settled`), marks every active note its input carried `reviewed`, and adds the notes that arrived meanwhile unreviewed — which is what buys a note sent during Reviewing its redraft. The wait has its own ceiling, `_REVIEW_NOTES_WAIT_S = 30.0` seconds (`graph/nodes.py`, review round 1, P3-3): twice `note_interpret_timeout_s`'s default of 15 s, so with the default every reading has ended — read, or kept as written — before the review stops waiting; while an operator's raised timeout (M6 allows up to 600 s) can hold the route decision for 30 s at most instead of ten minutes. The cost of the bound: a note still being read when it passes is left out of this route decision, unreviewed. If the route loops, the next node takes the note in once it is read (`agent_node`, or the review node's own merge) and a later review judges it; if the route publishes, the note ends `pending` (`not checked`), as O4's note does.
 9. **Which notes are rendered.** Only interpreted notes that no later note replaces. `new_angle` notes are kept out of a running research loop, as §4.6 says, and also out of the researcher's extraction, which reads the same set.
 10. **The researcher's per-turn block.** The decision context is rebuilt before every provider turn (`agents/base.py:381-395`), so each turn renders every active note but the `new_angle` ones — from the state and the board — under `## Reader notes` after the acquisition context. That is §4.6's "notes newer than the loop's last-seen id are added": this codebase keeps no accumulating transcript to add them to.
 11. **The planner's scoping turn.** `PlannerAgent.build_decision_context` returns the block, which the shared prompt module prints under `## Acquisition context` (`agents/prompts.py:259-260`). `prompts.py` is not edited (see O6).
@@ -125,10 +126,10 @@
 13. **Dispositions are not a rubric dimension.** `ReportReview.note_dispositions` defaults to `[]` and never enters the acceptance rule; the quality record does not publish it (`agents/report.py:422-459` lists its fields explicitly).
 14. **A note's sub-topic.** Coverage id `note-{id}`, title `Your note: {restatement}`, one required target per new question (`note-{id}-target-NN`) with the note's scope as geography and period; a note that raised no question gets one target whose question is its restatement. Its priority is the plan's largest plus one, so it sorts after every planned topic.
 15. **Confining the note pass.** The note pass hands the researcher its targets through `extra_pass_target_ids`, exactly as the extra pass does (`agents/researcher.py:307-331`). `extra_pass_target_ids()` leaves `note-*` targets out, so a note's target never buys, spends or exhausts an extra pass (see O1).
-16. **The note redraft.** Destination `redraft` with reason `note_redraft_requested`. The hop flags the due notes `redrafted` and emits its own `graph.note_redraft.requested`, instead of spending the review's writer re-run. The writer drafts every part afresh after either note loop (its redraft check reads the latest loop marker), and the reviewer then makes a full review, not a scoped one.
+16. **The note redraft.** Destination `redraft` with reason `note_redraft_requested`. The hop flags the due notes `redrafted` and emits its own `graph.note_redraft.requested`, instead of spending the review's writer re-run. The writer drafts every part afresh after either note loop (its redraft check reads the latest loop marker), and the reviewer then makes a full review, not a scoped one. A scoped redraft (only the parts a defect names, as the review's own re-run does) was not chosen because a note has no parts to scope to: it applies to the whole report — an emphasis reweights every section, an exclude or a scope note can remove material from any of them — and the review names no defect for it, only a disposition. The cost, stated (review round 1, P3-8): one note redraft re-drafts every section and buys a full review, at most once per note, so at most ten times a run (D11a), within the recursion limit (ambiguity 20).
 17. **Status and events.** Both note reasons map to `incomplete`, like the other loop reasons, and are never a run's last decision. `graph.note_pass.started` carries `{iteration, note_passes, note_ids, targets}`, a superset of §4.6's `{note_ids, targets}`; `iteration` is unchanged by a note pass.
-18. **The report's line.** Each note sub-topic with an unanswered target is listed once, as `Couldn't find evidence for your note: {restatement}`, among "What we couldn't confirm"'s groups, instead of its questions under "We found no source we could check that answers:" or "This run did not research:".
-19. **Outcomes.** `covered` when the last review judged the note `honoured` or `ignored_with_evidence`; `not_found` for `no_evidence`; `replaced` when a later note replaced it (O3); `pending` otherwise — while the run goes on, and when no review judged it. `note_passes` is the finished state's count, or the stream's latest `graph.note_pass.started` while the run goes on. `clarification` is the one-time check's questions and the answers the run started with, `null` when it asked none.
+18. **The report's lines.** Each note sub-topic with an unanswered target is listed once, as `Couldn't find evidence for your note: {restatement}`, among "What we couldn't confirm"'s groups, instead of its questions under "We found no source we could check that answers:" or "This run did not research:". Each note sub-topic with a target that a verified finding answers but no printed statement states is listed once too, as `We found sources on your note but could not state a checked answer: {restatement}`, right after the group "We found sources on these but could not state a checked answer:", instead of its questions in that group (review round 1, P3-1). So no question the run derived from a note is ever printed: the reader wrote the note, not the questions. `answered_not_stated_targets` itself is unchanged, so the quality gate that exempts a disclosed target reads the same set as before (`agents/report.py:1461-1469`).
+19. **Outcomes.** `covered` when the last review judged the note `honoured`; `not_found` for `no_evidence`; `not_addressed` for `ignored_with_evidence` — the findings bore on the note and the report still does not follow it, after its one redraft or because the run ended before it (O8); `replaced` when a later note replaced it (O3); `pending` otherwise — while the run goes on, and when no review judged it. A note the report ignores is never reported `covered`. `note_passes` is the finished state's count, or the stream's latest `graph.note_pass.started` while the run goes on. `clarification` is the one-time check's questions and the answers the run started with, `null` when it asked none.
 20. **The recursion limit** is §4.6's formula with `NOTE_REDRAFT_STEPS = 3` (the redraft hop, the writer, the reviewer). `NODE_NAMES` now has ten entries, so `graph_recursion_limit(1)` is 160.
 
 **Web**
@@ -137,11 +138,12 @@
 22. **`{where}`** is read from the row that was running when `session.note.interpreted` arrived; with Publishing or no row running it is empty.
 23. **Past two notes**: the two latest in receipt order, then one line `and {n} earlier notes`, `note` singular for one.
 24. **Several notes in one loop**: `Researching your notes: {a}; {b}`. The note redraft's first line and Reviewing's outcome lines for the two note routes are this plan's words (the spec names none); see the copy table.
-25. **The two unnamed outcomes** read `not checked` and `replaced by a later note`.
+25. **The three unnamed outcomes** read `not checked`, `replaced by a later note` (O3) and `not addressed in the report` (O8).
 26. **Notes left on the page**: the smaller of the last `/status`'s `notes_remaining` and ten less the notes the stream has received, so the line disables with no failed POST, even between status reads. The response fields are optional in `web/lib/api.ts`, because the replay captures under `web/test/fixtures/events/` predate them.
 27. **The acknowledgement's motion.** A new line rises 4px and fades in over 200ms from its `@starting-style`: at once in a row that is already open, and in its place in the stagger in the row a hand-off opens. Under reduced motion it fades in place over 160ms, as every brief line does (`globals.css:1324`).
-28. **Other POST failures** (5xx, network) keep the text and add nothing; the spec names only the two 409s.
+28. **Other POST failures** (a 5xx, a network error, any refusal but the two 409s) keep the text and show one `.cap` under the field, `Couldn't send — try again` (this plan's words; the spec names only the two 409s), until the reader edits the note or sends it again (review round 1, P3-6). It is a polite status (`role="status"`), and nothing else on the line changes.
 29. **Class names.** The note line is `.note-line`: the prototype's `.note` is the status box (`globals.css:934-939`). The send is the plain `.icon-btn` (36px, 44px at phone width, `globals.css:173-178`, `:987`), not the pick's `.icon-btn.sm`, which the app does not have. The field is Phase 2's `.tx` (`globals.css:1352-1355`: transparent, a soft ground on hover, the focus ring on focus), which is global and sized for the check card (a 44px min-height, 8px padding); `.note-line .tx` gives the line its own 36px min-height and 6px padding, and Phase 2's rule stays as it is.
+30. **The acknowledgements are announced.** Each note's ack line is its own polite live region (`aria-live="polite"`, `aria-atomic="true"`): nothing moves focus, as Phase 2's check card does, so a screen-reader user hears the line whole when it changes from `Reading your note…` to `Got it — …` (review round 1, P3-7). The `and {n} earlier notes` line is not a live region: it only counts.
 
 ## Phase 2's final-review notes, and where each is met
 
@@ -161,9 +163,10 @@
 - **O2 — On the replay server a note is never applied.** `ReplayRunner` runs the graph at full speed and paces only the stream (`api/replay.py:64-141`): by the time the page shows Researching, the engine has finished. A note sent then is received, read and acknowledged, and ends `pending` (`not checked`). The engine's use of notes is proven offline instead, on the real graph with a bound board (Tasks 2–6), and the page's flow on the replay server (Task 11); DESIGN.md and `api-gaps.md` gap 3.9 say so. A replay runner that holds each node until the stream has published its start would close it; that changes the replay contract and is not planned.
 - **O3 — The outcome enum gains `replaced`.** §4.6 lists `covered | not_found | pending`. A note a later note replaced is never judged, and `pending` would read as "still to come" forever. Resolution kept: a fourth value, `replaced`, rendered `replaced by a later note`.
 - **O4 — A note in the last instant before the route is published is taken and never applied.** Between the review node's wait for readings and the orchestrator's publication of its route decision, a note can still be accepted: it misses the decision, and publishing then closes notes. It ends `pending` (`not checked`). The window is one node's return; closing it would need the route decided under a lock the notes route shares.
-- **O5 — The interpreter's call is outside the run's request-attempt budget and its telemetry**, like Phase 2's check call (its O1): the budget belongs to the runner, and a note arrives from outside the run. One structured request of at most 2048 output tokens per note, at most ten per run, each within `hitl.note_interpret_timeout_s` (15 s).
+- **O5 — The interpreter's call is outside the run's request-attempt budget and its telemetry**, like Phase 2's check call (its O1): the budget belongs to the runner, and a note arrives from outside the run. One structured request of at most 2048 output tokens per note, at most ten per run, each within `hitl.note_interpret_timeout_s` (15 s). However high that timeout is set (M6 caps it at 600 s), the review node waits for a reading at most `_REVIEW_NOTES_WAIT_S` (30 s) before it reads its route (ambiguity 8).
 - **O6 — The planner's scoping block is printed under `## Acquisition context`.** The shared prompt module prints a decision context under that heading (`agents/prompts.py:259-260`), and editing it would move every agent's fingerprint, the evidence verifier's included. The block's own lead sentence says what it is.
 - **O7 — The live structured call is [INFERENCE].** `NoteInterpretationDraft` goes through the provider's structured-output path like Phase 2's `ClarityCheckDraft`. No test may call a provider; a rejected schema would fall back safely (every note kept as written, `fallback: true`). One live note by the owner settles it; that is outside this plan.
+- **O8 — The outcome enum gains `not_addressed`: a note the report still ignores is never `covered`.** §4.6 lists `covered | not_found | pending`, and §4.7's captions are `covered` and `couldn't find evidence`; neither names a note the last review judged `ignored_with_evidence` — the findings bore on it and the report does not follow it, after its one redraft (D11, AC18) or because the run ended before that redraft. The first draft of this plan mapped it to `covered`, which tells the reader the opposite of what happened (review round 1, P2-1). Resolution (the controller's ruling on P2-1, 2026-09-29; the human may rename the value or its caption): a fifth value, `not_addressed`, captioned `not addressed in the report`, carried through `note_outcome` and `NoteOutcome` (Task 7), `ReaderNoteResponse.outcome` and the status response (Tasks 7–8), `ReaderNoteOutcome` and `OUTCOME_TEXT` (Task 9), "Your notes" (Task 10), the README (Task 8) and DESIGN.md (Task 12). No event carries an outcome: `session.note.interpreted` carries the reading only, and the two graph note events carry note ids (Tasks 3, 7), so no event changes.
 
 ## File map
 
@@ -172,10 +175,10 @@
 | `src/deep_research/utils/types.py` | `MAX_NOTES_PER_RUN`, `NOTE_COVERAGE_PREFIX`, `NOTE_TOPIC_TITLE_PREFIX`, `ReaderNoteKind`, `ReaderNoteScope`, `ReaderNote`, `NoteDisposition`, `active_reader_notes`, `with_board_notes`; `ReportReview.note_dispositions`; `ResearchState.reader_notes` / `note_passes` and their update keys | 2 |
 | `src/deep_research/runtime/notes.py` (new) | `NoteBoard` (receive, add, drop, settle, snapshot), `NoteLimitReached`, `ReceivedNote`, the ContextVar binding | 2 |
 | `src/deep_research/agents/reader_notes.py` (new), `agents/__init__.py` | each step's lead sentence, the one renderer, the board read at call time; the package's exports | 2, 3, 6 |
-| `src/deep_research/graph/nodes.py` | every node starts from the board's notes (2); the review node's reviewed/late notes, the note redraft, `note_sub_topic`, `note_pass_node` (3) | 2, 3 |
+| `src/deep_research/graph/nodes.py` | every node starts from the board's notes (2); the review node's reviewed/late notes and its bounded wait (`_REVIEW_NOTES_WAIT_S`), the note redraft, `note_sub_topic`, `note_pass_node` (3) | 2, 3 |
 | `src/deep_research/graph/state.py`, `graph/events.py`, `graph/orchestrator.py`, `graph/__init__.py` | the two note routes, `NOTE_PASS_NODE`, the recursion limit, the two note events, the `note_pass` node and edge | 3 |
 | `src/deep_research/agents/planner.py`, `agents/researcher.py` | the notes in planning, scoping, each research turn and extraction | 4 |
-| `src/deep_research/agents/source_evaluator.py`, `agents/report_writer.py`, `agents/report.py` | the notes in scoring and writing; a fresh draft after a note loop; the report's uncovered-note line | 5 |
+| `src/deep_research/agents/source_evaluator.py`, `agents/report_writer.py`, `agents/report.py` | the notes in scoring and writing; a fresh draft after a note loop; the report's two note lines (uncovered, and answered but not stated) | 5 |
 | `src/deep_research/agents/report_reviewer.py` | the notes in the review's packet and both its fingerprints (3); the review's notes block, `note_dispositions`, the two notes schemas (6) | 3, 6 |
 | `src/deep_research/e2e_evaluation/replay.py` | replay's answer to the two notes schemas | 6 |
 | `src/deep_research/api/notes.py` (new), `api/models.py` | the interpreter (live, scripted, fallback), the two events, outcomes; the note request and response shapes | 7 |
@@ -337,7 +340,7 @@ If a baseline differs from the Expected above — because Phase 2's verification
 
 | Suite | Increments by task |
 |---|---|
-| Backend | +17 (Task 2), +13 (Task 3), +5 (Task 4), +3 (Task 5), +7 (Task 6), +20 (Task 7), +28 (Task 8): 93 in all |
+| Backend | +17 (Task 2), +14 (Task 3), +5 (Task 4), +4 (Task 5), +7 (Task 6), +20 (Task 7), +28 (Task 8): 95 in all |
 | Vitest | +10 (Task 9), +12 (Task 10), +1 (Task 13) |
 | Chromium | +6 (Task 11) |
 | Visual | +2 (Task 11) |
@@ -362,7 +365,7 @@ Nothing changed. Task 1's summary lists the anchor line, the three suite baselin
 - Produces:
   - In `deep_research.utils.types`: `MAX_NOTES_PER_RUN = 10`, `NOTE_COVERAGE_PREFIX = "note-"`, `NOTE_TOPIC_TITLE_PREFIX = "Your note: "`; `ReaderNoteKind`, `NoteDispositionStatus`; `ReaderNoteScope(geography, period)`; `ReaderNote(ContractModel)` with `note_id` (`n1`–`n10`), `text` (1–500), `received_at`, `received_during`, `kinds` (1–3), `restatement` (1–500), `scope`, `new_questions` (≤ 3), `replaces`, and the flags `reviewed`, `passed`, `redrafted` (default `False`); `NoteDisposition(note_id, status)`; `active_reader_notes(notes)` (drops every note a later one replaces); `with_board_notes(existing, board)` (the state's notes, then the board's notes it does not hold); `ReportReview.note_dispositions: list[NoteDisposition] = []`; `ResearchState.reader_notes: list[ReaderNote] = []` (replace-on-write) and `note_passes: int = 0`, both keys in `ResearchStateUpdate`.
   - `deep_research.runtime.notes`: `NoteBoard` with `receive(text, *, received_at, received_during) -> ReceivedNote` (numbers `n1`…, raises `NoteLimitReached` past the tenth), `add(note)`, `drop(note_id)`, `interpreted(note_id)`, `snapshot()` (deep copies, receipt order), `received()`, `accepted`, `remaining`, `pending`, `async settled()`; `bind_note_board(board)` (a context manager) and `current_note_board()`.
-  - `deep_research.agents.reader_notes`: `PLANNING_NOTES`, `RESEARCH_NOTES`, `EXTRACTION_NOTES`, `SOURCE_NOTES`, `WRITING_NOTES`, `REVIEW_NOTES` (each step's lead sentence); `render_reader_notes(notes, *, instruction, with_ids=False) -> str` (`""` without notes); `board_notes()`, `async notes_settled()`, `live_reader_notes(state_notes)`, `research_reader_notes(notes)`; all exported from `deep_research.agents`.
+  - `deep_research.agents.reader_notes`: `PLANNING_NOTES`, `RESEARCH_NOTES`, `EXTRACTION_NOTES`, `SOURCE_NOTES`, `WRITING_NOTES`, `REVIEW_NOTES` (each step's lead sentence); `render_reader_notes(notes, *, instruction, with_ids=False) -> str` (`""` without notes); `board_notes()`, `async notes_settled(*, timeout=None) -> bool` (`False` when `timeout` seconds passed with a note still being read), `live_reader_notes(state_notes)`, `research_reader_notes(notes)`; all exported from `deep_research.agents`.
   - `agent_node` starts every agent from the state plus the board's new notes (`_board_notes_update`, `{}` when there is none).
   - `tests/graph_fakes.py`: `fake_reader_note(note_id="n1", **overrides)` and `fake_report_review(..., note_dispositions={id: status})`.
 
@@ -1251,6 +1254,7 @@ cycle whenever the graph is imported first.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -1319,13 +1323,24 @@ def board_notes() -> list[ReaderNote]:
     return [] if board is None else board.snapshot()
 
 
-async def notes_settled() -> None:
-    """Wait until the bound board has no note still being interpreted."""
+async def notes_settled(*, timeout: float | None = None) -> bool:
+    """Wait until the bound board has no note still being interpreted.
+
+    ``timeout`` bounds the wait in seconds (``None``: no bound). ``True`` once
+    nothing is being read, and at once with no board bound; ``False`` when the
+    bound passed first, with the notes still being read left on the board.
+    """
     from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
 
     board = notes.current_note_board()
-    if board is not None:
-        await board.settled()
+    if board is None:
+        return True
+    try:
+        async with asyncio.timeout(timeout):
+            await board.settled()
+    except TimeoutError:
+        return False
+    return True
 
 
 def live_reader_notes(state_notes: Sequence[ReaderNote]) -> list[ReaderNote]:
@@ -1554,13 +1569,13 @@ git commit -m "feat(engine): reader notes on a per-run board, in the run's state
 - Produces:
   - In `deep_research.graph.state`: `NOTE_PASS_NODE = ROUTE_NOTE_PASS = "note_pass"` (in `NODE_NAMES` before `extra_pass`), `NOTE_REDRAFT_STEPS = 3`; reasons `note_pass_requested` and `note_redraft_requested` (both status `incomplete`); `note_dispositions(state)`, `notes_due_a_pass(state)`, `notes_due_a_redraft(state)`; `graph_route` reads them right after "halted"; `extra_pass_target_ids` leaves `note-*` targets out; the new recursion limit.
   - In `deep_research.graph.events`: `note_pass_started_event(*, iteration, note_passes, note_ids, targets)` → `graph.note_pass.started`; `note_redraft_requested_event(*, iteration, note_ids)` → `graph.note_redraft.requested`.
-  - In `deep_research.graph.nodes`: `note_sub_topic(note, *, priority) -> SubTopic`; `note_pass_node` (appends one sub-topic per note that owes a pass, sets `extra_pass_target_ids` to their targets, flags the notes `passed`, adds one to `note_passes`, emits the event; with no note due it halts on `graph_invalid_route`); `writer_redraft_node` serves a note redraft without spending a re-run; the review node merges the board, waits for readings, marks its notes `reviewed` and adds late ones unreviewed.
+  - In `deep_research.graph.nodes`: `note_sub_topic(note, *, priority) -> SubTopic`; `note_pass_node` (appends one sub-topic per note that owes a pass, sets `extra_pass_target_ids` to their targets, flags the notes `passed`, adds one to `note_passes`, emits the event; with no note due it halts on `graph_invalid_route`); `writer_redraft_node` serves a note redraft without spending a re-run; the review node merges the board, waits for readings for `_REVIEW_NOTES_WAIT_S = 30.0` seconds at most (ambiguity 8), marks its notes `reviewed` and adds late ones unreviewed.
   - The compiled graph routes `note_pass` → `researcher`.
   - In `deep_research.agents.report_reviewer`: `ReviewNoteView(note_id, restatement, kinds)`; `ReportReviewInput.reader_notes: list[ReviewNoteView]`, the state's active notes, filled by `build_report_review_input`. Both packet fingerprints leave it out while it is empty, so a packet without notes keeps its fingerprint. The review node needs this to hand the reviewer the notes it judges; the review request shows them from Task 6 on.
 
 - [ ] **Step 1: Write the failing tests**
 
-`graph_route` is tested on plain states; the hops and the review node on channels; AC17, AC18 and AC20 on the compiled stub graph. `NoteJudge` is a reviewer double that judges each note its packet carries by how many reviews have read it, and can land a note on the board while a review runs. In AC20 each note arrives alone during a review, so each buys its own redraft and then its own pass: the most supersteps ten notes can take.
+`graph_route` is tested on plain states; the hops and the review node on channels; AC17, AC18 and AC20 on the compiled stub graph. The review node's wait for a reading is tested twice: a reading that ends is waited for, and one that never ends is waited for only until `_REVIEW_NOTES_WAIT_S` (set to 50 ms in the test, whose `asyncio.wait_for(..., timeout=5)` fails the test if the node waits unbounded). `NoteJudge` is a reviewer double that judges each note its packet carries by how many reviews have read it, and can land a note on the board while a review runs. In AC20 each note arrives alone during a review, so each buys its own redraft and then its own pass: the most supersteps ten notes can take.
 
 Create `tests/test_graph/test_note_routing.py`:
 
@@ -1579,6 +1594,7 @@ import pytest
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.researcher import select_sub_topics
 from deep_research.graph.nodes import (
+    _REVIEW_NOTES_WAIT_S,
     _arrived_via_redraft_hop,
     note_pass_node,
     note_sub_topic,
@@ -1606,6 +1622,7 @@ from deep_research.graph.state import (
 )
 from deep_research.observability import Tracker
 from deep_research.runtime.notes import NoteBoard, bind_note_board
+from deep_research.utils.config import HitlConfig
 from deep_research.utils.types import (
     MAX_NOTES_PER_RUN,
     NoteDisposition,
@@ -1807,6 +1824,22 @@ async def test_the_note_redraft_flags_its_notes_and_spends_no_rerun() -> None:
     assert _arrived_via_redraft_hop(hop.events) is False
 
 
+def _drafted_state() -> ResearchState:
+    """A run that has drafted its report and is ready for review."""
+    one = verified_pass()
+    state = fake_research_state(
+        sub_topics=[fake_sub_topic(targets=[fake_target()])],
+        raw_findings=[one.finding], verified_findings=[one.finding],
+        read_records={one.read.read_id: one.read}, evaluated_sources=[fake_scored_source()],
+    )
+    composition = fake_writer_composition(state)
+    return state.model_copy(update={
+        "composition": composition,
+        "report": render_written_report(composition),
+        "report_evidence": render_finding_log(composition),
+    })
+
+
 @pytest.mark.asyncio
 async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_read() -> None:
     """spec §4.8 "A note arrives during Reviewing": the node waits for the note, then
@@ -1815,18 +1848,6 @@ async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_re
     board.receive("first", received_at=AT, received_during="report_writer")
     board.add(fake_reader_note("n1"))
     board.receive("second", received_at=AT, received_during="report_reviewer")
-    one = verified_pass()
-    state = fake_research_state(
-        sub_topics=[fake_sub_topic(targets=[fake_target()])],
-        raw_findings=[one.finding], verified_findings=[one.finding],
-        read_records={one.read.read_id: one.read}, evaluated_sources=[fake_scored_source()],
-    )
-    composition = fake_writer_composition(state)
-    state = state.model_copy(update={
-        "composition": composition,
-        "report": render_written_report(composition),
-        "report_evidence": render_finding_log(composition),
-    })
     reviewer = FakeReviewer()
 
     async def interpret_later() -> None:
@@ -1835,7 +1856,7 @@ async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_re
 
     with bind_note_board(board):
         reading = asyncio.create_task(interpret_later())
-        result = load_state(await report_reviewer_node(reviewer)(dump_state(state)))
+        result = load_state(await report_reviewer_node(reviewer)(dump_state(_drafted_state())))
         await reading
 
     assert [note.note_id for note in reviewer.packets[0].reader_notes] == ["n1"]
@@ -1843,6 +1864,35 @@ async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_re
     decided = [event for event in result.events if event.event_type == "graph.route.decided"]
     assert decided[-1].metadata["reason"] == "note_redraft_requested"
     assert decided[-1].metadata["destination"] == ROUTE_REDRAFT
+
+
+@pytest.mark.asyncio
+async def test_the_review_waits_for_a_reading_no_longer_than_its_own_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reading that never ends holds the route for ``_REVIEW_NOTES_WAIT_S`` at most, however
+    long the interpreter's own timeout is: the note stays on the board, out of this
+    decision, and the route is read without it."""
+    assert _REVIEW_NOTES_WAIT_S == 30.0
+    assert HitlConfig().note_interpret_timeout_s < _REVIEW_NOTES_WAIT_S
+    monkeypatch.setattr("deep_research.graph.nodes._REVIEW_NOTES_WAIT_S", 0.05)
+    board = NoteBoard()
+    board.receive("first", received_at=AT, received_during="report_writer")
+    board.add(fake_reader_note("n1"))
+    board.receive("never read", received_at=AT, received_during="report_reviewer")
+
+    with bind_note_board(board):
+        result = load_state(
+            await asyncio.wait_for(report_reviewer_node(FakeReviewer())(dump_state(_drafted_state())), timeout=5)
+        )
+
+    assert board.pending == ("n2",)
+    assert [(n.note_id, n.reviewed) for n in result.reader_notes] == [("n1", True)]
+    # Read without the note: none is due, so the review's own verdict decides.
+    decided = [event for event in result.events if event.event_type == "graph.route.decided"]
+    assert (decided[-1].metadata["destination"], decided[-1].metadata["reason"]) == (
+        ROUTE_FINALIZE, "report_not_accepted",
+    )
 
 
 # --- the compiled graph: AC17, AC18, AC20 ------------------------------------------
@@ -2762,8 +2812,9 @@ with
     The reader's notes (live-briefs spec §4.6): the node starts from every note
     received so far, and each active one is in the review input, so each is
     marked ``reviewed``. Before the route is read the node waits for any note
-    still being interpreted and takes in every note that arrived meanwhile,
-    unreviewed — which is what buys a note sent during Reviewing its redraft.
+    still being interpreted — for ``_REVIEW_NOTES_WAIT_S`` at most — and takes
+    in every note that arrived meanwhile, unreviewed, which is what buys a
+    note sent during Reviewing its redraft.
     """
 ```
 
@@ -2809,7 +2860,7 @@ with
                 else []
             }
         )
-        await notes_settled()
+        await notes_settled(timeout=_REVIEW_NOTES_WAIT_S)
         merged = merge_research_state(
             started,
             {
@@ -2832,6 +2883,15 @@ def _unreviewed(packet: ReportReviewInput, reason: str, *, status: str) -> Repor
 with
 
 ```python
+
+# The longest the review node waits for a note still being read before it reads
+# its route (live-briefs spec §4.8 "A note arrives during Reviewing"): twice
+# ``hitl.note_interpret_timeout_s``'s default of 15 s, so with the default every
+# reading has ended first, and a raised timeout (up to ten minutes) can hold the
+# route for this long at most. A note still being read then is left out of this
+# decision, unreviewed; a loop's next node takes it in once it is read.
+_REVIEW_NOTES_WAIT_S = 30.0
+
 
 def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
     """The review's notes marked reviewed, then every note that arrived since, or ``{}``.
@@ -3498,7 +3558,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_graph/test_note_routing.py tests/test_graph/test_state.py tests/test_graph/test_orchestrator.py tests/test_imports.py -q 2>&1 | tail -1
 ```
 
-Expected: `89 passed`: `test_note_routing.py`'s `13`, the two updated files' Task 1 count of `50`, and `tests/test_imports.py`'s `26` (which now reaches `ReviewNoteView`).
+Expected: `90 passed`: `test_note_routing.py`'s `14`, the two updated files' Task 1 count of `50`, and `tests/test_imports.py`'s `26` (which now reaches `ReviewNoteView`, and finds no public name of `graph/*.py` missing from `deep_research.graph.__all__`).
 
 - [ ] **Step 5: Run the full suite**
 
@@ -3508,7 +3568,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4864 passed, 6 skipped, 12 deselected` (+13). Every existing route test passes unchanged: with no note due, `graph_route` reads exactly as it did.
+Expected: `4865 passed, 6 skipped, 12 deselected` (+14). Every existing route test passes unchanged: with no note due, `graph_route` reads exactly as it did.
 
 - [ ] **Step 6: Commit**
 
@@ -3523,7 +3583,7 @@ git commit -m "feat(graph): one targeted pass and one redraft per reader note, o
 
 **Files:**
 - Create: `tests/test_agents/test_reader_notes_planning.py`
-- Modify: `src/deep_research/agents/planner.py:37`, `:63` (imports), `:2707`, `:2719`, `:2730` (`plan_messages`), `:2849`, `:2862` (`plan_review_messages`), `:3135`, `:3160` (`_reader_notes`, `reader_notes_block`, `build_decision_context`), `:3203` (`run`), `:3267`, `:3353` (the two requests); `src/deep_research/agents/researcher.py:56` (imports), `:1486`, `:1647` (`extraction_messages`), `:3173` (`_reader_notes_block`), `:3374`, `:3511`, `:3843` (the three extraction requests), `:4384` (the `decide` closure)
+- Modify: `src/deep_research/agents/planner.py:37`, `:63` (imports), `:2707`, `:2719`, `:2730` (`plan_messages`), `:2849`, `:2862` (`plan_review_messages`), `:3135`, `:3160` (`_reader_notes`, `reader_notes_block`, `build_decision_context`), `:3203` (`run`), `:3267`, `:3353` (the two requests); `src/deep_research/agents/researcher.py:56` (imports), `:1486`, `:1731` (`extraction_messages`: the signature, and the block after `# Retrieved evidence`), `:3173` (`_reader_notes_block`), `:3374`, `:3511`, `:3843` (the three extraction requests), `:4384` (the `decide` closure)
 - Test: `tests/test_graph/test_reader_notes_replay.py` (one test appended), `tests/test_evaluation/test_config.py` (two pins, by the snippet in Step 6)
 
 **Interfaces:**
@@ -3531,7 +3591,7 @@ git commit -m "feat(graph): one targeted pass and one redraft per reader note, o
 - Produces:
   - `plan_messages(..., reader_notes: str = "")` and `plan_review_messages(..., reader_notes: str = "")` add `# Reader notes\n{block}` after `# Reader answers` (Phase 2's section), only when the block is not empty.
   - `PlannerAgent.reader_notes_block()` (the state's notes plus the board's, active, under `PLANNING_NOTES`) feeds both requests, and `PlannerAgent.build_decision_context` returns it for every scoping turn (`""` without notes).
-  - `extraction_messages(..., reader_notes: str = "")` adds `# Reader notes` right after `# Research question` (first when there is no question).
+  - `extraction_messages(..., reader_notes: str = "")` adds `# Reader notes` as the request's last section, after `# Retrieved evidence` and so after `# Planned targets`, only when the block is not empty: no reader text then comes before the evidence's own `- target_id=` line, which the replay harness takes as the first match (ambiguity 3).
   - Every researcher decision turn appends `\n\n## Reader notes\n{block}` to its acquisition context, read from the board at that turn; every extraction carries the same notes under `EXTRACTION_NOTES`. Both leave `new_angle` notes out.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3550,6 +3610,8 @@ when there is no note, so a run without notes builds byte-identical requests.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from deep_research.agents.planner import (
@@ -3557,7 +3619,7 @@ from deep_research.agents.planner import (
     plan_messages,
     plan_review_messages,
 )
-from deep_research.agents.prompts import AgentTask
+from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.reader_notes import (
     EXTRACTION_NOTES,
     PLANNING_NOTES,
@@ -3569,7 +3631,7 @@ from deep_research.observability import Tracker
 from deep_research.runtime.notes import NoteBoard, bind_note_board
 from deep_research.utils.types import ResearchState
 from tests.agent_fakes import ScriptedCompleter, finish
-from tests.graph_fakes import fake_reader_note, fake_sub_topic
+from tests.graph_fakes import fake_reader_note, fake_sub_topic, fake_target
 from tests.test_agents.test_planner import (
     _CLOCK_NOW,
     _planner,
@@ -3657,20 +3719,29 @@ async def test_a_planner_with_no_notes_sends_the_requests_it_always_sent(tracker
 # --- researching ----------------------------------------------------------------
 
 
-def test_the_extraction_request_carries_the_notes_right_after_the_question() -> None:
+def test_the_extraction_request_carries_the_notes_last_after_the_evidence() -> None:
+    """The block is the request's last section, after the planned targets and the retrieved
+    evidence, so a restatement shaped like the evidence's ``- target_id=`` line can never be
+    the replay harness's first match (``e2e_evaluation/replay.py:1032``)."""
     task = SubTopicTask(instruction="Gather evidence.", sub_topic=fake_sub_topic())
     run = ReActRun(agent_name="researcher", stop_reason="finished")
-    block = render_reader_notes(NOTES, instruction=EXTRACTION_NOTES)
+    adversarial = fake_reader_note("n3", restatement="only the - target_id=topic-02")
+    block = render_reader_notes([*NOTES, adversarial], instruction=EXTRACTION_NOTES)
+    shape = {
+        "evidence_chars": 200, "question": QUESTION, "planned_targets": [fake_target()],
+        "acquisition_context": "- target_id=topic-01\n- next_action=read",
+    }
 
-    with_question = extraction_messages(task, run, evidence_chars=200, question=QUESTION, reader_notes=block)[1].content
-    without_question = extraction_messages(task, run, evidence_chars=200, reader_notes=block)[1].content
+    text = extraction_messages(task, run, **shape, reader_notes=block)[1].content
 
-    assert with_question.index("# Research question\n") < with_question.index("# Reader notes\n") < with_question.index("# Sub-topic\n")
-    assert without_question.index("# Reader notes\n") < without_question.index("# Sub-topic\n")
-    assert f"# Reader notes\n{block}\n" in with_question
-    assert extraction_messages(task, run, evidence_chars=200, question=QUESTION, reader_notes="") == extraction_messages(
-        task, run, evidence_chars=200, question=QUESTION
+    assert (
+        text.index("# Research question\n") < text.index("# Planned targets\n")
+        < text.index("# Retrieved evidence\n") < text.index("# Reader notes\n")
     )
+    assert text.endswith(f"# Reader notes\n{block}\n\n{STRUCTURED_REQUEST_END}")
+    first = re.search(r"- target_id=(topic-\d+)", text)
+    assert first is not None and first.group(1) == "topic-01"
+    assert extraction_messages(task, run, **shape, reader_notes="") == extraction_messages(task, run, **shape)
 ```
 
 Append to `tests/test_graph/test_reader_notes_replay.py`:
@@ -3717,7 +3788,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_agents/test_reader_notes_planning.py tests/test_graph/test_reader_notes_replay.py -q 2>&1 | tail -8
 ```
 
-Expected: four `FAILED` lines, then `4 failed, 3 passed`. `test_the_plan_requests_carry_the_notes_block_only_when_there_is_one` and `test_the_extraction_request_carries_the_notes_right_after_the_question` fail with `TypeError: … got an unexpected keyword argument 'reader_notes'`; `test_the_planner_reads_the_notes_into_its_scoping_turn_and_both_requests` finds no notes under `## Acquisition context`; `test_the_planner_and_every_research_turn_carry_the_notes` finds a `planner:react` turn without them. The three that pass are `test_a_planner_with_no_notes_sends_the_requests_it_always_sent` and Task 2's two digest cases.
+Expected: four `FAILED` lines, then `4 failed, 3 passed`. `test_the_plan_requests_carry_the_notes_block_only_when_there_is_one` and `test_the_extraction_request_carries_the_notes_last_after_the_evidence` fail with `TypeError: … got an unexpected keyword argument 'reader_notes'`; `test_the_planner_reads_the_notes_into_its_scoping_turn_and_both_requests` finds no notes under `## Acquisition context`; `test_the_planner_and_every_research_turn_carry_the_notes` finds a `planner:react` turn without them. The three that pass are `test_a_planner_with_no_notes_sends_the_requests_it_always_sent` and Task 2's two digest cases.
 
 - [ ] **Step 3: Put the notes into the planner's and the researcher's requests**
 
@@ -4026,24 +4097,37 @@ with
     """Build the messages that extract findings from one finished loop.
 
     ``reader_notes`` is the rendered reader-notes block (live-briefs spec
-    §4.6), printed as ``# Reader notes`` right after the research question so
-    extraction respects a note's scope; an empty block adds nothing.
+    §4.6), printed as ``# Reader notes`` so extraction respects a note's
+    scope; an empty block adds nothing. It is the last section, after the
+    retrieved evidence: no reader text then comes before the evidence's own
+    ``- target_id=`` line, which the replay harness reads as the first match
+    (``e2e_evaluation/replay.py``).
 ```
 
 `src/deep_research/agents/researcher.py` — replace
 
 ```python
-        sections.insert(0, f"# Research question\n{question}")
-    if planned_targets:
+                else render_evidence(
+                    run, limit=evidence_chars, discovery_payloads=False
+                )
+            )
+        )
+    )
+    static = [
 ```
 
 with
 
 ```python
-        sections.insert(0, f"# Research question\n{question}")
+                else render_evidence(
+                    run, limit=evidence_chars, discovery_payloads=False
+                )
+            )
+        )
+    )
     if reader_notes:
-        sections.insert(1 if question else 0, f"# Reader notes\n{reader_notes}")
-    if planned_targets:
+        sections.append(f"# Reader notes\n{reader_notes}")
+    static = [
 ```
 
 `src/deep_research/agents/researcher.py` — replace
@@ -4205,7 +4289,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | grep -E "^E +\{|passed|failed"
 ```
 
-Expected: `1 failed, 10 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'planner': 'd1ba46ce147f'} != {'planner': 'e9b74316ad14'}` and `{'researcher': '4995fd442e1d'} != {'researcher': 'de7506bed63e'}` (the two lines come in either order): the modules' code changed, and `agents/prompts.py` did not.
+Expected: `1 failed, 10 passed, 67 deselected`. `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift` reports `{'planner': 'd1ba46ce147f'} != {'planner': 'e9b74316ad14'}` and `{'researcher': 'a8c9528f0c20'} != {'researcher': 'de7506bed63e'}` (the two lines come in either order): the modules' code changed, and `agents/prompts.py` did not.
 
 - [ ] **Step 6: Re-pin the planner and the researcher (module code only)**
 
@@ -4239,7 +4323,7 @@ EOF
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | tail -1
 ```
 
-Expected: `planner: e9b74316ad14 -> d1ba46ce147f`, `researcher: de7506bed63e -> 4995fd442e1d`, then `11 passed, 67 deselected`.
+Expected: `planner: e9b74316ad14 -> d1ba46ce147f`, `researcher: de7506bed63e -> a8c9528f0c20`, then `11 passed, 67 deselected`.
 
 The snippet reads the current pin, so it works whatever value Phase 2 left, and it writes the comment above the pin in the file's existing ``Moved `old` -> `new`.`` style. The new values are the ones planning produced from exactly this task's text. A different value is acceptable when `git diff -- src/deep_research/agents/planner.py src/deep_research/agents/researcher.py` shows only this task's edits and every test in this task passes: the snippet pins whatever the modules now hash to, so do not hunt for single characters.
 
@@ -4251,7 +4335,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4869 passed, 6 skipped, 12 deselected` (+5). Every existing replay test passes unchanged.
+Expected: `4870 passed, 6 skipped, 12 deselected` (+5). Every existing replay test passes unchanged.
 
 - [ ] **Step 8: Commit**
 
@@ -4266,7 +4350,7 @@ git commit -m "feat(agents): the planner and the researcher read the reader's no
 
 **Files:**
 - Create: `tests/test_agents/test_reader_notes_writing.py`
-- Modify: `src/deep_research/agents/source_evaluator.py:57`, `:76` (imports), `:1102` (`build_task`'s `guidance`); `src/deep_research/agents/report_writer.py:45`, `:108` (imports), `:516` (`ReportWriterTask.reader_notes`), `:1015` (`_is_redraft_hop`), `:1110` (`section_messages`), `:1194` (`bottom_line_messages`), `:3221` (`build_task`); `src/deep_research/agents/report.py:59` (imports), `:1481`, `:1500` (`_uncovered_note_groups`, `_could_not_confirm_groups`)
+- Modify: `src/deep_research/agents/source_evaluator.py:57`, `:76` (imports), `:1102` (`build_task`'s `guidance`); `src/deep_research/agents/report_writer.py:45`, `:108` (imports), `:516` (`ReportWriterTask.reader_notes`), `:1015` (`_is_redraft_hop`), `:1110` (`section_messages`), `:1194` (`bottom_line_messages`), `:3221` (`build_task`); `src/deep_research/agents/report.py:59` (imports), `:1481`, `:1500` (`_note_groups`, `_could_not_confirm_groups`)
 - Test: `tests/test_graph/test_reader_notes_replay.py` (one test appended), `tests/test_evaluation/test_config.py` (two pins, by Task 4's snippet)
 
 **Interfaces:**
@@ -4275,7 +4359,7 @@ git commit -m "feat(agents): the planner and the researcher read the reader's no
   - The scoring request's `# Context` slot (`agents/source_evaluator.py:858-859`, unused until now) carries the active notes under `SOURCE_NOTES` — relevance only, never authority or recency — and is empty without notes.
   - `ReportWriterTask.reader_notes: str = ""`; `section_messages` and `bottom_line_messages` add `# Reader notes` right after `# Answer form`, only when it is not empty.
   - `_is_redraft_hop(state)` reads the latest loop marker at the same iteration: after `graph.report.redraft_requested` the draft is a redraft; after `graph.note_pass.started` or `graph.note_redraft.requested` it is a fresh draft.
-  - `render_written_report` lists each note sub-topic with an unanswered target once, as `Couldn't find evidence for your note: {restatement}`, and never lists its questions among the other groups.
+  - `render_written_report` lists each note sub-topic with an unanswered target once, as `Couldn't find evidence for your note: {restatement}`, and each note sub-topic with a target a verified finding answers but no printed statement states once, as `We found sources on your note but could not state a checked answer: {restatement}` (right after the group `We found sources on these but could not state a checked answer:`, which no longer lists a note's target); so it never lists a note's derived questions in any group (ambiguity 18). `answered_not_stated_targets` is unchanged.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4286,7 +4370,7 @@ Create `tests/test_agents/test_reader_notes_writing.py`:
 
 from __future__ import annotations
 
-from deep_research.agents.report import render_written_report
+from deep_research.agents.report import answered_not_stated_targets, render_written_report
 from deep_research.agents.report_writer import _is_redraft_hop
 from deep_research.graph.nodes import note_sub_topic
 from deep_research.utils.types import ResearchEvent
@@ -4296,6 +4380,7 @@ from tests.graph_fakes import (
     fake_sub_topic,
     fake_target,
     fake_writer_composition,
+    verified_pass,
 )
 
 # --- writing and the report ----------------------------------------------------------
@@ -4342,6 +4427,29 @@ def test_the_report_names_a_note_it_found_no_evidence_for() -> None:
         "Couldn't find evidence for your note: how battery cells are recycled\n"
     )
     assert "How are battery cells recycled at end of life?" not in confirm
+
+
+def test_a_note_answered_but_never_stated_is_named_by_the_note_too() -> None:
+    """A note target a verified finding answers, but that no printed statement states, is
+    disclosed by the note, never by the question the run derived from it."""
+    angled = fake_reader_note(
+        "n2", kinds=["new_angle"], restatement="how battery cells are recycled",
+        new_questions=["How are battery cells recycled at end of life?"],
+    )
+    one = verified_pass(target_ids=["note-n2-target-01"])
+    state = fake_research_state(
+        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2)],
+        verified_findings=[one.finding],
+    )
+    composition = fake_writer_composition(state).model_copy(update={"summary": []})
+
+    report = render_written_report(composition)
+    confirm = report[report.index("## What we couldn't confirm"):]
+
+    assert answered_not_stated_targets(composition) == ["note-n2-target-01"]
+    assert "We found sources on your note but could not state a checked answer: how battery cells are recycled\n" in confirm
+    assert "We found sources on these but could not state a checked answer:" not in confirm
+    assert "How are battery cells recycled at end of life?" not in confirm
 ```
 
 Append to `tests/test_graph/test_reader_notes_replay.py`:
@@ -4382,7 +4490,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_agents/test_reader_notes_writing.py tests/test_graph/test_reader_notes_replay.py -q 2>&1 | tail -6
 ```
 
-Expected: three `FAILED` lines, then `3 failed, 3 passed`: `test_a_note_loop_makes_the_next_draft_a_fresh_one` (after `graph.note_pass.started` the writer still takes its draft for a redraft), `test_the_report_names_a_note_it_found_no_evidence_for` (the note's question is listed under "This run did not research:", and no line names the note) and `test_the_source_evaluator_and_the_writer_carry_the_notes`. The three that pass are Task 2's two digest cases and Task 4's replay test.
+Expected: four `FAILED` lines, then `4 failed, 3 passed`: `test_a_note_loop_makes_the_next_draft_a_fresh_one` (after `graph.note_pass.started` the writer still takes its draft for a redraft), `test_the_report_names_a_note_it_found_no_evidence_for` (the note's question is listed under "This run did not research:", and no line names the note), `test_a_note_answered_but_never_stated_is_named_by_the_note_too` (the note's question is listed under "We found sources on these but could not state a checked answer:", and no line names the note) and `test_the_source_evaluator_and_the_writer_carry_the_notes`. The three that pass are Task 2's two digest cases and Task 4's replay test.
 
 - [ ] **Step 3: Put the notes into scoring and writing, and name the uncovered note in the report**
 
@@ -4620,30 +4728,28 @@ with
     ]
 
 
-def _uncovered_note_groups(composition: ReportComposition) -> list[list[str]]:
-    """live-briefs spec §4.6: one line per reader note whose own targets are
-    still unanswered after its pass, in plan order.
+def _note_groups(
+    composition: ReportComposition, target_ids: set[str], lead: str
+) -> list[list[str]]:
+    """live-briefs spec §4.6: one line, ``lead`` then the note as the run read
+    it, per reader-note sub-topic with a target in ``target_ids``, in plan order.
 
     A note's targets are listed by the note, never by question: the reader
     wrote a note, not the questions the run derived from it.
     """
-    missing = {row.target_id for row in composition.not_found}
     return [
-        [
-            "Couldn't find evidence for your note: "
-            + topic.title.removeprefix(NOTE_TOPIC_TITLE_PREFIX)
-        ]
+        [lead + topic.title.removeprefix(NOTE_TOPIC_TITLE_PREFIX)]
         for topic in composition.sub_topics
         if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX)
-        and any(target.target_id in missing for target in topic.evidence_targets)
+        and any(target.target_id in target_ids for target in topic.evidence_targets)
     ]
 
 
 def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]:
     """§10: each present group, in order -- searched targets, unsearched
     targets, the reader's uncovered notes (live-briefs spec §4.6),
-    answered-but-unstated targets, failed parts, unreachable pages (capped at
-    5, Q5)."""
+    answered-but-unstated targets, the reader's answered-but-unstated notes,
+    failed parts, unreachable pages (capped at 5, Q5)."""
     groups: list[list[str]] = []
     rows = [
         target
@@ -4662,14 +4768,44 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
 ```python
         ])
     unstated_ids = answered_not_stated_targets(composition)
+    if unstated_ids:
+        targets_by_id = {
+            target.target_id: target
+            for topic in composition.sub_topics for target in topic.evidence_targets
+        }
+        groups.append([
+            "We found sources on these but could not state a checked answer:",
+            *[f"- {targets_by_id[t].question}" for t in unstated_ids if t in targets_by_id],
+        ])
+    failed = [part for part in composition.parts if part.status == "failed"]
 ```
 
 with
 
 ```python
         ])
-    groups.extend(_uncovered_note_groups(composition))
-    unstated_ids = answered_not_stated_targets(composition)
+    groups.extend(_note_groups(
+        composition,
+        {row.target_id for row in composition.not_found},
+        "Couldn't find evidence for your note: ",
+    ))
+    unstated = answered_not_stated_targets(composition)
+    unstated_ids = [t for t in unstated if not t.startswith(NOTE_COVERAGE_PREFIX)]
+    if unstated_ids:
+        targets_by_id = {
+            target.target_id: target
+            for topic in composition.sub_topics for target in topic.evidence_targets
+        }
+        groups.append([
+            "We found sources on these but could not state a checked answer:",
+            *[f"- {targets_by_id[t].question}" for t in unstated_ids if t in targets_by_id],
+        ])
+    groups.extend(_note_groups(
+        composition,
+        set(unstated),
+        "We found sources on your note but could not state a checked answer: ",
+    ))
+    failed = [part for part in composition.parts if part.status == "failed"]
 ```
 
 - [ ] **Step 4: Run the tests**
@@ -4679,7 +4815,7 @@ PY="$PWD/.venv/bin/python"
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_agents/test_reader_notes_writing.py tests/test_graph/test_reader_notes_replay.py tests/test_agents/test_source_evaluator.py tests/test_agents/test_report_writer.py tests/test_agents/test_report.py tests/test_agents/test_report_layout.py -q 2>&1 | tail -1
 ```
 
-Expected: `349 passed`.
+Expected: `350 passed`.
 
 - [ ] **Step 5: See the two pins move**
 
@@ -4732,7 +4868,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4872 passed, 6 skipped, 12 deselected` (+3).
+Expected: `4874 passed, 6 skipped, 12 deselected` (+4).
 
 - [ ] **Step 8: Commit**
 
@@ -5054,6 +5190,7 @@ with
 ```python
         'F02\'s figure, a material defect."}',
     ),
+)
 ```
 
 with
@@ -5084,6 +5221,7 @@ _REVIEW_NOTES_REPLY_EXAMPLES = (
         'F02\'s figure, a material defect.",'
         '"note_dispositions":[{"note_id":"n1","status":"honoured"}]}',
     ),
+)
 ```
 
 `src/deep_research/agents/report_reviewer.py` — replace
@@ -5771,7 +5909,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4879 passed, 6 skipped, 12 deselected` (+7). No pin moves in this task: `report_reviewer.py` and `e2e_evaluation/replay.py` are not part of any pinned fingerprint.
+Expected: `4881 passed, 6 skipped, 12 deselected` (+7). No pin moves in this task: `report_reviewer.py` and `e2e_evaluation/replay.py` are not part of any pinned fingerprint.
 
 - [ ] **Step 6: Commit**
 
@@ -5989,15 +6127,17 @@ def _finished(*notes: Any, verdicts: dict[str, str]) -> ResearchState:
     )
 
 
-def test_each_note_ends_covered_not_found_replaced_or_pending() -> None:
+def test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending() -> None:
+    """A note the report still ignores after its one redraft is ``not_addressed``, never
+    ``covered`` (open issue O8)."""
     state = _finished(
         fake_reader_note("n1"), fake_reader_note("n2"), fake_reader_note("n3"),
-        fake_reader_note("n4", replaces="n3"), fake_reader_note("n5"),
+        fake_reader_note("n4", replaces="n3", reviewed=True, redrafted=True), fake_reader_note("n5"),
         verdicts={"n1": "honoured", "n2": "no_evidence", "n4": "ignored_with_evidence"},
     )
 
     assert [note_outcome(f"n{i}", state) for i in range(1, 7)] == [
-        "covered", "not_found", "replaced", "covered", "pending", "pending",
+        "covered", "not_found", "replaced", "not_addressed", "pending", "pending",
     ]
     assert note_outcome("n1", None) == "pending"
 
@@ -6111,14 +6251,15 @@ class ReaderNoteResponse(ApiModel):
 
     ``restatement`` is the run's reading of it, ``None`` until the note is
     interpreted. ``outcome`` is the finished run's conclusion — ``covered``,
-    ``not_found`` or ``replaced`` — and ``pending`` while the run is going or
-    when no review judged the note.
+    ``not_found``, ``not_addressed`` (the report still does not follow the
+    note, though the findings bore on it) or ``replaced`` — and ``pending``
+    while the run is going or when no review judged the note.
     """
 
     note_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     restatement: str | None = None
-    outcome: Literal["covered", "not_found", "pending", "replaced"]
+    outcome: Literal["covered", "not_found", "not_addressed", "pending", "replaced"]
 
 
 class ClarificationQuestionResponse(ApiModel):
@@ -6221,7 +6362,9 @@ NOTE_TRACE_SESSION = "note-interpreter"
 MAX_RESTATEMENT_CHARS = 120
 MAX_NEW_QUESTIONS = 3
 MAX_NEW_QUESTION_CHARS = 200
-NoteOutcome: TypeAlias = Literal["covered", "not_found", "pending", "replaced"]
+NoteOutcome: TypeAlias = Literal[
+    "covered", "not_found", "not_addressed", "pending", "replaced"
+]
 
 
 class NoteScopeDraft(BaseModel):
@@ -6465,11 +6608,15 @@ def note_interpreted_event(note: ReaderNote, *, fallback: bool) -> ResearchEvent
 def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
     """What the finished run concluded about one note.
 
-    ``covered`` when the last review found evidence bearing on it (honoured, or
-    ignored with evidence after its one redraft), ``not_found`` when it found
-    none, ``replaced`` when a later note replaced it, and ``pending`` while the
-    run is going or when no review judged it (a note that arrived too late, or
-    a review that could not be made).
+    ``covered`` when the last review judged that the report follows it
+    (``honoured``); ``not_found`` when it found no evidence bearing on it;
+    ``not_addressed`` when it judged it ``ignored_with_evidence`` — the
+    findings bore on the note and the report still does not follow it, after
+    its one redraft or because the run ended before it — which is never
+    ``covered`` (live-briefs Phase 3, open issue O8); ``replaced`` when a later
+    note replaced it; and ``pending`` while the run is going or when no review
+    judged it (a note that arrived too late, or a review that could not be
+    made).
     """
     if state is None:
         return "pending"
@@ -6487,7 +6634,9 @@ def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
     verdict = verdicts.get(note_id)
     if verdict == "no_evidence":
         return "not_found"
-    if verdict in ("honoured", "ignored_with_evidence"):
+    if verdict == "ignored_with_evidence":
+        return "not_addressed"
+    if verdict == "honoured":
         return "covered"
     return "pending"
 
@@ -6550,7 +6699,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4899 passed, 6 skipped, 12 deselected` (+20).
+Expected: `4901 passed, 6 skipped, 12 deselected` (+20).
 
 - [ ] **Step 6: Commit**
 
@@ -6929,26 +7078,31 @@ def _wait(client: TestClient, session_id: str, predicate: Callable[[dict[str, An
 
 def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome() -> None:
     """AC19's status half: every note, its reading and its outcome; the pass count."""
-    runner = HeldRunner({"n2": "no_evidence"}, note_passes=1)
+    runner = HeldRunner({"n2": "no_evidence", "n3": "ignored_with_evidence"}, note_passes=1)
     app = create_app(runner=runner, preflight=valid_preflight, note_interpreter=Interpreter())
     with TestClient(app) as client:
         session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
         first = client.post(f"/research/{session_id}/notes", json={"text": "  Pumped hydro  "})
         second = client.post(f"/research/{session_id}/notes", json={"text": "Flow batteries"})
+        third = client.post(f"/research/{session_id}/notes", json={"text": "Grid codes"})
         running = _wait(client, session_id, lambda body: all(n["restatement"] for n in body["notes"]))
         client.portal.call(runner.release.set)
         done = _wait(client, session_id, lambda body: body["status"] == "completed")
         closed = client.post(f"/research/{session_id}/notes", json={"text": "after the end"})
 
     assert (first.status_code, first.json()) == (202, {"note_id": "n1", "status": "received"})
-    assert second.json()["note_id"] == "n2"
+    assert (second.json()["note_id"], third.json()["note_id"]) == ("n2", "n3")
     assert running["notes"] == [
         {"note_id": "n1", "text": "Pumped hydro", "restatement": "leave out pumped hydro", "outcome": "pending"},
         {"note_id": "n2", "text": "Flow batteries", "restatement": "leave out flow batteries", "outcome": "pending"},
+        {"note_id": "n3", "text": "Grid codes", "restatement": "leave out grid codes", "outcome": "pending"},
     ]
-    assert (running["notes_remaining"], running["note_passes"], running["clarification"]) == (8, 1, None)
-    assert [(n["note_id"], n["outcome"]) for n in done["notes"]] == [("n1", "covered"), ("n2", "not_found")]
-    assert (done["notes_remaining"], done["note_passes"]) == (8, 1)
+    assert (running["notes_remaining"], running["note_passes"], running["clarification"]) == (7, 1, None)
+    # A note the report still ignores is reported as such, never as covered (open issue O8).
+    assert [(n["note_id"], n["outcome"]) for n in done["notes"]] == [
+        ("n1", "covered"), ("n2", "not_found"), ("n3", "not_addressed"),
+    ]
+    assert (done["notes_remaining"], done["note_passes"]) == (7, 1)
     assert closed.status_code == 409
     assert closed.json()["error"]["code"] == "notes_closed"
 
@@ -7814,8 +7968,11 @@ times out keeps the note as written, as an emphasis, with `fallback: true`. Ever
 but evidence verification reads the notes (a later note replaces an earlier one it
 contradicts); a note the review finds no evidence for buys one targeted research pass,
 and a note the report ignores buys one redraft, neither spending the extra-pass budget
-or the writer's own re-run. The status snapshot carries `notes` (each with its `text`,
-its `restatement` once read, and its `outcome`: `covered`, `not_found`, `replaced`, or
+or the writer's own re-run. Notes close once `finalize_report` has started: the run's
+published decision to publish (or to end) closes them (live-briefs Phase 3 plan,
+ambiguity 5). The status snapshot carries `notes` (each with its `text`, its
+`restatement` once read, and its `outcome`: `covered`, `not_found`, `not_addressed`
+when the report still does not follow the note after its one redraft, `replaced`, or
 `pending` while the run goes on or when no review judged it), `notes_remaining`,
 `note_passes`, and `clarification` (the one-time check's questions and the answers the
 run started with, or `null`).
@@ -7837,7 +7994,7 @@ with
 ```markdown
 | `422` | Invalid request body or override shape, or answers that do not fit the session's questions (an unknown or repeated `question_id`, a `choice` that was not offered); the error body lists field locations and types only, never rejected values |
 | `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers` and `/notes` |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once publishing has begun, or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`) |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
 ```
 
@@ -7880,7 +8037,7 @@ with
 
 ```markdown
 | `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:265-294`, `api/sessions.py` `submit_answers`) |
-| `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, publishing begun, or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
+| `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, once `finalize_report` has started — from the run's published decision to publish, live-briefs Phase 3 ambiguity 5 — or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
 `api/sessions.py:73-128`), 22 fields: `session_id`, `query`, `status`,
@@ -7908,7 +8065,7 @@ with
 
 ```markdown
 | 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
-| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, and it ends `pending` (`not checked`). A live run applies every note that arrives before publishing begins. | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
+| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, and it ends `pending` (`not checked`). A live run applies every note that arrives before `finalize_report` starts (read from the run's decision to publish, ambiguity 5 of the same plan). | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
 ```
 
 - [ ] **Step 6: Run the full suite**
@@ -7919,7 +8076,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4927 passed, 6 skipped, 12 deselected` (+28): the backend's final count.
+Expected: `4929 passed, 6 skipped, 12 deselected` (+28): the backend's final count.
 
 - [ ] **Step 7: Commit**
 
@@ -7942,7 +8099,7 @@ git commit -m "feat(api): the notes route, the session's note board, the notes o
 - Produces:
   - `web/lib/api.ts`: `ReaderNoteOutcome`, `ReaderNoteRecord`, `ClarificationRecord`, `NoteAcceptedResponse`; optional `notes`, `notes_remaining`, `note_passes`, `clarification` on `ResearchSessionResponse`; `addNote(sessionId, text)`.
   - `web/lib/run-state.ts`: `NoteState {id, text, interpreted, restatement, replaces, fallback, where}`; `RunState.notes`; handlers `session.note.received`, `session.note.interpreted` (records the running row in `where`), `graph.note_pass.started`, `graph.note_redraft.requested`; the `note_pass` route re-arms rows 2–6 and lights `arc: "note_pass"`; `stepLabel("note_pass")` is Researching.
-  - `web/lib/notes.ts`: `NOTE_LIMIT`, `NOTE_MAX_CHARS`, `NOTE_PLACEHOLDER`, `NOTE_FIELD_LABEL`, `NOTE_SEND_LABEL`, `NOTES_CLOSED`, `WHERE`, `ackFor`, `visibleAcks`, `earlierNotesText`, `noteSubjects`, `notePassLine`, `noteRedraftLine`, `OUTCOME_TEXT`, `notesLeft`.
+  - `web/lib/notes.ts`: `NOTE_LIMIT`, `NOTE_MAX_CHARS`, `NOTE_PLACEHOLDER`, `NOTE_FIELD_LABEL`, `NOTE_SEND_LABEL`, `NOTES_CLOSED`, `NOTE_SEND_FAILED`, `WHERE`, `ackFor`, `visibleAcks`, `earlierNotesText`, `noteSubjects`, `notePassLine`, `noteRedraftLine`, `OUTCOME_TEXT`, `notesLeft`.
   - `rowBrief(...).acks` and `.earlier` — the running row only.
 
 - [ ] **Step 1: Write the failing tests**
@@ -8021,7 +8178,10 @@ describe("lib/notes — the note line's copy and each note's acknowledgement (li
     expect(notePassLine(["n1"], run.notes)).toBe("Researching your note: fire safety");
     expect(notePassLine(["n1", "n2"], run.notes)).toBe("Researching your notes: fire safety; recycling");
     expect(noteRedraftLine(["n2"], run.notes)).toBe("Rewriting for your note: recycling");
-    expect(OUTCOME_TEXT).toEqual({ covered: "covered", not_found: "couldn't find evidence", pending: "not checked", replaced: "replaced by a later note" });
+    expect(OUTCOME_TEXT).toEqual({
+      covered: "covered", not_found: "couldn't find evidence", not_addressed: "not addressed in the report",
+      pending: "not checked", replaced: "replaced by a later note",
+    });
     expect([notesLeft(undefined, 0), notesLeft(10, 3), notesLeft(7, 1), notesLeft(4, 9), notesLeft(0, 0)]).toEqual([10, 7, 7, 1, 0]);
   });
 });
@@ -8170,8 +8330,9 @@ with
   notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
 }
 /* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the
-   finished run concluded ("pending" while it runs, or when no review judged it). */
-export type ReaderNoteOutcome = "covered" | "not_found" | "pending" | "replaced";
+   finished run concluded ("pending" while it runs, or when no review judged it; "not_addressed"
+   when the report still does not follow it after its one redraft). */
+export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "replaced";
 export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome }
 export interface ClarificationRecord {
   questions: { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string }[];
@@ -8222,6 +8383,9 @@ export const NOTE_PLACEHOLDER = "Add a note — something to focus on, leave out
 export const NOTE_FIELD_LABEL = "Add a note for this research";
 export const NOTE_SEND_LABEL = "Add note";
 export const NOTES_CLOSED = "Notes are closed — the report is being published";
+/* Any failure but the two 409s (a 5xx, a network error): the text stays, and this caption says so
+   until the next edit (this plan's words; the spec names only the two 409s). */
+export const NOTE_SEND_FAILED = "Couldn't send — try again";
 
 /* Where a note takes effect, by the step that was active when the run read it (§4.7 table).
    Publishing has none: notes are closed by then. */
@@ -8270,11 +8434,13 @@ export function noteRedraftLine(ids: readonly string[], notes: readonly NoteStat
   return (ids.length === 1 ? "Rewriting for your note: " : "Rewriting for your notes: ") + noteSubjects(ids, notes);
 }
 
-/* The report's "Your notes" block: one caption per note (§4.7; "not checked" and "replaced by a
-   later note" are this plan's words for the two outcomes the spec's table leaves unnamed). */
+/* The report's "Your notes" block: one caption per note (§4.7; "not addressed in the report",
+   "not checked" and "replaced by a later note" are this plan's words for the three outcomes the
+   spec's table leaves unnamed). A note the report still ignores is never "covered". */
 export const OUTCOME_TEXT: Readonly<Record<ReaderNoteOutcome, string>> = {
   covered: "covered",
   not_found: "couldn't find evidence",
+  not_addressed: "not addressed in the report",
   pending: "not checked",
   replaced: "replaced by a later note",
 };
@@ -8636,9 +8802,9 @@ git commit -m "feat(web): the reader's notes and the note loops in the run state
 **Interfaces:**
 - Consumes: Task 9's model, words and `addNote`.
 - Produces:
-  - `NoteLine({ sessionId, remaining })`: `div#noteLine.note-line` holding `input#noteInput.tx` and `button#noteSend.icon-btn`; Enter or the button sends the trimmed text once; read-only while in flight; cleared on 202; `div#noteLine[data-closed="1"] > p#noteClosed.cap` after a 409 `notes_closed`; the field and button `disabled` when `remaining` is 0 or after a 409 `note_limit_reached`, with nothing added.
+  - `NoteLine({ sessionId, remaining })`: `div#noteLine.note-line` holding `input#noteInput.tx` and `button#noteSend.icon-btn`; Enter or the button sends the trimmed text once; read-only while in flight; cleared on 202; `div#noteLine[data-closed="1"] > p#noteClosed.cap` after a 409 `notes_closed`; the field and button `disabled` when `remaining` is 0 or after a 409 `note_limit_reached`, with nothing added; after any other failure the text stays and `div#noteLine[data-failed="1"]` adds `p#noteFailed.cap[role="status"]` `Couldn't send — try again` under the field until the next edit or send (ambiguity 28).
   - `RunningPipeline(..., notesRemaining?)` renders the line as the card's last child with `notesLeft(notesRemaining, run.notes.length)`.
-  - `BriefSpine` renders `p.ln.ack[data-ack]` lines (a `span.d` dot, then the words, the reading in `span.said`) after the reopen line of the running row, and one `and {n} earlier notes` line past two.
+  - `BriefSpine` renders `p.ln.ack[data-ack]` lines (a `span.d` dot, then the words, the reading in `span.said`), each a polite live region (`aria-live="polite"`, `aria-atomic="true"`; ambiguity 30), after the reopen line of the running row, and one `and {n} earlier notes` line past two, which is not.
   - `ReportBody(..., notes?)` renders `section#readerNotes.reader-notes` (an `h2.eyebrow` and one `li` per note: `span.rn-text`, then `span.cap` outcome) as the report card's first child, before `.prose`, only when there are notes.
   - `ReportStage` and `ReportRail` read `passFact(status.iteration, status.note_passes ?? 0)`.
 
@@ -8650,7 +8816,7 @@ Create `web/test/components/note-line.test.tsx`:
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NoteLine } from "../../components/NoteLine";
-import { NOTES_CLOSED, NOTE_PLACEHOLDER } from "../../lib/notes";
+import { NOTES_CLOSED, NOTE_PLACEHOLDER, NOTE_SEND_FAILED } from "../../lib/notes";
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 const refusal = (code: string) => json(409, { error: { code, message: "Refused.", reason: null, issues: [] } });
@@ -8733,14 +8899,26 @@ describe("NoteLine — the quiet line at the foot of the pipeline card (live-bri
     expect(again.container.querySelector(".cap")).toBeNull();
   });
 
-  it("keeps the text after any other failure, so the note can be sent again", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => json(500, { error: { code: "internal_error", message: "Oops.", reason: null, issues: [] } })));
-    render(<NoteLine sessionId="s1" remaining={10} />);
+  it("keeps the text after any other failure — a 5xx or a network error — and says it couldn't send until the next edit", async () => {
+    const fetchMock = vi.fn(async () => json(500, { error: { code: "internal_error", message: "Oops.", reason: null, issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { container } = render(<NoteLine sessionId="s1" remaining={10} />);
     fireEvent.change(field(), { target: { value: "keep me" } });
     fireEvent.keyDown(field(), { key: "Enter" });
     await settle();
     expect(field().value).toBe("keep me");
     expect([field().readOnly, field().disabled]).toEqual([false, false]);
+    const failed = screen.getByRole("status");
+    expect([failed.id, failed.className, failed.textContent]).toEqual(["noteFailed", "cap", NOTE_SEND_FAILED]);
+    expect(NOTE_SEND_FAILED).toBe("Couldn't send — try again");
+    fireEvent.change(field(), { target: { value: "keep me, edited" } });
+    expect(container.querySelector("#noteFailed")).toBeNull();
+    fetchMock.mockImplementation(async () => { throw new TypeError("Failed to fetch"); });
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await settle();
+    expect(field().value).toBe("keep me, edited");
+    expect(screen.getByRole("status").textContent).toBe(NOTE_SEND_FAILED);
+    expect(container.querySelector("#noteClosed")).toBeNull();
   });
 });
 ```
@@ -8780,6 +8958,8 @@ describe("the running stage's notes (live-briefs spec §4.7)", () => {
     expect(acks.map((a) => a.textContent)).toEqual(["Got it — reading 1, from each topic's next search", "Reading your note…"]);
     expect(acks[0].querySelector(".said")!.textContent).toBe("reading 1");
     expect(acks[0].querySelector(".d")!.getAttribute("aria-hidden")).toBe("true");
+    // Each acknowledgement is announced when it changes, without moving focus (ambiguity 30).
+    expect(acks.map((a) => [a.getAttribute("aria-live"), a.getAttribute("aria-atomic")])).toEqual([["polite", "true"], ["polite", "true"]]);
     expect(brief.firstElementChild).toBe(acks[0]);
     expect(container.querySelectorAll(".ack")).toHaveLength(2);
   });
@@ -8790,6 +8970,7 @@ describe("the running stage's notes (live-briefs spec §4.7)", () => {
     expect([...container.querySelectorAll(".ack")].map((a) => a.textContent)).toEqual([
       "Got it — reading 3, from each topic's next search", "Reading your note…", "and 2 earlier notes",
     ]);
+    expect(container.querySelector(".ack:not([data-ack])")!.hasAttribute("aria-live")).toBe(false);
   });
 
   it("puts the note line last in the pipeline card, and disables it once the stream has seen the tenth note", () => {
@@ -8813,6 +8994,7 @@ const NOTES = [
   { note_id: "n1", text: "More on fire safety", restatement: "more weight on fire-safety standards", outcome: "covered" as const },
   { note_id: "n2", text: "Recycling too", restatement: "how cells are recycled", outcome: "not_found" as const },
   { note_id: "n3", text: "Actually only the US", restatement: "only the United States", outcome: "pending" as const },
+  { note_id: "n4", text: "Leave out pumped hydro", restatement: "leave out pumped hydro", outcome: "not_addressed" as const },
 ];
 
 describe("the report's Your notes (live-briefs spec §4.7, AC19)", () => {
@@ -8827,6 +9009,7 @@ describe("the report's Your notes (live-briefs spec §4.7, AC19)", () => {
     expect(block.querySelector("h2.eyebrow")!.textContent).toBe("Your notes");
     expect([...block.querySelectorAll("li")].map((li) => [li.querySelector(".rn-text")!.textContent, li.querySelector(".cap")!.textContent])).toEqual([
       ["More on fire safety", "covered"], ["Recycling too", "couldn't find evidence"], ["Actually only the US", "not checked"],
+      ["Leave out pumped hydro", "not addressed in the report"],
     ]);
   });
 
@@ -8841,7 +9024,7 @@ describe("the report's Your notes (live-briefs spec §4.7, AC19)", () => {
       session_id: "s", query: "q", status: "completed", current_agent: null, iteration: 1, started_at: "2026-09-16T14:02:11Z",
       finished_at: "2026-09-16T14:12:00Z", report_path: null, trace_url: null, errors: [], evidence_path: null, quality_path: null,
       quality_contract_version: null, semantic_review_status: "scored", semantic_review_score: 0.9, duration_seconds: null,
-      coverage: null, evidence_counts: null, notes: NOTES, notes_remaining: 7, note_passes: 2, clarification: null,
+      coverage: null, evidence_counts: null, notes: NOTES, notes_remaining: 6, note_passes: 2, clarification: null,
     };
     const { container } = render(<ReportRail status={status} evidence={null} />);
     expect(container.querySelector("#repFactPass")!.textContent).toBe("Went back once to fill gaps · went back twice for your notes");
@@ -8865,46 +9048,51 @@ Create `web/components/NoteLine.tsx`:
 "use client";
 import { useState } from "react";
 import { ApiError, addNote } from "@/lib/api";
-import { NOTES_CLOSED, NOTE_FIELD_LABEL, NOTE_MAX_CHARS, NOTE_PLACEHOLDER, NOTE_SEND_LABEL } from "@/lib/notes";
+import { NOTES_CLOSED, NOTE_FIELD_LABEL, NOTE_MAX_CHARS, NOTE_PLACEHOLDER, NOTE_SEND_FAILED, NOTE_SEND_LABEL } from "@/lib/notes";
 
 /* The note line (live-briefs spec §4.7, D8; pick 6A, docs/design/running-stage-picks/Hitl3.dc.html
    column A): the last element in the pipeline card, under a hairline — a borderless field and a
    neutral icon send, never the purple primary. Enter sends. While the POST is in flight the field is
    read-only. With no note left to take (`remaining` is 0, or a 409 note_limit_reached) the field and
-   the button are disabled, with no message and the placeholder unchanged (D11a). Once publishing
-   has begun (409 notes_closed) one caption takes the line's place. Any other failure keeps the text,
-   so the reader can send it again. */
+   the button are disabled, with no message and the placeholder unchanged (D11a). Once
+   `finalize_report` has started (409 notes_closed) one caption takes the line's place. Any other
+   failure (a 5xx, a network error) keeps the text and shows one caption under the field,
+   "Couldn't send — try again", until the reader edits the note or sends it again. */
 export function NoteLine({ sessionId, remaining }: { sessionId: string; remaining: number }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [closed, setClosed] = useState(false);
   const [full, setFull] = useState(false);
+  const [failed, setFailed] = useState(false);
   const disabled = full || remaining <= 0;
   if (closed) return <div className="note-line" id="noteLine" data-closed="1"><p className="cap" id="noteClosed">{NOTES_CLOSED}</p></div>;
   const send = async () => {
     const body = text.trim();
     if (!body || sending || disabled) return;
     setSending(true);
+    setFailed(false);
     try {
       await addNote(sessionId, body);
       setText("");
     } catch (error) {
       if (error instanceof ApiError && error.status === 409 && error.body.code === "notes_closed") setClosed(true);
       else if (error instanceof ApiError && error.status === 409 && error.body.code === "note_limit_reached") setFull(true);
+      else setFailed(true);
     } finally {
       setSending(false);
     }
   };
   return (
-    <div className="note-line" id="noteLine">
+    <div className="note-line" id="noteLine" data-failed={failed ? "1" : undefined}>
       <input className="tx" id="noteInput" type="text" aria-label={NOTE_FIELD_LABEL} placeholder={NOTE_PLACEHOLDER} maxLength={NOTE_MAX_CHARS}
         value={text} readOnly={sending} disabled={disabled} autoComplete="off"
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => { setText(event.target.value); setFailed(false); }}
         onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
       <button type="button" className="icon-btn" id="noteSend" disabled={disabled} onClick={() => void send()}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" /></svg>
         <span className="sr">{NOTE_SEND_LABEL}</span>
       </button>
+      {failed ? <p className="cap" id="noteFailed" role="status">{NOTE_SEND_FAILED}</p> : null}
     </div>
   );
 }
@@ -8922,10 +9110,12 @@ with
 ```tsx
     if (brief.why) lines.push(<p key="why" className="ln b-why" data-kind={brief.why.kind} style={lineStyle(n++)}>{brief.why.text}</p>);
     // live-briefs spec §4.7 (D9): the reader's notes, acknowledged at the top of the running row's
-    // brief — a muted dot, then the run's reading of the note, never the note echoed back.
+    // brief — a muted dot, then the run's reading of the note, never the note echoed back. Each line
+    // is a polite live region: nothing moves focus, so a screen reader hears the line whole when
+    // "Reading your note…" becomes "Got it — …".
     for (const ack of brief.acks) {
       lines.push(
-        <p key={`ack-${ack.key}`} className="ln ack" data-ack={ack.key} style={lineStyle(n++)}>
+        <p key={`ack-${ack.key}`} className="ln ack" data-ack={ack.key} aria-live="polite" aria-atomic="true" style={lineStyle(n++)}>
           <span className="d" aria-hidden="true" />
           <span>{ack.lead}{ack.said !== null ? <span className="said">{ack.said}</span> : null}{ack.rest}</span>
         </p>,
@@ -9138,6 +9328,10 @@ with
 .note-line .icon-btn:disabled{color:var(--border);cursor:not-allowed}
 .note-line .icon-btn:disabled:hover{background:transparent;border-color:transparent}
 .note-line .cap{padding:6px 0}
+/* A send that failed for any reason but the two 409s: the text stays, and one caption under the
+   field says so until the next edit; the line wraps only then. */
+.note-line[data-failed="1"]{flex-wrap:wrap}
+.note-line #noteFailed{flex-basis:100%;padding:0}
 /* Each acknowledgement (D9): a muted dot, then the run's reading of the note in --fg and the rest
    muted. A new one rises in from its starting style over 200ms: at once in a row that is already
    open, and in its place in the stagger in the row a hand-off is opening. Under reduced motion the
@@ -9201,7 +9395,7 @@ Replay's engine finishes before the paced stream shows Researching (O2), so thes
 
 - [ ] **Step 1: Write the specs and the recorder**
 
-`installNoteRecorder` wraps the page's `fetch` to time each note POST's answer and polls every frame for the first fully shown acknowledgement and for the closed caption: the caption can be on screen for well under a second before the report replaces the running stage. The captures blur the field and scroll to the top first, so they show the line at rest.
+`installNoteRecorder` wraps the page's `fetch` to stamp the moment each note POST is sent (AC15 is timed from it: see the coverage table) and polls every frame for the first fully shown acknowledgement and for the closed caption: the caption can be on screen for well under a second before the report replaces the running stage. The captures blur the field and scroll to the top first, so they show the line at rest.
 
 **`web/e2e/support.ts`**: 2 edits, in file order.
 
@@ -9231,21 +9425,24 @@ with
 ```ts
 export const clarifyRecord = (page: Page) => page.evaluate(() => (window as unknown as { __drClarify: ClarifyRecord }).__drClarify);
 
-/* live-briefs spec §4.7 (AC15, AC19): when each note POST was answered, when each acknowledgement
-   was first fully shown, and every caption the note line showed — recorded from before the page's
+/* live-briefs spec §4.7 (AC15, AC19): when each note POST was sent, when each acknowledgement was
+   first fully shown, and every caption the note line showed — recorded from before the page's
    scripts run, because the "notes are closed" caption can be on screen for well under a second
-   before the report stage replaces the running one. Times are performance.now() in the page. */
-export interface NoteRecord { answered: number[]; acks: { text: string; at: number }[]; closed: string[] }
+   before the report stage replaces the running one. Times are performance.now() in the page.
+   AC15 is timed from the send: `session.note.interpreted` is published only after the server has
+   the note, so it cannot reach the page before the POST left it, and a bound measured from the send
+   holds for the event too (the POST's 202 would not do: it and the event's frame reach the page
+   over separate connections, and nothing orders them). */
+export interface NoteRecord { sent: number[]; acks: { text: string; at: number }[]; closed: string[] }
 export async function installNoteRecorder(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const w = window as unknown as { __drNotes: NoteRecord };
-    w.__drNotes = { answered: [], acks: [], closed: [] };
+    w.__drNotes = { sent: [], acks: [], closed: [] };
     const original = window.fetch.bind(window);
     window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-      const response = await original(input, init);
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (init?.method === "POST" && /\/notes$/.test(url)) w.__drNotes.answered.push(performance.now());
-      return response;
+      if (init?.method === "POST" && /\/notes$/.test(url)) w.__drNotes.sent.push(performance.now());
+      return original(input, init);
     };
     const tick = () => {
       for (const el of document.querySelectorAll<HTMLElement>(".ack")) {
@@ -9303,7 +9500,8 @@ test("a note sent while Researching is received, read and acknowledged in the ru
   await expect(ack.locator(".said")).toHaveText("More on fire-safety standards");
   await expect.poll(async () => (await noteRecord(page)).acks.length).toBe(1);
   const record = await noteRecord(page);
-  expect(record.acks[0].at - record.answered[0]).toBeLessThan(1000);
+  // Timed from the send, which the interpreted event can only follow: an upper bound on AC15's measure.
+  expect(record.acks[0].at - record.sent[0]).toBeLessThan(1000);
   // It rises in over 200 ms, with no wait, in the row that is already open.
   const rise = (await motion(page)).filter((m) => m.part === "ack");
   expect(rise.map((m) => [m.prop, m.delay, m.duration]).sort()).toEqual([["opacity", 0, 200], ["transform", 0, 200]]);
@@ -9485,6 +9683,8 @@ Expected: `12 passed`, then `20`.
 
 - [ ] **Step 5: Review the captures, full height, with the Read tool**
 
+**This is a first-time visual review, not a confirmation.** Planning produced these captures but never read them (see "Evidence" at the top; review round 1, P3-9), so no image of `11-note-ack` or `12-report-notes` has been checked by anyone yet: read every image and every slice as new, and hold each to every check below.
+
 Read each of `web/visual/P3-T11/11-note-ack.png`, `11-note-ack-phone.png`, `12-report-notes.png` and `12-report-notes-phone.png` whole. The phone report capture is about 5,650 px tall; cut it into 1,400 px slices first and read every slice:
 
 ```bash
@@ -9585,13 +9785,18 @@ then `Got it — {the run's reading}{where it applies}`, with
 `…, replacing your earlier note about {…}` when it contradicts an earlier one and
 `Got it — passed on as you wrote it` when the reading failed; past two notes it shows the
 latest two and `and {n} earlier notes`. The run's reading is shown, never the note echoed
-back (D9). After the tenth note the field and the send are disabled with no message and
-the same placeholder (D11a); once publishing has begun a note is refused and one caption,
-`Notes are closed — the report is being published`, takes the line's place. The report
-then states what became of each note: inside the report card and above the prose — not a
-card of its own, and outside `.prose` — `Your notes` lists each note as written with its
-outcome as a caption: `covered`, `couldn't find evidence`, `not checked` (no review judged
-it) or `replaced by a later note`.
+back (D9). Each acknowledgement is a polite live region, so a screen reader hears it once
+the note is read, and nothing moves focus. After the tenth note the field and the send are
+disabled with no message and the same placeholder (D11a); once `finalize_report` has
+started — from the run's decision to publish — a note is refused and one caption,
+`Notes are closed — the report is being published`, takes the line's place. Any other
+failed send keeps the text and says `Couldn't send — try again` under the field until the
+next edit. The report then states what became of each note: inside the report card and
+above the prose — not a card of its own, and outside `.prose` — `Your notes` lists each
+note as written with its outcome as a caption: `covered`, `couldn't find evidence`,
+`not addressed in the report` (the findings bore on it and the report still does not
+follow it, after its one redraft — never `covered`), `not checked` (no review judged it)
+or `replaced by a later note`.
 ```
 
 `docs/design/DESIGN.md` (anchor as written by Phase 2's review fix `539d51f`) — replace
@@ -11036,7 +11241,7 @@ DESELECT="--deselect tests/test_config.py::test_the_evidence_verifier_pipeline_c
 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest -q $DESELECT 2>&1 | tail -1
 ```
 
-Expected: `4927 passed, 6 skipped, 12 deselected`: Task 1's baseline plus the 93 new tests of Task 1 Step 5's increments.
+Expected: `4929 passed, 6 skipped, 12 deselected`: Task 1's baseline plus the 95 new tests of Task 1 Step 5's increments.
 
 - [ ] **Step 2: What must not have moved**
 
@@ -11051,7 +11256,7 @@ PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 "$PY" -m pytest tests/test_graph/test_r
 
 `FIRST` is Task 2's commit, so `$FIRST~1` is the end of Phase 2 as this plan found it.
 
-Expected: `4a3d56fab932` (the verifier's pin, D10); nothing from the `--stat` (those five files are untouched); `36	0	web/app/globals.css` (the stylesheet only gained lines, all after line 1131); `5 passed` (the two pinned whole-run digests, and the notes on the real graph).
+Expected: `4a3d56fab932` (the verifier's pin, D10); nothing from the `--stat` (those five files are untouched); `40	0	web/app/globals.css` (the stylesheet only gained lines, all after line 1131); `5 passed` (the two pinned whole-run digests, and the notes on the real graph).
 
 - [ ] **Step 3: The web app, whole**
 
@@ -11073,6 +11278,8 @@ Expected: no port line, `61 passed`, then `12 passed`.
 
 - [ ] **Step 5: The final visual review**
 
+**This is a first-time visual review too, not a confirmation.** Planning's own run of this step was cut off before it printed, and its captures were never read; Step 4's Expected lines are observed values from the same tree (see "Evidence"; review round 1, P3-9). Read every image as new, even where Task 11 Step 5 already passed the same view.
+
 Read all twenty `web/visual/P3-final/*.png` whole (slice the tall phone report as in Task 11 Step 5). The checks of Task 11 Step 5 hold for `11-note-ack(-phone)` and `12-report-notes(-phone)`, and every other capture matches its Phase 2 counterpart except that the running captures end with the note line.
 
 - [ ] **Step 6: No commit**
@@ -11083,11 +11290,11 @@ Nothing changed. The summary lists the five Expected lines of Steps 1–4 as obs
 
 | AC | Proven by |
 |---|---|
-| AC15 | Task 11 `a note sent while Researching is received, read and acknowledged in the running row within 1 s (AC15)` — the ack is fully shown less than 1 s after the POST answered (the reading, and its event, follow the 202), and the stream carries `session.note.received` before `session.note.interpreted`; Task 8 `test_a_note_is_published_at_once_then_read_onto_the_boards_the_run_holds`; Task 9/10 ack wording and placement |
+| AC15 | Task 11 `a note sent while Researching is received, read and acknowledged in the running row within 1 s (AC15)` — the ack is fully shown less than 1 s after the page **sent** the POST, and the stream carries `session.note.received` before `session.note.interpreted`. The spec measures from the interpreted event; the test measures from the send, which is an upper bound on that measure: the event is published only after the server has the note, so it cannot reach the page before the POST left it. (The first draft measured from the POST's 202, which is not a bound: the 202 and the event's frame reach the page over separate connections, and nothing orders them — review round 1, P3-4.) Task 8 `test_a_note_is_published_at_once_then_read_onto_the_boards_the_run_holds`; Task 9/10 ack wording and placement |
 | AC16 | Task 6 `test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does` (the real graph: planner's scoping turn, plan and plan review; every research turn and extraction; scoring; section and bottom line; review — and no `ContextCheckDraft` or `StatementCheckDraft` request); Tasks 4–6 per-agent tests |
 | AC17 | Task 3 `test_ac17_a_note_without_evidence_gets_exactly_one_targeted_pass` (one `graph.note_pass.started`, the researcher's second call sees only `note-n1-target-01` and selects only `note-n1`, `iteration` 0, `note_passes` 1), plus the `graph_route` and `note_pass_node` tests |
 | AC18 | Task 3 `test_ac18_a_note_the_report_ignores_gets_exactly_one_redraft` (`writer_redrafts` stays 0, no `graph.report.redraft_requested`), `test_a_report_that_ignores_a_note_buys_its_redraft_even_with_the_reviews_own_rerun_spent`, `test_the_note_redraft_flags_its_notes_and_spends_no_rerun` |
-| AC19 | Task 8 `test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome` (outcomes, `notes_remaining`, `note_passes`, a 409 `notes_closed` after the end) and `test_notes_close_while_the_session_waits_once_publishing_begins_and_once_it_ends`; Task 10 `sits inside the report card above the prose…`; Task 11 `once publishing has begun a note is refused…` and `the report lists every note above the prose…` |
+| AC19 | Task 8 `test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome` (the outcomes `covered`, `not_found` and `not_addressed` through the status response, `notes_remaining`, `note_passes`, a 409 `notes_closed` after the end) and `test_notes_close_while_the_session_waits_once_publishing_begins_and_once_it_ends`; Task 7 `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending`; Task 10 `sits inside the report card above the prose…`; Task 11 `once publishing has begun a note is refused…` and `the report lists every note above the prose…` |
 | AC20 | Task 3 `test_ac20_ten_notes_each_buy_one_pass_and_one_redraft_within_the_recursion_limit` (each note arrives alone during a review: ten redrafts and ten passes, completed, supersteps below the limit); Task 8 `test_the_notes_route_refuses_unknown_sessions_bad_text_and_the_eleventh_note`; Task 10 disabled-line tests; Task 11 `after the tenth note the line is disabled with nothing added, and an eleventh is refused (AC20, D11a)` |
 | R4 | bounded by D11a and the per-note flags: Task 3 AC20 and `graph_recursion_limit`; the request-attempt budget is untouched |
 | R5 | a wrongly reported `no_evidence` buys one pass per note and the report states the gap: Task 3 AC17 (the verdict repeats; no second pass) and Task 5 `test_the_report_names_a_note_it_found_no_evidence_for` |
@@ -11099,3 +11306,34 @@ Nothing changed. The summary lists the five Expected lines of Steps 1–4 as obs
 - **Type consistency.** `ReaderNote`, `NoteDisposition`, `NoteBoard`, `ReceivedNote`, `NoteInterpretation` and `NoteOutcome` are defined once and used by the names above; the web's `NoteState`, `ReaderNoteRecord` and `ReaderNoteOutcome` mirror them; `note_pass`, `note_pass_requested` and `note_redraft_requested` are spelled the same in the graph, the events, the tests and the web.
 - **Phase 2's final-review notes.** R1, R2 and M6 (Task 8), R3 (Task 10), R4 (Task 7) and R6 (Task 13) are met as the table under "Phase 2's final-review notes" says; O2 is left to the human, as asked. The DESIGN.md sentences the controller named after the fix wave are Task 12's.
 - **Decisions.** D8 (Task 10), D9 (Tasks 7, 9, 10), D10 (Tasks 4–6: AC16 proves no verifier request), D11 (Task 3), D11a (Tasks 2, 8, 10, 11), D17 (Task 10's styles; Task 11's review). Nothing here changes a decision; the open issues are where the spec's text could not be kept as written.
+
+## Review round 1 (2026-09-29): findings and how each was resolved
+
+The review (`.superpowers/sdd/phase3-plan-review-r1.md`, spec-plan-reviewer) approved the plan with changes: no P1, one P2, ten P3s. The controller ruled on every finding: P2-1 gets its own honest outcome, recorded as open issue O8; P3-1 to P3-10 are all applied. Each is resolved below, and the round's changes were dry-run as described under Evidence.
+
+- **P2-1 — a note the report still ignores after its one redraft was reported `covered`.** Fixed as ruled, and recorded as open issue O8 (the human may rename the value or its caption).
+  - `note_outcome` maps `ignored_with_evidence` to a fifth outcome, `not_addressed`, and only `honoured` to `covered` (Task 7). `NoteOutcome` and `ReaderNoteResponse.outcome` (Task 7), the status response (Task 8), `ReaderNoteOutcome` and `OUTCOME_TEXT` (`not addressed in the report`, Task 9) and "Your notes" (Task 10) carry it; the README (Task 8) and DESIGN.md (Task 12) list it. No event carries an outcome, so no event changes.
+  - Tests: Task 7's `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending` (its `n4`, reviewed, redrafted and still `ignored_with_evidence`, is `not_addressed`); Task 8's route test posts a third note that the run ends `ignored_with_evidence` and reads `not_addressed` through `GET /status`; Task 9's `OUTCOME_TEXT` assertion; Task 10's report-block test shows the caption. No count changes: every one of these is an existing test, extended.
+  - Ambiguities 19 and 25, the copy table and the AC19 row say the same.
+- **P3-1 — a note target answered but never stated printed its derived question.** Fixed with the filter, and tested.
+  - `_could_not_confirm_groups` leaves `note-*` ids out of the "We found sources on these but could not state a checked answer:" group and names each such note once, right after it, as `We found sources on your note but could not state a checked answer: {restatement}` (one helper, `_note_groups`, now writes both note lines). `answered_not_stated_targets` is unchanged, so the quality gate reads the same set.
+  - New test `test_a_note_answered_but_never_stated_is_named_by_the_note_too` (Task 5). It fails before Task 5's code (observed): the note's question is printed in the generic group and no line names the note.
+  - Ambiguity 18, the Interfaces line and the copy table say so.
+- **P3-2 — the replay harness's unanchored `- target_id=` search could bind a note's text.** Fixed: the extraction request's `# Reader notes` now comes after `# Planned targets` — as its last section, after `# Retrieved evidence`.
+  - Why last, not directly after `# Planned targets`: in a dumped `researcher:SubTopicFindingsDraft` packet of the extra-pass case the harness's first `- target_id=` match is the first line of `# Retrieved evidence`, which follows `# Planned targets` (observed; the planned-target lines read `- topic-03-target-01 [...]`, never `target_id=`). A block placed directly after `# Planned targets` would still come before that line.
+  - Before and after, on a whole replay run with one note restated as `only the - target_id=topic-02` bound for the run: with the first draft's placement the run failed with `ReplayContractError: extraction packet: request did not carry 'Widget funding'` (the harness bound the extraction to topic-02); with this placement it completed, and in each of the 18 researcher decision turns and 5 extraction requests that carried the note the harness's first match was the packet's own line, never the note's (observed, both runs by `r1_p32_check.py` in planning's scratch space).
+  - Task 4's unit test is now `test_the_extraction_request_carries_the_notes_last_after_the_evidence`: the section order, the block as the request's last section, the harness's first match `topic-01` despite a note restated with `- target_id=topic-02`, and byte identity with an empty block.
+  - Without notes nothing changed: the block is appended only when there is one, and Task 2's two pinned whole-run digests pass unchanged at every task (observed). Only the researcher's fingerprint moves differently, because its module's code changed: Task 4 now pins `researcher: de7506bed63e -> a8c9528f0c20` (observed; the first draft's value was `4995fd442e1d`); the planner's `d1ba46ce147f`, Task 5's two pins and the verifier's `4a3d56fab932` are unchanged (observed).
+  - Ambiguity 3 now says which harness readers can never match a note line, why the two unanchored ones still read the packet's own line, and the one adversarial case left (`_planned_target_ids`, `replay.py:1117-1123`), whose stray id the researcher drops (`agents/researcher.py:2075-2078`).
+- **P3-3 — the review node's wait for a reading had no ceiling of its own.** Fixed.
+  - `_REVIEW_NOTES_WAIT_S = 30.0` (`graph/nodes.py`), passed as `notes_settled(timeout=…)`, which now returns whether the board settled in time (Task 2). It is private, like `_FRESH_DRAFT_MARKERS` beside it: `tests/test_imports.py::test_graph_submodule_public_names_all_reach_all` requires every public name of `graph/*.py` in `deep_research.graph.__all__`, and the dry run's first spelling, public, failed it (observed). Why 30 s: twice `note_interpret_timeout_s`'s default of 15 s, so with the default every reading has ended before the review stops waiting; a raised timeout (M6 allows 600 s) holds the route for 30 s at most. The cost is stated in ambiguity 8 and O5: a note still being read then misses that route decision, unreviewed; a loop's next node takes it in, and a decision to publish leaves it `pending`, as O4's note.
+  - New test `test_the_review_waits_for_a_reading_no_longer_than_its_own_ceiling` (Task 3): it pins the value and its relation to the default, sets the ceiling to 50 ms, lands a note that is never read, and requires the node to return inside `asyncio.wait_for(..., timeout=5)` with the note left on the board, `n1` reviewed and the route read without it (`finalize`, `report_not_accepted`: no note is due, so the review's own verdict decides). Without the bound the test fails on its 5 s `wait_for`.
+- **P3-4 — AC15 was timed from the POST's 202.** Fixed with the smaller accurate change. Stating in the coverage table that the 202 is an upper bound would not have been accurate: the 202 and the `session.note.interpreted` frame reach the page over separate connections, and nothing orders them. The recorder now stamps the moment the page sends the POST, which the interpreted event can only follow — so `ack − sent < 1000 ms` bounds AC15's measure from above — and the coverage table says so. Observed: `notes.spec.ts` passed 18 of 18 under `--repeat-each=3` with the new stamp.
+- **P3-5 — the notes example's edit read as an unclosed tuple.** Fixed: the anchor now ends `    ),\n)\n`, and the replacement closes both tuples itself. The file it writes is byte-identical to before, and the anchor count is still 280 (observed).
+- **P3-6 — a non-409 failure of the note POST was silent.** Fixed as ruled.
+  - `NoteLine` keeps the text and shows `p#noteFailed.cap[role="status"]` `Couldn't send — try again` under the field (the line wraps only then, `.note-line[data-failed="1"]`) until the reader edits the note or sends it again. The two 409s keep their own faces, and the note-limit case still shows nothing.
+  - The existing Vitest `keeps the text after any other failure…` is extended to a 500 and a network error, the caption, and its clearing on the next edit (no count change). `NOTE_SEND_FAILED` joins `lib/notes.ts` (Task 9); ambiguity 28, the copy table and DESIGN.md say so. Task 14's stylesheet line count moves from `36` to `40`.
+- **P3-7 — acknowledgements were not announced.** Fixed: each note's ack line is a polite live region (`aria-live="polite"`, `aria-atomic="true"`), so the line is read whole when `Reading your note…` becomes `Got it — …`; the `and {n} earlier notes` line is not one. Asserted in Task 10's two acknowledgement Vitests (no count change); ambiguity 30 and DESIGN.md.
+- **P3-8 — the note redraft's full fresh draft was not argued.** Ambiguity 16 now says why a scoped redraft was not chosen: a note has no parts to scope to — it applies to the whole report — and the review names no defect for it, only a disposition. The cost is stated: at most ten full redrafts and full reviews a run.
+- **P3-9 — the captures had never been read.** Task 11 Step 5 and Task 14 Step 5 now open with a bold line: each is a first-time visual review, not a confirmation, and every image and slice is to be read as new.
+- **P3-10 — the docs said notes close "once publishing has begun".** The README (its `409` row and its notes paragraph) and `api-gaps.md` (the route row and gap 3.9) now use the spec's words, "once `finalize_report` has started", say how that is read — from the run's published decision to publish — and cite ambiguity 5 (Task 8). DESIGN.md's note paragraph (Task 12) and the Global Constraints' API line use the same words. Code docstrings and test names that describe the same moment in the implementation's terms are unchanged.
