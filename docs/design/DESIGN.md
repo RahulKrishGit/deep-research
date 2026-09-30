@@ -790,11 +790,13 @@ reads the same whether events arrive one at a time or as a burst.
 A **pass** is one complete run of the seven steps. It is not a retry of a failed
 step: after each pass the reviewer scores the report and the graph decides where
 to go — `finalize` and publish, `extra_pass` back to Researching for the required
-targets that still have no verified finding, or `redraft` back to Writing for a
-report with a material defect (`graph/state.py:259-314`). `max_extra_passes`
-bounds the extra passes and `MAX_WRITER_REDRAFTS = 1` bounds the redrafts. So a
-run's real shape is a loop with two return paths, and the pipeline control is
-linear. That mismatch is the single most confusing thing about this screen, and
+targets that still have no verified finding, `note_pass` back to Researching for
+the reader's notes that found no evidence yet (live-briefs spec §4.6; it is not
+counted as an extra pass), or `redraft` back to Writing for a report with a
+material defect (`graph/state.py:259-314`). `max_extra_passes` bounds the extra
+passes and `MAX_WRITER_REDRAFTS = 1` bounds the redrafts; each note is given at
+most one pass and one redraft. So a run's real shape is a loop with two places it
+returns to, and the pipeline control is linear. That mismatch is the single most confusing thing about this screen, and
 it needs to be designed for rather than left to emerge.
 
 **The number of passes varies, and the interface must not imply otherwise.** An
@@ -1043,6 +1045,7 @@ the event stream, not from `current_agent`:
 | `report_writer` | Writing report | 5 |
 | `report_reviewer` | Reviewing | 6 |
 | `extra_pass` | — | a hop, not a row: the graph returns to 2 |
+| `note_pass` | — | a hop, not a row: the graph returns to 2 |
 | `writer_redraft` | — | a hop, not a row: the graph returns to 5 |
 | `finalize_report` | Publishing | 7 |
 
@@ -1648,8 +1651,10 @@ rows, each with its scope:
 Rules: the block is derived from the same stream and the same handlers as the
 running stage, frozen where the run stopped; a row whose node never ran reads
 `not reached`, never `0`; on `graph.extra_pass.started` the this-pass rows reset
-and the block's caption reads `pass p`; on `graph.report.redraft_requested` the
-current-draft rows and the review score reset.
+and the block's caption reads `pass p`; on `graph.note_pass.started` the this-pass
+rows reset too, and the caption keeps its pass (a note pass is not an extra pass);
+on `graph.report.redraft_requested` the current-draft rows and the review score
+reset.
 
 The block is honest where the earlier cost card was not: each row names the pass
 or draft it counts. Token usage is still `Not recorded`: totals are **not** in
