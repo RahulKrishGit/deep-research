@@ -157,8 +157,8 @@ chosen by the operator.
 | 1 | **Idle** | no active session | Composer only | Operator submits → `202` → stage 2 |
 | 2 | **Submitted** | `status == "running"` or `"needs_input"`, first beat | The question read back and the four-chip settings strip (`model · thinking · effort · out`) — and nothing else | Held ~2.2s → stage 2a or 3 |
 | 2a | **Check** | `status == "needs_input"`, or the stream's `session.clarification.requested` until the planner's `graph.node.started` | One question at a time in the pipeline card's place, under the eyebrow `Before we start`, the locked question and the settings strip (pick 4B): the answers, the best guess marked, **Other…**, then Back · Skip this one · Just start and the countdown; after the answers, the one summary line `Starting research with: …` | The planner starts → stage 3 |
-| 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it | Server status leaves `running` → stage 4 or 5 |
-| 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
+| 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it and the note line at the card's foot | Server status leaves `running` → stage 4 or 5 |
+| 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then — when the reader added notes — **Your notes**, the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
 
 **Stage 2 carries the question and its settings, and nothing else.** It used to open a card
@@ -193,12 +193,37 @@ the page shows stage 3; if questions come back, stage 2a replaces the pipeline c
 
 **The composer exists on stage 1 only.** Once a question is sent, the text box is
 gone for the rest of that session's life: stages 2, 3 and 4 show the locked-in
-question and the settings it was run with, and nothing that accepts typing. A new
+question and the settings it was run with, and nothing that accepts a question. A new
 question is started from **New research** in the sidebar, which clears the active
 session and returns to stage 1. This is deliberate — a text box beside a running
 pipeline invites a second submission that the API would treat as an unrelated
 session, and a text box above a finished report invites a question the operator
 would expect to refine the report in place.
+
+**The note line is the one text entry after stage 1, and it is not a second question**
+(live-briefs D8, D9, D11a, 2026-09-29; pick 6A). The running stage's pipeline card ends
+in a quiet line under a `--border-soft` hairline: a borderless field reading
+`Add a note — something to focus on, leave out or change` and a neutral icon send, never
+the purple primary. Enter sends, and the field is read-only while the note is in flight.
+A note steers *this* run — the session reads it with a fast model and every step but
+Verifying uses it (D10) — so it never reads as a new session. The running row
+acknowledges each note at the top of its brief, with a muted dot: `Reading your note…`,
+then `Got it — {the run's reading}{where it applies}`, with
+`…, replacing your earlier note about {…}` when it contradicts an earlier one and
+`Got it — passed on as you wrote it` when the reading failed; past two notes it shows the
+latest two and how many it leaves out (`and 1 earlier note`, `and {n} earlier notes`). The
+run's reading is shown, never the note echoed back (D9). Each acknowledgement is a polite
+live region, so a screen reader hears it once the note is read, and nothing moves focus. After the tenth note the field and the send are
+disabled with no message and the same placeholder (D11a); once `finalize_report` has
+started — from the run's decision to publish — a note is refused and one caption,
+`Notes are closed — the report is being published`, takes the line's place. Any other
+failed send keeps the text and says `Couldn't send — try again` under the field until the
+next edit. The report then states what became of each note: inside the report card and
+above the prose — not a card of its own, and outside `.prose` — `Your notes` lists each
+note as written with its outcome as a caption: `covered`, `couldn't find evidence`,
+`not addressed in the report` (the findings bore on it and the report still does not
+follow it, after its one redraft — never `covered`), `not checked` (no review judged it)
+or `replaced by a later note`.
 
 **The pipeline owns the running stage.** It was a 280px rail in the previous pass
 and is now the centred column at reading width: seven rows, one per graph node,
@@ -263,16 +288,16 @@ The sidebar is the redesign's most constrained surface, because **the API keeps 
 durable collection**. `SessionStore._sessions` is a process-local dict, and the routes
 are `POST /research`, `GET /research` (the newest sessions that process holds, memory
 only), the `GET`s keyed by an id the client must already hold (`/research/{id}/status`,
-`/stream`, `/report`, `/evidence`, `/trace`) and `POST /research/{id}/answers` for the
-one-time check. A session id is generated server-side (`new_session_id()`), so a
-client cannot even guess one.
+`/stream`, `/report`, `/evidence`, `/trace`), `POST /research/{id}/answers` for the
+one-time check and `POST /research/{id}/notes` for the reader's notes. A session id is
+generated server-side (`new_session_id()`), so a client cannot even guess one.
 
-The sidebar therefore renders a **client-assembled ledger**, and says so in its
-own footer rather than implying a server-side history:
+The sidebar therefore lists **only what this API process holds** (`GET /research`, newest
+first, memory only), and says so in its own footer rather than implying a durable history:
 
 | Sidebar row shows | Source | Honest when absent |
 |---|---|---|
-| Question text | The client's own copy of what it submitted, clamped to two lines | Never absent for rows the client created |
+| Question text | The session's `query`, as `GET /research` returns it, clamped to two lines | Never absent: every session has one |
 | A running mark | `isLive(status)` in the session snapshot: `running`, or `needs_input` while the session waits for the reader's answers | Absent on every settled row, by design — see below |
 | Session id | `session_id`, carried on the row as `data-session` and `title` | Never rendered as text, so it cannot be missing from the page |
 | Report body on click | `GET /research/{id}/report` | A failed row opens stage 4, not an empty reader |
@@ -793,17 +818,18 @@ decision, which it emits before its own completion (`graph/nodes.py:819-841`):
 |---|---|
 | no `graph.node.completed` yet | 1 Planning |
 | `graph.node.completed` for `planner` … `report_writer` | the next row |
-| `graph.route.decided` | the destination's row, immediately: `extra_pass` → Researching, `redraft` → Writing, `finalize` → Publishing, `end` → none (the failed stage follows) |
+| `graph.route.decided` | the destination's row, immediately: `extra_pass` or `note_pass` → Researching, `redraft` → Writing, `finalize` → Publishing, `end` → none (the failed stage follows) |
 | `graph.node.completed` for `report_reviewer` | **inert after a loop decision** — it neither marks Reviewing `done` nor moves the active row; after `finalize` or `end` it marks Reviewing `done` as any completion does |
-| `graph.node.completed` for the hops `extra_pass` / `writer_redraft` | nothing: hops never map to a row |
+| `graph.node.completed` for the hops `extra_pass` / `note_pass` / `writer_redraft` | nothing: hops never map to a row |
 | `graph.node.completed` for `finalize_report`, or `graph.session.completed` | none; the stage transition follows |
 
 Three things make the loop legible, and **none of them is a sentence**:
 
-1. **Two return arcs are drawn, in the spine's left gutter.** Each leaves the
+1. **Return arcs are drawn in the spine's left gutter.** Each leaves the
    Reviewing node and returns to the row the graph re-runs: the **extra-pass
-   arc** to Researching, stroked `--warn`, and the **redraft arc** to Writing,
-   stroked `--meta`. A dashed overlay travels along the lit arc and an arrowhead
+   arc** to Researching, stroked `--warn`; the **note-pass arc** to Researching
+   too, stroked `--meta`, because a reader's note is not a warning (live-briefs
+   §4.7); and the **redraft arc** to Writing, stroked `--meta`. A dashed overlay travels along the lit arc and an arrowhead
    points into the destination. The arc is measured from the live node positions
    on every layout pass, so it stays attached to the nodes through a resize, a
    wrap, or a font change; the endpoints are resolved from each row's
@@ -815,17 +841,17 @@ Three things make the loop legible, and **none of them is a sentence**:
    | State | Set by | Reads as |
    |---|---|---|
    | `off` | run start; `graph.session.completed`; the next `graph.route.decided` | a run that has not looped, or whose loop is over |
-   | `flowing` | `graph.route.decided` with `destination: extra_pass` or `redraft` | the handoff: dashes travel from Reviewing to the destination |
-   | `settled` | `graph.extra_pass.started` / `graph.report.redraft_requested` | the re-armed rows are the ones running; the arc rests lit |
+   | `flowing` | `graph.route.decided` with `destination: extra_pass`, `note_pass` or `redraft` | the handoff: dashes travel from Reviewing to the destination |
+   | `settled` | `graph.extra_pass.started` / `graph.note_pass.started` / `graph.report.redraft_requested` / `graph.note_redraft.requested` | the re-armed rows are the ones running; the arc rests lit |
 
-   At most one arc is lit; `#spineWrap` carries `data-arc="extra_pass"|"redraft"`
-   beside `data-loop`. A one-pass run never shows either, which is correct —
+   At most one arc is lit; `#spineWrap` carries `data-arc="extra_pass"|"note_pass"|"redraft"`
+   beside `data-loop`. A one-pass run never shows any, which is correct —
    nothing looped. `--meta` is a stroke here and never text; the extra-pass reopen line's amber
-   is the text-safe `--status-warn`. Under `prefers-reduced-motion` both arcs
-   arrive already lit.
+   is the text-safe `--status-warn`. Under `prefers-reduced-motion` every arc
+   arrives already lit.
 
 2. **The pipeline is always exactly one pass.** On `graph.route.decided` with
-   `destination: extra_pass` rows 2–6 go hollow and Planning keeps `done`; with
+   `destination: extra_pass` or `note_pass` rows 2–6 go hollow and Planning keeps `done`; with
    `destination: redraft` rows 5–6 go hollow and rows 1–4 keep `done`. The reset
    fires on the route decision, not on the hop's own event, so the spine is
    already hollow as the arc flows. **And the reviewer's own completion, which
@@ -837,7 +863,7 @@ Three things make the loop legible, and **none of them is a sentence**:
    rows it just reset — so it is not allowed to.
 
 3. **A step re-armed by a loop carries a `↺` mark**, not a label: on Researching
-   for an extra pass, on Writing for a redraft, once the row has completed again.
+   for an extra pass or a note pass, on Writing for a redraft, once the row has completed again.
 
 **A reopened row says why it reopened** (live-briefs D14, 2026-09-28). On
 `graph.extra_pass.started` Researching's brief opens on `Going back to research {k}
@@ -846,6 +872,18 @@ checklist lists only the topics that pass re-runs, as they start; on
 `graph.report.redraft_requested` Writing's opens on `Rewriting to fix {n} issues the
 review found` (`--muted`). Both pluralise (`1 gap`, `1 issue`). This replaces the
 header's loop tag, which went with the "Now" header.
+
+**A reader's note buys its own reopenings** (live-briefs §4.6–§4.7, D11, 2026-09-29).
+A note the review found no evidence for buys one targeted research pass: on
+`graph.note_pass.started` Researching opens on
+`Researching your note: {the run's reading}` (`Researching your notes: {a}; {b}` for
+several; `--muted`), and its checklist lists only the notes' own sub-topics,
+`Your note: …`. A note the report
+ignores, or one that arrived while the review ran, buys one redraft: on
+`graph.note_redraft.requested` Writing opens on `Rewriting for your note: {…}`. Neither
+spends the review's own budget — a note pass is not an extra pass and does not advance
+`iteration`, and a note redraft is not the one writer re-run — and each note buys at most
+one of each, so ten notes (D11a) bound the run.
 
 **No pass counter** (live-briefs D14). The pass track, and later the pass number
 in the header and the chip, were second representations of what the arc already
@@ -880,8 +918,9 @@ outcome yet — plays a one-pass accepted script at whatever budget it was given
 
 The honest limitation: the API reports `iteration` on the session snapshot but not
 the route history, so the arcs and the reopen lines are driven by
-`graph.route.decided`, `graph.extra_pass.started` and
-`graph.report.redraft_requested` rather than by the session. A finished session
+`graph.route.decided`, `graph.extra_pass.started`, `graph.note_pass.started`,
+`graph.report.redraft_requested` and `graph.note_redraft.requested` rather than by the
+session. A finished session
 opens on its report, which states the passes in plain words (§4); its loops are
 not redrawn.
 
@@ -1037,8 +1076,9 @@ the report head bar and as the Session facts' pass fact (`passFact`,
 | n > 2 | 0 | `Went back n times to fill gaps` |
 | any | k > 0 | the above, plus ` · went back once / twice / k times for your notes` |
 
-`note_passes` arrives with reader notes (live-briefs Phase 3) and reads as 0 until
-then. The one rule the old counter taught still holds: `researcher.tool_call` carries
+`note_passes` is the status response's count of the targeted passes the reader's notes
+bought (live-briefs §4.6): 0 for a run without notes, and for a status recorded before
+notes existed. The one rule the old counter taught still holds: `researcher.tool_call` carries
 an `iteration` that is the ReAct step index, never the pass, so nothing reads the
 pass from agent events.
 
@@ -1375,6 +1415,11 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   `--motion-base`), and the summary line arrives the same way. The step dots change
   colour, never size. **Under reduced motion** the next question and the summary fade
   in place over 160ms, with no rise.
+- **A note's acknowledgement rises in once** (live-briefs §4.7, 2026-09-29). A new
+  `.ack` line starts from its `@starting-style` and rises 4px as it fades in over
+  200ms: at once in a row that is already open, and in its place in the stagger in
+  the row a hand-off is opening. **Under reduced motion** it fades in place over
+  160ms, like every brief line.
 - **One decorative loop, and it is not load-bearing.** `halo` runs at
   `--motion-halo: 2200ms` on the running node, on each running topic's dot and on the header status dot. It stops
   under reduced motion, and §3.4's table is identical either way — no state on this
@@ -1625,13 +1670,14 @@ Full detail, with the request shape each gap implies, is in
 | Stage | Blocked by |
 |---|---|
 | Evidence (every stage) | **E1** — no `GET /research/{id}/evidence`: the Evidence view, the `Download evidence log` button and coverage's question text are prototype-only until it exists |
-| Idle | the session's own `query` is never returned; no endpoint lists sessions; no effective-settings echo; no `/capabilities`; no `/health` |
+| Idle | no effective-settings echo; no `/capabilities`; no `/health` |
 | Submitted | nothing beyond Idle |
 | Check | nothing: `needs_input`, the two `session.clarification.*` events and `POST /research/{id}/answers` serve it (live-briefs Phase 2) |
+| Notes | nothing: `POST /research/{id}/notes`, the two `session.note.*` events and the status's `notes`, `notes_remaining` and `note_passes` serve them (live-briefs Phase 3); on the replay server a note is acknowledged but never applied (api-gaps 3.9) |
 | Running | no token usage; no terminal frame; no `Last-Event-ID` resume (events carry an `event_id`, but a reconnect replays from event 1); the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
 | Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |
-| Sidebar | no `GET /research`; no result summary per row; no durable store |
+| Sidebar | no result summary per row; no durable store (`GET /research` lists only what the process holds) |
 
 Every one of these is worked around in the prototype rather than faked: the gaps
 document names the workaround and, where there is no honest workaround, the
