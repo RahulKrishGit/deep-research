@@ -247,9 +247,17 @@ async def test_a_note_kept_as_written_is_one_line_even_when_its_text_is_not() ->
     ]
 
 
-@pytest.mark.parametrize("replaces", ["n2", "n3", "n10"])
+def test_the_new_note_is_one_line_of_the_request_even_when_the_text_is_not() -> None:
+    """``NoteRequest`` collapses a note, but the request builder does not rely on it."""
+    body = note_messages(RAW, "What limits storage?", EARLIER)[1].content
+
+    assert body.endswith(f"# The new note\n{ONE_LINE}")
+
+
+@pytest.mark.parametrize("replaces", ["n2", "n3", "n10", "x1", "n-1"])
 def test_a_note_never_replaces_itself_or_a_later_note(replaces: str) -> None:
-    """The interpreter does not know the note's own id, so the board record refuses the pointer."""
+    """The interpreter does not know the note's own id, so the board record refuses the pointer.
+    A pointer that is not ``n<number>`` at all (``x1``, ``n-1``) is no earlier note either."""
     reading = NoteInterpretation(kinds=["emphasis"], restatement="only the EU", replaces=replaces)
 
     assert reader_note(RECEIVED, reading).replaces is None

@@ -29,17 +29,21 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`:313-338`) |
 | `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:265-269`) |
 | `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:265-294`, `api/sessions.py` `submit_answers`) |
+| `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, once `finalize_report` has started — from the run's published decision to publish, live-briefs Phase 3 ambiguity 5 — or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 18 fields: `session_id`, `query`, `status`,
+`api/sessions.py:73-128`), 22 fields: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, `errors`, `evidence_path`, `quality_path`,
 `quality_contract_version`, `semantic_review_status`,
 `semantic_review_score`, `duration_seconds`, `coverage`
 (`required_targets`, `answered_targets`, `missing_required_target_ids`,
-`not_found_target_ids`) and `evidence_counts` (fifteen counts; `null`
+`not_found_target_ids`), `evidence_counts` (fifteen counts; `null`
 unless the run left both a composition and a quality snapshot,
-`runtime/outcome.py:525`). `status` is one of `running`, `needs_input` (the
+`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3):
+`notes` (each note as written, the run's reading of it and its outcome),
+`notes_remaining`, `note_passes` and `clarification` (the one-time check's
+questions and the answers the run started with, or `null`). `status` is one of `running`, `needs_input` (the
 one-time check waiting for the reader; not terminal), `completed`,
 `max_iterations`, `incomplete`, `failed`. Not on the response:
 `quality_status`, `max_iterations`/`max_extra_passes`, token usage,
@@ -120,6 +124,7 @@ Kept as a record, one line each.
 | 3.5 | **Halting-type vocabulary** [2.5] | The failed stage headlines the halting type in plain words and the rail groups recoverable errors, but the client keeps its own copy of `HALTING_ERROR_TYPES` to know which is which. | `HALTING_ERROR_TYPES` in `graph/state.py:141-150` | Client copy, small and stable | `halting: bool` on `ResearchError`, or publish the enumerated set |
 | 3.6 | **Shutdown while running** [2.7] | On cancellation the store sets `finished_at` and leaves `status` as `running`, then the stream ends. The console sees a closed stream with a non-terminal status. | Deliberate: *"cancellation stays cancellation"* | On stream close, re-read `/status`; a closed stream with `finished_at` set and `status == "running"` means the service stopped | The terminal frame from 3.3, or an explicit status |
 | 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
+| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, and it ends `pending` (`not checked`). A live run applies every note that arrives before `finalize_report` starts (read from the run's decision to publish, ambiguity 5 of the same plan). | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
 
 ---
 

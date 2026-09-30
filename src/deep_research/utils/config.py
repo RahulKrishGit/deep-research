@@ -424,6 +424,10 @@ class GraphConfig(BaseModel):
     checkpointing_enabled: bool = False
 
 
+HITL_TIMING_MAX_S = 600.0
+"""The longest any reader-in-the-loop timing may be: ten minutes."""
+
+
 class HitlConfig(BaseModel):
     """The reader-in-the-loop timings (live-briefs spec §4.4), in seconds.
 
@@ -433,13 +437,24 @@ class HitlConfig(BaseModel):
     check's best guesses (D6). ``note_interpret_timeout_s`` bounds one reader
     note's interpretation (reader notes, live-briefs Phase 3). Request-scoped
     ``config_overrides`` may set each; nothing reads them from the environment.
+
+    Each is a finite number of seconds in (0, ``HITL_TIMING_MAX_S``]. A larger
+    or non-finite value is refused where the request is validated (a ``422``):
+    ``1e12`` seconds would otherwise pass here and then overflow the session's
+    answer deadline, failing the run instead of the request.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    check_timeout_s: float = Field(default=20.0, gt=0)
-    answer_wait_s: float = Field(default=60.0, gt=0)
-    note_interpret_timeout_s: float = Field(default=15.0, gt=0)
+    check_timeout_s: float = Field(
+        default=20.0, gt=0, le=HITL_TIMING_MAX_S, allow_inf_nan=False
+    )
+    answer_wait_s: float = Field(
+        default=60.0, gt=0, le=HITL_TIMING_MAX_S, allow_inf_nan=False
+    )
+    note_interpret_timeout_s: float = Field(
+        default=15.0, gt=0, le=HITL_TIMING_MAX_S, allow_inf_nan=False
+    )
 
 
 class OutputConfig(BaseModel):

@@ -5,7 +5,8 @@ background task per session, records every ``ResearchEvent`` the runner
 publishes into an append-only per-session list, and exposes replayable
 iteration and safe terminal state. Nothing here touches the network, the
 file system, or a provider: the one-time check reaches a provider only through
-the injected ``ClarityChecker``.
+the injected ``ClarityChecker``, and a reader note only through the injected
+``NoteInterpreter``.
 """
 
 from __future__ import annotations
@@ -27,12 +28,25 @@ from deep_research.api.clarify import (
     resolve_answers,
 )
 from deep_research.api.models import (
+    ClarificationAnswerResponse,
     ClarificationAnswersRequest,
+    ClarificationQuestionResponse,
+    ClarificationRecordResponse,
     CoverageProgressResponse,
     EvidenceCountsResponse,
+    ReaderNoteResponse,
     SessionStatus,
 )
+from deep_research.api.notes import (
+    NoteInterpreter,
+    fallback_interpretation,
+    note_interpreted_event,
+    note_received_event,
+    note_records,
+    reader_note,
+)
 from deep_research.runtime.errors import ResearchConfigurationError
+from deep_research.runtime.notes import NoteBoard, ReceivedNote, bind_note_board
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.config import HitlConfig
 from deep_research.utils.types import ReaderAnswer, ResearchError, ResearchEvent
@@ -47,6 +61,18 @@ _log = logging.getLogger(__name__)
 
 class NotWaitingForInput(Exception):
     """Answers arrived for a session that is not waiting for them (a 409)."""
+
+
+class NotesClosed(Exception):
+    """A note arrived for a session that no longer takes notes (a 409, spec §4.6)."""
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRecord:
+    """The one-time check a session asked, and the answers its run started with."""
+
+    questions: tuple[ClarityQuestion, ...]
+    answers: tuple[ReaderAnswer, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +118,16 @@ class ResearchSession:
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     clarification: PendingClarification | None = None
     """The check this session waits on while ``needs_input``, else ``None``."""
+    check: CheckRecord | None = None
+    """The check this session asked, if any, kept for the status response."""
+    note_board: NoteBoard = field(default_factory=NoteBoard)
+    """The reader's notes (live-briefs spec §4.6), bound for the run's task."""
+    note_tasks: set[asyncio.Task[None]] = field(default_factory=set)
+    notes_closed: bool = False
+    """Set once the stream shows publication has begun: no note is taken after."""
+    note_passes: int = 0
+    run_settings: Any = None
+    hitl: HitlConfig = field(default_factory=HitlConfig)
 
     def publish(self, event: ResearchEvent) -> None:
         """Record one progress event and update the live status fields."""
@@ -104,6 +140,16 @@ class ResearchSession:
         # carries an ``iteration``, but that is the ReAct step index (A6).
         if event.event_type.startswith("graph.") and isinstance(iteration, int):
             self.iteration = iteration
+        # live-briefs spec §4.6: a decision to publish (or to end) closes the
+        # notes — this is the event that makes Publishing the active row, so
+        # the page and the API agree on when notes stop.
+        if event.event_type == "graph.route.decided" and event.metadata.get(
+            "destination"
+        ) in ("finalize", "end"):
+            self.notes_closed = True
+        note_passes = event.metadata.get("note_passes")
+        if event.event_type == "graph.note_pass.started" and isinstance(note_passes, int):
+            self.note_passes = note_passes
         self.changed.set()
 
 
@@ -165,6 +211,49 @@ def outcome_response_fields(
     return fields
 
 
+def session_note_fields(session: ResearchSession) -> dict[str, object]:
+    """The session response's reader-side fields (live-briefs spec §4.4, §4.6).
+
+    Every note in receipt order with its reading and outcome, how many more
+    notes the session takes, the note passes the run bought, and the one-time
+    check it asked. A finished run's own state is the authority for outcomes
+    and the pass count; while it runs, the stream's count stands in.
+    """
+    state = session.outcome.state if session.outcome is not None else None
+    check = session.check
+    return {
+        "notes": [
+            ReaderNoteResponse(
+                note_id=received.note_id,
+                text=received.text,
+                restatement=restatement,
+                outcome=outcome,
+            )
+            for received, restatement, outcome in note_records(session.note_board, state)
+        ],
+        "notes_remaining": session.note_board.remaining,
+        "note_passes": state.note_passes if state is not None else session.note_passes,
+        "clarification": (
+            None
+            if check is None
+            else ClarificationRecordResponse(
+                questions=[
+                    ClarificationQuestionResponse(**question.model_dump(mode="json"))
+                    for question in check.questions
+                ],
+                answers=[
+                    ClarificationAnswerResponse(
+                        question_id=answer.question_id,
+                        value=answer.value,
+                        source=answer.source,
+                    )
+                    for answer in check.answers
+                ],
+            )
+        ),
+    }
+
+
 class SessionStore:
     """Own one process's research sessions and their background tasks."""
 
@@ -173,9 +262,11 @@ class SessionStore:
         *,
         runner: ResearchRunner,
         clarity_checker: ClarityChecker | None = None,
+        note_interpreter: NoteInterpreter | None = None,
     ) -> None:
         self._runner = runner
         self._clarity_checker = clarity_checker
+        self._note_interpreter = note_interpreter
         self._sessions: dict[str, ResearchSession] = {}
 
     def start(
@@ -212,21 +303,27 @@ class SessionStore:
             query=query,
             status="running",
             started_at=datetime.now(timezone.utc),
+            run_settings=settings,
+            hitl=hitl or HitlConfig(),
         )
         self._sessions[session_id] = session
-        session.task = asyncio.create_task(
-            self._run(
-                session=session,
-                query=query,
-                max_extra_passes=max_extra_passes,
-                output_format=output_format,
-                config_overrides=config_overrides,
-                config_path=config_path,
-                ask_clarifying_questions=ask_clarifying_questions,
-                settings=settings,
-                hitl=hitl or HitlConfig(),
+        # live-briefs spec §4.6: the task copies this context, so the session's
+        # note board is bound for its whole run — every node and every task an
+        # agent starts inside it reads the same board.
+        with bind_note_board(session.note_board):
+            session.task = asyncio.create_task(
+                self._run(
+                    session=session,
+                    query=query,
+                    max_extra_passes=max_extra_passes,
+                    output_format=output_format,
+                    config_overrides=config_overrides,
+                    config_path=config_path,
+                    ask_clarifying_questions=ask_clarifying_questions,
+                    settings=settings,
+                    hitl=hitl or HitlConfig(),
+                )
             )
-        )
         return session
 
     def require(self, session_id: str) -> ResearchSession:
@@ -274,6 +371,76 @@ class SessionStore:
         )
         return session
 
+    def add_note(self, session_id: str, text: str) -> ReceivedNote:
+        """Accept one reader note for a running session (live-briefs spec §4.6).
+
+        Raises ``KeyError`` for an unknown session; ``NotesClosed`` while the
+        session waits for the one-time check's answers, once it has finished
+        or stopped (or its task is being cancelled, when the session still
+        reads ``running`` without a ``finished_at``), and once its stream
+        shows publication has begun; and ``NoteLimitReached`` past the tenth
+        accepted note (D11a). A refused note is never counted. An accepted
+        note is published at once, then interpreted in the background: the
+        interpreted note joins the run's board and ``session.note.interpreted``
+        follows.
+        """
+        session = self.require(session_id)
+        if (
+            session.status != "running"
+            or session.finished_at is not None
+            or session.notes_closed
+            or (session.task is not None and session.task.cancelling())
+        ):
+            raise NotesClosed(session_id)
+        received = session.note_board.receive(
+            text,
+            received_at=datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            received_during=session.current_agent or "planner",
+        )
+        session.publish(note_received_event(received))
+        task = asyncio.create_task(self._interpret_note(session, received))
+        session.note_tasks.add(task)
+        task.add_done_callback(
+            lambda done: _note_task_done(session, received.note_id, done)
+        )
+        return received
+
+    async def _interpret_note(
+        self, session: ResearchSession, received: ReceivedNote
+    ) -> None:
+        """Read one note within ``hitl.note_interpret_timeout_s``, or keep it as written.
+
+        Any failure — no interpreter, a provider error, a timeout, an invalid
+        reading — keeps the note as an emphasis in the reader's own words, and
+        its event says ``fallback`` (spec §4.6). Cancellation (the service
+        closing) drops the note from the board's pending set, so nothing waits
+        on it.
+        """
+        # Only notes numbered before this one, whatever else the board holds: a
+        # note is read against what the reader had already said.
+        received_ids = [note.note_id for note in session.note_board.received()]
+        before = set(received_ids[: received_ids.index(received.note_id)])
+        earlier = [
+            note for note in session.note_board.snapshot() if note.note_id in before
+        ]
+        fallback = False
+        try:
+            if self._note_interpreter is None:
+                raise LookupError("no note interpreter")
+            async with asyncio.timeout(session.hitl.note_interpret_timeout_s):
+                reading = await self._note_interpreter(
+                    received.text, session.query, earlier, session.run_settings
+                )
+        except asyncio.CancelledError:
+            session.note_board.drop(received.note_id)
+            raise
+        except Exception as error:  # noqa: BLE001 - a note is never lost to its reading
+            _log.warning("note interpretation fell back: %s", type(error).__name__)
+            reading, fallback = fallback_interpretation(received.text), True
+        note = reader_note(received, reading)
+        session.note_board.add(note)
+        session.publish(note_interpreted_event(note, fallback=fallback))
+
     async def iter_events(
         self, session_id: str
     ) -> AsyncIterator[ResearchEvent]:
@@ -309,6 +476,11 @@ class SessionStore:
             session.task
             for session in self._sessions.values()
             if session.task is not None and not session.task.done()
+        ] + [
+            task
+            for session in self._sessions.values()
+            for task in session.note_tasks
+            if not task.done()
         ]
         for task in pending:
             task.cancel()
@@ -428,6 +600,7 @@ class SessionStore:
             submitted=asyncio.get_running_loop().create_future(),
         )
         session.clarification = pending
+        session.check = CheckRecord(questions=questions)
         session.status = "needs_input"
         session.publish(clarification_requested_event(questions, deadline))
         await asyncio.wait({pending.submitted}, timeout=hitl.answer_wait_s)
@@ -441,8 +614,22 @@ class SessionStore:
             answers = resolve_answers(questions)
             reason = "timed_out"
         session.status = "running"
+        session.check = CheckRecord(questions=questions, answers=tuple(answers))
         session.publish(clarification_answered_event(answers, reason))
         return answers
+
+
+def _note_task_done(
+    session: ResearchSession, note_id: str, task: asyncio.Task[None]
+) -> None:
+    """Forget a finished reading; a reading cancelled before its first step is dropped.
+
+    A task cancelled before it ever ran never enters ``_interpret_note``, so its
+    own handler cannot drop the note: without this, the board would wait on it.
+    """
+    session.note_tasks.discard(task)
+    if task.cancelled():
+        session.note_board.drop(note_id)
 
 
 def _record_failure(

@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from deep_research.main import load_settings
 from deep_research.observability import Tracker
 from deep_research.utils.config import (
+    HITL_TIMING_MAX_S,
     PRODUCTION_AGENT_NAMES,
     SERVICE_ROLE_NAMES,
     AgentRuntimeConfig,
@@ -1445,3 +1446,27 @@ def test_request_overrides_set_the_hitl_timings_and_reject_bad_ones() -> None:
     for bad in ({"answer_wait_s": 0}, {"check_timeout_s": -1}, {"question_limit": 3}):
         with pytest.raises(ValueError):
             apply_config_overrides(ConfigSettings(), {"hitl": bad})
+
+
+HITL_TIMINGS = ("check_timeout_s", "answer_wait_s", "note_interpret_timeout_s")
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 600.5, 1e12])
+@pytest.mark.parametrize("field", HITL_TIMINGS)
+def test_each_hitl_timing_refuses_infinite_nan_and_oversized_values(
+    field: str, bad: float
+) -> None:
+    """A timing that is not a finite number of seconds up to ten minutes is refused
+    where the request is validated: ``1e12`` s used to pass and then overflow the
+    session's answer deadline, failing the run instead of the request."""
+    with pytest.raises(ValidationError):
+        HitlConfig(**{field: bad})
+    with pytest.raises(ValueError):
+        apply_config_overrides(ConfigSettings(), {"hitl": {field: bad}})
+
+
+def test_each_hitl_timing_takes_up_to_ten_minutes() -> None:
+    timings = HitlConfig(**{field: HITL_TIMING_MAX_S for field in HITL_TIMINGS})
+
+    assert HITL_TIMING_MAX_S == 600.0
+    assert [getattr(timings, field) for field in HITL_TIMINGS] == [600.0, 600.0, 600.0]

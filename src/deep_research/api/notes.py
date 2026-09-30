@@ -16,6 +16,7 @@ its acknowledgement says so (``fallback``).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal, TypeAlias
 
@@ -201,10 +202,16 @@ def note_messages(
     question: str,
     earlier: Sequence[ReaderNote],
 ) -> list[ChatMessage]:
-    """The one tool-free request a live interpretation sends."""
+    """The one tool-free request a live interpretation sends.
+
+    The new note is collapsed to one line here too: the route already does it,
+    but this request is where a line break in reader text would start a line of
+    its own, so it does not rely on the caller.
+    """
     listed = "\n".join(
         f"- {note.note_id}: {note.restatement}" for note in active_reader_notes(earlier)
     ) or "(none)"
+    text = collapse_whitespace(text)
     return [
         ChatMessage(role="developer", content=NOTE_SYSTEM_PROMPT),
         ChatMessage(
@@ -268,12 +275,17 @@ async def scripted_note_interpreter(
     return NoteInterpretation(kinds=["emphasis"], restatement=text)
 
 
+_NOTE_ID = re.compile(r"n([1-9]\d*)")
+
+
 def _numbered_before(candidate: str, note_id: str) -> bool:
-    """Whether ``candidate`` is a note id numbered strictly below ``note_id``."""
-    try:
-        return int(candidate[1:]) < int(note_id[1:])
-    except ValueError:
-        return False
+    """Whether ``candidate`` is a note id numbered strictly below ``note_id``.
+
+    Both must be ``n<number>`` exactly: ``x1`` and ``n-1`` are no note's id, so
+    neither is numbered below anything.
+    """
+    earlier, own = _NOTE_ID.fullmatch(candidate), _NOTE_ID.fullmatch(note_id)
+    return earlier is not None and own is not None and int(earlier[1]) < int(own[1])
 
 
 def reader_note(received: ReceivedNote, reading: NoteInterpretation) -> ReaderNote:
