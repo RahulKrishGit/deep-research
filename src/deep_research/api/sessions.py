@@ -268,6 +268,7 @@ class SessionStore:
         self._clarity_checker = clarity_checker
         self._note_interpreter = note_interpreter
         self._sessions: dict[str, ResearchSession] = {}
+        self._closing = False
 
     def start(
         self,
@@ -376,20 +377,20 @@ class SessionStore:
 
         Raises ``KeyError`` for an unknown session; ``NotesClosed`` while the
         session waits for the one-time check's answers, once it has finished
-        or stopped (or its task is being cancelled, when the session still
-        reads ``running`` without a ``finished_at``), and once its stream
-        shows publication has begun; and ``NoteLimitReached`` past the tenth
-        accepted note (D11a). A refused note is never counted. An accepted
-        note is published at once, then interpreted in the background: the
-        interpreted note joins the run's board and ``session.note.interpreted``
-        follows.
+        or stopped, once the store is closing (its tasks are being cancelled
+        while the session still reads ``running`` without a ``finished_at``),
+        and once its stream shows publication has begun; and
+        ``NoteLimitReached`` past the tenth accepted note (D11a). A refused
+        note is never counted. An accepted note is published at once, then
+        interpreted in the background: the interpreted note joins the run's
+        board and ``session.note.interpreted`` follows.
         """
         session = self.require(session_id)
         if (
             session.status != "running"
             or session.finished_at is not None
             or session.notes_closed
-            or (session.task is not None and session.task.cancelling())
+            or self._closing
         ):
             raise NotesClosed(session_id)
         received = session.note_board.receive(
@@ -471,7 +472,14 @@ class SessionStore:
             session.changed.clear()
 
     async def close(self) -> None:
-        """Cancel every unfinished task; cancellation stays cancellation."""
+        """Cancel every unfinished task; cancellation stays cancellation.
+
+        The closing flag goes up first, so no note is taken from here on: a
+        note accepted between ``task.cancel()`` and a task's own close-out
+        would outlive this call. ``task.cancelling()`` cannot say this — a
+        timeout firing inside the run's own task raises it too.
+        """
+        self._closing = True
         pending = [
             session.task
             for session in self._sessions.values()

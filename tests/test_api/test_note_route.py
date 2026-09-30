@@ -310,22 +310,85 @@ async def test_closing_the_store_drops_a_note_whose_reading_had_not_begun() -> N
 
 
 @pytest.mark.asyncio
-async def test_no_note_is_taken_once_the_run_is_being_cancelled() -> None:
-    """Phase 2's shutdown note: between ``task.cancel()`` and the task's own close-out the session
-    still reads ``running`` with no ``finished_at``; a note accepted then would outlive ``close()``."""
-    runner = HeldRunner()
+async def test_no_note_is_taken_once_the_store_is_closing() -> None:
+    """Shutdown: a note posted while ``close()`` cancels the run — the session still reads
+    ``running`` with no ``finished_at`` — would outlive ``close()``, so it is refused."""
+    refused: list[bool] = []
+    store_ref: list[SessionStore] = []
+
+    class Runner(HeldRunner):
+        async def __call__(self, **kwargs: Any) -> ResearchOutcome:
+            try:
+                return await super().__call__(**kwargs)
+            except asyncio.CancelledError:
+                session = store_ref[0].require("s1")
+                assert session.status == "running" and session.finished_at is None
+                try:
+                    store_ref[0].add_note("s1", "during shutdown")
+                except NotesClosed:
+                    refused.append(True)
+                raise
+
+    runner = Runner()
     store = SessionStore(runner=runner, note_interpreter=Interpreter())
+    store_ref.append(store)
     _start(store)
     session = store.require("s1")
     await _until(lambda: runner.board is not None)
-    assert session.task is not None
 
-    session.task.cancel()
+    await store.close()
 
-    assert session.status == "running" and session.finished_at is None
-    with pytest.raises(NotesClosed):
-        store.add_note("s1", "during shutdown")
+    assert refused == [True]
     assert session.note_board.accepted == 0
+    assert session.note_tasks == set()
+    with pytest.raises(NotesClosed):
+        store.add_note("s1", "after shutdown")
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_firing_inside_the_run_does_not_refuse_a_note() -> None:
+    """A timeout that fires in the run's own task (a provider read, the one-time check, the note
+    settle) leaves ``task.cancelling()`` above zero until the task resumes; a note arriving then is
+    not a shutdown and is accepted."""
+    seen: list[tuple[int, str]] = []
+    store_ref: list[SessionStore] = []
+
+    class Runner(HeldRunner):
+        async def __call__(self, **kwargs: Any) -> ResearchOutcome:
+            loop, task = asyncio.get_running_loop(), asyncio.current_task()
+            assert task is not None
+
+            def note_arrives() -> None:
+                try:
+                    received = store_ref[0].add_note("s1", "a note while a read timed out")
+                except NotesClosed:
+                    seen.append((task.cancelling(), "refused"))
+                else:
+                    seen.append((task.cancelling(), received.note_id))
+
+            try:
+                async with asyncio.timeout(None) as timeout:
+                    # The timeout fires first and the note arrives right behind it, in the same
+                    # loop iteration: the run's task has been asked to cancel but has not yet
+                    # resumed to leave the ``async with`` and uncancel itself.
+                    timeout.reschedule(loop.time())
+                    loop.call_soon(note_arrives)
+                    await asyncio.sleep(5)
+            except TimeoutError:
+                pass
+            return await super().__call__(**kwargs)
+
+    runner = Runner()
+    store = SessionStore(runner=runner, note_interpreter=Interpreter())
+    store_ref.append(store)
+    _start(store)
+    session = store.require("s1")
+    await _until(lambda: bool(seen))
+
+    assert seen == [(1, "n1")]
+    assert session.note_board.accepted == 1
+    await _until(lambda: _types(session.events)[-1] == "session.note.interpreted")
+    runner.release.set()
     await store.close()
 
 
