@@ -1137,6 +1137,81 @@ REVIEW_DIMENSIONS: frozenset[str] = frozenset(
 SEMANTIC_REVIEW_MEAN: float = 0.80
 """The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
 
+# Reader notes (live-briefs spec §4.6, D8-D11a): what the reader adds while a run
+# is going, as the run's own agents and routing read it.
+MAX_NOTES_PER_RUN = 10
+"""D11a: a run accepts at most ten notes; the API refuses an eleventh."""
+NOTE_COVERAGE_PREFIX = "note-"
+"""A note's own sub-topic is ``note-{note_id}``, and its targets carry the same prefix."""
+NOTE_TOPIC_TITLE_PREFIX = "Your note: "
+"""A note's own sub-topic is titled ``Your note: {restatement}`` (live-briefs spec §4.6)."""
+ReaderNoteKind: TypeAlias = Literal[
+    "emphasis", "exclude", "scope", "new_angle", "about_reader"
+]
+NoteDispositionStatus: TypeAlias = Literal[
+    "honoured", "ignored_with_evidence", "no_evidence"
+]
+
+
+class ReaderNoteScope(ContractModel):
+    """The scope a ``scope`` note sets: a geography, a period, or both."""
+
+    geography: str | None = Field(default=None, min_length=1, max_length=120)
+    period: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class ReaderNote(ContractModel):
+    """One interpreted reader note (live-briefs spec §4.6).
+
+    The first nine fields are fixed once the note is interpreted; the three
+    flags are the run's own bookkeeping, set by the graph: ``reviewed`` when a
+    review input carried the note, ``passed`` when its one targeted research
+    pass was bought, ``redrafted`` when its one redraft was (D11).
+    ``restatement`` is the interpreter's plain-words reading, or the note's own
+    text when the interpretation failed.
+    """
+
+    note_id: str = Field(pattern=r"^n([1-9]|10)$")
+    text: str = Field(min_length=1, max_length=500)
+    received_at: AwareISOString
+    received_during: str = Field(min_length=1)
+    kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
+    restatement: str = Field(min_length=1, max_length=500)
+    scope: ReaderNoteScope | None = None
+    new_questions: list[str] = Field(default_factory=list, max_length=3)
+    replaces: str | None = None
+    reviewed: bool = False
+    passed: bool = False
+    redrafted: bool = False
+
+
+class NoteDisposition(ContractModel):
+    """What one review concluded about one reader note (live-briefs spec §4.6)."""
+
+    note_id: str = Field(min_length=1)
+    status: NoteDispositionStatus
+
+
+def active_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
+    """The notes the run acts on: every note no later note replaces, in receipt order (D9)."""
+    replaced = {note.replaces for note in notes if note.replaces}
+    return [note for note in notes if note.note_id not in replaced]
+
+
+def with_board_notes(
+    existing: Sequence[ReaderNote],
+    board: Sequence[ReaderNote],
+) -> list[ReaderNote]:
+    """The state's notes, then every board note the state does not hold yet.
+
+    The board is append-only and an interpreted note never changes, so a note
+    the state already holds keeps the state's own flags: the board carries
+    none of the run's bookkeeping.
+    """
+    known = {note.note_id for note in existing}
+    return [*existing, *(note for note in board if note.note_id not in known)]
+
+
 REVIEW_RUBRIC_VERSION = 3
 """Which semantic rubric a review was made under.
 
@@ -1247,6 +1322,14 @@ class ReportReview(ContractModel):
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     rationale: str = ""
+    note_dispositions: list[NoteDisposition] = Field(default_factory=list)
+    """One entry per reader note this review judged (live-briefs spec §4.6).
+
+    Optional and empty by default, so a review without reader notes, and every
+    review recorded before notes existed, is unchanged. It never enters the
+    seven-dimension acceptance rule: ``graph_route`` reads it only to buy a
+    note's one pass or one redraft.
+    """
 
     @property
     def coverage_complete(self) -> bool:
@@ -1999,6 +2082,20 @@ class ResearchState(ContractModel):
     every consumer renders its reader-answers section only when this is
     non-empty, so a run without answers builds the same requests as before.
     """
+    reader_notes: list[ReaderNote] = Field(default_factory=list)
+    """The reader's notes the run has taken in so far, in receipt order, or ``[]``.
+
+    Replaced on every write (live-briefs spec §4.6). ``agent_node`` and the
+    review node copy in every note the run's board holds that this list does
+    not, so each node starts with the notes received so far; the flags on each
+    note are the graph's own record of its one pass and one redraft.
+    """
+    note_passes: int = Field(default=0, ge=0)
+    """How many targeted research passes the reader's notes bought (D11).
+
+    Counted apart from ``iteration``: a note pass never spends the extra-pass
+    budget, and the report's pass fact names the two separately.
+    """
     events: list[ResearchEvent] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
 
@@ -2039,6 +2136,8 @@ class ResearchStateUpdate(TypedDict, total=False):
     writer_redrafts: int
     memory_context: MemorySnapshot
     reader_answers: list[ReaderAnswer]
+    reader_notes: list[ReaderNote]
+    note_passes: int
     events: list[ResearchEvent]
     errors: list[ResearchError]
 

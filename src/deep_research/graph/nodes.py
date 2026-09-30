@@ -33,6 +33,7 @@ from deep_research.agents.quality import (
     compute_report_quality,
     review_status_fields,
 )
+from deep_research.agents.reader_notes import board_notes
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     evidence_report_filename,
@@ -108,6 +109,7 @@ from deep_research.utils.types import (
     ResearchStateUpdate,
     advance_research_iteration,
     merge_research_state,
+    with_board_notes,
 )
 
 GraphNode: TypeAlias = Callable[
@@ -187,6 +189,19 @@ def _halt(
     return _with(state, {"errors": [error]})
 
 
+def _board_notes_update(state: ResearchState) -> ResearchStateUpdate:
+    """The run board's notes the state does not hold yet, as one update, or ``{}``.
+
+    live-briefs spec §4.6: a node starts from every note received so far. A
+    note the state already holds keeps the state's flags; ``{}`` when the
+    board adds nothing, so a run without notes merges exactly what it did.
+    """
+    notes = with_board_notes(state.reader_notes, board_notes())
+    if len(notes) == len(state.reader_notes):
+        return {}
+    return {"reader_notes": notes}
+
+
 def agent_node(
     agent: ResearchAgent,
     *,
@@ -208,7 +223,10 @@ def agent_node(
             return _skipped(state, name)
 
         started_event = node_started_event(name, iteration=state.iteration)
-        started = merge_research_state(state, {"events": [started_event]})
+        # live-briefs spec §4.6: every node begins with the notes received so far.
+        started = merge_research_state(
+            state, {"events": [started_event], **_board_notes_update(state)}
+        )
         # Published live (live-briefs spec E3): the object merged here is the one
         # this node's snapshot carries, so the orchestrator delivers it once.
         publish_live(started_event)
