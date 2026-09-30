@@ -5,7 +5,8 @@ import type { NextRequest } from "next/server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const REQUEST_HEADERS = ["accept", "content-type", "x-replay-case"] as const;
+// x-replay-clarify: replay's scripted one-time check asks only when the POST carried it (live-briefs spec §4.4).
+const REQUEST_HEADERS = ["accept", "content-type", "x-replay-case", "x-replay-clarify"] as const;
 const RESPONSE_HEADERS = ["content-type", "cache-control", "x-accel-buffering", "x-deep-research-mode"] as const;
 type Ctx = { params: Promise<{ path: string[] }> };
 

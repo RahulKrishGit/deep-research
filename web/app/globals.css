@@ -1227,3 +1227,184 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
      also overriding evidence-view's grid-template-columns. */
   .evidence-view{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
 }
+
+/* ═══ 2026-09-28: live step briefs (live-briefs spec §4.3; picks 1A, 2C) ═══
+   Scoped to the running stage's spine (`ol.spine-lg.briefs`, BriefSpine.tsx); the Failed and
+   Stopped stages keep the compact rows above. Rows align to the top, so an open row keeps its node
+   beside its name, and the connector is drawn by the upper row from its own node centre to the next
+   one — it stretches with the row instead of assuming equal row heights. `--node-c` is a node's
+   centre measured from its row's padding box: the row's padding plus half the 33 px node. */
+.spine-lg.briefs{--node-c:calc(var(--space-3) + 16.5px)}
+.spine-lg.briefs > li{align-items:start;transition:background var(--motion-fluid) var(--ease-entrance) var(--d-tint,0ms)}
+.spine-lg.briefs > li + li::before,
+.spine-lg.briefs > li + li::after{content:none}
+/* To the next node's centre: the list gap, the two rows' 1px borders, then that row's `--node-c`. */
+.spine-lg.briefs > li:not(:last-child)::before,
+.spine-lg.briefs > li:not(:last-child)::after{
+  content:"";position:absolute;left:calc(var(--space-3) + 16px);width:1px;height:auto;
+  top:var(--node-c);bottom:calc(-1 * (var(--space-2) + 2px + var(--node-c)));background:var(--border);
+}
+.spine-lg.briefs > li:not(:last-child)::after{
+  background:var(--status-ok);transform-origin:top;transform:scaleY(0);
+  transition:transform var(--fill-line) var(--ease-entrance) var(--d-line,0ms);
+}
+.spine-lg.briefs > li[data-state="done"]:not(:last-child)::after,
+.spine-lg.briefs > li[data-state="loop"]:not(:last-child)::after{transform:scaleY(1)}
+.spine-lg.briefs .bullet{
+  transition:background var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),
+             border-color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms),box-shadow var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms);
+}
+.spine-lg.briefs .stage-name{transition:color var(--motion-fluid) var(--ease-entrance) var(--d-node,0ms)}
+.spine-lg.briefs .ps-body{min-width:0}
+.spine-lg.briefs .ps-head{position:relative;min-height:33px}
+.spine-lg.briefs .ps-toggle{position:absolute;inset:0;width:100%;padding:0;border-radius:var(--radius-sm)}
+.spine-lg.briefs > li[data-toggle]:hover{background:var(--border-soft)}
+/* The subtitle is two stacked lines that cross-fade: the live line until the row is done, then its outcome. */
+.spine-lg.briefs .stage-meta.xf{display:grid;font-variant-numeric:tabular-nums}
+.spine-lg.briefs .stage-meta.xf > span{grid-area:1/1;min-width:0;transition:opacity var(--motion-base) var(--ease-standard) var(--d-out,0ms)}
+.spine-lg.briefs .m-out{opacity:0}
+.spine-lg.briefs > li[data-state="done"] .m-live,.spine-lg.briefs > li[data-state="loop"] .m-live{opacity:0}
+.spine-lg.briefs > li[data-state="done"] .m-out,.spine-lg.briefs > li[data-state="loop"] .m-out{opacity:1}
+/* The brief (pick 1A): the height opens by the 0fr → 1fr technique, then its lines rise 4px and fade
+   in 60ms apart; closing fades the lines out, then closes the height. */
+.spine-lg.briefs .ps-x{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--motion-fluid) var(--ease-entrance) var(--d-h,0ms)}
+.spine-lg.briefs > li[data-open="1"] .ps-x{grid-template-rows:1fr}
+.spine-lg.briefs > li[data-open="0"]{--d-h:160ms}
+.spine-lg.briefs .ps-xi{min-height:0;overflow:hidden}
+.spine-lg.briefs .ps-brief{padding-top:var(--space-3);display:flex;flex-direction:column;gap:var(--space-2)}
+.spine-lg.briefs .ln{transition:opacity var(--dur-c,240ms) var(--ease-entrance) var(--d-c,0ms),transform var(--dur-c,240ms) var(--ease-entrance) var(--d-c,0ms)}
+.spine-lg.briefs > li[data-open="0"] .ln{opacity:0;transform:translateY(4px);--dur-c:160ms;--d-c:0ms}
+.spine-lg.briefs > li[data-open="1"] .ln{--d-c:calc(280ms + var(--i,0) * 60ms)}
+.spine-lg.briefs .b-line,.spine-lg.briefs .b-why{font-size:var(--text-sm);line-height:1.5}
+.spine-lg.briefs .b-line{color:var(--fg)}
+.spine-lg.briefs .b-why{color:var(--muted)}
+.spine-lg.briefs .b-why[data-kind="extra_pass"]{color:var(--status-warn)}
+/* Researching's checklist (pick 2C): mark · number · title · fact, hairlines between topics. Divs, not
+   list items: the verbatim `.spine-lg li` rules would otherwise style every topic as a pipeline row. */
+.ps-topics,.ps-titles{display:flex;flex-direction:column}
+.ps-topics > .ln{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:6px 0;font-size:var(--text-sm);color:var(--muted)}
+.ps-titles > .ln{display:grid;grid-template-columns:18px minmax(0,1fr);gap:var(--space-3);padding:6px 0;font-size:var(--text-sm);color:var(--fg)}
+.ps-topics > .ln + .ln,.ps-titles > .ln + .ln{border-top:1px solid var(--border-soft)}
+.ps-topics > [data-topic="running"],.ps-topics > [data-topic="done"]{color:var(--fg)}
+.ps-topics .tn,.ps-titles .tn{font-family:var(--font-mono);color:var(--muted);margin-right:6px}
+.ps-topics .tt{min-width:0;overflow-wrap:anywhere}
+.ps-topics .tf{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ps-topics > [data-topic="running"] .tf{color:var(--status-ok)}
+/* ✓ drawn, ● running, ○ waiting — one 14px slot, so the column never shifts. Scoped to the checklist:
+   the bare `.mk` is also the note head's tag ("stopped", "halt", "gone"), which must keep its own box. */
+.ps-topics .mk{width:14px;height:14px;position:relative;display:grid;place-items:center}
+.ps-topics .mk .ring{position:absolute;inset:2px;border-radius:50%;border:1px solid var(--border);transition:opacity var(--motion-base) var(--ease-standard)}
+.ps-topics .mk .dotc{position:absolute;inset:4px;border-radius:50%;background:var(--status-ok);opacity:0;transform:scale(.4);transition:opacity var(--motion-base) var(--ease-entrance),transform var(--motion-fluid) var(--ease-entrance)}
+.ps-topics .mk svg{position:absolute;inset:0;width:14px;height:14px;overflow:visible}
+.ps-topics .mk svg path{fill:none;stroke:var(--status-ok);stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:14;stroke-dashoffset:14;transition:stroke-dashoffset 360ms var(--ease-entrance) 80ms}
+[data-topic="running"] > .mk .dotc{opacity:1;transform:none;animation:halo var(--motion-halo) var(--ease-entrance) infinite}
+[data-topic="running"] > .mk .ring,[data-topic="done"] > .mk .ring{opacity:0}
+[data-topic="done"] > .mk svg path{stroke-dashoffset:0}
+@media (max-width:480px){
+  .ps-topics > .ln{grid-template-columns:18px minmax(0,1fr);row-gap:0}
+  .ps-topics .tf{grid-column:2}
+}
+
+/* ═══ 2026-09-28: the hand-off between steps (pick 3B, overlapped; live-briefs spec §4.3) ═══
+   Timed from the render in which row k is marked done and row k+1 becomes active; BriefSpine holds
+   the two roles (data-handoff) for HANDOFF_HOLD_MS. Row k: its lines fade out at 0 (180ms), its
+   height closes at 100ms, its subtitle cross-fades to the outcome at 260ms and the connector below it
+   fills at 180ms (--fill-line). Row k+1: its node fills at 600ms, its height opens at 600ms and its
+   lines rise at 900ms + i × 60ms — so the next row opens while the line is still filling. The
+   running node's halo waits the same 600ms, so it starts once the node has filled. */
+.spine-lg.briefs > li[data-handoff="from"]{--d-h:100ms;--d-out:260ms;--d-tint:260ms;--d-line:180ms}
+.spine-lg.briefs > li[data-handoff="from"] .ln{transform:none;--dur-c:180ms;--d-c:0ms}
+.spine-lg.briefs > li[data-handoff="to"]{--d-node:600ms;--d-tint:600ms;--d-h:600ms}
+.spine-lg.briefs > li[data-handoff="to"] .ln{--d-c:calc(900ms + var(--i,0) * 60ms)}
+.spine-lg.briefs > li[data-state="active"] .bullet{animation-delay:600ms}
+@media (prefers-reduced-motion:reduce){
+  /* Heights change at once; lines fade over 160ms with no stagger and no travel; the ✓ appears
+     without drawing; the dot does not scale; halos rest at a pinned radius, as the node's does. */
+  .spine-lg.briefs .ps-x{transition:none !important}
+  .spine-lg.briefs .ln{transform:none !important;transition-property:opacity !important;transition-duration:160ms !important;transition-delay:0ms !important}
+  .spine-lg.briefs > li::after{transition:none !important}
+  /* Nothing waits on the hand-off timings (the --d-* delays above, the per-row stagger on the row's
+     colours): with no travel to time against, a delay would only show the next row's node hollow
+     and the finished row's live subtitle for 0.26-0.6s after the state changed. */
+  .spine-lg.briefs > li,.spine-lg.briefs > li *{transition-delay:0ms !important}
+  .mk svg path{transition:none !important}
+  .mk .dotc{transform:none !important}
+  [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
+}
+
+/* ═══ 2026-09-29: the one-time check (live-briefs spec §4.5; pick 4B, docs/design/running-stage-picks/Hitl1.dc.html column B) ═══ */
+/* One card in the pipeline card's place: a step line with dots, one question, its answers stacked
+   full width, a hairline footer. No purple at rest (D17): the answers and the footer's buttons are
+   neutral; the text field alone shows the app's focus ring while it has focus. */
+#clarifyCard{display:flex;flex-direction:column;gap:var(--space-4)}
+#clarifyCard .ck-top{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)}
+.step-dots{display:flex;gap:6px;align-items:center}
+.step-dots i{width:6px;height:6px;border-radius:50%;background:var(--border);transition:background var(--motion-base) var(--ease-standard)}
+.step-dots i[data-on="1"]{background:var(--fg)}
+#clarifyCard .ck-q{display:flex;flex-direction:column;gap:var(--space-4);animation:enter var(--motion-base) var(--ease-entrance) both}
+.choices{display:flex;flex-direction:column;gap:var(--space-2)}
+.choice{display:flex;width:100%;min-height:44px;align-items:center;justify-content:space-between;gap:var(--space-2);padding:8px var(--space-4);border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface);color:var(--muted);font-size:var(--text-sm);text-align:left;transition:background var(--motion-fast) var(--ease-standard),border-color var(--motion-fast) var(--ease-standard),color var(--motion-fast) var(--ease-standard)}
+.choice:hover{background:var(--border-soft);border-color:var(--muted);color:var(--fg)}
+.choice[aria-pressed="true"]{background:var(--border-soft);border-color:var(--fg);color:var(--fg)}
+.choice .cap{flex:none}
+/* Text entry that reads as text (theme.css .tx): transparent, a soft ground on hover, the ring on focus.
+   Its box and its text line up with the answers above it (same padding, an invisible 1px border). */
+.tx{flex:1;min-width:0;display:block;min-height:44px;background:transparent;border:1px solid transparent;outline:none;color:var(--fg);font:inherit;font-size:var(--text-sm);padding:8px var(--space-4);border-radius:var(--radius-md);transition:background var(--motion-fast) var(--ease-standard)}
+.tx:hover{background:var(--border-soft)}
+.tx:focus{background:transparent;box-shadow:var(--focus-ring)}
+.tx::placeholder{color:var(--meta)}
+#clarifyCard .ck-other{display:flex;align-items:center;gap:var(--space-3)}
+#clarifyCard .ic-foot{display:flex;align-items:center;justify-content:space-between;gap:var(--space-4);flex-wrap:wrap;padding-top:var(--space-4);border-top:1px solid var(--border-soft)}
+#clarifyCard .ic-btns{display:flex;gap:var(--space-2)}
+#clarifyCard .ck-back{margin-left:calc(-1 * var(--space-4))}
+#clarifyCard .ck-summary{color:var(--fg);animation:enter var(--motion-base) var(--ease-entrance) both}
+/* Focus is moved to the question and to the line that replaces the buttons, so a keyboard or
+   screen-reader user keeps their place; neither is a control, so neither draws a ring (D17). */
+#clarifyCard [tabindex="-1"]:focus{outline:none}
+@media (prefers-reduced-motion:reduce){
+  /* the next question and the summary fade in place, with no travel (spec §4.3, §4.8) */
+  #clarifyCard .ck-q,#clarifyCard .ck-summary{animation-duration:160ms !important}
+}
+
+/* ═══ 2026-09-29: reader notes (live-briefs spec §4.7; pick 6A, docs/design/running-stage-picks/Hitl3.dc.html column A) ═══ */
+/* The note line: the pipeline card's last element, under a hairline — a borderless field that reads
+   as text (.tx, above) and a neutral icon send (D8). No purple at rest (D17): only the field's focus
+   ring, while it has focus. Disabled after the tenth note with nothing added (D11a). */
+.note-line{display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
+.note-line .tx{min-height:36px;padding:6px var(--space-2);margin-left:calc(-1 * var(--space-2));text-overflow:ellipsis}
+.note-line .tx[readonly]{color:var(--muted)}
+.note-line .tx:disabled{cursor:not-allowed}
+.note-line .tx:disabled:hover{background:transparent}
+.note-line .icon-btn svg{width:14px;height:14px}
+.note-line .icon-btn:disabled{color:var(--border);cursor:not-allowed}
+.note-line .icon-btn:disabled:hover{background:transparent;border-color:transparent}
+.note-line .cap{padding:6px 0}
+/* A send that failed for any reason but the two 409s: the text stays, and one caption under the
+   field says so until the next edit; the line wraps only then. */
+.note-line[data-failed="1"]{flex-wrap:wrap}
+.note-line #noteFailed{flex-basis:100%;padding:0}
+/* Once notes close, focus moves to the caption that replaces the line (as the clarify card's does):
+   it is not a control, so it draws no ring (D17). */
+.note-line [tabindex="-1"]:focus{outline:none}
+/* Each acknowledgement (D9): a muted dot, then the run's reading of the note in --fg and the rest
+   muted. A new one rises in from its starting style over 200ms: at once in a row that is already
+   open, and in its place in the stagger in the row a hand-off is opening. Under reduced motion the
+   brief's own rule keeps the fade and drops the travel. */
+.spine-lg.briefs .ack{display:grid;grid-template-columns:14px minmax(0,1fr);gap:var(--space-3);align-items:baseline;font-size:var(--text-sm);line-height:1.5;color:var(--muted);overflow-wrap:anywhere}
+.spine-lg.briefs .ack .d{width:6px;height:6px;border-radius:50%;background:var(--muted);justify-self:center;transform:translateY(-2px)}
+.spine-lg.briefs .ack .said{color:var(--fg)}
+.spine-lg.briefs > li[data-open="1"] .ack{--dur-c:200ms}
+.spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ack{--d-c:0ms}
+@starting-style{.spine-lg.briefs > li[data-open="1"] .ack{opacity:0;transform:translateY(4px)}}
+/* A note pass returns to Researching drawn with the redraft's stroke: a note pass is not a warning
+   (DESIGN.md §3.4, colour means status). */
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-base,
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-flow{stroke:var(--meta)}
+.spine-wrap[data-arc="note_pass"] .loop-layer .loop-head{fill:var(--meta)}
+/* The report's "Your notes": inside the report card and above the prose, no box of its own — an
+   eyebrow, one line per note with its outcome as a caption, and a hairline below. */
+.reader-notes{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-4);border-bottom:1px solid var(--border-soft);max-width:var(--reading-max)}
+.reader-notes h2{margin:0;font-weight:400}
+.reader-notes .rn-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1)}
+.reader-notes li{font-size:var(--text-sm);line-height:1.5;color:var(--fg);overflow-wrap:anywhere}
+.reader-notes li .cap{white-space:nowrap}

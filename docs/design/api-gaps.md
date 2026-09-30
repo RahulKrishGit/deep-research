@@ -9,8 +9,9 @@ interface says so in muted text. It never renders `0`, `—`, `null`, a placehol
 or a disabled control.**
 
 The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
-3 Running, 4 Report, 5 Failed) and a collapsible session sidebar, so gaps are
-keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1 and 1.2 are closed
+3 Running, 4 Report, 5 Failed), a one-time check that can come between 2 and 3
+(2a, live-briefs Phase 2) and a collapsible session sidebar, so gaps are
+keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2, 3.1 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the
 Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 
@@ -27,17 +28,23 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | `GET` | `/research/{id}/report` | `200` `text/markdown`, or `409` `session_not_complete` / `report_unavailable` (`:238-263`) |
 | `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`:313-338`) |
 | `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:265-269`) |
+| `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:265-294`, `api/sessions.py` `submit_answers`) |
+| `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, once `finalize_report` has started — from the run's published decision to publish, live-briefs Phase 3 ambiguity 5 — or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 18 fields: `session_id`, `query`, `status`,
+`api/sessions.py:73-128`), 22 fields: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, `errors`, `evidence_path`, `quality_path`,
 `quality_contract_version`, `semantic_review_status`,
 `semantic_review_score`, `duration_seconds`, `coverage`
 (`required_targets`, `answered_targets`, `missing_required_target_ids`,
-`not_found_target_ids`) and `evidence_counts` (fifteen counts; `null`
+`not_found_target_ids`), `evidence_counts` (fifteen counts; `null`
 unless the run left both a composition and a quality snapshot,
-`runtime/outcome.py:525`). `status` is one of `running`, `completed`,
+`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3):
+`notes` (each note as written, the run's reading of it and its outcome),
+`notes_remaining`, `note_passes` and `clarification` (the one-time check's
+questions and the answers the run started with, or `null`). `status` is one of `running`, `needs_input` (the
+one-time check waiting for the reader; not terminal), `completed`,
 `max_iterations`, `incomplete`, `failed`. Not on the response:
 `quality_status`, `max_iterations`/`max_extra_passes`, token usage,
 tool-call totals, any report structure.
@@ -45,15 +52,27 @@ tool-call totals, any report structure.
 Every response carries `X-Deep-Research-Mode: live|replay`.
 
 `ResearchRequest` accepts `query`, `max_iterations` (`int | None`, `ge=0`,
-default → config), `output_format` and `config_overrides`; overrides are
+default → config), `output_format`, `config_overrides` and
+`ask_clarifying_questions` (`bool`, default `true`; the one-time check, whose
+timings are the `hitl` config section); overrides are
 validated against `ConfigSettings()`, so an unknown path is a `422` before a
 session exists.
 
-**Delivery model.** Events reach the stream once per node step: each
-`stream_mode="values"` snapshot publishes the events that superstep appended
-(`graph/orchestrator.py:312-346`), so a node's `graph.node.started`, everything
-it emitted and its `graph.node.completed` arrive together when the node finishes.
-Every running-stage rule in DESIGN.md §3.5 and §5.7 is written for that.
+**Delivery model.** Events reach the stream as they happen (3.7, closed
+2026-09-28). Every `ResearchEvent` carries an `event_id`. `agent_node` publishes
+`graph.node.started` when a node starts, and the agents publish their progress
+events the moment they build them — the researcher's `researcher.sub_topic.started`,
+each `researcher.tool_call` as its step is recorded, and
+`researcher.sub_topic.completed`, while its topics run concurrently — through the
+run's sink (`graph/live.py`). The per-superstep snapshot publishes everything else,
+in state order, skipping any `event_id` already published live
+(`graph/orchestrator.py`, `_stream_graph_result`). Every event is delivered exactly
+once; a live event can arrive ahead of events its node recorded earlier; a node that
+halts after publishing live has delivered those events although its halted state
+keeps none of them. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays
+burst-safe: the state after event *k* depends only on events 1..*k*. The one-time
+check's `session.clarification.requested` and `.answered` are published by the
+session itself (`api/sessions.py`, `_clarify`), before the graph starts.
 
 ---
 
@@ -72,6 +91,8 @@ Kept as a record, one line each.
 | 1.1 | `query` echo | `query` is on every `ResearchSessionResponse` (`api/models.py`) |
 | 1.2 | `GET /research` | the session list, newest first, `?limit=` 1–200 (default 20); process-local memory, as SB.2 records |
 | — | `/status.iteration` store fix | `ResearchSession.publish` copies `iteration` from `graph.*` events only (`api/sessions.py`), so `researcher.tool_call`'s ReAct step index never moves the pass |
+| 3.7 | live per-event delivery | closed 2026-09-28 (live-briefs spec E1–E3): every `ResearchEvent` carries an `event_id`; `agent_node` and the agents publish progress live through the run's sink (`graph/live.py`), and the snapshot loop skips ids already published, so each event is delivered once (`graph/orchestrator.py`) |
+| 3.1 | `max_iterations` echo | obsolete 2026-09-28: the console no longer shows a pass ceiling or sends a budget (live-briefs D14, D15); `max_extra_passes` stays on the stream at `graph.session.started` |
 
 ---
 
@@ -79,7 +100,7 @@ Kept as a record, one line each.
 
 | # | Needed | Why | Where it exists today | Honest workaround | Suggested shape |
 |---|---|---|---|---|---|
-| 1.3 | **The effective settings echo, now including per-role effort** [1.3] | The composer sends `llm.model` and `llm.thinking_mode` as overrides and `max_iterations` at the top level, then cannot show what was actually used; effort is fixed per role in `llm.model_overrides` (`config.yaml:32-63`) and the response has no config block, so the settings strip shows the submitted values and the effort line states the configured ones. | `ConfigSettings.llm` after `apply_config_overrides` | Show the submitted values, labelled as submitted; state effort per agent from the configuration | A non-secret `config` block: `provider`, `model`, `thinking_mode`, per-role `reasoning_effort`, `max_extra_passes` |
+| 1.3 | **The effective settings echo, now including per-role effort** [1.3] | The composer sends `llm.model` and `llm.thinking_mode` as overrides, then cannot show what was actually used; effort is fixed per role in `llm.model_overrides` (`config.yaml:32-63`) and the response has no config block, so the settings strip shows the submitted values and the effort line states the configured ones. | `ConfigSettings.llm` after `apply_config_overrides` | Show the submitted values, labelled as submitted; state effort per agent from the configuration | A non-secret `config` block: `provider`, `model`, `thinking_mode`, per-role `reasoning_effort`, `max_extra_passes` |
 | 1.4 | **`GET /capabilities`** [1.4 + 1.5] | The provider override is now accepted by validation, but nothing lists the valid provider/model/thinking-mode/effort combinations, so the composer mirrors `capabilities.py` by hand (three DeepSeek models, `enabled`/`disabled`) and that copy drifts the moment the registry changes. | `_CAPABILITIES` in `providers/capabilities.py:71-77` | Hand-mirrored; the configured provider only | `GET /capabilities` returning `{provider, models[], thinking_modes[], enabled_efforts[]}[]` |
 | 1.5 | **`GET /health`** [1.6] | A configuration failure is only discoverable by submitting, so the operator loses the question they just typed. | `prepare_research_settings` is already a side-effect-free callable | None; the compose surface cannot warn ahead of time | `GET /health` → `{ready: bool, reasons: [enumerated]}`, reusing the `configuration_error` reasons |
 
@@ -97,13 +118,13 @@ Kept as a record, one line each.
 
 | # | Needed | Why | Where it exists today | Honest workaround | Suggested shape |
 |---|---|---|---|---|---|
-| 3.1 | **`max_iterations` echo, partially closed** [1.7] | The ceiling `P` in `pass p of P` comes from `graph.session.started.max_extra_passes` while the stream is open, but `/status` never carries it, so a reload after the stream closes falls back to the client's submitted budget. | `ResearchState.max_extra_passes`; on the stream at `graph.session.started` | Read it from the stream; fall back to the submitted value, used consistently | Include `max_extra_passes` on the response |
 | 3.2 | **Token usage, absent on every stage** [2.1] | "Cost and usage" wants token totals and the client cannot derive them; they are absent while running and after the run alike. | `ResearchOutcome.token_usage`, from `TokenUsageMetric`s accumulated in the tracker | `Not recorded`, with the reason stated | A `usage` block on the status response, or cumulative totals on `graph.node.completed` metadata |
 | 3.3 | **A terminal frame on the stream** [2.3] | The stream ends when the session reaches a terminal state, but the final frame is an ordinary event. The console learns *that* the run ended and must then call `GET /status` to learn *how* — and the stage transition depends on knowing how. | `graph.session.completed` carries `status`, `iteration`, `error_count`, `has_report`, but the store returns without synthesising a frame | On stream close, re-read `/status` and transition from it | One terminal `api.session.closed` frame carrying the final snapshot |
-| 3.4 | **Event identity / `Last-Event-ID`** [2.6] | SSE `id` is per-subscriber and starts at 1, so it is a stream position rather than an event identity. A reconnect cannot ask for "everything after what I saw". | `ResearchSession.events` list index | Re-derive the running stage from the full replay — every rule is idempotent over events 1..k | A monotonic `sequence` on `ResearchEvent`, plus `Last-Event-ID` support |
+| 3.4 | **Resume / `Last-Event-ID`** [2.6] | SSE `id` is per-subscriber and starts at 1, so it is a stream position, not a resume token. Every event now carries an `event_id` (live-briefs spec E1), which gives identity but not order, so a reconnect still cannot ask for "everything after what I saw". | `ResearchSession.events` list index; `ResearchEvent.event_id` (an unordered uuid4 hex) | Re-derive the running stage from the full replay — every rule is idempotent over events 1..k | A monotonic `sequence` on `ResearchEvent`, plus `Last-Event-ID` support |
 | 3.5 | **Halting-type vocabulary** [2.5] | The failed stage headlines the halting type in plain words and the rail groups recoverable errors, but the client keeps its own copy of `HALTING_ERROR_TYPES` to know which is which. | `HALTING_ERROR_TYPES` in `graph/state.py:141-150` | Client copy, small and stable | `halting: bool` on `ResearchError`, or publish the enumerated set |
 | 3.6 | **Shutdown while running** [2.7] | On cancellation the store sets `finished_at` and leaves `status` as `running`, then the stream ends. The console sees a closed stream with a non-terminal status. | Deliberate: *"cancellation stays cancellation"* | On stream close, re-read `/status`; a closed stream with `finished_at` set and `status == "running"` means the service stopped | The terminal frame from 3.3, or an explicit status |
-| 3.7 | **Live per-event delivery** (new) | Events are published once per node step (`graph/orchestrator.py:312-346`), not as they happen, so the running stage's counters and active row move once per node; during the researcher — the longest stage — the research counters read `not yet` for its whole duration. | The events exist as they are appended to `ResearchState.events`; only publication is batched per superstep | The design's burst-safe rules (DESIGN.md §3.5, §5.7): the state after event *k* depends only on events 1..*k*, so bursts, ticks and replays paint the same screen | Publish each event as it is appended (stream the node's events, not the superstep snapshot); listed for the API work |
+| 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
+| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, and it ends `pending` (`not checked`). A live run applies every note that arrives before `finalize_report` starts (read from the run's decision to publish, ambiguity 5 of the same plan). | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
 
 ---
 

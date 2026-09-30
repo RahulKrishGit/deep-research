@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { ApiUnreachableError, evidenceMarkdownUrl, getEvidence, getReport, reportUrl, type EvidenceResponse, type ResearchSessionResponse } from "@/lib/api";
-import { fmtClock, fmtSeconds, passText, qFitClass, toSessionView } from "@/lib/format";
+import { fmtClock, fmtSeconds, passFact, qFitClass } from "@/lib/format";
 import { runReportSlide, takeRunningLayout } from "@/lib/handoff";
 import { useConsole } from "./ConsoleProvider";
 import { EvidenceView } from "./EvidenceView";
@@ -10,7 +10,7 @@ import { ReportRail } from "./ReportRail";
 
 type Loaded<T> = { kind: "loading" } | { kind: "ready"; value: T } | { kind: "unavailable" };
 
-export function ReportStage({ sessionId, status, strip, passes }: { sessionId: string; status: ResearchSessionResponse; strip: ReactNode; passes: number | null }) {
+export function ReportStage({ sessionId, status, strip }: { sessionId: string; status: ResearchSessionResponse; strip: ReactNode }) {
   const { noteUnreachable, clearUnreachable } = useConsole();
   const [view, setView] = useState<"report" | "evidence">("report");
   const [report, setReport] = useState<Loaded<string>>({ kind: "loading" });
@@ -67,9 +67,8 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
     if (!q || !o) return;
     runReportSlide([{ from: layout.question, toEl: q }, { from: layout.opts, toEl: o }]);
   }, [sessionId]);
-  const sv = toSessionView(status, passes);
   const dur = fmtSeconds(status.duration_seconds);
-  const meta = `session ${status.session_id} · finished ${fmtClock(status.finished_at) ?? "not recorded"}${dur ? ` · ${dur}` : ""} · ${passText(sv)}`;
+  const meta = `session ${status.session_id} · finished ${fmtClock(status.finished_at) ?? "not recorded"}${dur ? ` · ${dur}` : ""} · ${passFact(status.iteration, status.note_passes ?? 0)}`;
   const evidenceLoaded = evidence.kind === "ready";
   return (
     <section className="stage is-on" id="stage-report" data-view={view} aria-labelledby="report-h">
@@ -95,10 +94,10 @@ export function ReportStage({ sessionId, status, strip, passes }: { sessionId: s
       {view === "report" ? (
         <div className="with-rail report-main">
           <div className="stack" style={{ gap: "var(--space-6)" }}>
-            {report.kind === "ready" ? <ReportBody markdown={report.value} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} />
+            {report.kind === "ready" ? <ReportBody markdown={report.value} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} notes={status.notes ?? []} />
               : <article className="card"><p className="avail">{report.kind === "unavailable" ? "Not published" : "loading report"}</p></article>}
           </div>
-          <ReportRail status={status} evidence={evidenceLoaded ? evidence.value : null} passes={passes} />
+          <ReportRail status={status} evidence={evidenceLoaded ? evidence.value : null} />
         </div>
       ) : evidenceLoaded ? <EvidenceView evidence={evidence.value} />
         : <div className="with-rail"><p className="avail" id="evEmpty">{evidence.kind === "unavailable" ? "Not published" : "loading evidence log"}</p></div>}

@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getStatus, reportUrl, startResearch, streamUrl } from "../lib/api";
+import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getStatus, reportUrl, startResearch, streamUrl, submitAnswers } from "../lib/api";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-const request = { query: "q", max_iterations: 1, output_format: "markdown" as const, config_overrides: {} };
+const request = { query: "q", output_format: "markdown" as const, config_overrides: {}, ask_clarifying_questions: true };
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -52,6 +52,26 @@ describe("the client", () => {
     const error = await getStatus("nope").catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect(error.body.code).toBe("session_not_found");
+  });
+  it("posts the check's answers once to the session's answers route (live-briefs spec §4.4)", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(202, { session_id: "s1", status: "needs_input" }, { "x-deep-research-mode": "replay" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const body = { answers: [{ question_id: "q1", choice: "Global" }, { question_id: "q2", text: "since 2021" }], skip: false };
+    const result = await submitAnswers("s1", body);
+    expect(result.data.status).toBe("needs_input");
+    expect(result.mode).toBe("replay");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research/s1/answers");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("POST");
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)).toEqual(body);
+  });
+  it("maps a late answer's 409 to ApiError and never retries it", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(409, { error: { code: "not_waiting_for_input", message: "Research session is not waiting for answers.", reason: null, issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = await submitAnswers("s1", { answers: [], skip: true }).catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect([error.status, error.body.code]).toEqual([409, "not_waiting_for_input"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it("builds same-origin URLs", () => {
     expect(reportUrl("abc")).toBe("/api/research/abc/report");

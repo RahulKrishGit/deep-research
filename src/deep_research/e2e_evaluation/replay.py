@@ -55,11 +55,14 @@ from deep_research.agents.planner import (
     SubTopicDraft,
 )
 from deep_research.agents.report_reviewer import (
+    NoteDispositionDraft,
     PreviousDefectResolutionDraft,
     ReportReviewDraft,
+    ReportReviewNotesDraft,
     ReviewDefectDraft,
     ReviewDimensionScores,
     ScopedReportReviewDraft,
+    ScopedReportReviewNotesDraft,
     StatementDispositionDraft,
 )
 from deep_research.agents.report_writer import WriterPointDraft
@@ -1529,6 +1532,27 @@ class ReplayCompleter(AgentCompleter):
             rationale="Every statement is carried by the evidence shown.",
         )
 
+    def _reply_ReportReviewNotesDraft(self, text: str) -> ReportReviewNotesDraft:
+        """The whole-report reply above, plus a verdict for every reader note listed."""
+        return ReportReviewNotesDraft(
+            **self._reply_ReportReviewDraft(text).model_dump(),
+            note_dispositions=self.note_dispositions_for(text),
+        )
+
+    def note_dispositions_for(self, text: str) -> list[NoteDispositionDraft]:
+        """``honoured`` for every reader note the review packet lists (live-briefs spec §4.6).
+
+        Read from the request's own ``# Reader notes`` section, so a packet
+        without notes gets no entry and every existing case replies exactly
+        as it did: a scripted reviewer has no way to judge a note against a
+        report, and the one honest default is that the report followed it.
+        """
+        block = self._material_block(text, "Reader notes")
+        return [
+            NoteDispositionDraft(note_id=note_id, status="honoured")
+            for note_id in re.findall(r"(?m)^- (n\d+): ", block)
+        ]
+
     def disposition_for(self, statement_id: str) -> str:
         """The disposition the scenario's reviewer records for one statement.
 
@@ -1592,6 +1616,15 @@ class ReplayCompleter(AgentCompleter):
             ],
             new_defects=[],
             rationale="The redraft closed every previous defect; nothing else changed.",
+        )
+
+    def _reply_ScopedReportReviewNotesDraft(
+        self, text: str
+    ) -> ScopedReportReviewNotesDraft:
+        """The scoped reply above, plus a verdict for every reader note listed."""
+        return ScopedReportReviewNotesDraft(
+            **self._reply_ScopedReportReviewDraft(text).model_dump(),
+            note_dispositions=self.note_dispositions_for(text),
         )
 
 

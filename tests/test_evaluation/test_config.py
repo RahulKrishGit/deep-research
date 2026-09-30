@@ -980,7 +980,26 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the why/how optional-target rule and
     # the shared prompts module's evaluator rules; reviews, Fable prompt review
     # GREEN at 6424075). Moved `a61d2797efd7` -> `9c5745683d9b`.
-    "planner": "9c5745683d9b",
+    # Live briefs (live-briefs spec E3 and AC2, 2026-09-28):
+    # planner.planning.completed lists each sub-topic's coverage_id and title
+    # (at most 160 characters), and the three planner events are published
+    # live. Module code only; no prompt string changed and agents.prompts was
+    # untouched, so the other four target pins and the Judge pin are
+    # unchanged. Moved `9c5745683d9b` -> `d40ffac43845`.
+    # Live briefs Phase 2 (live-briefs spec §4.4, 2026-09-29): the planner
+    # reads the reader's answers to the one-time check into the answer
+    # contract and, only when there are answers, into a # Reader answers
+    # section of the plan and plan-review requests. Without answers every
+    # request is byte-identical; agents.prompts was untouched, so the other
+    # four target pins and the Judge pin are unchanged. Moved `d40ffac43845`
+    # -> `e9b74316ad14`.
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the planner
+    # puts the reader's notes, only when there are any, in a # Reader notes
+    # section of the plan and plan-review requests and in the scoping turn's
+    # decision context. Without notes every request is byte-identical;
+    # agents.prompts was untouched, so the evidence_verifier pin and the Judge
+    # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
+    "planner": "d1ba46ce147f",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1125,7 +1144,18 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the extraction subject rule and the
     # shared prompts module; reviews, Fable prompt review GREEN at 6424075).
     # Moved `580bec83c9a1` -> `a0691eedc3b2`.
-    "researcher": "a0691eedc3b2",
+    # Live briefs (live-briefs spec E3, 2026-09-28): the topic events carry
+    # their coverage_id, each researcher.tool_call is built as its step is
+    # recorded (tool_call_event), and the three topic events are published
+    # live. Module code only; no prompt string changed and agents.prompts was
+    # untouched, so the other four target pins and the Judge pin are
+    # unchanged. Moved `a0691eedc3b2` -> `de7506bed63e`.
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the researcher
+    # reads the reader's notes from the run's board before every decision turn
+    # (## Reader notes) and into its extraction requests (# Reader notes),
+    # only when there are any. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
+    "researcher": "a8c9528f0c20",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1136,7 +1166,15 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; the dossier Self-description line,
     # the self-declared relay and subject-relevance rules; reviews, Fable
     # prompt review GREEN at 6424075). Moved `72339771d728` -> `0d96c48eae29`.
-    "source_evaluator": "0d96c48eae29",
+    # Live briefs (live-briefs spec E3, 2026-09-28): both evaluation events
+    # are published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `0d96c48eae29` -> `fb7f60d73873`.
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the source
+    # evaluator puts the reader's notes, only when there are any, in the
+    # scoring request's # Context slot, for relevance only. Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `fb7f60d73873` -> `24809aa975a3`.
+    "source_evaluator": "24809aa975a3",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1211,7 +1249,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Run-8 fix wave (Fable audit 69/100; a pronoun is never an organisation,
     # and the shared prompts module; reviews, Fable prompt review GREEN at
     # 6424075). Moved `624687fd7ae1` -> `0dc169302934`.
-    "evidence_verifier": "0dc169302934",
+    # Live briefs (live-briefs spec E3, 2026-09-28): verification.completed is
+    # published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `0dc169302934` -> `4a3d56fab932`.
+    "evidence_verifier": "4a3d56fab932",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1306,7 +1347,15 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # floor, authority-ordered registry, the outcome mark, Outcome block and
     # re-ask, why-part points; reviews, Fable prompt review GREEN at 6424075).
     # Moved `f1a5d8f8efc3` -> `ee5199095402`.
-    "report_writer": "ee5199095402",
+    # Live briefs (live-briefs spec E3, 2026-09-28): report.written is
+    # published live. Module code only; no prompt string changed and
+    # agents.prompts was untouched. Moved `ee5199095402` -> `0dcd4a41a378`.
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the writer puts
+    # the reader's notes, only when there are any, in a # Reader notes section
+    # of the section and bottom-line requests, and drafts afresh after a note
+    # pass or a note redraft. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
+    "report_writer": "6e1aedc2888e",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

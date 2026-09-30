@@ -7,7 +7,10 @@ which owns its own ``asyncio.run``). Events are released one every ``delay``
 seconds through a queue drained by a task on the same loop, so the running
 stage is watchable; order and content are untouched. ``ReplayCaseMiddleware``
 reads ``X-Replay-Case`` on ``POST /research`` and rewrites the request's
-``query`` to the case's own question, so the session records what ran.
+``query`` to the case's own question, so the session records what ran. It
+also reads ``X-Replay-Clarify`` on the same request: ``on`` makes the scripted
+one-time check ask its fixed questions (``api/clarify.py``), and anything else
+leaves every flow exactly as it was (live-briefs spec §4.4).
 
 The two harness guards (``offline_credentials``, ``network_denied``) are not
 entered here: the start command holds them for the whole server process.
@@ -18,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +30,7 @@ from typing import Any
 from pydantic import JsonValue
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from deep_research.api.clarify import REPLAY_CLARIFY_HEADER, requested_clarify
 from deep_research.e2e_evaluation.replay import (
     ReplayScenario,
     build_replay_runtime,
@@ -37,7 +41,7 @@ from deep_research.main import ProgressHandler, run_research
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.config import ConfigSettings
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import ReaderAnswer, ResearchEvent
 
 REPLAY_CASE_HEADER = "x-replay-case"
 requested_case: ContextVar[str | None] = ContextVar("deep_research_replay_case", default=None)
@@ -74,9 +78,11 @@ class ReplayRunner:
         config_overrides: Mapping[str, JsonValue],
         config_path: str,
         event_handler: ProgressHandler | None,
+        reader_answers: Sequence[ReaderAnswer] = (),
     ) -> ResearchOutcome:
         # The case decides the question and the ceiling: its scripted completer
         # requires its own question, and its script is written for its ceiling.
+        # The reader's answers are the run's own and go to the graph unchanged.
         del question, max_extra_passes
         scenario = resolve_scenario(requested_case.get() or self.default_case)
         session_root = self.root / session_id
@@ -108,6 +114,7 @@ class ReplayRunner:
                 config_overrides=config_overrides,
                 runtime_builder=builder,
                 event_handler=paced,
+                reader_answers=reader_answers,
             )
             if drain_task is not None:
                 queue.put_nowait(None)
@@ -159,6 +166,9 @@ class ReplayCaseMiddleware:
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         case_id = headers.get(REPLAY_CASE_HEADER) or self.default_case
         requested_case.set(case_id)
+        requested_clarify.set(
+            headers.get(REPLAY_CLARIFY_HEADER, "").strip().lower() == "on"
+        )
         if case_id not in REPLAY_CASE_IDS:
             await self.app(scope, receive, send)
             return

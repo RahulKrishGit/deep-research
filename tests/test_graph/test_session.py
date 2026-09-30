@@ -803,3 +803,32 @@ async def test_a_material_defect_re_drafts_the_report_once(tracker: Tracker) -> 
 
 def test_the_graph_config_default_matches_the_graph_module_default() -> None:
     assert GraphConfig().max_extra_passes == DEFAULT_MAX_EXTRA_PASSES
+
+
+@pytest.mark.asyncio
+async def test_a_terminal_checkpoint_written_before_event_ids_publishes_each_event_once(
+    tracker: Tracker,
+) -> None:
+    """live-briefs spec E1: an old checkpoint's events get fresh ids once, on load, and
+    each is still published exactly once, in state order, with the completion last."""
+    agents = fake_research_agents()
+    graph = compile_research_graph(agents, checkpointer=build_checkpointer(enabled=True))
+    first = await run_research_graph(
+        graph=graph, tracker=tracker, session_id="session-1", question=QUESTION
+    )
+    old = dump_state(first.state.model_copy(update={"events": first.state.events[:-1]}))
+    for event in old["state"]["events"]:
+        del event["event_id"]
+
+    received = []
+    resumed = await resume_research_graph(
+        graph=EmptyValuesGraph(snapshot=SimpleNamespace(values=old, next=())),
+        tracker=tracker,
+        session_id="session-1",
+        event_handler=received.append,
+    )
+
+    assert resumed.status == "completed"
+    assert received == resumed.state.events
+    assert len({event.event_id for event in received}) == len(received)
+    assert received[-1].event_type == "graph.session.completed"

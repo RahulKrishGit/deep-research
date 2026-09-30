@@ -9,6 +9,7 @@ from math import isfinite
 import re
 from typing import Annotated, Literal, TypeAlias, TypedDict
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from pydantic import (
     AfterValidator,
@@ -16,8 +17,11 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
+
+from deep_research.utils.text import collapse_whitespace
 
 
 def _validate_aware_iso8601(value: str) -> str:
@@ -33,6 +37,11 @@ def _validate_aware_iso8601(value: str) -> str:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _new_event_id() -> str:
+    """A fresh identity for one progress event: 32 lowercase hex characters."""
+    return uuid4().hex
 
 
 def _validate_finite_json(value: JsonValue) -> JsonValue:
@@ -1131,6 +1140,107 @@ REVIEW_DIMENSIONS: frozenset[str] = frozenset(
 SEMANTIC_REVIEW_MEAN: float = 0.80
 """The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
 
+# Reader notes (live-briefs spec §4.6, D8-D11a): what the reader adds while a run
+# is going, as the run's own agents and routing read it.
+MAX_NOTES_PER_RUN = 10
+"""D11a: a run accepts at most ten notes; the API refuses an eleventh."""
+NOTE_COVERAGE_PREFIX = "note-"
+"""A note's own sub-topic is ``note-{note_id}``, and its targets carry the same prefix."""
+NOTE_TOPIC_TITLE_PREFIX = "Your note: "
+"""A note's own sub-topic is titled ``Your note: {restatement}`` (live-briefs spec §4.6)."""
+ReaderNoteKind: TypeAlias = Literal[
+    "emphasis", "exclude", "scope", "new_angle", "about_reader"
+]
+NoteDispositionStatus: TypeAlias = Literal[
+    "honoured", "ignored_with_evidence", "no_evidence"
+]
+
+
+class ReaderNoteScope(ContractModel):
+    """The scope a ``scope`` note sets: a geography, a period, or both."""
+
+    geography: str | None = Field(default=None, min_length=1, max_length=120)
+    period: str | None = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("geography", "period", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        """A note's scope becomes its own sub-topic's target (``note_sub_topic``), so
+        it is one single-spaced line, whatever produced it."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+
+class ReaderNote(ContractModel):
+    """One interpreted reader note (live-briefs spec §4.6).
+
+    The first nine fields are fixed once the note is interpreted; the three
+    flags are the run's own bookkeeping, set by the graph: ``reviewed`` when a
+    review input carried the note, ``passed`` when its one targeted research
+    pass was bought, ``redrafted`` when its one redraft was (D11).
+    ``restatement`` is the interpreter's plain-words reading, or the note's own
+    text when the interpretation failed.
+    """
+
+    note_id: str = Field(pattern=r"^n([1-9]|10)$")
+    text: str = Field(min_length=1, max_length=500)
+    received_at: AwareISOString
+    received_during: str = Field(min_length=1)
+    kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
+    restatement: str = Field(min_length=1, max_length=500)
+    scope: ReaderNoteScope | None = None
+    new_questions: list[str] = Field(default_factory=list, max_length=3)
+    replaces: str | None = None
+    reviewed: bool = False
+    passed: bool = False
+    redrafted: bool = False
+
+    @field_validator("restatement", mode="before")
+    @classmethod
+    def restatement_is_one_line(cls, value: object) -> object:
+        """Every agent's request prints the restatement as one ``- `` line (the shared
+        renderer), so a newline followed by ``# ...`` must never open a section of its
+        own: collapsed here, every producer is covered, not only the interpreter."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+    @field_validator("new_questions", mode="before")
+    @classmethod
+    def new_questions_are_one_line(cls, value: object) -> object:
+        """The questions become a note sub-topic's queries and targets (``note_sub_topic``)."""
+        if isinstance(value, list):
+            return [
+                collapse_whitespace(question) if isinstance(question, str) else question
+                for question in value
+            ]
+        return value
+
+
+class NoteDisposition(ContractModel):
+    """What one review concluded about one reader note (live-briefs spec §4.6)."""
+
+    note_id: str = Field(min_length=1)
+    status: NoteDispositionStatus
+
+
+def active_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
+    """The notes the run acts on: every note no later note replaces, in receipt order (D9)."""
+    replaced = {note.replaces for note in notes if note.replaces}
+    return [note for note in notes if note.note_id not in replaced]
+
+
+def with_board_notes(
+    existing: Sequence[ReaderNote],
+    board: Sequence[ReaderNote],
+) -> list[ReaderNote]:
+    """The state's notes, then every board note the state does not hold yet.
+
+    The board is append-only and an interpreted note never changes, so a note
+    the state already holds keeps the state's own flags: the board carries
+    none of the run's bookkeeping.
+    """
+    known = {note.note_id for note in existing}
+    return [*existing, *(note for note in board if note.note_id not in known)]
+
+
 REVIEW_RUBRIC_VERSION = 3
 """Which semantic rubric a review was made under.
 
@@ -1241,6 +1351,14 @@ class ReportReview(ContractModel):
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     rationale: str = ""
+    note_dispositions: list[NoteDisposition] = Field(default_factory=list)
+    """One entry per reader note this review judged (live-briefs spec §4.6).
+
+    Optional and empty by default, so a review without reader notes, and every
+    review recorded before notes existed, is unchanged. It never enters the
+    seven-dimension acceptance rule: ``graph_route`` reads it only to buy a
+    note's one pass or one redraft.
+    """
 
     @property
     def coverage_complete(self) -> bool:
@@ -1340,6 +1458,11 @@ class ResearchEvent(ContractModel):
     message: str = Field(min_length=1)
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
     metadata: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
+    event_id: str = Field(default_factory=_new_event_id, min_length=1)
+    """This event's identity (live-briefs spec E1). One event object can reach the
+    stream twice — published live, then again inside its node's snapshot — and the
+    orchestrator publishes each id once. Fresh per construction and kept by every
+    copy and dump; an event dumped before this field existed loads with a fresh id."""
 
 
 class ResearchError(ContractModel):
@@ -1798,6 +1921,29 @@ class BottomLineDraft(ContractModel):
     sentences: list[WriterPointDraft] = Field(default_factory=list)
 
 
+# The one-time check (live-briefs spec §4.4): the dimensions a check question may
+# ask about, and where each answer came from.
+ClarityDimension: TypeAlias = Literal["geography", "period", "purpose", "scope"]
+ReaderAnswerSource: TypeAlias = Literal["chosen", "typed", "best_guess"]
+
+
+class ReaderAnswer(ContractModel):
+    """One answer to the one-time check, as the planner reads it (live-briefs spec §4.4).
+
+    ``text`` is the question the reader was asked and ``short`` its one- or
+    two-word label ("Region"). ``source`` says where ``value`` came from: an
+    option the reader chose, text the reader typed, or the check's own best
+    guess for a question the reader skipped, left, or let time out on.
+    """
+
+    question_id: str = Field(min_length=1)
+    dimension: ClarityDimension
+    text: str = Field(min_length=1)
+    short: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    source: ReaderAnswerSource
+
+
 class ResearchState(ContractModel):
     session_id: str = Field(min_length=1)
     original_question: str = Field(min_length=1)
@@ -1957,6 +2103,28 @@ class ResearchState(ContractModel):
     state that says the re-run was spent rather than drafting again.
     """
     memory_context: MemorySnapshot = Field(default_factory=MemorySnapshot)
+    reader_answers: list[ReaderAnswer] = Field(default_factory=list)
+    """The reader's answers to the one-time check, best guesses included, or ``[]``.
+
+    Set once, when the run starts, and replaced on every write (live-briefs
+    spec §4.4). Empty when the check asked nothing, was turned off, or failed:
+    every consumer renders its reader-answers section only when this is
+    non-empty, so a run without answers builds the same requests as before.
+    """
+    reader_notes: list[ReaderNote] = Field(default_factory=list)
+    """The reader's notes the run has taken in so far, in receipt order, or ``[]``.
+
+    Replaced on every write (live-briefs spec §4.6). ``agent_node`` and the
+    review node copy in every note the run's board holds that this list does
+    not, so each node starts with the notes received so far; the flags on each
+    note are the graph's own record of its one pass and one redraft.
+    """
+    note_passes: int = Field(default=0, ge=0)
+    """How many targeted research passes the reader's notes bought (D11).
+
+    Counted apart from ``iteration``: a note pass never spends the extra-pass
+    budget, and the report's pass fact names the two separately.
+    """
     events: list[ResearchEvent] = Field(default_factory=list)
     errors: list[ResearchError] = Field(default_factory=list)
 
@@ -1996,6 +2164,9 @@ class ResearchStateUpdate(TypedDict, total=False):
     extra_pass_target_ids: list[str]
     writer_redrafts: int
     memory_context: MemorySnapshot
+    reader_answers: list[ReaderAnswer]
+    reader_notes: list[ReaderNote]
+    note_passes: int
     events: list[ResearchEvent]
     errors: list[ResearchError]
 

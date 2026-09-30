@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "../../components/AppShell";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
@@ -78,7 +78,8 @@ describe("SessionScreen — C1: the ladder retries getStatus before any status h
     vi.stubGlobal("fetch", fetchMock);
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.getElementById("stage-loading")).toBeTruthy());
-    expect(document.querySelector('[role="alert"]')).toBeTruthy();
+    // The banner follows the first 502 — waited for, not assumed to have landed in the same tick.
+    await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
     // No click anywhere in this test: the ladder itself must keep retrying (1 s, then 2 s, …)
     // until the service answers.
     await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });
@@ -116,6 +117,9 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done"));
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+    // live-briefs spec §4.3: the active row is open on its brief; the done row is closed on its outcome.
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
+    expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-open")).toBe("0");
     // Drive the loop through the outage: the stream ends, the follow-up /status answers 502
     // (raising the banner), the ladder sleeps, and the reconnect attempt itself also fails. Before
     // C2, the loop reset `run.current` to a fresh RunState before *every* attempt — including this
@@ -124,6 +128,70 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
     expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done");
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
+    expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
+  });
+});
+
+describe("SessionScreen — live-briefs final review M2: a reconnect keeps the rows the reader reopened", () => {
+  it("replays from event 0 into a fresh run state without folding a done row the reader reopened", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) {
+        streamCalls++;
+        const head = frame(1, "graph.session.started", { max_extra_passes: 1 })
+          + frame(2, "graph.node.started", { node: "planner", iteration: 0 })
+          + frame(3, "graph.node.completed", { node: "planner" });
+        // The reconnect replays from event 0 and then carries on past where the first stream ended,
+        // so a settled Researching row proves the whole replay reached the page.
+        return sse(streamCalls === 1 ? head : head + frame(4, "graph.node.started", { node: "researcher", iteration: 0 }) + frame(5, "graph.node.completed", { node: "researcher" }));
+      }
+      if (url.includes("/status")) return json(200, RUNNING);
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    const row = (id: string) => document.querySelector(`#spine li[data-stage="${id}"]`);
+    await waitFor(() => expect(row("planner")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
+    // The reader reopens Planning to read its titles.
+    fireEvent.click(row("planner")!.querySelector("button.ps-toggle")!);
+    expect(row("planner")?.getAttribute("data-open")).toBe("1");
+    // The stream ends, /status still says running, the ladder sleeps 1 s and reconnects.
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(row("researcher")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-state")).toBe("done");
+    expect(row("planner")?.getAttribute("data-open")).toBe("1");
+    // Only what the reader opened carries over: Researching stays folded on its outcome.
+    expect(row("researcher")?.getAttribute("data-open")).toBe("0");
+  });
+  it("does not carry a row the reader had closed again", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/stream")) {
+        streamCalls++;
+        const head = frame(1, "graph.session.started", { max_extra_passes: 1 })
+          + frame(2, "graph.node.started", { node: "planner", iteration: 0 })
+          + frame(3, "graph.node.completed", { node: "planner" });
+        return sse(streamCalls === 1 ? head : head + frame(4, "graph.node.started", { node: "researcher", iteration: 0 }) + frame(5, "graph.node.completed", { node: "researcher" }));
+      }
+      if (url.includes("/status")) return json(200, RUNNING);
+      return json(200, { sessions: [] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
+    const row = (id: string) => document.querySelector(`#spine li[data-stage="${id}"]`);
+    await waitFor(() => expect(row("planner")?.getAttribute("data-state")).toBe("done"));
+    const toggle = () => fireEvent.click(row("planner")!.querySelector("button.ps-toggle")!);
+    toggle(); toggle(); // opened, then closed again
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(row("researcher")?.getAttribute("data-state")).toBe("done"));
+    expect(row("planner")?.getAttribute("data-open")).toBe("0");
   });
 });
 
@@ -174,8 +242,52 @@ describe("SessionScreen — re-review item 4: no false Running chip on the not-i
     await waitFor(() => expect(document.querySelector("#topbarStatus .chip")).toBeTruthy());
     await waitFor(() => expect(document.getElementById("stage-not-found")).toBeTruthy());
     // Before this fix: `stopped` is false (finished_at is null on the stale RUNNING record), so
-    // the chip kept reading the old status — "Running · pass 1 of 2" — over a page that itself
+    // the chip kept reading the old status — "Running · Planning" — over a page that itself
     // says the session isn't in memory.
     expect(document.querySelector("#topbarStatus .chip")).toBeNull();
+  });
+});
+
+describe("SessionScreen — the one-time check (live-briefs spec §4.5)", () => {
+  const QUESTIONS = [{ id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], best_guess: "Global" }];
+  const WAITING: ResearchSessionResponse = { ...RUNNING, status: "needs_input" };
+  const requested = () => frame(1, "session.clarification.requested", { questions: QUESTIONS, deadline_at: new Date(Date.now() + 60_000).toISOString() });
+  const answered = frame(2, "session.clarification.answered", { reason: "timed_out", answers: [{ question_id: "q1", value: "Global", source: "best_guess" }] });
+  const serve = (status: ResearchSessionResponse, frames: () => string, onStream: () => void = () => {}) => vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/stream")) { onStream(); return sse(frames()); }
+    if (url.includes("/status")) return json(200, status);
+    return json(200, { sessions: [] });
+  });
+
+  it("a session waiting for the reader shows the check in the pipeline card's place, under the waiting chip", async () => {
+    vi.stubGlobal("fetch", serve(WAITING, requested));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifyStep")?.textContent).toBe("Question 1 of 1"));
+    expect(document.getElementById("stage-clarify")!.className).toBe("stage is-on no-enter is-arriving");
+    expect(document.getElementById("stage-running")).toBeNull();
+    expect(document.getElementById("stage-report")).toBeNull();
+    expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Waiting for you · a few quick questions");
+    expect(document.querySelector("#topbarStatus .chip .dot")!.className).toContain("dot-warn");
+  });
+  it("shows what the run starts with once answered, then gives way to the pipeline when the planner starts", async () => {
+    let planner = false;
+    vi.stubGlobal("fetch", serve(RUNNING, () => requested() + answered + (planner ? frame(3, "graph.node.started", { node: "planner", iteration: 0 }) : "")));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifySummary")?.textContent).toBe("Starting research with: Region: Global (best guess)"));
+    expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toMatch(/^Running · /);
+    expect(document.querySelector("#topbarStatus .chip .dot")!.className).toContain("dot-live");
+    planner = true;
+    await waitFor(() => expect(document.getElementById("stage-running")).toBeTruthy(), { timeout: 3_000 });
+    expect(document.getElementById("stage-clarify")).toBeNull();
+  });
+  it("keeps the stream open while the session waits: an ended stream reconnects, as for a running one", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let streamCalls = 0;
+    vi.stubGlobal("fetch", serve(WAITING, requested, () => { streamCalls++; }));
+    render(<ConsoleProvider><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("clarifyCard")).toBeTruthy());
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
   });
 });

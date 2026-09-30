@@ -43,7 +43,7 @@ from deep_research.agents.base import (
     StructuredCompleter,
 )
 from deep_research.agents.errors import agent_error
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import (
     _ATTRIBUTION_PHRASES,
     _document_text,
@@ -1004,11 +1004,13 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
             span.set_outputs({"agent_name": self.name, "findings": len(judged)})
         snapshot = _merged_snapshot(state.verified_findings, judged)
         react = ReActRun(agent_name=self.name, stop_reason="finished", errors=errors)
+        completed = evidence_verified_event(judged)
+        publish_live(completed)  # live-briefs spec E3; returned below as well
         return AgentRun(
             agent_name=self.name, result=VerifiedFindings(findings=judged), react=react,
             errors=errors,
             state_update={"verified_findings": snapshot, "errors": errors,
-                          "events": [evidence_verified_event(judged)]},
+                          "events": [completed]},
             call_fingerprints=dict(self._call_fingerprints),
         )
 

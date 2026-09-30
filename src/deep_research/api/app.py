@@ -19,11 +19,20 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from deep_research.api.clarify import (
+    AnswerValidationError,
+    ClarityChecker,
+    live_clarity_check,
+    scripted_clarity_check,
+)
 from deep_research.api.events import api_error_event, encode_sse
 from deep_research.api.evidence import build_evidence_response
 from deep_research.api.models import (
     ApiErrorBody,
     ApiErrorResponse,
+    ClarificationAnswersRequest,
+    NoteAcceptedResponse,
+    NoteRequest,
     ResearchRequest,
     ResearchSessionResponse,
     SessionListResponse,
@@ -31,11 +40,19 @@ from deep_research.api.models import (
     TraceResponse,
     ValidationIssue,
 )
+from deep_research.api.notes import (
+    NoteInterpreter,
+    live_note_interpreter,
+    scripted_note_interpreter,
+)
 from deep_research.api.sessions import (
+    NotesClosed,
+    NotWaitingForInput,
     ResearchRunner,
     ResearchSession,
     SessionStore,
     outcome_response_fields,
+    session_note_fields,
 )
 from deep_research.main import (
     DEFAULT_CONFIG_PATH,
@@ -45,6 +62,7 @@ from deep_research.main import (
 )
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.errors import ResearchConfigurationError
+from deep_research.runtime.notes import NoteLimitReached
 from deep_research.utils.config import ConfigSettings
 
 PreflightHandler: TypeAlias = Callable[..., ConfigSettings]
@@ -56,6 +74,9 @@ _SAFE_MESSAGES = {
     "session_not_complete": "Research session has not produced a report yet.",
     "report_unavailable": "Research session finished without a report.",
     "evidence_unavailable": "Research session finished without an evidence log.",
+    "not_waiting_for_input": "Research session is not waiting for answers.",
+    "notes_closed": "Research session no longer takes notes.",
+    "note_limit_reached": "Research session takes no more notes.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -130,6 +151,7 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
         trace_url=session.trace_url,
         errors=[error.model_copy(deep=True) for error in session.errors],
         **outcome_response_fields(session.outcome),
+        **session_note_fields(session),
     )
 
 
@@ -170,8 +192,26 @@ def create_app(
     preflight: PreflightHandler = prepare_research_settings,
     tracker: Tracker | None = None,
     mode: Literal["live", "replay"] = "live",
+    clarity_checker: ClarityChecker | None = None,
+    note_interpreter: NoteInterpreter | None = None,
 ) -> FastAPI:
-    """Build the local FastAPI interface around one process's session store."""
+    """Build the local FastAPI interface around one process's session store.
+
+    ``clarity_checker`` decides the one-time check's questions (live-briefs
+    spec §4.4). Left ``None`` it follows ``mode``: live mode asks the
+    configured provider, and replay mode uses the scripted checker, so a
+    replay server can never reach a provider for the check.
+    ``note_interpreter`` reads each reader note (spec §4.6) and follows
+    ``mode`` the same way: replay restates a note as written.
+    """
+    if clarity_checker is None:
+        clarity_checker = (
+            live_clarity_check if mode == "live" else scripted_clarity_check
+        )
+    if note_interpreter is None:
+        note_interpreter = (
+            live_note_interpreter if mode == "live" else scripted_note_interpreter
+        )
     if tracker is None:
         tracker = Tracker(
             LangSmithRuntimeConfig(
@@ -180,7 +220,11 @@ def create_app(
                 api_key=None,
             )
         )
-    store = SessionStore(runner=runner)
+    store = SessionStore(
+        runner=runner,
+        clarity_checker=clarity_checker,
+        note_interpreter=note_interpreter,
+    )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -218,7 +262,7 @@ def create_app(
         payload: ResearchRequest,
     ) -> ResearchSessionResponse:
         try:
-            preflight(
+            settings = preflight(
                 config_path=config_path,
                 output_format=payload.output_format,
                 config_overrides=payload.config_overrides,
@@ -236,8 +280,70 @@ def create_app(
             output_format=payload.output_format,
             config_overrides=payload.config_overrides,
             config_path=config_path,
+            ask_clarifying_questions=payload.ask_clarifying_questions,
+            settings=settings,
+            hitl=settings.hitl,
         )
         return _session_response(session)
+
+    @router.post(
+        "/research/{session_id}/answers",
+        status_code=202,
+        response_model=ResearchSessionResponse,
+    )
+    async def answer_research(
+        request: Request,
+        payload: ClarificationAnswersRequest,
+    ) -> ResearchSessionResponse:
+        """Take the reader's answers to the one-time check, once (spec §4.4).
+
+        ``404`` for an unknown session, ``409 not_waiting_for_input`` when it is
+        not in ``needs_input`` (never asked, already answered, or past its
+        deadline), ``422`` when an answer names an unknown question, repeats
+        one, or picks a choice that was not offered. Questions left out take
+        their best guess. The response is taken as the answers are accepted:
+        its ``status`` still reads ``needs_input`` until the session's own task
+        applies them, an instant later.
+        """
+        try:
+            session = store.submit_answers(request.state.session_id, payload)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        except NotWaitingForInput:
+            raise ApiProblem(
+                code="not_waiting_for_input", status_code=409
+            ) from None
+        except AnswerValidationError as error:
+            raise RequestValidationError(error.errors()) from None
+        return _session_response(session)
+
+    @router.post(
+        "/research/{session_id}/notes",
+        status_code=202,
+        response_model=NoteAcceptedResponse,
+    )
+    async def add_research_note(
+        request: Request,
+        payload: NoteRequest,
+    ) -> NoteAcceptedResponse:
+        """Take one reader note for a running session (live-briefs spec §4.6).
+
+        ``404`` for an unknown session; ``409 notes_closed`` while the session
+        waits for the one-time check's answers, once it has finished or
+        stopped, and once publication has begun; ``409 note_limit_reached``
+        past the tenth accepted note (D11a); ``422`` for an empty or overlong
+        note. The note is interpreted after this answer, which is why its
+        status is ``received``.
+        """
+        try:
+            received = store.add_note(request.state.session_id, payload.text)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        except NotesClosed:
+            raise ApiProblem(code="notes_closed", status_code=409) from None
+        except NoteLimitReached:
+            raise ApiProblem(code="note_limit_reached", status_code=409) from None
+        return NoteAcceptedResponse(note_id=received.note_id)
 
     @router.get(
         "/research/{session_id}/status",

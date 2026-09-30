@@ -430,6 +430,7 @@ def test_research_event_serializes_and_round_trips() -> None:
             "queries": ["enterprise AI adoption"],
             "counts": {"sub_topics": 3},
         },
+        event_id="0123456789abcdef0123456789abcdef",
     )
     payload = event.model_dump(mode="json")
 
@@ -443,8 +444,22 @@ def test_research_event_serializes_and_round_trips() -> None:
             "queries": ["enterprise AI adoption"],
             "counts": {"sub_topics": 3},
         },
+        "event_id": "0123456789abcdef0123456789abcdef",
     }
     assert ResearchEvent.model_validate(payload) == event
+
+
+def test_research_event_ids_default_to_distinct_uuid4_hex() -> None:
+    """live-briefs spec E1: every event gets its own identity, so two events built
+    alike are distinct, and a copy keeps the identity of what it copies."""
+    first = ResearchEvent(event_type="graph.node.started", source="graph", message="Node started.")
+    second = ResearchEvent(event_type="graph.node.started", source="graph", message="Node started.")
+
+    assert len(first.event_id) == 32 and int(first.event_id, 16) >= 0
+    assert first.event_id == first.event_id.lower()
+    assert first.event_id != second.event_id
+    assert first != second
+    assert first.model_copy(deep=True).event_id == first.event_id
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])

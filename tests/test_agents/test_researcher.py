@@ -51,6 +51,7 @@ from deep_research.agents.researcher import (
     render_sub_topic_guidance,
     retrieved_finding_urls,
     select_sub_topics,
+    tool_call_events,
 )
 from deep_research.agents.steps import (
     ReActDecision,
@@ -60,6 +61,7 @@ from deep_research.agents.steps import (
     read_evidence_urls,
     summarize_text,
 )
+from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -82,6 +84,7 @@ from deep_research.utils.types import (
     MemorySnapshot,
     ReadRecord,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     SubTopic,
     merge_research_state,
@@ -8566,3 +8569,45 @@ def test_a_dispute_and_a_plain_duplicate_do_not_merge_targets_or_lose_the_flag()
     # and its own target, never the other record's.
     assert survivor.disputes is False
     assert survivor.target_ids == [OTHER_TARGET_ID]
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_publishes_topic_and_tool_call_events_live_in_step_order(
+    tracker: Tracker,
+) -> None:
+    """live-briefs spec E3 and R3: the started event as the loop begins, each tool call
+    as its step is recorded, the completed event once extraction settles — live, in step
+    order, as the very objects the run returns — and each tool call carries exactly what
+    the post-loop rebuild (``tool_call_events``) builds."""
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(), outputs=[_findings_draft()]
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "q"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    returned = outcome.state_update["events"]
+    assert [event.event_type for event in received] == [
+        "researcher.sub_topic.started",
+        "researcher.tool_call",
+        "researcher.tool_call",
+        "researcher.sub_topic.completed",
+    ]
+    assert [event.event_id for event in received] == [
+        event.event_id for event in returned[:4]
+    ]
+    assert returned[4].event_type == "researcher.research.completed"
+    assert returned[0].metadata["coverage_id"] == "topic-01"
+    assert returned[3].metadata["coverage_id"] == "topic-01"
+
+    def call(event: ResearchEvent) -> tuple[object, ...]:
+        m = event.metadata
+        return (m["sub_topic"], m["tool"], m["proposal_id"], m["iteration"], m["success"], m["error_type"])
+
+    assert [call(e) for e in returned if e.event_type == "researcher.tool_call"] == [
+        call(e) for e in tool_call_events(state.sub_topics[0], outcome.react)
+    ]

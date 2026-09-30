@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, TypeAlias
 from uuid import uuid4
@@ -42,7 +42,7 @@ from deep_research.utils.config import (
     MissingSecretsError,
     load_config,
 )
-from deep_research.utils.types import ResearchEvent
+from deep_research.utils.types import ReaderAnswer, ResearchEvent
 
 DEFAULT_CONFIG_PATH = "config.yaml"
 
@@ -198,8 +198,14 @@ async def run_research(
     runtime_builder: RuntimeBuilder = build_runtime,
     event_handler: ProgressHandler | None = None,
     request_budget_handler: RequestBudgetObserver | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
+
+    ``reader_answers`` are the reader's answers to the API's one-time check
+    (live-briefs spec §4.4). A fresh run starts with them in its state, where
+    the planner reads them; a resumed run keeps the answers its checkpoint
+    holds, so they are ignored there.
 
     ``max_extra_passes`` bounds how many extra research passes the run may
     buy after its first one (D4) and defaults to
@@ -346,6 +352,7 @@ async def run_research(
                 ),
                 memory_context=memory_context,
                 event_handler=event_handler,
+                reader_answers=reader_answers,
             )
         snapshots = budget.snapshots()
     finally:

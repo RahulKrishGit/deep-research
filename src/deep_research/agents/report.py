@@ -33,7 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timezone
 
 from pydantic import JsonValue
@@ -57,6 +57,8 @@ from deep_research.agents.verified_facts import (
 )
 from deep_research.agents.wording import title_segments
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
+    NOTE_TOPIC_TITLE_PREFIX,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_NOT_GATED,
     QUALITY_STATUS_PARTIAL,
@@ -1481,13 +1483,43 @@ def answered_not_stated_targets(composition: ReportComposition) -> list[str]:
     ]
 
 
+def _note_groups(
+    composition: ReportComposition,
+    target_ids: set[str],
+    lead: str,
+    *,
+    already_named: Collection[str] = (),
+) -> list[list[str]]:
+    """live-briefs spec §4.6: one line, ``lead`` then the note as the run read
+    it, per reader-note sub-topic with a target in ``target_ids``, in plan order.
+
+    A note's targets are listed by the note, never by question: the reader
+    wrote a note, not the questions the run derived from it. A note is one
+    line, so a note with a target in ``already_named`` -- the targets of the
+    note lines an earlier group printed -- is not named a second time.
+    """
+    return [
+        [lead + topic.title.removeprefix(NOTE_TOPIC_TITLE_PREFIX)]
+        for topic in composition.sub_topics
+        if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX)
+        and any(target.target_id in target_ids for target in topic.evidence_targets)
+        and not any(target.target_id in already_named for target in topic.evidence_targets)
+    ]
+
+
 def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]:
     """§10: each present group, in order -- searched targets, unsearched
-    targets, answered-but-unstated targets, failed parts, unreachable pages
-    (capped at 5, Q5)."""
+    targets, the reader's uncovered notes (live-briefs spec §4.6),
+    answered-but-unstated targets, the reader's answered-but-unstated notes,
+    failed parts, unreachable pages (capped at 5, Q5)."""
     groups: list[list[str]] = []
-    searched = [target for target in composition.not_found if target.searched]
-    unsearched = [target for target in composition.not_found if not target.searched]
+    rows = [
+        target
+        for target in composition.not_found
+        if not target.target_id.startswith(NOTE_COVERAGE_PREFIX)
+    ]
+    searched = [target for target in rows if target.searched]
+    unsearched = [target for target in rows if not target.searched]
     if searched:
         groups.append([
             "We found no source we could check that answers:",
@@ -1498,7 +1530,10 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
             "This run did not research:",
             *[f"- {target.question}" for target in unsearched],
         ])
-    unstated_ids = answered_not_stated_targets(composition)
+    uncovered = {row.target_id for row in composition.not_found}
+    groups.extend(_note_groups(composition, uncovered, "Couldn't find evidence for your note: "))
+    unstated = answered_not_stated_targets(composition)
+    unstated_ids = [t for t in unstated if not t.startswith(NOTE_COVERAGE_PREFIX)]
     if unstated_ids:
         targets_by_id = {
             target.target_id: target
@@ -1508,6 +1543,12 @@ def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]
             "We found sources on these but could not state a checked answer:",
             *[f"- {targets_by_id[t].question}" for t in unstated_ids if t in targets_by_id],
         ])
+    groups.extend(_note_groups(
+        composition,
+        set(unstated),
+        "We found sources on your note but could not state a checked answer: ",
+        already_named=uncovered,
+    ))
     failed = [part for part in composition.parts if part.status == "failed"]
     if failed:
         groups.append([

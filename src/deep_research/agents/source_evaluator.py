@@ -29,7 +29,7 @@ from deep_research.agents.errors import (
     agent_error,
     agent_provider_failure_details,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import (
     ReadDossier,
     ReadIdentityRequest,
@@ -55,6 +55,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.reader_notes import SOURCE_NOTES, render_reader_notes
 from deep_research.agents.sources import (
     SourceGroup,
     group_findings_by_url,
@@ -76,6 +77,7 @@ from deep_research.utils.types import (
     ResearchStateUpdate,
     ScoredSource,
     SubTopic,
+    active_reader_notes,
 )
 
 SOURCE_EVALUATOR_NAME = "source_evaluator"
@@ -1100,6 +1102,11 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         }
         return SourceEvaluationTask(
             instruction=state.original_question,
+            # live-briefs spec §4.6: the reader's notes fill the request's
+            # ``# Context`` slot, for relevance only; ``""`` without notes.
+            guidance=render_reader_notes(
+                active_reader_notes(state.reader_notes), instruction=SOURCE_NOTES
+            ),
             groups=groups,
             reputations=reputations,
             dossiers=dossiers,
@@ -1358,6 +1365,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 source_count=len(task.groups),
             )
         ]
+        publish_live(events[0])  # live-briefs spec E3; returned below as well
         errors: list[ResearchError] = []
 
         async with self.tracker.agent_span(self.name) as span:
@@ -1374,13 +1382,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 for error in lookup_errors
             )
             snapshot = self._snapshot(sources)
-            events.append(
-                evaluation_completed_event(
-                    snapshot,
-                    reputation_hits=hits,
-                    reputation_failures=failures,
-                )
+            completed = evaluation_completed_event(
+                snapshot,
+                reputation_hits=hits,
+                reputation_failures=failures,
             )
+            publish_live(completed)
+            events.append(completed)
             span.set_outputs(
                 {
                     "agent_name": self.name,

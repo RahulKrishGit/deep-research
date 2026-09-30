@@ -1,12 +1,13 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { submit, waitTerminal } from "./support";
+import { API, submit, waitTerminal } from "./support";
 
 const CHECKPOINT = process.env.VISUAL_CHECKPOINT ?? "C4";
 const dir = path.join("visual", CHECKPOINT);
 mkdirSync(dir, { recursive: true });
 const shoot = async (page: Page, name: string) => {
+  await page.mouse.move(0, 0); // no hover state in a capture: a finished row highlights under the pointer
   await page.waitForTimeout(400);
   await page.screenshot({ path: path.join(dir, `${name}.png`), fullPage: true });
   const width = await page.evaluate(() => [document.scrollingElement!.scrollWidth, window.innerWidth]);
@@ -28,7 +29,8 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
-      await expect(page.locator("#runNow")).toHaveText("Researching", { timeout: 10_000 });
+      // live-briefs spec §6: 03-running is taken with the Researching brief open and a topic done.
+      await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"] .ps-topics [data-topic="done"]').first()).toBeVisible({ timeout: 10_000 });
       await shoot(page, `03-running${suffix}`);
       await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
       await shoot(page, `09-running-extra-pass${suffix}`);
@@ -51,6 +53,38 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await waitTerminal(request, id);
       await expect(page.locator("#stage-failed")).toBeVisible({ timeout: 20_000 });
       await shoot(page, `05-failed${suffix}`);
+    });
+
+    // live-briefs spec §6: the one-time check's card, on question 1 of 3 (pick 4B).
+    test(`10-clarify${suffix}`, async ({ page, request, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await expect(page.locator("#clarifyStep")).toHaveText("Question 1 of 3", { timeout: 10_000 });
+      await shoot(page, `10-clarify${suffix}`);
+      await page.locator("#clarifyCard").getByRole("button", { name: "Just start" }).click();
+      await waitTerminal(request, id);
+    });
+
+    // live-briefs spec §6: a note acknowledged at the top of the running Researching row, with the
+    // note line at the card's foot (pick 6A); then the report's "Your notes" above the prose (§4.7).
+    test(`11-note-ack${suffix}, 12-report-notes${suffix}`, async ({ page, request, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await page.locator('#spine li[data-stage="researcher"][data-state="active"]:not([data-handoff])').waitFor({ timeout: 15_000 });
+      await page.getByLabel("Add a note for this research").fill("More on fire-safety standards");
+      await page.getByLabel("Add a note for this research").press("Enter");
+      await expect(page.locator("#spine .ack", { hasText: "Got it" })).toBeVisible();
+      // At rest, from the top: typing scrolled the field into view, and its focus ring is not the resting look.
+      await page.locator("#noteInput").blur();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shoot(page, `11-note-ack${suffix}`);
+      const second = await request.post(`${API}/research/${id}/notes`, { data: { text: "Only the United States" } });
+      expect(second.status()).toBe(202);
+      await waitTerminal(request, id);
+      await expect(page.locator("#stage-report .reader-notes")).toBeVisible({ timeout: 20_000 });
+      await expect(page.locator("#stage-report .prose h2").first()).toBeVisible();
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shoot(page, `12-report-notes${suffix}`);
     });
   });
 }

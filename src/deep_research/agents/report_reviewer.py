@@ -59,6 +59,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.reader_notes import REVIEW_NOTES, render_reader_notes
 from deep_research.agents.report import (
     ReportComposition,
     # The label builders this review must never re-derive (R1): ``_point_labels``
@@ -105,6 +106,8 @@ from deep_research.utils.types import (
     Finding,
     GapKind,
     GapSeverity,
+    NoteDisposition,
+    ReaderNoteKind,
     ReportPoint,
     ReportSection,
     ReportStatement,
@@ -115,6 +118,7 @@ from deep_research.utils.types import (
     ReviewDefect,
     StatementReviewDisposition,
     UnitScore,
+    active_reader_notes,
 )
 
 REPORT_REVIEWER_ROLE = "report_reviewer"
@@ -403,6 +407,29 @@ _REVIEW_REPLY_EXAMPLES = (
 )
 
 
+# The example a review of a packet with reader notes shows (live-briefs spec
+# §4.6): the one above, plus the verdict on one note.
+_REVIEW_NOTES_REPLY_EXAMPLES = (
+    (
+        "Example input: statements S001 and S002; S001 restates the actual that "
+        "F01 reports, and S002 calls the actual that F02 reports a forecast; "
+        "reader note n1, which the report follows.",
+        '{"dimensions":{"completeness":0.7,"prioritization":0.8,'
+        '"evidence_quality":0.5,"attribution":0.6,"uncertainty":0.7,'
+        '"readability":0.9,"actionability":0.7},'
+        '"statement_dispositions":[{"statement_id":"S001","disposition":"supported",'
+        '"problem":""},{"statement_id":"S002","disposition":"unsupported",'
+        '"problem":"F02 reports an actual; the sentence calls it a forecast."}],'
+        '"defects":[{"kind":"contradiction","severity":"major",'
+        '"statement_ids":["S002"],"target_ids":[],'
+        '"problem":"S002 presents the actual F02 reports as a forecast."}],'
+        '"rationale":"S001 is supported by F01; S002 misstates the kind of '
+        'F02\'s figure, a material defect.",'
+        '"note_dispositions":[{"note_id":"n1","status":"honoured"}]}',
+    ),
+)
+
+
 def _render_defect_contract(packet: ReportReviewInput) -> str:
     """The defect rules with this packet's own bound, as the review enforces it."""
     return (
@@ -549,6 +576,15 @@ class ReviewDeterministic(ContractModel):
     uncited_settled_points: int = Field(default=0, ge=0)
 
 
+class ReviewNoteView(ContractModel):
+    """One reader note as the review reads it (live-briefs spec §4.6): its id,
+    so the reply can name it, and the run's own reading of it."""
+
+    note_id: str = Field(min_length=1)
+    restatement: str = Field(min_length=1)
+    kinds: list[ReaderNoteKind] = Field(min_length=1)
+
+
 class ReportReviewInput(ContractModel):
     """Everything one semantic review is allowed to judge, and nothing else.
 
@@ -586,6 +622,10 @@ class ReportReviewInput(ContractModel):
     account of what the question required.
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
+    reader_notes: list[ReviewNoteView] = Field(default_factory=list)
+    """The reader's active notes (live-briefs spec §4.6), which the review
+    judges one by one into ``note_dispositions``; ``[]`` for a run without
+    notes, whose packet and fingerprint are then exactly what they were."""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this packet was built from.
 
@@ -672,6 +712,14 @@ def build_report_review_input(
             uncited_settled_points=quality.uncited_settled_points if quality else 0,
         ),
         required_target_ids=list(quality.required_target_ids) if quality else [],
+        reader_notes=[
+            ReviewNoteView(
+                note_id=note.note_id,
+                restatement=note.restatement,
+                kinds=list(note.kinds),
+            )
+            for note in active_reader_notes(state.reader_notes)
+        ],
         composition_fingerprint=composition_semantic_fingerprint(composition),
     )
     return packet.model_copy(
@@ -997,8 +1045,11 @@ def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
     presentation field: ``quality_status`` is a generated badge this packet
     never reads, so stamping "accepted" onto a composition cannot invalidate a
     judgement of its content, while a content or reference change always does.
+    ``reader_notes`` is left out while it is empty, so a packet without notes
+    keeps the fingerprint it had before notes existed (live-briefs spec §4.6).
     """
-    payload = packet.model_dump(mode="json", exclude={"fingerprint"})
+    exclude = {"fingerprint"} | (set() if packet.reader_notes else {"reader_notes"})
+    payload = packet.model_dump(mode="json", exclude=exclude)
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -1079,6 +1130,18 @@ class ReviewDefectDraft(ContractModel):
     problem: str = Field(min_length=1)
 
 
+class NoteDispositionDraft(ContractModel):
+    """One provider-reported verdict on one reader note (live-briefs spec §4.6).
+
+    ``status`` is a plain string for the reason ``ReviewDefectDraft.kind`` is:
+    one invented verdict drops that one entry (``_note_dispositions``) rather
+    than refusing the whole review.
+    """
+
+    note_id: str = Field(min_length=1)
+    status: str = Field(min_length=1)
+
+
 class ReportReviewDraft(ContractModel):
     """One provider-reported whole-report review, before local resolution.
 
@@ -1097,6 +1160,17 @@ class ReportReviewDraft(ContractModel):
     # of twelve refused truthful reviews of larger reports whole.
     defects: list[ReviewDefectDraft] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
+
+
+class ReportReviewNotesDraft(ReportReviewDraft):
+    """A whole-report review of a packet that carries reader notes (live-briefs spec §4.6).
+
+    The same reply plus one verdict per note. Its own schema, so a review
+    without notes asks for exactly the reply, and shows exactly the examples,
+    it always did.
+    """
+
+    note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)
 
 
 class ReportReviewContractViolation(RuntimeError):
@@ -1282,6 +1356,23 @@ def _not_found_block(packet: ReportReviewInput) -> str:
     )
 
 
+def _reader_notes_block(packet: ReportReviewInput) -> list[str]:
+    """The ``# Reader notes`` section, with each note's id, or nothing at all.
+
+    live-briefs spec §4.6: only a packet that carries notes gains the section
+    (and the request to judge them), so a review without notes is byte-for-byte
+    the request it was.
+    """
+    if not packet.reader_notes:
+        return []
+    return [
+        "# Reader notes\n"
+        + render_reader_notes(
+            packet.reader_notes, instruction=REVIEW_NOTES, with_ids=True
+        )
+    ]
+
+
 def _deterministic_block(packet: ReportReviewInput) -> str:
     return (
         "# Deterministic checks\n"
@@ -1308,7 +1399,10 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
         "# What each dimension means\n"
         "Score each dimension in [0,1] against its own definition:\n"
         + _render_dimension_guidance(),
-        "# Reply format\n" + render_structured_reply_format(_REVIEW_REPLY_EXAMPLES),
+        "# Reply format\n"
+        + render_structured_reply_format(
+            _REVIEW_NOTES_REPLY_EXAMPLES if packet.reader_notes else _REVIEW_REPLY_EXAMPLES
+        ),
     ]
     material = [
         f"# Research question\n{packet.question}",
@@ -1320,6 +1414,7 @@ def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
             "deterministic checks below are the whole of what is being judged."
         ),
         f"# Answer contract\n{_render_answer_contract(packet.answer_contract)}",
+        *_reader_notes_block(packet),
         (
             "# Reader content — the complete candidate\n"
             "The report is quoted in full below and nothing is removed from its "
@@ -1459,6 +1554,32 @@ def _defects(
     return defects, notes
 
 
+_NOTE_DISPOSITION_STATUSES = frozenset(
+    {"honoured", "ignored_with_evidence", "no_evidence"}
+)
+
+
+def _note_dispositions(
+    drafts: Sequence[NoteDispositionDraft],
+    *,
+    packet: ReportReviewInput,
+) -> list[NoteDisposition]:
+    """One verdict per reader note the packet carried, in the reply's order.
+
+    An id the packet did not carry, a status outside the vocabulary, or a
+    second verdict on the same note is dropped: a note is never a reason to
+    refuse the review of the report itself (live-briefs spec §4.6).
+    """
+    known = {note.note_id for note in packet.reader_notes}
+    verdicts: dict[str, NoteDisposition] = {}
+    for draft in drafts:
+        note_id = draft.note_id.strip()
+        status = draft.status.strip()
+        if note_id in known and note_id not in verdicts and status in _NOTE_DISPOSITION_STATUSES:
+            verdicts[note_id] = NoteDisposition(note_id=note_id, status=status)  # type: ignore[arg-type]
+    return list(verdicts.values())
+
+
 def _derived_defects(
     packet: ReportReviewInput,
     dispositions: Mapping[str, StatementReviewDisposition],
@@ -1528,6 +1649,7 @@ def _merge_review(
     derived_statements: Sequence[str],
     rationale: str,
     status: str,
+    note_dispositions: Sequence[NoteDisposition] = (),
 ) -> ReportReview:
     """Assemble the recorded review from the reply that came back."""
     reviewed = [
@@ -1552,6 +1674,7 @@ def _merge_review(
         composition_fingerprint=packet.composition_fingerprint,
         rubric_version=packet.rubric_version,
         rationale=rationale,
+        note_dispositions=list(note_dispositions),
     )
 
 
@@ -1925,13 +2048,14 @@ async def _review_packet(
             status="incomplete",
         )
 
+    schema = ReportReviewNotesDraft if packet.reader_notes else ReportReviewDraft
     try:
         reply = await reviewer._request(  # noqa: SLF001
-            review_messages(packet), ReportReviewDraft
+            review_messages(packet), schema
         )
     except (StructuredOutputError, ValidationError) as error:
         return _failed_review(
-            packet, _schema_reason(error, ReportReviewDraft), status="incomplete"
+            packet, _schema_reason(error, schema), status="incomplete"
         )
     except ProviderError as error:
         return _failed_review(packet, _provider_reason(error))
@@ -1984,6 +2108,9 @@ async def _review_packet(
             derived_statements=derived_statements,
             rationale=rationale,
             status=status,
+            note_dispositions=_note_dispositions(
+                getattr(reply, "note_dispositions", ()), packet=packet
+            ),
         )
     except ValidationError as error:
         # The last boundary: assembling the record is the one remaining step
@@ -2119,6 +2246,9 @@ class ScopedReportReviewInput(ContractModel):
     carried_dispositions: dict[str, StatementReviewDisposition] = Field(
         default_factory=dict
     )
+    carried_note_dispositions: list[NoteDisposition] = Field(default_factory=list)
+    """The previous review's verdicts on the reader's notes (live-briefs spec
+    §4.6), kept for every note the re-review's reply does not judge again."""
     fingerprint: str = ""
 
 
@@ -2126,8 +2256,15 @@ def scoped_report_review_input_fingerprint(scoped: ScopedReportReviewInput) -> s
     """The scoped packet's own fingerprint: distinct from
     ``scoped.base.fingerprint`` because the material a scoped re-review reads
     -- the changed/unchanged split and the carried previous defects -- is not
-    the material a full review reads, even over an identical report."""
-    payload = scoped.model_dump(mode="json", exclude={"fingerprint"})
+    the material a full review reads, even over an identical report. The
+    reader-note fields are left out while empty, so a scoped packet without
+    notes keeps the fingerprint it had before notes existed (spec §4.6)."""
+    exclude: dict[str, object] = {"fingerprint": True}
+    if not scoped.carried_note_dispositions:
+        exclude["carried_note_dispositions"] = True
+    if not scoped.base.reader_notes:
+        exclude["base"] = {"reader_notes": True}
+    payload = scoped.model_dump(mode="json", exclude=exclude)
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -2358,6 +2495,11 @@ def build_scoped_report_review_input(
             statement_id: previous_review.per_statement_dispositions[statement_id]
             for statement_id in unchanged_ordered
         },
+        carried_note_dispositions=[
+            entry
+            for entry in previous_review.note_dispositions
+            if entry.note_id in {note.note_id for note in base.reader_notes}
+        ],
     )
     return scoped.model_copy(
         update={"fingerprint": scoped_report_review_input_fingerprint(scoped)}
@@ -2433,6 +2575,25 @@ _SCOPED_REVIEW_REPLY_EXAMPLES = (
         '"rationale":"The redraft closed review-01; nothing else changed."}',
     ),
 )
+# The scoped example a packet with reader notes shows (live-briefs spec §4.6).
+_SCOPED_REVIEW_NOTES_REPLY_EXAMPLES = (
+    (
+        "Example input: changed statement S004; unchanged statement S001; "
+        "one previous defect review-01 against S001, since resolved because "
+        "S004 now supplies the qualifier S001 was missing; reader note n1, "
+        "which the report follows.",
+        '{"dimensions":{"completeness":0.85,"prioritization":0.8,'
+        '"evidence_quality":0.8,"attribution":0.8,"uncertainty":0.8,'
+        '"readability":0.85,"actionability":0.8},'
+        '"statement_dispositions":[{"statement_id":"S004","disposition":"supported",'
+        '"problem":""}],'
+        '"previous_defect_resolutions":[{"defect_id":"review-01","resolved":true,'
+        '"note":"S004 now supplies the missing qualifier."}],'
+        '"new_defects":[],'
+        '"rationale":"The redraft closed review-01; nothing else changed.",'
+        '"note_dispositions":[{"note_id":"n1","status":"honoured"}]}',
+    ),
+)
 
 
 def _render_scoped_defect_contract(scoped: ScopedReportReviewInput) -> str:
@@ -2478,7 +2639,11 @@ def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]
         "Score each dimension in [0,1] against its own definition:\n"
         + _render_dimension_guidance(),
         "# Reply format\n"
-        + render_structured_reply_format(_SCOPED_REVIEW_REPLY_EXAMPLES),
+        + render_structured_reply_format(
+            _SCOPED_REVIEW_NOTES_REPLY_EXAMPLES
+            if packet.reader_notes
+            else _SCOPED_REVIEW_REPLY_EXAMPLES
+        ),
     ]
     material = [
         f"# Research question\n{packet.question}",
@@ -2491,6 +2656,7 @@ def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]
             "and findings following them are shown for context."
         ),
         f"# Answer contract\n{_render_answer_contract(packet.answer_contract)}",
+        *_reader_notes_block(packet),
         (
             "# Reader content — the complete candidate\n"
             "The report is quoted in full below and nothing is removed from "
@@ -2560,6 +2726,13 @@ class ScopedReportReviewDraft(ContractModel):
     )
     new_defects: list[ReviewDefectDraft] = Field(default_factory=list)
     rationale: str = Field(min_length=1)
+
+
+class ScopedReportReviewNotesDraft(ScopedReportReviewDraft):
+    """A scoped re-review of a packet that carries reader notes (live-briefs spec §4.6):
+    the same reply plus one verdict per note, for the reason ``ReportReviewNotesDraft`` exists."""
+
+    note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)
 
 
 # --- resolving a scoped reply into one review --------------------------------
@@ -2702,13 +2875,16 @@ async def _review_scoped_packet(
             ),
             status="incomplete",
         )
+    schema = (
+        ScopedReportReviewNotesDraft if packet.reader_notes else ScopedReportReviewDraft
+    )
     try:
         reply = await reviewer._request(  # noqa: SLF001
-            scoped_review_messages(scoped), ScopedReportReviewDraft
+            scoped_review_messages(scoped), schema
         )
     except (StructuredOutputError, ValidationError) as error:
         return _failed_review(
-            packet, _schema_reason(error, ScopedReportReviewDraft), status="incomplete"
+            packet, _schema_reason(error, schema), status="incomplete"
         )
     except ProviderError as error:
         return _failed_review(packet, _provider_reason(error))
@@ -2788,6 +2964,15 @@ async def _review_scoped_packet(
         )
         dimensions = None
     rationale = " ".join(part for part in rationale_parts if part).strip()
+    judged = {
+        entry.note_id: entry
+        for entry in _note_dispositions(
+            getattr(reply, "note_dispositions", ()), packet=packet
+        )
+    }
+    note_dispositions = [
+        judged.pop(entry.note_id, entry) for entry in scoped.carried_note_dispositions
+    ] + list(judged.values())
     try:
         return _merge_review(
             packet,
@@ -2797,6 +2982,7 @@ async def _review_scoped_packet(
             derived_statements=derived_statements,
             rationale=rationale,
             status=status,
+            note_dispositions=note_dispositions,
         )
     except ValidationError as error:
         return _failed_review(
@@ -2828,14 +3014,18 @@ __all__ = [
     "ReportReviewContractViolation",
     "ReportReviewDraft",
     "ReportReviewInput",
+    "ReportReviewNotesDraft",
     "ReportReviewer",
     "ReviewDefectDraft",
     "ReviewDeterministic",
     "ReviewDimensionScores",
+    "NoteDispositionDraft",
     "ReviewFindingView",
+    "ReviewNoteView",
     "ReviewStatementView",
     "ScopedReportReviewDraft",
     "ScopedReportReviewInput",
+    "ScopedReportReviewNotesDraft",
     "StatementDispositionDraft",
     "build_report_review_input",
     "build_scoped_report_review_input",

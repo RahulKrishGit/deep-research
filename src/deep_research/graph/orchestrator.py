@@ -9,7 +9,8 @@ Graph shape:
 
     START -> planner -> researcher -> source_evaluator -> evidence_verifier
           -> report_writer -> report_reviewer
-          -> {extra_pass -> researcher | finalize_report -> END}
+          -> {note_pass -> researcher | extra_pass -> researcher
+              | writer_redraft -> report_writer | finalize_report -> END}
 
 ``report_reviewer`` is the terminal review: it judges the report the Report
 Writer just composed, and it runs before the route because the missing
@@ -27,7 +28,7 @@ has three destinations after the review rather than two.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
@@ -39,6 +40,7 @@ from deep_research.graph.events import (
     session_completed_event,
     session_started_event,
 )
+from deep_research.graph.live import bind_live_sink
 from deep_research.graph.nodes import (
     ReportPublisher,
     ReportReviewerLike,
@@ -46,6 +48,7 @@ from deep_research.graph.nodes import (
     agent_node,
     extra_pass_node,
     finalize_report_node,
+    note_pass_node,
     report_reviewer_node,
     report_writer_node,
     route_after_review,
@@ -57,6 +60,7 @@ from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
     NODE_NAMES,
+    NOTE_PASS_NODE,
     PLANNER_NODE,
     REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
@@ -65,6 +69,7 @@ from deep_research.graph.state import (
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
+    ROUTE_NOTE_PASS,
     ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     ResearchGraphState,
@@ -78,6 +83,7 @@ from deep_research.graph.state import (
 from deep_research.observability import RunTelemetryCollector, Tracker
 from deep_research.utils.types import (
     MemorySnapshot,
+    ReaderAnswer,
     ResearchEvent,
     ResearchState,
     merge_research_state,
@@ -172,6 +178,7 @@ def build_research_graph(
     builder.add_node(
         REPORT_REVIEWER_NODE, report_reviewer_node(agents.report_reviewer)
     )
+    builder.add_node(NOTE_PASS_NODE, note_pass_node)
     builder.add_node(EXTRA_PASS_NODE, extra_pass_node)
     builder.add_node(REDRAFT_NODE, writer_redraft_node)
     builder.add_node(
@@ -194,6 +201,7 @@ def build_research_graph(
         REPORT_REVIEWER_NODE,
         route_after_review,
         {
+            ROUTE_NOTE_PASS: NOTE_PASS_NODE,
             ROUTE_EXTRA_PASS: EXTRA_PASS_NODE,
             ROUTE_REDRAFT: REDRAFT_NODE,
             ROUTE_FINALIZE: FINALIZE_NODE,
@@ -204,6 +212,10 @@ def build_research_graph(
     # exists for the targets that were missing, and the topics that already
     # answered their own obligations are not part of it.
     builder.add_edge(EXTRA_PASS_NODE, RESEARCHER_NODE)
+    # A reader note's targeted pass (live-briefs spec §4.6) loops back the same
+    # way, confined to the notes' own sub-topics; its redraft reuses the
+    # writer-redraft hop below.
+    builder.add_edge(NOTE_PASS_NODE, RESEARCHER_NODE)
     # The redraft hop loops back to the writer alone: its defects are about the
     # report, not about the evidence, so no research or verification re-runs —
     # the writer drafts again and the reviewer judges that draft.
@@ -309,13 +321,19 @@ async def _stream_graph_result(
     event_handler: ProgressHandler,
     terminal_checkpoint: ResearchState | None = None,
 ) -> ResearchGraphState:
-    """Run the graph in values mode, publishing only newly appended events.
+    """Run the graph in values mode, publishing every event exactly once.
 
-    Each ``stream_mode="values"`` snapshot is the cumulative channel, so the
-    slice after the last published index is exactly the events this superstep
-    appended — nothing is published twice, and order within a snapshot is the
-    order the graph recorded it. On a resume the first snapshot carries the
-    checkpointed events, so a fresh handler still sees the whole session.
+    Events reach the handler by two paths (live-briefs spec E2). An agent or node
+    publishes an event *live* the moment it builds it, through the sink bound here
+    for the stream's duration (``graph/live.py``); the sink records its
+    ``event_id``. Each ``stream_mode="values"`` snapshot is the cumulative channel,
+    so the slice after the last published index is exactly the events this
+    superstep appended; they are published in state order, skipping any id the live
+    path already delivered. So nothing is published twice, a live event can arrive
+    ahead of events its node recorded earlier in state order, and a node that halts
+    after publishing live has delivered those events although its halted state keeps
+    none of them. On a resume the first snapshot carries the checkpointed events, so
+    a fresh handler still sees the whole session.
 
     A terminal checkpoint has no pending nodes, so its resumed stream can be
     empty and there is no first snapshot to carry the checkpointed events.
@@ -327,6 +345,11 @@ async def _stream_graph_result(
     """
     latest: ResearchGraphState | None = None
     published = 0
+    published_ids: set[str] = set()
+
+    def live(event: ResearchEvent) -> None:
+        event_handler(event)
+        published_ids.add(event.event_id)
 
     if channel is not None:
         initial = load_state(channel)
@@ -334,16 +357,18 @@ async def _stream_graph_result(
             event_handler(event)
         published = len(initial.events)
 
-    async for snapshot in graph.astream(
-        channel,
-        config,
-        stream_mode="values",
-    ):
-        latest = snapshot
-        state = load_state(snapshot)
-        for event in state.events[published:]:
-            event_handler(event)
-        published = len(state.events)
+    with bind_live_sink(live):
+        async for snapshot in graph.astream(
+            channel,
+            config,
+            stream_mode="values",
+        ):
+            latest = snapshot
+            state = load_state(snapshot)
+            for event in state.events[published:]:
+                if event.event_id not in published_ids:
+                    event_handler(event)
+            published = len(state.events)
 
     if latest is None:
         if terminal_checkpoint is None:
@@ -425,8 +450,13 @@ async def run_research_graph(
     max_extra_passes: int = DEFAULT_MAX_EXTRA_PASSES,
     memory_context: MemorySnapshot | None = None,
     event_handler: ProgressHandler | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> GraphRun:
     """Run one research session from the question to a final status.
+
+    ``reader_answers`` are the reader's answers to the one-time check
+    (live-briefs spec §4.4); they start in the initial state, so the planner
+    reads them, and a run without them starts exactly as before.
 
     ``session_started_event`` is written into the initial state *before* the
     graph runs, so it is checkpointed with everything else.
@@ -450,6 +480,7 @@ async def run_research_graph(
             question=question,
             max_extra_passes=max_extra_passes,
             memory_context=memory_context,
+            reader_answers=reader_answers,
         )
     )
     state = merge_research_state(

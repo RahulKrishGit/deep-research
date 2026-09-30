@@ -8,6 +8,8 @@ const api = process.env.DEEP_RESEARCH_API_URL ?? "http://127.0.0.1:8010";
 const cases = process.argv.slice(2);
 if (!cases.length) { console.error("usage: capture-replay-events.mjs <case-id> ..."); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A session waiting for the reader (needs_input, live-briefs spec §4.4) has not finished either.
+const TERMINAL = /^(completed|max_iterations|incomplete|failed)$/;
 const frames = (text) =>
   text.split(/\r?\n\r?\n/).filter((f) => f.includes("data: ")).map((f) =>
     JSON.parse(f.split(/\r?\n/).filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n")));
@@ -25,10 +27,10 @@ for (const caseId of cases) {
   let status = null;
   for (let i = 0; i < 100; i++) {
     status = await (await fetch(`${api}/research/${session_id}/status`)).json();
-    if (status.status !== "running") break;
+    if (TERMINAL.test(status.status)) break;
     await sleep(100);
   }
-  if (!status || status.status === "running") throw new Error(`${caseId}: the session did not finish`);
+  if (!status || !TERMINAL.test(status.status)) throw new Error(`${caseId}: the session did not finish`);
   const out = path.join("test", "fixtures", "events", `${caseId}.json`);
   mkdirSync(path.dirname(out), { recursive: true });
   const record = { case_id: caseId, captured_at: new Date().toISOString(), api_mode: stream.headers.get("x-deep-research-mode"), status, events };

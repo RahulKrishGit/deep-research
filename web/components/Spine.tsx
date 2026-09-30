@@ -1,6 +1,7 @@
 "use client";
-import { useLayoutEffect, useRef } from "react";
-import { ARCS, STAGES, type NodeId, type PaintedMark, type RunState } from "@/lib/run-state";
+import { useRef } from "react";
+import { STAGES, type NodeId, type PaintedMark, type RunState } from "@/lib/run-state";
+import { useLoopArc } from "./loop-arc";
 
 interface Props { marks: Partial<Record<NodeId, PaintedMark>>; run: RunState; withArcs: boolean; id?: string }
 
@@ -26,33 +27,7 @@ export function Spine({ marks, run, withArcs, id = "spine" }: Props) {
       </li>
     );
   });
-  useLayoutEffect(() => {
-    if (!withArcs) return;
-    const draw = () => {
-      const host = wrap.current, ol = list.current;
-      const svg = host?.querySelector<SVGSVGElement>("svg.loop-layer");
-      if (!host || !ol || !svg || !run.arc) return;
-      const arc = ARCS[run.arc];
-      const from = ol.querySelector<HTMLElement>(`li[data-stage="${arc.from}"] .bullet`);
-      const to = ol.querySelector<HTMLElement>(`li[data-stage="${arc.to}"] .bullet`);
-      if (!from || !to) return;
-      const hostRect = host.getBoundingClientRect();
-      const w = Math.round(hostRect.width), h = Math.round(hostRect.height);
-      if (!w || !h) return;
-      svg.setAttribute("width", String(w)); svg.setAttribute("height", String(h));
-      const leave = from.getBoundingClientRect(), enter = to.getBoundingClientRect();
-      const x1 = enter.left - hostRect.left + enter.width / 2, y1 = enter.top - hostRect.top + enter.height / 2;
-      const x2 = leave.left - hostRect.left + leave.width / 2, y2 = leave.top - hostRect.top + leave.height / 2;
-      const r = Math.max(2, x1 - enter.width / 2 - 8);
-      const d = `M ${x2} ${y2} H ${r} V ${y1} H ${x1 + 10}`;
-      svg.querySelector(".loop-base")?.setAttribute("d", d);
-      svg.querySelector(".loop-flow")?.setAttribute("d", d);
-      svg.querySelector(".loop-head")?.setAttribute("d", `M ${x1 + 3} ${y1 - 4} L ${x1 + 11} ${y1} L ${x1 + 3} ${y1 + 4} Z`);
-    };
-    draw();
-    window.addEventListener("resize", draw);
-    return () => window.removeEventListener("resize", draw);
-  }, [withArcs, run.arc, run.loop, marks]);
+  useLoopArc(withArcs, wrap, list, run.arc, [withArcs, run.arc, run.loop, marks]);
   if (!withArcs) return <ol className="spine-lg" id={id} ref={list}>{rows}</ol>;
   return (
     <div className="spine-wrap" id="spineWrap" data-loop={run.loop} {...(run.arc ? { "data-arc": run.arc } : {})} ref={wrap}>

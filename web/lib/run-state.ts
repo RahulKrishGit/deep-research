@@ -1,7 +1,12 @@
 // The prototype's event core (docs/design/prototype/index.html:2456-2465, :2501-2504, :2885-3054,
 // :3095-3103), ported unchanged: every handler reads only `md.<key>` and the state after event k
 // depends only on events 1..k, so bursts, ticks and a replay from event 1 paint the same screen.
+// live-briefs spec §4.3 (2026-09-28) extends it with the step briefs' state — the topic checklist,
+// the outcome lines and the reopen lines — on the same rule; `open` is the one field the reader,
+// not the stream, writes.
 import type { ResearchEvent, SessionStatus } from "./api";
+import { fmtScore } from "./format";
+import { noteRedraftLine, notePassLine } from "./notes";
 
 export type NodeId = "planner" | "researcher" | "source_evaluator" | "evidence_verifier" | "report_writer" | "report_reviewer" | "finalize_report";
 export type Mark = "done" | "loop" | "skipped";
@@ -18,38 +23,58 @@ export const STAGES: readonly Stage[] = [
   { id: "finalize_report", label: "Publishing", meta: "report · evidence log · quality record" },
 ];
 export const AGENT_ORDER: readonly NodeId[] = STAGES.map((s) => s.id);
-export const ARCS: Record<"extra_pass" | "redraft", { from: NodeId; to: NodeId }> = {
+/* live-briefs spec §4.7: a note pass returns to Researching like the extra pass, drawn with the
+   redraft's stroke (--meta), because a note pass is not a warning. */
+export const ARCS: Record<"extra_pass" | "redraft" | "note_pass", { from: NodeId; to: NodeId }> = {
   extra_pass: { from: "report_reviewer", to: "researcher" },
   redraft: { from: "report_reviewer", to: "report_writer" },
+  note_pass: { from: "report_reviewer", to: "researcher" },
 };
-export const BLURB: Record<NodeId, string> = {
-  planner: "Turning the question into sub-topics and evidence targets.",
-  researcher: "Searching and reading; every finding keeps a verbatim snippet.",
-  source_evaluator: "Scoring every source behind the findings.",
-  evidence_verifier: "Checking each snippet is on its page, then each figure's context.",
-  report_writer: "Drafting from verified findings; every sentence is checked against what it cites.",
-  report_reviewer: "Scoring the report; accepted at a mean of 0.80 with no material defect.",
-  finalize_report: "Publishing the report, the evidence log and the quality record.",
-};
-
 export interface Counters {
   subTopicsDone: number | null; subTopicsResearched: number | null; subTopicsTotal: number | null; toolCalls: number | null;
   findings: number | null; sources: number | null; verified: number | null; corrected: number | null; dropped: number | null;
   statements: number | null; refused: number | null; reviewSeen: boolean; reviewScore: number | null;
 }
-export interface LoopTag { kind: "extra_pass" | "redraft"; label: string; text: string }
+/* The step briefs' state (live-briefs spec §4.3). A topic is one planned sub-topic in this pass's
+   Researching checklist; "waiting" until its researcher.sub_topic.started, "running" until its
+   researcher.sub_topic.completed. */
+export type TopicState = "waiting" | "running" | "done";
+export interface Topic { coverageId: string; title: string; state: TopicState; findings: number | null }
+export interface PlannedTopic { coverageId: string; title: string }
+/* The first line of a row a loop reopened: why it reopened (the old loop tag's content). */
+export interface ReopenLine { kind: "extra_pass" | "redraft" | "note_pass" | "note_redraft"; text: string }
+/* One reader note (live-briefs spec §4.6-§4.7): as received, then as the run read it. `where` is the
+   row that was active when session.note.interpreted arrived — the step the acknowledgement names. */
+export interface NoteState {
+  id: string; text: string; interpreted: boolean; restatement: string | null;
+  replaces: string | null; fallback: boolean; where: NodeId | null;
+}
+/* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from
+   session.clarification.requested, then the answers the run starts with from .answered. */
+export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
+export interface ClarifyAnswer { questionId: string; value: string; source: "chosen" | "typed" | "best_guess" }
+export interface ClarifyState { questions: ClarifyQuestion[]; deadlineAt: string; answered: { answers: ClarifyAnswer[]; reason: string } | null }
 export interface RunState {
   marks: Partial<Record<NodeId, Mark>>;   /* node id → "done" | "loop" | "skipped"; the active row is derived */
   active: NodeId | null;                  /* the "Now" row: the successor of the last graph.node.completed */
   openNode: NodeId | null;                /* the last graph.node.started with no graph.node.completed — the halting row */
-  pass: number; maxPasses: number;
-  loop: "off" | "flowing" | "settled"; arc: "extra_pass" | "redraft" | null;
+  pass: number;
+  loop: "off" | "flowing" | "settled"; arc: "extra_pass" | "redraft" | "note_pass" | null;
   loopPending: boolean;                   /* a loop was routed; the reviewer's own completion is inert */
-  tag: LoopTag | null;
   rearmed: Partial<Record<NodeId, true>>; rearmedFirst: NodeId | null;
-  captions: Partial<Record<NodeId, string>>; blurbs: Partial<Record<NodeId, string>>;
+  captions: Partial<Record<NodeId, string>>;
   counters: Counters; countersPass: number;
   finalStatus: string | null;
+  plan: PlannedTopic[];                   /* planner.planning.completed.metadata.sub_topics, in plan order */
+  topics: Topic[];                        /* this pass's Researching checklist */
+  pagesRead: number | null;               /* Σ successful_reads over this pass's completed topics */
+  findingsSoFar: number | null;           /* Σ findings_retained over completed topics, then researcher.research.completed.findings */
+  passFindings: number | null;            /* the latest researcher.research.completed.findings (Verifying's brief) */
+  reopen: Partial<Record<NodeId, ReopenLine>>;
+  outcomes: Partial<Record<NodeId, string>>;  /* each row's outcome line once it is done */
+  open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
+  clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
+  notes: NoteState[];                     /* the reader's notes, in receipt order */
 }
 export interface RunEvent { type: string; metadata: Record<string, unknown> }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -61,13 +86,15 @@ export function emptyCounters(): Counters {
     findings: null, sources: null, verified: null, corrected: null, dropped: null,
     statements: null, refused: null, reviewSeen: false, reviewScore: null };
 }
-export function newRunState(passes: number | null | undefined): RunState {
+export function newRunState(): RunState {
   return {
     marks: {}, active: "planner", openNode: null,
-    pass: 1, maxPasses: Math.max(1, Number(passes) || 1),
-    loop: "off", arc: null, loopPending: false, tag: null,
-    rearmed: {}, rearmedFirst: null, captions: {}, blurbs: {},
+    pass: 1,
+    loop: "off", arc: null, loopPending: false,
+    rearmed: {}, rearmedFirst: null, captions: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
+    plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
+    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [],
   };
 }
 function nextRow(node: NodeId): NodeId | null {
@@ -82,16 +109,72 @@ function rearm(run: RunState, fromIndex: number): void {
   for (let i = fromIndex; i <= 5; i++) {
     delete run.marks[AGENT_ORDER[i]];
     run.rearmed[AGENT_ORDER[i]] = true;
+    run.open.delete(AGENT_ORDER[i]);
   }
   delete run.marks.finalize_report;
 }
 export function plural(n: number, one: string, many: string): string { return n + " " + (n === 1 ? one : many); }
+/* The label of the row a node runs on, for the chip's "Running · {step}" (live-briefs spec §4.2).
+   The two hops lead back into a row, so they read as that row; anything else is not a row. */
+const HOP_ROW: Readonly<Record<string, NodeId>> = { extra_pass: "researcher", note_pass: "researcher", writer_redraft: "report_writer" };
+export function stepLabel(node: string | null | undefined): string | null {
+  if (!node) return null;
+  const id = HOP_ROW[node] ?? node;
+  return STAGES.find((s) => s.id === id)?.label ?? null;
+}
+/* The node the chip names while the stream is open: the active row; once graph.session.completed
+   has arrived (and until /status turns terminal), the row the run ended on — Publishing, or the
+   node that halted. Between Publishing's own completion and graph.session.completed no row is active
+   and none is open, so the chip keeps naming Publishing rather than fall back to a stale /status. */
+export function chipStep(run: RunState): string | null {
+  if (run.active) return run.active;
+  if (run.finalStatus === null) return run.openNode ?? (run.marks.finalize_report ? "finalize_report" : null);
+  if (run.finalStatus === "failed") return run.openNode;
+  return "finalize_report";
+}
+/* A measured count in words: 0 reads "no …", never a bare 0 (live-briefs spec AC5). */
+export function countPhrase(n: number, one: string, many: string): string { return n === 0 ? "no " + many : plural(n, one, many); }
+const count = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const topicId = (md: Md): string => (typeof md.coverage_id === "string" && md.coverage_id ? md.coverage_id : "index-" + String(md.index));
+function topicFor(run: RunState, md: Md): Topic {
+  const id = topicId(md);
+  const known = run.topics.find((t) => t.coverageId === id);
+  if (known) return known;
+  const title = run.plan.find((p) => p.coverageId === id)?.title ?? (typeof md.sub_topic === "string" ? md.sub_topic : id);
+  const topic: Topic = { coverageId: id, title, state: "waiting", findings: null };
+  run.topics.push(topic);
+  return topic;
+}
+/* Reviewing's outcome line, read at the route decision (the review's score arrived just before it). */
+function reviewOutcome(run: RunState, md: Md): string {
+  if (md.reason === "note_pass_requested") return "Sent back to research your note";
+  if (md.reason === "note_redraft_requested") return "Sent back to the writer for your note";
+  if (md.destination === "extra_pass") {
+    const k = Array.isArray(md.missing_required_target_ids) ? md.missing_required_target_ids.length : 0;
+    return k > 0 ? "Sent back to fill " + plural(k, "gap", "gaps") : "Sent back for more research";
+  }
+  const score = fmtScore(run.counters.reviewScore);
+  if (md.reason === "report_accepted") return score === null ? "Accepted" : "Accepted · " + score;
+  return score === null ? "Review unavailable" : "Not accepted · " + score;
+}
+export function toggleOpen(run: RunState, id: NodeId): void {
+  if (run.open.has(id)) run.open.delete(id); else run.open.add(id);
+}
+
+/* The check's wire shapes (api/clarify.py): an entry that does not fit is dropped, never invented. */
+const isText = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+function isClarifyQuestion(q: unknown): q is { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string } {
+  const m = q as Md | null;
+  return !!m && isText(m.id) && isText(m.dimension) && isText(m.text) && isText(m.short)
+    && Array.isArray(m.options) && m.options.every(isText) && isText(m.best_guess);
+}
+function isClarifyAnswer(a: unknown): a is { question_id: string; value: string; source: ClarifyAnswer["source"] } {
+  const m = a as Md | null;
+  return !!m && isText(m.question_id) && typeof m.value === "string" && ["chosen", "typed", "best_guess"].includes(m.source);
+}
 
 /* Keyed by event type; each handler reads only `md` (the event's metadata). */
 export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
-  "graph.session.started": (run, md) => {
-    if (typeof md.max_extra_passes === "number") run.maxPasses = 1 + md.max_extra_passes;
-  },
   "graph.node.started": (run, md) => {
     run.openNode = md.node;
     /* the pass number is read here and from graph.extra_pass.started only */
@@ -100,9 +183,10 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   "graph.node.completed": (run, md) => {
     const node: NodeId = md.node;
     if (run.openNode === node) run.openNode = null;
-    if ((node as string) === "extra_pass" || (node as string) === "writer_redraft") return;          /* hops never map to a row */
+    if ((node as string) === "extra_pass" || (node as string) === "note_pass" || (node as string) === "writer_redraft") return; /* hops never map to a row */
     if (node === "report_reviewer" && run.loopPending) { run.loopPending = false; return; }         /* inert after a loop decision */
     run.marks[node] = run.rearmed[node] ? "loop" : "done";
+    if (node === "finalize_report") run.outcomes.finalize_report = "Published";
     if (node === "report_reviewer") return;                                                          /* the route decision already moved the active row */
     run.active = nextRow(node);
   },
@@ -112,9 +196,24 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "planner.planning.completed": (run, md) => {
     run.captions.planner = plural(md.sub_topic_count, "sub-topic", "sub-topics");
+    run.outcomes.planner = run.captions.planner;
+    const listed: unknown[] = Array.isArray(md.sub_topics) ? md.sub_topics : [];
+    run.plan = listed.filter((t): t is { coverage_id: string; title: string } =>
+      !!t && typeof (t as Md).coverage_id === "string" && typeof (t as Md).title === "string")
+      .map((t) => ({ coverageId: t.coverage_id, title: t.title }));
+    run.topics = run.plan.map((p) => ({ coverageId: p.coverageId, title: p.title, state: "waiting", findings: null }));
+    run.pagesRead = null; run.findingsSoFar = null;
   },
-  "researcher.sub_topic.completed": (run) => {
+  "researcher.sub_topic.started": (run, md) => {
+    topicFor(run, md).state = "running";
+  },
+  "researcher.sub_topic.completed": (run, md) => {
     run.counters.subTopicsDone = (run.counters.subTopicsDone || 0) + 1;
+    const topic = topicFor(run, md);
+    const kept = count(md.findings_retained);
+    topic.state = "done"; topic.findings = kept;
+    run.pagesRead = (run.pagesRead ?? 0) + count(md.successful_reads);
+    run.findingsSoFar = (run.findingsSoFar ?? 0) + kept;
   },
   "researcher.tool_call": (run) => {
     /* counted only — its `iteration` is the ReAct step index, never the pass */
@@ -125,17 +224,24 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     c.subTopicsResearched = md.sub_topics_researched;
     c.subTopicsTotal = md.sub_topics_researched + md.sub_topics_skipped;
     c.findings = md.findings;
+    run.findingsSoFar = count(md.findings);
+    run.passFindings = count(md.findings);
+    run.outcomes.researcher = [countPhrase(count(md.sub_topics_researched), "topic", "topics"),
+      countPhrase(run.pagesRead ?? 0, "page read", "pages read"), countPhrase(count(md.findings), "finding", "findings")].join(" · ");
   },
   "source_evaluator.evaluation.completed": (run, md) => {
     run.counters.sources = md.source_count;
+    run.outcomes.source_evaluator = plural(count(md.source_count), "source rated", "sources rated");
   },
   "evidence_verifier.verification.completed": (run, md) => {
     const c = run.counters;
     c.verified = md.verified; c.corrected = md.verified_corrected; c.dropped = md.dropped;
+    run.outcomes.evidence_verifier = count(md.verified) + " verified · " + count(md.verified_corrected) + " corrected · " + count(md.dropped) + " dropped";
   },
   "report_writer.report.written": (run, md) => {
     const c = run.counters;
     c.statements = md.statements; c.refused = md.refused;
+    run.outcomes.report_writer = "Report drafted · " + plural(count(md.statements), "sentence", "sentences") + " · " + plural(count(md.citations), "citation", "citations");
   },
   "graph.report.reviewed": (run, md) => {
     const c = run.counters;
@@ -143,11 +249,20 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     c.reviewScore = typeof md.mean_score === "number" ? md.mean_score : null;
   },
   "graph.route.decided": (run, md) => {
-    run.tag = null;
     run.loopPending = false;
+    run.outcomes.report_reviewer = reviewOutcome(run, md);
     if (md.destination === "extra_pass") {
       rearm(run, 1); run.active = "researcher";
       run.loopPending = true; run.arc = "extra_pass"; run.loop = "flowing";
+      /* the pass about to run starts its own checklist; the writer's next draft is not a redraft */
+      run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
+      delete run.reopen.report_writer;
+    } else if (md.destination === "note_pass") {
+      /* live-briefs spec §4.6: the note pass re-runs Researching onward, as the extra pass does */
+      rearm(run, 1); run.active = "researcher";
+      run.loopPending = true; run.arc = "note_pass"; run.loop = "flowing";
+      run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
+      delete run.reopen.report_writer;
     } else if (md.destination === "redraft") {
       rearm(run, 4); run.active = "report_writer";
       run.loopPending = true; run.arc = "redraft"; run.loop = "flowing";
@@ -161,9 +276,8 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const n = (md.targets || []).length;
     if (typeof md.iteration === "number") run.pass = md.iteration + 1;
     run.loop = "settled";
-    run.tag = { kind: "extra_pass", label: "extra pass", text: plural(n, "required target had no verified finding", "required targets had no verified finding") };
     run.captions.researcher = plural(n, "missing target only", "missing targets only");
-    run.blurbs.researcher = "Researching the " + plural(n, "target", "targets") + " still missing a verified finding.";
+    run.reopen.researcher = { kind: "extra_pass", text: "Going back to research " + plural(n, "gap", "gaps") + " the review found" };
     /* this-pass rows reset; whole-run and current-draft rows keep their values */
     const c = run.counters;
     c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
@@ -172,15 +286,72 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "graph.report.redraft_requested": (run, md) => {
     run.loop = "settled";
-    run.tag = { kind: "redraft", label: "redraft", text: "Reviewer named " + plural(md.material_defects, "material defect", "material defects") };
+    run.reopen.report_writer = { kind: "redraft", text: "Rewriting to fix " + plural(count(md.material_defects), "issue", "issues") + " the review found" };
     /* current-draft rows and the review score reset */
+    const c = run.counters;
+    c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
+  },
+  /* live-briefs spec §4.7: the note pass researches only the notes' own sub-topics — "Your note: …" —
+     and its first line says which notes it is for. Like an extra pass it starts its own this-pass
+     rows and drops the earlier pass's researching caption; whole-run and current-draft rows keep
+     their values. */
+  "graph.note_pass.started": (run, md) => {
+    const ids: string[] = Array.isArray(md.note_ids) ? md.note_ids.filter(isText) : [];
+    run.loop = "settled";
+    delete run.captions.researcher;
+    const c = run.counters;
+    c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
+    c.verified = null; c.corrected = null; c.dropped = null;
+    run.reopen.researcher = { kind: "note_pass", text: notePassLine(ids, run.notes) };
+    run.outcomes.report_reviewer = ids.length === 1 ? "Sent back to research your note" : "Sent back to research " + ids.length + " of your notes";
+    run.topics = ids.map((id) => {
+      const note = run.notes.find((n) => n.id === id);
+      return { coverageId: "note-" + id, title: "Your note: " + (note ? note.restatement ?? note.text : id), state: "waiting", findings: null };
+    });
+    run.pagesRead = null; run.findingsSoFar = null;
+  },
+  "graph.note_redraft.requested": (run, md) => {
+    const ids: string[] = Array.isArray(md.note_ids) ? md.note_ids.filter(isText) : [];
+    run.loop = "settled";
+    run.reopen.report_writer = { kind: "note_redraft", text: noteRedraftLine(ids, run.notes) };
+    run.outcomes.report_reviewer = ids.length === 1 ? "Sent back to the writer for your note" : "Sent back to the writer for " + ids.length + " of your notes";
     const c = run.counters;
     c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
   },
   "graph.session.completed": (run, md) => {
     run.finalStatus = md.status;
-    run.loop = "off"; run.arc = null; run.tag = null;
+    run.loop = "off"; run.arc = null;
     run.active = null;
+  },
+  /* live-briefs spec §4.4: the session asks before the graph starts; neither event moves a row. */
+  "session.clarification.requested": (run, md) => {
+    const listed: unknown[] = Array.isArray(md.questions) ? md.questions : [];
+    run.clarify = {
+      questions: listed.filter(isClarifyQuestion).map((q) => ({ id: q.id, dimension: q.dimension, text: q.text, short: q.short, options: [...q.options], bestGuess: q.best_guess })),
+      deadlineAt: typeof md.deadline_at === "string" ? md.deadline_at : "",
+      answered: null,
+    };
+  },
+  "session.clarification.answered": (run, md) => {
+    const listed: unknown[] = Array.isArray(md.answers) ? md.answers : [];
+    const answers = listed.filter(isClarifyAnswer).map((a) => ({ questionId: a.question_id, value: a.value, source: a.source }));
+    run.clarify = { questions: run.clarify?.questions ?? [], deadlineAt: run.clarify?.deadlineAt ?? "", answered: { answers, reason: typeof md.reason === "string" ? md.reason : "" } };
+  },
+  /* live-briefs spec §4.6-§4.7: a note is acknowledged as received at once, then as the run read
+     it; neither event moves a row. A replayed note is never counted twice. */
+  "session.note.received": (run, md) => {
+    if (!isText(md.note_id) || run.notes.some((n) => n.id === md.note_id)) return;
+    run.notes.push({ id: md.note_id, text: typeof md.text === "string" ? md.text : "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null });
+  },
+  "session.note.interpreted": (run, md) => {
+    if (!isText(md.note_id)) return;
+    let note = run.notes.find((n) => n.id === md.note_id);
+    if (!note) { note = { id: md.note_id, text: "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null }; run.notes.push(note); }
+    note.interpreted = true;
+    note.restatement = isText(md.restatement) ? md.restatement : null;
+    note.replaces = isText(md.replaces) ? md.replaces : null;
+    note.fallback = md.fallback === true;
+    note.where = run.active;
   },
 };
 export function applyEvent(run: RunState, ev: RunEvent): void {
@@ -209,8 +380,8 @@ export const COUNTER_ROWS: readonly CounterRow[] = [
 
 /* The API's frame carries `event_type`; the prototype's scripts carried `type`. */
 export function toRunEvent(event: ResearchEvent): RunEvent { return { type: event.event_type, metadata: event.metadata }; }
-export function replayRun(events: readonly ResearchEvent[], passes: number | null | undefined): RunState {
-  const run = newRunState(passes);
+export function replayRun(events: readonly ResearchEvent[]): RunState {
+  const run = newRunState();
   for (const event of events) applyEvent(run, toRunEvent(event));
   return run;
 }

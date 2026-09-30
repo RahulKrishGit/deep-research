@@ -32,6 +32,8 @@ from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
     NODE_NAMES,
+    NOTE_PASS_NODE,
+    NOTE_REDRAFT_STEPS,
     PLANNER_NODE,
     REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
@@ -49,6 +51,7 @@ from deep_research.observability import Tracker
 from deep_research.providers import ProviderResponseError
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
+    MAX_NOTES_PER_RUN,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     BottomLineDraft,
@@ -392,10 +395,11 @@ def test_the_agent_node_order_matches_the_designed_sequence() -> None:
     )
     # Order matters, not just membership: the graph's real edges read
     # ``AGENT_NODE_ORDER``, so it must be exactly the head of ``NODE_NAMES``,
-    # with the reviewer, the two hops and the finalizer after it.
+    # with the reviewer, the three hops and the finalizer after it.
     assert NODE_NAMES == (
         *AGENT_NODE_ORDER,
         REPORT_REVIEWER_NODE,
+        NOTE_PASS_NODE,
         EXTRA_PASS_NODE,
         REDRAFT_NODE,
         FINALIZE_NODE,
@@ -597,7 +601,11 @@ def test_the_session_config_pins_the_thread_and_the_superstep_bound() -> None:
     config = session_config("session-1", max_extra_passes=2)
 
     assert config["configurable"]["thread_id"] == "session-1"
-    assert config["recursion_limit"] == (2 + 1) * len(NODE_NAMES) + 10
+    assert config["recursion_limit"] == (
+        (2 + 1) * len(NODE_NAMES)
+        + MAX_NOTES_PER_RUN * (len(NODE_NAMES) + NOTE_REDRAFT_STEPS)
+        + 10
+    )
 
 
 def test_a_checkpointer_is_built_only_when_it_is_asked_for() -> None:

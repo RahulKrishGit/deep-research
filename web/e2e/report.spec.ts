@@ -14,7 +14,7 @@ test("the default case ends on the Report stage with the body, the rail and both
     const href = await page.locator(sel).getAttribute("href");
     expect((await request.get(`http://127.0.0.1:3010${href}`)).status()).toBe(200);
   }
-  await expect(page.locator("#repFactPass")).toHaveText("pass 2 of 2");
+  await expect(page.locator("#repFactPass")).toHaveText("Went back once to fill gaps"); // live-briefs spec §4.2 (AC8)
 });
 
 test("review unavailable: Partially completed · review unavailable, not scored", async ({ page, request, context }) => {

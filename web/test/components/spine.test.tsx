@@ -5,7 +5,7 @@ import { failedMarks, marksFor, newRunState } from "../../lib/run-state";
 
 describe("Spine", () => {
   it("paints data-state per row, data-fed from the previous row, and the caption", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     run.marks = { planner: "done", researcher: "loop" };
     run.active = "source_evaluator";
     run.rearmedFirst = "researcher";
@@ -21,7 +21,7 @@ describe("Spine", () => {
     expect(rows[2].querySelector(".stage-name .sr")!.textContent).toBe(" (in progress)");
   });
   it("marks a halted run's Publishing row skipped", () => {
-    const run = newRunState(2);
+    const run = newRunState();
     run.openNode = "planner";
     const { container } = render(<Spine marks={failedMarks(run, "failed")} run={run} withArcs={false} />);
     expect(container.querySelector('li[data-stage="finalize_report"]')!.getAttribute("data-state")).toBe("skipped");

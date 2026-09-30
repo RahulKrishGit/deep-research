@@ -42,6 +42,7 @@ from deep_research.utils.types import (
     Finding,
     FindingFigure,
     FindingVerification,
+    ReaderNote,
     ReadRecord,
     ReportComposition,
     ReportPoint,
@@ -364,6 +365,21 @@ def fake_research_state(**overrides: object) -> ResearchState:
     return ResearchState.model_validate(payload)
 
 
+def fake_reader_note(note_id: str = "n1", **overrides: object) -> ReaderNote:
+    """One interpreted reader note (live-briefs spec §4.6): an emphasis, not yet
+    reviewed, passed or redrafted, unless a test says otherwise."""
+    payload: dict[str, object] = {
+        "note_id": note_id,
+        "text": f"Focus on grid storage ({note_id}).",
+        "received_at": "2026-09-29T10:00:00+00:00",
+        "received_during": "researcher",
+        "kinds": ["emphasis"],
+        "restatement": f"more weight on grid storage ({note_id})",
+    }
+    payload.update(overrides)
+    return ReaderNote.model_validate(payload)
+
+
 def fake_quality(*, hard_failures: Sequence[str] = ()) -> ReportQualitySnapshot:
     """A clean quality snapshot, optionally carrying named hard failures."""
     return ReportQualitySnapshot(hard_failures=list(hard_failures))
@@ -489,6 +505,7 @@ def fake_report_review(
     missing_required_target_ids: Sequence[str] = (),
     fingerprint: str = "packet-1",
     composition_fingerprint: str = "composition-1",
+    note_dispositions: Mapping[str, str] | None = None,
 ) -> ReportReview:
     """A terminal review, complete unless a test says otherwise.
 
@@ -510,6 +527,10 @@ def fake_report_review(
         "composition_fingerprint": composition_fingerprint,
         "rubric_version": 2,
         "rationale": "Recorded for graph tests.",
+        "note_dispositions": [
+            {"note_id": note_id, "status": verdict}
+            for note_id, verdict in (note_dispositions or {}).items()
+        ],
     }
     if status == "scored":
         payload["dimensions"] = dict(

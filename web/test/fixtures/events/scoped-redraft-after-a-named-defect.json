@@ -1,24 +1,24 @@
 {
  "case_id": "scoped-redraft-after-a-named-defect",
- "captured_at": "2026-09-28T02:35:32.139Z",
+ "captured_at": "2026-09-29T07:38:56.515Z",
  "api_mode": "replay",
  "status": {
-  "session_id": "94666db4c1284f9084960ec2b1bfe83d",
+  "session_id": "e794aa7f4a68439c971fd86ceb4f048c",
   "query": "What were the Acme widget adoption rate and export volume in the United States in 2024?",
   "status": "completed",
   "current_agent": null,
   "iteration": 0,
-  "started_at": "2026-09-28T02:35:31.958488Z",
-  "finished_at": "2026-09-28T02:35:32.137143Z",
-  "report_path": "report-94666db4c1284f9084960ec2b1bfe83d-0.md",
+  "started_at": "2026-09-29T07:38:56.178763Z",
+  "finished_at": "2026-09-29T07:38:56.511956Z",
+  "report_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0.md",
   "trace_url": null,
   "errors": [],
-  "evidence_path": "report-94666db4c1284f9084960ec2b1bfe83d-0-evidence.md",
-  "quality_path": "report-94666db4c1284f9084960ec2b1bfe83d-0-quality.json",
+  "evidence_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0-evidence.md",
+  "quality_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0-quality.json",
   "quality_contract_version": "2",
   "semantic_review_status": "scored",
   "semantic_review_score": 0.9,
-  "duration_seconds": 0.153165,
+  "duration_seconds": 0.309483,
   "coverage": {
    "required_targets": 2,
    "answered_targets": 2,
@@ -48,222 +48,252 @@
    "event_type": "graph.session.started",
    "source": "graph",
    "message": "Research session started.",
-   "timestamp": "2026-09-28T02:35:31.982010+00:00",
+   "timestamp": "2026-09-29T07:38:56.199796+00:00",
    "metadata": {
-    "session_id": "94666db4c1284f9084960ec2b1bfe83d",
+    "session_id": "e794aa7f4a68439c971fd86ceb4f048c",
     "max_extra_passes": 1,
     "checkpointing": false
-   }
+   },
+   "event_id": "8b3d540c44144b24813eb4437f2aa7fa"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.planner",
    "message": "Node planner started.",
-   "timestamp": "2026-09-28T02:35:31.983011+00:00",
+   "timestamp": "2026-09-29T07:38:56.201651+00:00",
    "metadata": {
     "node": "planner",
     "iteration": 0
-   }
+   },
+   "event_id": "307e11fd964a49b295f4b30af1d41f3f"
   },
   {
    "event_type": "planner.planning.started",
    "source": "agent.planner",
    "message": "Planning started.",
-   "timestamp": "2026-09-28T02:35:31.983011+00:00",
+   "timestamp": "2026-09-29T07:38:56.201808+00:00",
    "metadata": {
     "iteration": 0,
     "min_sub_topics": 1,
     "max_sub_topics": 10
-   }
+   },
+   "event_id": "f729465a7d3340f1b58977e19f4abc5d"
   },
   {
    "event_type": "planner.memory.recalled",
    "source": "agent.planner",
    "message": "Memory recall complete.",
-   "timestamp": "2026-09-28T02:35:31.983011+00:00",
+   "timestamp": "2026-09-29T07:38:56.201831+00:00",
    "metadata": {
     "recalled_findings": 0,
     "known_source_reputations": 0,
     "suggested_strategies": 0
-   }
+   },
+   "event_id": "def5ac4ac2e543acb5208b790e271f95"
   },
   {
    "event_type": "planner.planning.completed",
    "source": "agent.planner",
    "message": "Planning complete.",
-   "timestamp": "2026-09-28T02:35:31.983513+00:00",
+   "timestamp": "2026-09-29T07:38:56.203485+00:00",
    "metadata": {
     "sub_topic_count": 2,
+    "sub_topics": [
+     {
+      "coverage_id": "topic-01",
+      "title": "Adoption rate"
+     },
+     {
+      "coverage_id": "topic-02",
+      "title": "Export volume"
+     }
+    ],
     "repair_attempted": false,
     "stop_reason": "finished",
     "iterations": 1,
     "tool_calls": 0
-   }
+   },
+   "event_id": "e8996bdba8a0460382111864fa632c23"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.planner",
    "message": "Node planner completed.",
-   "timestamp": "2026-09-28T02:35:31.984516+00:00",
+   "timestamp": "2026-09-29T07:38:56.203779+00:00",
    "metadata": {
     "node": "planner",
     "iteration": 0,
     "event_count": 3,
     "error_count": 0
-   }
+   },
+   "event_id": "d5efbed33a964a62a74a1fa39ed271f4"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.researcher",
    "message": "Node researcher started.",
-   "timestamp": "2026-09-28T02:35:31.984887+00:00",
+   "timestamp": "2026-09-29T07:38:56.205615+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 0
-   }
+   },
+   "event_id": "a5d7504d26414709ae42788eda48238a"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 1.",
-   "timestamp": "2026-09-28T02:35:31.984887+00:00",
+   "timestamp": "2026-09-29T07:38:56.206054+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
+    "coverage_id": "topic-01",
     "priority": 1,
     "index": 1,
     "existing_sources": 0
-   }
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_search call completed.",
-   "timestamp": "2026-09-28T02:35:31.995864+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "tool": "web_search",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-01/turn-1/call-0",
-    "iteration": 1,
-    "success": true,
-    "error_type": null
-   }
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-09-28T02:35:31.995864+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-01/turn-2/call-0",
-    "iteration": 2,
-    "success": true,
-    "error_type": null
-   }
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-09-28T02:35:31.995864+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-01/turn-3/call-0",
-    "iteration": 3,
-    "success": true,
-    "error_type": null
-   }
-  },
-  {
-   "event_type": "researcher.sub_topic.completed",
-   "source": "agent.researcher",
-   "message": "Sub-topic 1 complete.",
-   "timestamp": "2026-09-28T02:35:31.995864+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "index": 1,
-    "stop_reason": "finished",
-    "iterations": 4,
-    "tool_calls": 3,
-    "cache_hits": 0,
-    "findings": 2,
-    "findings_dropped_duplicate": 0,
-    "findings_dropped_cap": 0,
-    "sources_retained": 2,
-    "publishers_retained": 2,
-    "source_urls_retained": 2,
-    "findings_retained": 2,
-    "works_retained": 2,
-    "successful_reads": 2,
-    "useful_evidence_yield": 2,
-    "acquired_work_count": 4,
-    "target_obligation_completed": true,
-    "elapsed_s": 0
-   }
+   },
+   "event_id": "94499ad7e7b048f9b70ed688be031a18"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 2.",
-   "timestamp": "2026-09-28T02:35:31.984887+00:00",
+   "timestamp": "2026-09-29T07:38:56.207489+00:00",
    "metadata": {
     "sub_topic": "Export volume",
+    "coverage_id": "topic-02",
     "priority": 2,
     "index": 2,
     "existing_sources": 0
-   }
+   },
+   "event_id": "d43911fdb64847ca87dc7d23332ba2ca"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_search call completed.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.208836+00:00",
    "metadata": {
-    "sub_topic": "Export volume",
+    "sub_topic": "Adoption rate",
     "tool": "web_search",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-02/turn-1/call-0",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-01/turn-1/call-0",
     "iteration": 1,
     "success": true,
     "error_type": null
-   }
+   },
+   "event_id": "3108f34e28e541dfa17edc6b3e6eab04"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_search call completed.",
+   "timestamp": "2026-09-29T07:38:56.210104+00:00",
+   "metadata": {
+    "sub_topic": "Export volume",
+    "tool": "web_search",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-02/turn-1/call-0",
+    "iteration": 1,
+    "success": true,
+    "error_type": null
+   },
+   "event_id": "ef8b183312d5426687fc07571a79b958"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.212880+00:00",
    "metadata": {
-    "sub_topic": "Export volume",
+    "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-02/turn-2/call-0",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-01/turn-2/call-0",
     "iteration": 2,
     "success": true,
     "error_type": null
-   }
+   },
+   "event_id": "e143e98a843e43cca4f42da7757d1cfc"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.216520+00:00",
    "metadata": {
     "sub_topic": "Export volume",
     "tool": "web_scraper",
-    "proposal_id": "researcher/94666db4c1284f9084960ec2b1bfe83d/topic-02/turn-3/call-0",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-02/turn-2/call-0",
+    "iteration": 2,
+    "success": true,
+    "error_type": null
+   },
+   "event_id": "bed94390b80249c08c4d4b64b8b10290"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-09-29T07:38:56.220442+00:00",
+   "metadata": {
+    "sub_topic": "Adoption rate",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-01/turn-3/call-0",
     "iteration": 3,
     "success": true,
     "error_type": null
-   }
+   },
+   "event_id": "21f01afe3256475b9fc1a6b5334f177d"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-09-29T07:38:56.224104+00:00",
+   "metadata": {
+    "sub_topic": "Export volume",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/e794aa7f4a68439c971fd86ceb4f048c/topic-02/turn-3/call-0",
+    "iteration": 3,
+    "success": true,
+    "error_type": null
+   },
+   "event_id": "1773feb202734882ba0d868babd70394"
+  },
+  {
+   "event_type": "researcher.sub_topic.completed",
+   "source": "agent.researcher",
+   "message": "Sub-topic 1 complete.",
+   "timestamp": "2026-09-29T07:38:56.225504+00:00",
+   "metadata": {
+    "sub_topic": "Adoption rate",
+    "coverage_id": "topic-01",
+    "index": 1,
+    "stop_reason": "finished",
+    "iterations": 4,
+    "tool_calls": 3,
+    "cache_hits": 0,
+    "findings": 2,
+    "findings_dropped_duplicate": 0,
+    "findings_dropped_cap": 0,
+    "sources_retained": 2,
+    "publishers_retained": 2,
+    "source_urls_retained": 2,
+    "findings_retained": 2,
+    "works_retained": 2,
+    "successful_reads": 2,
+    "useful_evidence_yield": 2,
+    "acquired_work_count": 4,
+    "target_obligation_completed": true,
+    "elapsed_s": 0
+   },
+   "event_id": "87c7da10e3d245bc8752066bab47346e"
   },
   {
    "event_type": "researcher.sub_topic.completed",
    "source": "agent.researcher",
    "message": "Sub-topic 2 complete.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.227502+00:00",
    "metadata": {
     "sub_topic": "Export volume",
+    "coverage_id": "topic-02",
     "index": 2,
     "stop_reason": "finished",
     "iterations": 4,
@@ -282,57 +312,62 @@
     "acquired_work_count": 4,
     "target_obligation_completed": true,
     "elapsed_s": 0
-   }
+   },
+   "event_id": "af022abbf25845a38dde590d7022cb9c"
   },
   {
    "event_type": "researcher.research.completed",
    "source": "agent.researcher",
    "message": "Research pass complete.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.227805+00:00",
    "metadata": {
     "sub_topics_planned": 2,
     "sub_topics_researched": 2,
     "sub_topics_skipped": 0,
     "findings": 4
-   }
+   },
+   "event_id": "8e990dcd466844fe85b79ea87923a942"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.researcher",
    "message": "Node researcher completed.",
-   "timestamp": "2026-09-28T02:35:31.996864+00:00",
+   "timestamp": "2026-09-29T07:38:56.229315+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 0,
     "event_count": 11,
     "error_count": 0
-   }
+   },
+   "event_id": "4a35c70f120640c6a6bc2043ad94d8c2"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator started.",
-   "timestamp": "2026-09-28T02:35:31.999370+00:00",
+   "timestamp": "2026-09-29T07:38:56.231989+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 0
-   }
+   },
+   "event_id": "35a812cba6514b16824bebe56aeae964"
   },
   {
    "event_type": "source_evaluator.evaluation.started",
    "source": "agent.source_evaluator",
    "message": "Source evaluation started.",
-   "timestamp": "2026-09-28T02:35:32.000815+00:00",
+   "timestamp": "2026-09-29T07:38:56.236621+00:00",
    "metadata": {
     "finding_count": 4,
     "source_count": 4
-   }
+   },
+   "event_id": "496ba5dc7a3d4f82a11b7f66605be115"
   },
   {
    "event_type": "source_evaluator.evaluation.completed",
    "source": "agent.source_evaluator",
    "message": "Source evaluation complete.",
-   "timestamp": "2026-09-28T02:35:32.004442+00:00",
+   "timestamp": "2026-09-29T07:38:56.245412+00:00",
    "metadata": {
     "source_count": 4,
     "average_score": 0.9,
@@ -344,70 +379,76 @@
     "unscored_missing_count": 0,
     "reputation_hits": 0,
     "reputation_failures": 0
-   }
+   },
+   "event_id": "2477e1cbab08405896667ce8bd38cb52"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator completed.",
-   "timestamp": "2026-09-28T02:35:32.005445+00:00",
+   "timestamp": "2026-09-29T07:38:56.247388+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 0,
     "event_count": 2,
     "error_count": 0
-   }
+   },
+   "event_id": "1d52d973432047109ef2619a4d7eb6bc"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier started.",
-   "timestamp": "2026-09-28T02:35:32.006968+00:00",
+   "timestamp": "2026-09-29T07:38:56.251045+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 0
-   }
+   },
+   "event_id": "74945fedd73843d6bfa89d438e4884f7"
   },
   {
    "event_type": "evidence_verifier.verification.completed",
    "source": "agent.evidence_verifier",
    "message": "Verified 4 findings.",
-   "timestamp": "2026-09-28T02:35:32.010972+00:00",
+   "timestamp": "2026-09-29T07:38:56.257803+00:00",
    "metadata": {
     "verified": 4,
     "verified_corrected": 0,
     "quoted": 0,
     "dropped": 0,
     "context_unchecked": 0
-   }
+   },
+   "event_id": "7ada149928184c728e0b9f77e4656808"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier completed.",
-   "timestamp": "2026-09-28T02:35:32.010972+00:00",
+   "timestamp": "2026-09-29T07:38:56.259328+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "5f09b23265e44d75a01b29c60bcd9564"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_writer",
    "message": "Node report_writer started.",
-   "timestamp": "2026-09-28T02:35:32.013972+00:00",
+   "timestamp": "2026-09-29T07:38:56.264725+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0
-   }
+   },
+   "event_id": "6a4cc911e9d44703b31ee02766e65399"
   },
   {
    "event_type": "report_writer.report.written",
    "source": "agent.report_writer",
    "message": "Wrote 8 statement(s) citing 4 source(s); 0 drafted point(s) refused.",
-   "timestamp": "2026-09-28T02:35:32.020971+00:00",
+   "timestamp": "2026-09-29T07:38:56.281805+00:00",
    "metadata": {
     "statements": 8,
     "citations": 4,
@@ -417,25 +458,27 @@
     "table": "findings",
     "parts": 2,
     "failed_parts": []
-   }
+   },
+   "event_id": "e837784d785e42f6abcd4ce112bc8487"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_writer",
    "message": "Node report_writer completed.",
-   "timestamp": "2026-09-28T02:35:32.022428+00:00",
+   "timestamp": "2026-09-29T07:38:56.284910+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "7a3c0d88dda44de5b916401ad828b950"
   },
   {
    "event_type": "graph.quality.assessed",
    "source": "graph",
    "message": "The report quality gates found no hard failure.",
-   "timestamp": "2026-09-28T02:35:32.024929+00:00",
+   "timestamp": "2026-09-29T07:38:56.289029+00:00",
    "metadata": {
     "iteration": 0,
     "hard_failures": [],
@@ -449,106 +492,115 @@
     ],
     "missing_required_target_ids": [],
     "uncited_settled_points": 0
-   }
+   },
+   "event_id": "ba6601a2c0f54644b9c5d94ef26ea001"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer started.",
-   "timestamp": "2026-09-28T02:35:32.028723+00:00",
+   "timestamp": "2026-09-29T07:38:56.294975+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0
-   }
+   },
+   "event_id": "cb36bf1ea71a428c8edc1e350f94e9fe"
   },
   {
    "event_type": "graph.report.reviewed",
    "source": "graph.report_reviewer",
    "message": "The report was reviewed and scored.",
-   "timestamp": "2026-09-28T02:35:32.032228+00:00",
+   "timestamp": "2026-09-29T07:38:56.406839+00:00",
    "metadata": {
     "iteration": 0,
     "review_status": "scored",
     "mean_score": 0.9,
     "material_defects": 1,
     "reviewed_statements": 8,
-    "input_fingerprint": "0bd0ae29aee4",
+    "input_fingerprint": "62e331794947",
     "reused": false
-   }
+   },
+   "event_id": "7e94ae00b0d841478844b86f52677421"
   },
   {
    "event_type": "graph.route.decided",
    "source": "graph",
    "message": "The Report Reviewer scored the report and named a material defect, and the one writer re-run a defect list buys has not been spent; the writer drafts again with those defects fed back.",
-   "timestamp": "2026-09-28T02:35:32.032228+00:00",
+   "timestamp": "2026-09-29T07:38:56.406881+00:00",
    "metadata": {
     "destination": "redraft",
     "reason": "redraft_requested",
     "iteration": 0,
     "max_extra_passes": 1,
     "missing_required_target_ids": []
-   }
+   },
+   "event_id": "260d043995584af1af887bff344699a0"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer completed.",
-   "timestamp": "2026-09-28T02:35:32.032228+00:00",
+   "timestamp": "2026-09-29T07:38:56.406906+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "71042ae51ef845fe947605f0182a8cb5"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.writer_redraft",
    "message": "Node writer_redraft started.",
-   "timestamp": "2026-09-28T02:35:32.036245+00:00",
+   "timestamp": "2026-09-29T07:38:56.417812+00:00",
    "metadata": {
     "node": "writer_redraft",
     "iteration": 0
-   }
+   },
+   "event_id": "84c95e1269e34ddfb2d5300c068807ae"
   },
   {
    "event_type": "graph.report.redraft_requested",
    "source": "graph",
    "message": "Writer re-run 1 requested for one materially defective report.",
-   "timestamp": "2026-09-28T02:35:32.036743+00:00",
+   "timestamp": "2026-09-29T07:38:56.420808+00:00",
    "metadata": {
     "iteration": 0,
     "redrafts": 1,
     "material_defects": 1
-   }
+   },
+   "event_id": "8a383cd2e98d4914802e037268248421"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.writer_redraft",
    "message": "Node writer_redraft completed.",
-   "timestamp": "2026-09-28T02:35:32.036743+00:00",
+   "timestamp": "2026-09-29T07:38:56.420876+00:00",
    "metadata": {
     "node": "writer_redraft",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "5a3f4d25e0f84f35bf165bcecc3cfc7d"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_writer",
    "message": "Node report_writer started.",
-   "timestamp": "2026-09-28T02:35:32.090373+00:00",
+   "timestamp": "2026-09-29T07:38:56.432249+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0
-   }
+   },
+   "event_id": "82c84f9ecdb14f18b7fba664497fda2d"
   },
   {
    "event_type": "report_writer.report.written",
    "source": "agent.report_writer",
    "message": "Wrote 8 statement(s) citing 4 source(s); 0 drafted point(s) refused.",
-   "timestamp": "2026-09-28T02:35:32.097373+00:00",
+   "timestamp": "2026-09-29T07:38:56.447982+00:00",
    "metadata": {
     "statements": 8,
     "citations": 4,
@@ -558,25 +610,27 @@
     "table": "findings",
     "parts": 2,
     "failed_parts": []
-   }
+   },
+   "event_id": "eff68225e3824cb49b0058f4ff0fbf1c"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_writer",
    "message": "Node report_writer completed.",
-   "timestamp": "2026-09-28T02:35:32.098374+00:00",
+   "timestamp": "2026-09-29T07:38:56.451902+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "0af6b451ac3c4b1b9264d633d8fc6f7b"
   },
   {
    "event_type": "graph.quality.assessed",
    "source": "graph",
    "message": "The report quality gates found no hard failure.",
-   "timestamp": "2026-09-28T02:35:32.101373+00:00",
+   "timestamp": "2026-09-29T07:38:56.456374+00:00",
    "metadata": {
     "iteration": 0,
     "hard_failures": [],
@@ -590,106 +644,115 @@
     ],
     "missing_required_target_ids": [],
     "uncited_settled_points": 0
-   }
+   },
+   "event_id": "1f793b5f21184376950420c017de4897"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer started.",
-   "timestamp": "2026-09-28T02:35:32.104880+00:00",
+   "timestamp": "2026-09-29T07:38:56.463397+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0
-   }
+   },
+   "event_id": "8e341e3c38674e5998e7ae52e1fbb5bc"
   },
   {
    "event_type": "graph.report.reviewed",
    "source": "graph.report_reviewer",
    "message": "The report was reviewed and scored.",
-   "timestamp": "2026-09-28T02:35:32.111273+00:00",
+   "timestamp": "2026-09-29T07:38:56.473941+00:00",
    "metadata": {
     "iteration": 0,
     "review_status": "scored",
     "mean_score": 0.9,
     "material_defects": 0,
     "reviewed_statements": 8,
-    "input_fingerprint": "024253d7bbb4",
+    "input_fingerprint": "85b9d8335649",
     "reused": false
-   }
+   },
+   "event_id": "d7735e2e0e064fa89cd430228ffdb904"
   },
   {
    "event_type": "graph.route.decided",
    "source": "graph",
    "message": "The Report Reviewer accepted the report and no gate failed; any required target with no verified finding is listed under Not found.",
-   "timestamp": "2026-09-28T02:35:32.111273+00:00",
+   "timestamp": "2026-09-29T07:38:56.473981+00:00",
    "metadata": {
     "destination": "finalize",
     "reason": "report_accepted",
     "iteration": 0,
     "max_extra_passes": 1,
     "missing_required_target_ids": []
-   }
+   },
+   "event_id": "d31b73f9ac5146f38b654b2e5b14ee57"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer completed.",
-   "timestamp": "2026-09-28T02:35:32.111273+00:00",
+   "timestamp": "2026-09-29T07:38:56.474001+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "fbfe38e2c44646099fc67a17dc902c4a"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.finalize_report",
    "message": "Node finalize_report started.",
-   "timestamp": "2026-09-28T02:35:32.115828+00:00",
+   "timestamp": "2026-09-29T07:38:56.486252+00:00",
    "metadata": {
     "node": "finalize_report",
     "iteration": 0
-   }
+   },
+   "event_id": "683bd40285784a6fbc725d41ce803157"
   },
   {
    "event_type": "graph.report.published",
    "source": "graph.finalize_report",
    "message": "The final report and its evidence ledger were published.",
-   "timestamp": "2026-09-28T02:35:32.130893+00:00",
+   "timestamp": "2026-09-29T07:38:56.500176+00:00",
    "metadata": {
     "quality_status": "accepted",
-    "report_path": "report-94666db4c1284f9084960ec2b1bfe83d-0.md",
-    "evidence_path": "report-94666db4c1284f9084960ec2b1bfe83d-0-evidence.md",
-    "quality_path": "report-94666db4c1284f9084960ec2b1bfe83d-0-quality.json",
+    "report_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0.md",
+    "evidence_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0-evidence.md",
+    "quality_path": "report-e794aa7f4a68439c971fd86ceb4f048c-0-quality.json",
     "document_writes": 3,
     "memory_writes": 4,
     "error_count": 0
-   }
+   },
+   "event_id": "b983766257544740bda501f4c9f1a349"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.finalize_report",
    "message": "Node finalize_report completed.",
-   "timestamp": "2026-09-28T02:35:32.130893+00:00",
+   "timestamp": "2026-09-29T07:38:56.500200+00:00",
    "metadata": {
     "node": "finalize_report",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
-   }
+   },
+   "event_id": "eaa01fd631df461abde96eea4188b777"
   },
   {
    "event_type": "graph.session.completed",
    "source": "graph",
    "message": "Research session finished with status completed.",
-   "timestamp": "2026-09-28T02:35:32.135175+00:00",
+   "timestamp": "2026-09-29T07:38:56.509279+00:00",
    "metadata": {
     "status": "completed",
     "iteration": 0,
     "error_count": 0,
     "has_report": true
-   }
+   },
+   "event_id": "c7bcef8e900a4a41b5c8291bc2eca591"
   }
  ]
 }

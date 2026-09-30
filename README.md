@@ -755,8 +755,10 @@ The `graph.route.decided` fragment is always the router's own enumerated reason
 ## FastAPI Interface
 
 The in-process API exposes one research start endpoint, a session list
-endpoint, and five session-scoped read endpoints (`status`, `stream`,
-`report`, `evidence`, `trace`), all served by a process-local `SessionStore`:
+endpoint, five session-scoped read endpoints (`status`, `stream`,
+`report`, `evidence`, `trace`), one session-scoped answers endpoint for the
+one-time check and one for the reader's notes, all served by a process-local
+`SessionStore`:
 
 | Method | Path | Response |
 | --- | --- | --- |
@@ -767,6 +769,8 @@ endpoint, and five session-scoped read endpoints (`status`, `stream`,
 | `GET` | `/research/{session_id}/report` | `200` `text/markdown` |
 | `GET` | `/research/{session_id}/evidence` | `200` JSON (the findings, their verification and sources, the not-found targets, the refused sentences); `?format=markdown` → the evidence log as `text/markdown` |
 | `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
+| `POST` | `/research/{session_id}/answers` | `202` `ResearchSessionResponse` (the one-time check's answers, below) |
+| `POST` | `/research/{session_id}/notes` | `202` `{"note_id": "n1", "status": "received"}` (a reader note, below) |
 
 Start a session:
 
@@ -791,6 +795,54 @@ The `202` response carries the session snapshot: `session_id`, `query`, `status`
 `incomplete`, or `failed`. Poll `status` or subscribe to the stream —
 nothing blocks on research work.
 
+**The one-time check** (live-briefs spec §4.4). Unless the request sets
+`"ask_clarifying_questions": false`, the session first asks the configured model,
+with thinking disabled and within `hitl.check_timeout_s` (20 s), whether the
+question leaves something material open. With no questions — the usual answer,
+and the answer to any failure or timeout — the run starts at once. With up to
+three, `status` reads `needs_input` and the stream carries
+`session.clarification.requested`: the questions, each with two to four options
+and a best guess, and a `deadline_at`. The answers are sent once:
+
+```bash
+curl -X POST http://localhost:8000/research/<session_id>/answers \
+  -H "Content-Type: application/json" \
+  -d '{"answers": [{"question_id": "q1", "choice": "Global"},
+                   {"question_id": "q2", "text": "since 2021"}], "skip": false}'
+```
+
+A question left out takes its best guess; with no answers at all the run starts on
+best guesses after `hitl.answer_wait_s` (60 s). Either way
+`session.clarification.answered` records the answers and why (`answered`,
+`skipped` or `timed_out`), `status` returns to `running`, and the planner plans
+within the answers.
+
+**Reader notes** (live-briefs spec §4.6). While a session is `running`, the reader
+may add up to ten notes — something to focus on, leave out or change:
+
+```bash
+curl -X POST http://localhost:8000/research/<session_id>/notes \
+  -H "Content-Type: application/json" \
+  -d '{"text": "More on fire-safety standards, please"}'
+```
+
+The note (1–500 characters, one line) is accepted at once as `session.note.received`
+(`{note_id, text}`), then read by the configured model, thinking disabled, within
+`hitl.note_interpret_timeout_s` (15 s): `session.note.interpreted` carries the run's
+reading (`{note_id, restatement, kinds, replaces, fallback}`). A reading that fails or
+times out keeps the note as written, as an emphasis, with `fallback: true`. Every step
+but evidence verification reads the notes (a later note replaces an earlier one it
+contradicts); a note the review finds no evidence for buys one targeted research pass,
+and a note the report ignores buys one redraft, neither spending the extra-pass budget
+or the writer's own re-run. Notes close once `finalize_report` has started: the run's
+published decision to publish (or to end) closes them (live-briefs Phase 3 plan,
+ambiguity 5). The status snapshot carries `notes` (each with its `text`, its
+`restatement` once read, and its `outcome`: `covered`, `not_found`, `not_addressed`
+when the report still does not follow the note after its one redraft, `replaced`, or
+`pending` while the run goes on or when no review judged it), `notes_remaining`,
+`note_passes`, and `clarification` (the one-time check's questions and the answers the
+run started with, or `null`).
+
 A finished session's snapshot also carries the outcome's own readings, added
 to the response without changing any existing field: `evidence_path` and
 `quality_path` (the other two files of the published set), the
@@ -811,25 +863,26 @@ JSON, preceded by its id and event type:
 ```text
 id: 1
 event: graph.node.started
-data: {"event_type":"graph.node.started","source":"graph.planner","message":"Node planner started.","timestamp":"...","metadata":{"node":"planner","iteration":0}}
+data: {"event_type":"graph.node.started","source":"graph.planner","message":"Node planner started.","timestamp":"...","metadata":{"node":"planner","iteration":0},"event_id":"bdb32a61e5d5408491933a6062d2e379"}
 
 ```
 
-A subscriber that connects late replays the session's retained events from
-id one, then follows live progress; the stream ends when the session
-reaches a terminal state. The report endpoint returns the authoritative
-Markdown body with `Content-Type: text/markdown` once the session is
-finished. The trace endpoint returns `session_id`, `trace_url`, and
-`metadata` carrying the `session_id`, the route template, and the current
-`status`.
+Every event carries its own `event_id`; the SSE `id:` line is the frame's
+position in this subscriber's replay. A subscriber that connects late replays
+the session's retained events from id one, then follows live progress; the
+stream ends when the session reaches a terminal state. The report endpoint
+returns the authoritative Markdown body with `Content-Type: text/markdown`
+once the session is finished. The trace endpoint returns `session_id`,
+`trace_url`, and `metadata` carrying the `session_id`, the route template, and
+the current `status`.
 
 Errors are structured and safe:
 
 | Status | Meaning |
 | --- | --- |
-| `422` | Invalid request body or override shape; the error body lists field locations and types only, never rejected values |
-| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence` and `/trace` |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`) |
+| `422` | Invalid request body or override shape, or answers that do not fit the session's questions (an unknown or repeated `question_id`, a `choice` that was not offered); the error body lists field locations and types only, never rejected values |
+| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers` and `/notes` |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
 
 Every response carries `X-Deep-Research-Mode: live` or `replay` (see *Run the app*).
@@ -862,7 +915,13 @@ Replay mode wraps the whole server in the e2e harness's `offline_credentials()` 
 a session costs nothing and finishes in seconds (`--replay-delay-ms` paces the stream so the
 running stage can be watched). A `POST /research` may name the case with the header
 `X-Replay-Case: <case id>` (the ids of `e2e_evaluation/replay_matrix.py`); the session
-records the case's own question. In replay mode the topbar shows a muted `replay mode` chip.
+records the case's own question. The one-time check asks nothing in replay mode unless the
+`POST /research` also carries `X-Replay-Clarify: on`; then it asks a fixed set of three
+questions (Region, Period, For), so the check can be exercised offline. A reader note is
+read in replay mode by a scripted interpreter that keeps it as written, as an emphasis;
+replay runs the graph at full speed and paces only the stream, so a note added while the
+running stage plays arrives after the engine has finished and ends `pending`. In replay mode the topbar
+shows a muted `replay mode` chip.
 Sessions are held in the API process's memory: the sidebar's list empties when the API
 restarts.
 

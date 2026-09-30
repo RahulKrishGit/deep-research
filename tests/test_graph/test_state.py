@@ -22,6 +22,8 @@ from deep_research.graph.state import (
     GRAPH_STATUSES,
     HALTING_ERROR_TYPES,
     NODE_NAMES,
+    NOTE_PASS_NODE,
+    NOTE_REDRAFT_STEPS,
     PLANNER_NODE,
     REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
@@ -30,6 +32,7 @@ from deep_research.graph.state import (
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
+    ROUTE_NOTE_PASS,
     ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     dump_state,
@@ -43,6 +46,7 @@ from deep_research.graph.state import (
 )
 from deep_research.utils.types import (
     LEGACY_QUALITY_CONTRACT_VERSION,
+    MAX_NOTES_PER_RUN,
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
@@ -52,12 +56,14 @@ from deep_research.utils.types import (
     ReportQualitySnapshot,
     ReportReview,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     ReviewDefect,
     SubTopic,
 )
 from tests.graph_fakes import (
     fake_quality,
+    fake_reader_note,
     fake_report_review,
     fake_research_state,
     fake_sub_topic,
@@ -591,7 +597,8 @@ def test_a_paused_run_cannot_buy_a_pass_it_cannot_pay_for() -> None:
 
 
 def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
-    """``graph_route`` has exactly the seven enumerated reasons (spec 6.3-6.5)."""
+    """``graph_route`` has exactly the nine enumerated reasons (spec 6.3-6.5, and
+    the reader notes' two of live-briefs spec §4.6)."""
     missing = fake_report_review(missing_required_target_ids=["t2"])
     rejected = fake_report_review(dimensions={d: 0.5 for d in REVIEW_DIMENSIONS})
     defective = fake_report_review(
@@ -618,6 +625,13 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
         fake_research_state(iteration=1, report_review=missing),
         fake_research_state(iteration=1, report_review=rejected),
         fake_research_state(quality=fake_quality(), report_review=defective),
+        fake_research_state(
+            reader_notes=[fake_reader_note(reviewed=True)],
+            report_review=fake_report_review(note_dispositions={"n1": "no_evidence"}),
+        ),
+        fake_research_state(
+            reader_notes=[fake_reader_note()], report_review=fake_report_review()
+        ),
     )
 
     reasons = {graph_route(state)[1] for state in states}
@@ -630,6 +644,8 @@ def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
         "extra_pass_requested",
         "extra_passes_exhausted",
         "redraft_requested",
+        "note_pass_requested",
+        "note_redraft_requested",
         "halted",
     }
     for reason in GRAPH_ROUTES:
@@ -672,6 +688,13 @@ def _reason_status(reason: str) -> str:
                     )
                 ]
             ),
+        ),
+        "note_pass_requested": fake_research_state(
+            reader_notes=[fake_reader_note(reviewed=True)],
+            report_review=fake_report_review(note_dispositions={"n1": "no_evidence"}),
+        ),
+        "note_redraft_requested": fake_research_state(
+            reader_notes=[fake_reader_note()], report_review=fake_report_review()
         ),
     }[reason]
     assert graph_route(state)[1] == reason
@@ -718,7 +741,11 @@ def test_the_status_vocabulary_is_closed() -> None:
 
 
 def test_the_recursion_limit_covers_every_planned_pass() -> None:
-    assert graph_recursion_limit(1) == 2 * len(NODE_NAMES) + 10
+    assert graph_recursion_limit(1) == (
+        2 * len(NODE_NAMES)
+        + MAX_NOTES_PER_RUN * (len(NODE_NAMES) + NOTE_REDRAFT_STEPS)
+        + 10
+    )
     assert graph_recursion_limit(3) > graph_recursion_limit(1)
     with pytest.raises(ValueError, match="max_extra_passes"):
         graph_recursion_limit(-1)
@@ -733,14 +760,16 @@ def test_the_node_names_are_unique_and_ordered() -> None:
         EVIDENCE_VERIFIER_NODE,
         REPORT_WRITER_NODE,
         REPORT_REVIEWER_NODE,
+        NOTE_PASS_NODE,
         EXTRA_PASS_NODE,
         REDRAFT_NODE,
         FINALIZE_NODE,
     )
-    # The two hops and the terminal publication are the last three: the
-    # extra-pass hop is the only node the loop back into the researcher passes
-    # through, the redraft hop is the only one that leads to the writer alone,
-    # and the finalizer is the only writer of the artifacts.
+    # The three hops and the terminal publication are the last four: the
+    # note-pass and extra-pass hops are the only nodes the loops back into the
+    # researcher pass through, the redraft hop is the only one that leads to
+    # the writer alone, and the finalizer is the only writer of the artifacts.
+    assert NODE_NAMES[-4] == NOTE_PASS_NODE == ROUTE_NOTE_PASS == "note_pass"
     assert NODE_NAMES[-3] == EXTRA_PASS_NODE == ROUTE_EXTRA_PASS == "extra_pass"
     assert NODE_NAMES[-2] == REDRAFT_NODE == "writer_redraft"
     assert ROUTE_REDRAFT == "redraft"
@@ -824,3 +853,29 @@ def test_an_extra_pass_runs_only_the_topics_that_own_a_missing_target() -> None:
     other = state.model_copy(update={"extra_pass_target_ids": ["topic-01-target-01"]})
 
     assert [topic.coverage_id for topic in select_sub_topics(other)] == ["topic-01"]
+
+
+def test_a_checkpoint_written_before_event_ids_loads_with_fresh_distinct_ids() -> None:
+    """live-briefs spec E1: an event recorded before ``event_id`` existed loads with a
+    fresh id, and that id then survives every later dump and load, so the
+    orchestrator's once-only rule holds across a resume."""
+    channel = initial_graph_state(session_id="session-1", question="Why?")
+    channel["state"]["events"] = [
+        ResearchEvent(
+            event_type="graph.node.started", source="graph.planner",
+            message="Node planner started.", metadata={"node": "planner", "iteration": 0},
+        ).model_dump(mode="json"),
+        ResearchEvent(
+            event_type="graph.node.completed", source="graph.planner",
+            message="Node planner completed.", metadata={"node": "planner", "iteration": 0},
+        ).model_dump(mode="json"),
+    ]
+    for event in channel["state"]["events"]:
+        del event["event_id"]
+
+    state = load_state(channel)
+    ids = [event.event_id for event in state.events]
+
+    assert all(len(event_id) == 32 for event_id in ids)
+    assert len(set(ids)) == 2
+    assert [event.event_id for event in load_state(dump_state(state)).events] == ids

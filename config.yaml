@@ -211,6 +211,13 @@ graph:
   max_extra_passes: 1
   checkpointing_enabled: false
 
+# The reader in the loop (live-briefs spec §4.4), in seconds. Request-scoped
+# config_overrides may set each value; no environment variable does.
+hitl:
+  check_timeout_s: 20            # the check call; failure or timeout = no questions
+  answer_wait_s: 60              # D6
+  note_interpret_timeout_s: 15   # Phase 3
+
 output:
   directory: output/
   default_format: markdown

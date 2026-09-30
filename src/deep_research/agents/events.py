@@ -39,3 +39,18 @@ def agent_event(
         message=message,
         metadata=dict(metadata or {}),
     )
+
+
+def publish_live(event: ResearchEvent) -> None:
+    """Publish one agent event live, through the run's sink, if one is bound.
+
+    live-briefs spec E3: the same object must also be returned in the agent's
+    ``state_update["events"]`` -- the orchestrator recognises it there by its
+    ``event_id`` and does not publish it twice. ``graph.live`` is imported at call
+    time: ``deep_research.graph`` imports every agent while its package
+    initialises, so a module-level import here would close an import cycle
+    whenever ``deep_research.agents`` is imported first.
+    """
+    from deep_research.graph import live  # noqa: PLC0415
+
+    live.publish_live(event)

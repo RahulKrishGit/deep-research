@@ -2,11 +2,13 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { ApiError, ApiUnreachableError, getStatus, streamUrl, type ResearchSessionResponse } from "@/lib/api";
-import { qFitClass, toSessionView, type SessionView } from "@/lib/format";
+import { checkPhase } from "@/lib/clarify";
+import { isLive, qFitClass, toSessionView, type SessionView } from "@/lib/format";
 import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
-import { applyEvent, marksFor, newRunState, toRunEvent, type RunState } from "@/lib/run-state";
+import { applyEvent, chipStep, marksFor, newRunState, stepLabel, toRunEvent, toggleOpen, type NodeId, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
+import { ClarifyStage } from "./ClarifyStage";
 import { useConsole } from "./ConsoleProvider";
 import { Counters } from "./Counters";
 import { FailedStage } from "./FailedStage";
@@ -18,7 +20,8 @@ import { Spine } from "./Spine";
 import { SubmittedStage } from "./SubmittedStage";
 
 /* The stage is derived from /status and the stream (spec §4.3 stage table):
-   404 → not in memory · running+finished_at → service stopped · running → Submitted (this tab, < 2.2 s) then Running ·
+   404 → not in memory · running+finished_at → service stopped · running or needs_input → Submitted (this tab, < 2.2 s),
+   then the one-time check while it asks and until the planner starts (live-briefs spec §4.5), then Running ·
    failed → Failed (Task 18) · other terminal → Report (Task 17). */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const router = useRouter();
@@ -28,11 +31,12 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   const [submission, setSubmission] = useState<Submission | null>(null);
   const [beat, setBeat] = useState(false);
   const [streaming, setStreaming] = useState(false);
-  const run = useRef<RunState>(newRunState(null));
-  const ceilingFromStream = useRef<number | null>(null);
+  const run = useRef<RunState>(newRunState());
   const wake = useRef<(() => void) | null>(null);
   const delaysRef = useRef(backoffDelaysMs());
   const [version, bump] = useReducer((n: number) => n + 1, 0);
+  // A done row reopened or closed by the reader (live-briefs spec §4.3): reader state on the run.
+  const toggleRow = useCallback((id: NodeId) => { toggleOpen(run.current, id); bump(); }, []);
 
   // Facts only this tab has (sessionStorage): read after mount so the server render never disagrees.
   useEffect(() => {
@@ -82,8 +86,6 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     return () => { cancelled = true; wake.current?.(); };
   }, [status, notFound, load]);
 
-  const ceiling = useCallback(() => ceilingFromStream.current ?? (submission ? submission.settings.extraPasses + 1 : null), [submission]);
-
   // The stream: opened for every known session (a finished one replays and closes); reconnect on
   // the ladder while the session is still running with no finished_at. K7: a service-stopped
   // session (running with finished_at set) also streams once — the server still replays its
@@ -95,6 +97,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     const controller = new AbortController();
     let cancelled = false;
     delaysRef.current = backoffDelaysMs();
+    let streamed = false; // this effect run (this session) has already opened the stream once
     const sleep = (ms: number) => new Promise<void>((resolve) => { const t = setTimeout(() => { wake.current = null; resolve(); }, ms); wake.current = () => { clearTimeout(t); wake.current = null; resolve(); }; });
     (async () => {
       while (!cancelled) {
@@ -105,9 +108,19 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
           // "Planning" pipeline the run never actually re-entered. I1: the ladder also resets here
           // (not only once at effect start), so a long-lived run's periodic ~300 s idle drop keeps
           // reconnecting after 1 s, never inheriting a stale 30 s cadence from an earlier gap.
-          onOpen: (mode) => { noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs(); run.current = newRunState(ceiling()); bump(); setStreaming(true); },
+          // Live-briefs final review M2: the rows the reader reopened are reader state, not stream
+          // state, so they ride across the reset (only on a reconnect of this same session). A row
+          // that is not finished never renders open, and a loop's re-arm during the replay drops the
+          // rows it re-arms, exactly as it did the first time.
+          onOpen: (mode) => {
+            noteMode(mode); clearUnreachable("session"); delaysRef.current = backoffDelaysMs();
+            const reopened = streamed ? run.current.open : new Set<NodeId>();
+            streamed = true;
+            run.current = newRunState();
+            run.current.open = reopened;
+            bump(); setStreaming(true);
+          },
           onEvent: (event) => {
-            if (event.event_type === "graph.session.started" && typeof event.metadata.max_extra_passes === "number") ceilingFromStream.current = (event.metadata.max_extra_passes as number) + 1;
             applyEvent(run.current, toRunEvent(event));
             bump();
           },
@@ -117,7 +130,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
         // idea of the run — otherwise a one-round-trip window shows the `/status` fetched at mount.
         const latest = await load();
         setStreaming(false);
-        if (latest && (latest.status !== "running" || latest.finished_at !== null)) {
+        if (latest && (!isLive(latest.status) || latest.finished_at !== null)) {
           // Final-wave item 2: the sidebar only polls every 5 s while some session is running;
           // refresh it the moment this tab proves the run it's watching just finished, so the
           // running ring doesn't linger on a stopped run for the rest of that window.
@@ -137,12 +150,19 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   // can leave a stale "running" `status` on screen while the ladder's next /status lands a 404 —
   // `notFound` must blank the chip too, or the not-in-memory page keeps showing "Running · pass…"
   // over a session the page itself just said isn't in memory.
-  const passes = ceiling();
-  const stopped = status !== null && status.status === "running" && status.finished_at !== null;
-  const view: SessionView | null = status ? toSessionView(status, passes) : null;
-  // M4: the known ceiling, never run.current.maxPasses (which defaults to 1 before the ceiling is known).
-  if (view && status?.status === "running" && streaming) { view.iteration = run.current.pass - 1; view.passes = passes; }
-  useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, passes, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
+  // live-briefs spec §4.4: a session waiting for the reader (needs_input) is as live as a running one.
+  const live = status !== null && isLive(status.status);
+  const stopped = live && status.finished_at !== null;
+  // live-briefs spec §4.5: "asking" while the check waits for the reader, "starting" from its answers
+  // until the planner starts, null otherwise (lib/clarify.ts checkPhase).
+  const phase = live ? checkPhase(run.current, status.status) : null;
+  // live-briefs spec §4.2: "Running · {active step label}" — the stream's active row while it is
+  // open (chipStep), the status snapshot's current_agent otherwise; no pass number anywhere. While
+  // the check asks, the chip reads "Waiting for you · a few quick questions": the stream is newer
+  // than the last /status, so the phase, not the snapshot, picks the chip's status.
+  const step = live && phase !== "asking" ? stepLabel((streaming ? chipStep(run.current) : null) ?? status.current_agent) : null;
+  const view: SessionView | null = status ? toSessionView(live ? { ...status, status: phase === "asking" ? "needs_input" : "running" } : status, step) : null;
+  useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Review fix round 1 (Important #1): a pending idle→running flight is only ever consumed by
   // SubmittedStage. Every other resolution — not found, a stopped/failed/finished session, or the
@@ -152,7 +172,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     if (notFound) { clearIdleToRunningFlight(); return; }
     if (!status) return; // still loading: give the pending flight a chance to reach SubmittedStage
     if (stopped) { clearIdleToRunningFlight(); return; }
-    if (status.status === "running" && beat) return; // this is the SubmittedStage branch
+    if (live && beat) return; // this is the SubmittedStage branch
     clearIdleToRunningFlight();
   }, [notFound, status, stopped, beat]);
   // Abandoning this page (a sidebar click, New Research) mid-flight must not leave the box
@@ -173,14 +193,16 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
 
   if (notFound) return <SessionNotFound onNew={() => router.push("/")} />;
   if (!status) return <section className="stage is-on" id="stage-loading"><div className="run-wrap"><p className="avail">loading session</p></div></section>;
-  const strip = <SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="runningOpts" />;
+  const strip = <SettingsStrip settings={submission?.settings ?? null} id="runningOpts" />;
   if (stopped) return <StoppedStage status={status} run={run.current} strip={strip} onNew={() => router.push("/")} />;
-  if (status.status === "running") {
+  if (live) {
     if (beat) return <SubmittedStage sessionId={sessionId} question={status.query} strip={strip} />;
-    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} ceiling={passes} />;
+    // live-briefs spec §4.5: the check takes the pipeline card's place until the planner starts.
+    if (phase !== null) return <ClarifyStage sessionId={sessionId} run={run.current} phase={phase} question={status.query} strip={strip} />;
+    return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} onToggleRow={toggleRow} notesRemaining={status.notes_remaining} />;
   }
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
-  return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} ceiling={passes} id="reportOpts" />} passes={passes} />;
+  return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} id="reportOpts" />} />;
 }
 
 /* S4: the service stopped while the run was in progress (running + finished_at). K7: the pipeline

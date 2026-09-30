@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
     MAX_PLAN_REVIEW_CALLS,
@@ -36,6 +37,7 @@ from deep_research.agents.planner import (
     inventory_target_ids,
     plan_messages,
     plan_review_messages,
+    planning_completed_event,
     stale_year_anchors,
     target_problems,
     validate_plan_draft,
@@ -43,6 +45,7 @@ from deep_research.agents.planner import (
 from deep_research.agents.prompts import AgentTask, STRUCTURED_REQUEST_END
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.cli import render_warnings
+from deep_research.graph.live import bind_live_sink
 from deep_research.graph.state import HALTING_ERROR_TYPES, is_halted
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
@@ -62,6 +65,7 @@ from deep_research.utils.types import (
     Finding,
     MemorySnapshot,
     ResearchError,
+    ResearchEvent,
     ResearchState,
     SubTopic,
     merge_research_state,
@@ -5292,3 +5296,53 @@ async def test_a_retry_that_fails_validation_keeps_its_diagnostics_as_a_redacted
         for problem in caught.value.problems
     )
     assert completer.efforts == [None, "high"]
+
+
+@pytest.mark.asyncio
+async def test_the_planner_publishes_its_events_live_and_lists_the_planned_titles(
+    tracker: Tracker,
+) -> None:
+    """live-briefs spec E3 and AC2: the three planner events are published live as the
+    objects the run returns, and planning.completed lists every planned sub-topic's
+    coverage id and title, in plan order."""
+    completer = ScriptedCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_plan("Cryptography", "Hardware timelines", "Mitigations"), _review()],
+    )
+    agent = _planner(tracker, completer)
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "q"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(_state())
+
+    events = outcome.state_update["events"]
+    assert [event.event_id for event in received] == [event.event_id for event in events]
+    assert events[2].metadata["sub_topics"] == [
+        {"coverage_id": s.coverage_id, "title": s.title} for s in outcome.result.sub_topics
+    ]
+    assert [s["title"] for s in events[2].metadata["sub_topics"]] == [
+        "Cryptography", "Hardware timelines", "Mitigations",
+    ]
+
+
+def test_planning_completed_caps_each_title_at_160_characters() -> None:
+    plan = ResearchPlan(
+        sub_topics=[
+            SubTopic(
+                coverage_id="topic-01", title="Battery " * 40, rationale="r",
+                search_queries=["q"], success_criteria=["c"], priority=1,
+            )
+        ]
+    )
+    outcome = AgentRun(
+        agent_name="planner", result=plan,
+        react=ReActRun(agent_name="planner", stop_reason="finished"),
+        errors=[], state_update={},
+    )
+
+    [entry] = planning_completed_event(outcome).metadata["sub_topics"]
+
+    assert entry["coverage_id"] == "topic-01"
+    assert len(entry["title"]) <= 160
+    assert entry["title"].endswith("...")

@@ -35,7 +35,7 @@ from deep_research.agents.errors import (
     agent_error,
     agent_provider_failure_details,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import (
     _issuer_name_pattern,
     _quote_states,
@@ -54,6 +54,13 @@ from deep_research.agents.prompts import (
     render_structured_request,
 )
 from deep_research.agents.react import run_react_loop
+from deep_research.agents.reader_notes import (
+    EXTRACTION_NOTES,
+    RESEARCH_NOTES,
+    live_reader_notes,
+    render_reader_notes,
+    research_reader_notes,
+)
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import (
     ReActDecision,
@@ -1484,8 +1491,16 @@ def extraction_messages(
     disputed_statements: Sequence[Finding] = (),
     question: str | None = None,
     coverage_titles: Mapping[str, str] | None = None,
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
+
+    ``reader_notes`` is the rendered reader-notes block (live-briefs spec
+    §4.6), printed as ``# Reader notes`` so extraction respects a note's
+    scope; an empty block adds nothing. It is the last section, after the
+    retrieved evidence: no reader text then comes before the evidence's own
+    ``- target_id=`` line, which the replay harness reads as the first match
+    (``e2e_evaluation/replay.py``).
 
     ``planned_targets`` is the run's whole counted target inventory, not the
     active sub-topic's share of it. The read being mined was fetched for one
@@ -1728,6 +1743,8 @@ def extraction_messages(
             )
         )
     )
+    if reader_notes:
+        sections.append(f"# Reader notes\n{reader_notes}")
     static = [
         f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}"
         f"{_FINDING_PROVENANCE_CONTRACT}",
@@ -2576,16 +2593,45 @@ def sub_topic_started_event(
     index: int,
     existing_sources: int,
 ) -> ResearchEvent:
-    """Announce that one sub-topic's loop is about to run."""
+    """Announce that one sub-topic's loop is about to run.
+
+    ``coverage_id`` lets a console match the topic to the plan's own list
+    (live-briefs spec E3).
+    """
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.sub_topic.started",
         message=f"Researching sub-topic {index}.",
         metadata={
             "sub_topic": summarize_text(sub_topic.title),
+            "coverage_id": sub_topic.coverage_id,
             "priority": sub_topic.priority,
             "index": index,
             "existing_sources": existing_sources,
+        },
+    )
+
+
+def tool_call_event(sub_topic: SubTopic, step: ReActStep) -> ResearchEvent | None:
+    """Report one tool call the sub-topic's loop made, or ``None`` for a step without one.
+
+    Built when the step's observation is recorded (live-briefs spec E3), so the
+    event is stamped at the call rather than when the sub-topic's loop ends.
+    """
+    observation = step.observation
+    if observation is None:
+        return None
+    return agent_event(
+        agent_name=RESEARCHER_NAME,
+        event_type="researcher.tool_call",
+        message=f"{observation.tool_name} call completed.",
+        metadata={
+            "sub_topic": summarize_text(sub_topic.title),
+            "tool": observation.tool_name,
+            "proposal_id": step.proposal_id,
+            "iteration": step.iteration,
+            "success": observation.success,
+            "error_type": observation.error_type,
         },
     )
 
@@ -2595,27 +2641,11 @@ def tool_call_events(
     run: ReActRun,
 ) -> list[ResearchEvent]:
     """Report one event per tool call the sub-topic's loop made."""
-    events: list[ResearchEvent] = []
-    for step in run.steps:
-        observation = step.observation
-        if observation is None:
-            continue
-        events.append(
-            agent_event(
-                agent_name=RESEARCHER_NAME,
-                event_type="researcher.tool_call",
-                message=f"{observation.tool_name} call completed.",
-                metadata={
-                    "sub_topic": summarize_text(sub_topic.title),
-                    "tool": observation.tool_name,
-                    "proposal_id": step.proposal_id,
-                    "iteration": step.iteration,
-                    "success": observation.success,
-                    "error_type": observation.error_type,
-                },
-            )
-        )
-    return events
+    return [
+        event
+        for step in run.steps
+        if (event := tool_call_event(sub_topic, step)) is not None
+    ]
 
 
 def sub_topic_completed_event(
@@ -2666,6 +2696,7 @@ def sub_topic_completed_event(
         message=f"Sub-topic {index} complete.",
         metadata={
             "sub_topic": summarize_text(sub_topic.title),
+            "coverage_id": sub_topic.coverage_id,
             "index": index,
             "stop_reason": run.stop_reason,
             "iterations": run.iterations,
@@ -2925,6 +2956,9 @@ class _LoopWithExtraction(NamedTuple):
     extraction_tasks: dict[str, "asyncio.Task[_PageExtraction]"]
     admitted_read_order: list[str]
     extraction_gate: asyncio.Semaphore
+    tool_calls: list[ResearchEvent]
+    """The loop's ``researcher.tool_call`` events, in step order, each built and
+    published live as its step was recorded (live-briefs spec E3)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -3153,6 +3187,23 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             guidance=render_session_guidance(state),
         )
 
+    def _reader_notes_block(self, instruction: str) -> str:
+        """The reader's notes a request built now carries, or ``""`` (live-briefs spec §4.6).
+
+        The notes this pass was handed plus any that arrived since, from the
+        run's board, less ``new_angle`` notes: those wait for the review's
+        note pass rather than steering a loop already running.
+        """
+        state_notes = (
+            self._run_source_state.reader_notes
+            if self._run_source_state is not None
+            else ()
+        )
+        return render_reader_notes(
+            research_reader_notes(live_reader_notes(state_notes)),
+            instruction=instruction,
+        )
+
     def _planned_targets(self) -> list[EvidenceTarget]:
         """Every target this pass's extraction may bind a finding to.
 
@@ -3359,6 +3410,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         planned_targets=planned_targets,
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -3494,6 +3546,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         disputed_statements=dissent_statements or (),
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -3828,6 +3881,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         planned_targets=planned_targets,
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -4365,18 +4419,31 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             iteration: int,
             steps: Sequence[ReActStep],
         ) -> tuple[ReActDecision, ...]:
+            # live-briefs spec §4.6: before each model call the loop reads the
+            # run's board, so a note that arrived since its last turn steers
+            # this one, under its own ``## Reader notes`` heading.
+            context = policy.context(
+                limit=self._decision_context_chars, for_decision=True
+            )
+            notes = self._reader_notes_block(RESEARCH_NOTES)
             return await self._complete_react_decision(
                 task,
                 iteration=iteration,
                 steps=steps,
-                decision_context=policy.context(
-                    limit=self._decision_context_chars, for_decision=True
+                decision_context=(
+                    f"{context}\n\n## Reader notes\n{notes}" if notes else context
                 ),
                 scratchpad=scratchpad,
             )
 
+        tool_calls: list[ResearchEvent] = []
+
         async def record(step: ReActStep) -> None:
             await self._record_step(step, scratchpad=scratchpad)
+            event = tool_call_event(task.sub_topic, step)
+            if event is not None:
+                publish_live(event)
+                tool_calls.append(event)
 
         try:
             react = await run_react_loop(
@@ -4410,6 +4477,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             extraction_tasks=extraction_tasks,
             admitted_read_order=admitted_read_order,
             extraction_gate=extraction_gate,
+            tool_calls=tool_calls,
         )
 
     async def _research_one(
@@ -4421,16 +4489,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Run one sub-topic's loop and extraction inside its own agent span.
 
         Nothing here writes to the agent: the loop's findings, errors, events
-        and counters are returned for ``run`` to fold in plan order.
+        and counters are returned for ``run`` to fold in plan order. The topic's
+        events are also published live as they happen (live-briefs spec E3): the
+        started event as the loop begins, each tool call as its step is
+        recorded, the completed event once extraction settles -- the very
+        objects this outcome returns.
         """
         sub_topic = task.sub_topic
-        events = [
-            sub_topic_started_event(
-                sub_topic,
-                index=index,
-                existing_sources=len(task.existing_sources),
-            )
-        ]
+        started = sub_topic_started_event(
+            sub_topic,
+            index=index,
+            existing_sources=len(task.existing_sources),
+        )
+        publish_live(started)
+        events = [started]
         scratchpad = ScratchpadMemory(
             session_id=self._scratchpad.session_id,
             agent_name=self._scratchpad.agent_name,
@@ -4452,6 +4524,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     task, policy, scratchpad, tool_lock
                 )
                 react = loop_result.react
+                tool_calls = loop_result.tool_calls
                 elapsed_s = round(perf_counter() - started_at, 1)
                 (
                     sub_findings,
@@ -4533,27 +4606,27 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # Reported after the loop's own errors and before the completed
             # event, exactly where the sequential fold reported it.
             errors.append(no_findings_error(sub_topic, react))
-        events.extend(tool_call_events(sub_topic, react))
-        events.append(
-            sub_topic_completed_event(
-                sub_topic,
-                react,
-                index=index,
-                findings=len(bounded.retained),
-                dropped_duplicate=bounded.dropped_duplicate,
-                dropped_cap=bounded.dropped_cap,
-                sources_retained=bounded.sources_retained,
-                publishers_retained=bounded.publishers_retained,
-                source_urls_retained=bounded.source_urls_retained,
-                findings_retained=bounded.findings_retained,
-                works_retained=bounded.works_retained,
-                successful_reads=successful_reads,
-                useful_evidence_yield=useful_evidence_yield,
-                acquired_work_count=acquired_work_count,
-                target_obligation_completed=target_obligation_completed,
-                elapsed_s=elapsed_s,
-            )
+        events.extend(tool_calls)
+        completed = sub_topic_completed_event(
+            sub_topic,
+            react,
+            index=index,
+            findings=len(bounded.retained),
+            dropped_duplicate=bounded.dropped_duplicate,
+            dropped_cap=bounded.dropped_cap,
+            sources_retained=bounded.sources_retained,
+            publishers_retained=bounded.publishers_retained,
+            source_urls_retained=bounded.source_urls_retained,
+            findings_retained=bounded.findings_retained,
+            works_retained=bounded.works_retained,
+            successful_reads=successful_reads,
+            useful_evidence_yield=useful_evidence_yield,
+            acquired_work_count=acquired_work_count,
+            target_obligation_completed=target_obligation_completed,
+            elapsed_s=elapsed_s,
         )
+        publish_live(completed)
+        events.append(completed)
         return _SubTopicOutcome(
             react=react,
             findings=bounded.retained,

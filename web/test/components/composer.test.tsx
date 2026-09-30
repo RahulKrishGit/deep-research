@@ -9,13 +9,41 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Composer", () => {
-  it("builds the request the design specifies", () => {
-    expect(buildRequest("  q  ", DEFAULT_SETTINGS)).toEqual({
-      query: "q", max_iterations: 1, output_format: "markdown",
+  it("builds the request the design specifies, with no max_iterations (live-briefs spec §4.2, AC8)", () => {
+    const body = buildRequest("  q  ", DEFAULT_SETTINGS);
+    expect(body).toEqual({
+      query: "q", output_format: "markdown",
       config_overrides: { llm: { model: "deepseek-flash", thinking_mode: "enabled" }, output: { directory: "output/" } },
+      ask_clarifying_questions: true,
     });
-    expect(buildRequest("q", { ...DEFAULT_SETTINGS, extraPasses: 0, outputDir: "" }).max_iterations).toBe(0);
+    expect(buildRequest("q", { ...DEFAULT_SETTINGS, askWhenUnclear: false }).ask_clarifying_questions).toBe(false);
+    expect("max_iterations" in body).toBe(false);
     expect(buildRequest("q", { ...DEFAULT_SETTINGS, outputDir: "" }).config_overrides).toEqual({ llm: { model: "deepseek-flash", thinking_mode: "enabled" } });
+  });
+  it("offers no extra-passes control: no pill and no stepper in the popover (AC8)", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    const { container } = render(<ConsoleProvider><Composer /></ConsoleProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
+    expect(container.querySelector("#pillExtra")).toBeNull();
+    expect(document.querySelector("#stepExtra")).toBeNull();
+    expect(document.querySelector("#settingsPop")!.textContent).not.toMatch(/extra pass/i);
+  });
+  it("offers 'Ask me when the question is unclear' as On/Off, on by default, and sends the choice (live-briefs spec D16)", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      init?.method === "POST" ? json(422, { error: { code: "validation_error", message: "Request validation failed.", reason: null, issues: [] } }) : json(200, { sessions: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<ConsoleProvider><Composer /></ConsoleProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
+    expect(document.getElementById("lblAsk")!.textContent).toBe("Ask me when the question is unclear");
+    const seg = () => [...document.querySelectorAll("#segAsk button")];
+    expect(seg().map((b) => [b.textContent, b.getAttribute("data-ask"), b.getAttribute("aria-pressed")])).toEqual([["On", "on", "true"], ["Off", "off", "false"]]);
+    fireEvent.click(seg()[1]);
+    expect(seg().map((b) => b.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+    fireEvent.change(screen.getByLabelText("Research question"), { target: { value: "q" } });
+    fireEvent.submit(screen.getByLabelText("Research question").closest("form")!);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1));
+    const [, init] = fetchMock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).ask_clarifying_questions).toBe(false);
   });
   it("shows the 422 issues under the box, keeps the question and posts exactly once", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -34,14 +34,19 @@ from deep_research.agents.errors import (
     agent_provider_failure_details,
     planning_provider_error,
 )
-from deep_research.agents.events import agent_event
+from deep_research.agents.events import agent_event, publish_live
+from deep_research.agents.reader_notes import (
+    PLANNING_NOTES,
+    live_reader_notes,
+    render_reader_notes,
+)
 from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.steps import ReActRun, summarize_text
+from deep_research.agents.steps import ReActRun, ReActStep, summarize_text
 from deep_research.agents.toolset import AgentToolset
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -63,6 +68,8 @@ from deep_research.utils.types import (
     EvidenceTarget,
     FigureKind,
     MemorySnapshot,
+    ReaderAnswer,
+    ReaderNote,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -1298,6 +1305,7 @@ def derive_answer_contract(
     question: str,
     now: datetime,
     requested_word_limit: int | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
 ) -> AnswerContract:
     """Freeze the question, its scope, its as-of date, and its answer form.
 
@@ -1323,6 +1331,12 @@ def derive_answer_contract(
     2026-09-16, not as of 2026-12-31. Freezing a future date into the contract
     would put a date nobody has lived through into every target's binding
     obligation — the very defect class this contract exists to remove.
+
+    ``reader_answers`` are the reader's answers to the one-time check
+    (live-briefs spec §4.4), applied after the question's own reading: a
+    ``geography`` answer sets the scope, a ``period`` answer sets the evidence
+    period, and every answer adds one assumption line. With none, the contract
+    is exactly the one the question alone yields.
     """
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError(
@@ -1372,6 +1386,9 @@ def derive_answer_contract(
         future_years=future_years,
         asks_for_currency=asks_for_currency,
     )
+    scope, period, assumptions = _with_reader_answers(
+        scope, period, assumptions, reader_answers
+    )
     scope_statement = (
         f"{question.strip()} — answered for {scope} as of {as_of_date}, as a "
         f"{kind} answer; evidence period: {period}."
@@ -1385,6 +1402,37 @@ def derive_answer_contract(
         assumptions=assumptions,
         answer_kind=kind,
         requested_word_limit=limit,
+    )
+
+
+def _with_reader_answers(
+    scope: str,
+    period: str,
+    assumptions: list[str],
+    reader_answers: Sequence[ReaderAnswer],
+) -> tuple[str, str, list[str]]:
+    """Apply the reader's answers to the question's own scope, period and assumptions.
+
+    The last ``geography`` answer becomes the scope, and the "names no
+    geography" assumption goes with the unspecified scope it explained; the
+    last ``period`` answer becomes the evidence period. Every answer adds
+    ``Reader said: {short} = {value}``, or ``Assumed (best guess): {short} =
+    {value}`` for one the reader did not give (live-briefs spec §4.4).
+    """
+    geography = [a.value for a in reader_answers if a.dimension == "geography"]
+    periods = [a.value for a in reader_answers if a.dimension == "period"]
+    # ``geographic_scope_for`` returns an assumption only for an unspecified
+    # scope, and it explains exactly that scope.
+    lines = [] if geography and scope == "unspecified" else list(assumptions)
+    lines += [
+        f"{'Assumed (best guess)' if a.source == 'best_guess' else 'Reader said'}: "
+        f"{a.short} = {a.value}"
+        for a in reader_answers
+    ]
+    return (
+        geography[-1] if geography else scope,
+        periods[-1] if periods else period,
+        lines,
     )
 
 
@@ -2634,6 +2682,28 @@ def render_answer_contract(contract: AnswerContract) -> str:
     )
 
 
+def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
+    """Print the reader's answers to the one-time check (live-briefs spec §4.4).
+
+    One line per question, saying whether the reader gave the answer or the
+    check assumed it. Rendered only when there are answers, so a request
+    without them is byte-identical to one built before the check existed.
+    """
+    lines = [
+        "Before planning, the reader answered a short check about what the "
+        "question leaves open. Plan within these answers: a narrowing the "
+        "reader asked for is not a missing part of the question."
+    ]
+    for answer in reader_answers:
+        said = (
+            "a best guess; the reader did not answer"
+            if answer.source == "best_guess"
+            else "the reader's answer"
+        )
+        lines.append(f"- {answer.text} {answer.value} ({said})")
+    return "\n".join(lines)
+
+
 def plan_messages(
     task: AgentTask,
     run: ReActRun,
@@ -2641,6 +2711,8 @@ def plan_messages(
     contract: AnswerContract | None = None,
     repair: str | None = None,
     plan_under_repair: Sequence[SubTopic] = (),
+    reader_answers: Sequence[ReaderAnswer] = (),
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft.
 
@@ -2651,6 +2723,10 @@ def plan_messages(
     ``contract`` is the frozen answer contract. The planner always passes
     one; a caller that omits it gets the plan requirements without a frozen
     scope, which is what a replay of an older prompt looks like.
+    ``reader_answers`` add a ``# Reader answers`` section after the contract,
+    only when there are any (live-briefs spec §4.4). ``reader_notes`` is the
+    rendered ``# Reader notes`` block (``agents.reader_notes``), added after
+    them only when it is not empty (live-briefs spec §4.6).
     """
     static = [
         f"# Plan requirements\n{PLAN_INSTRUCTION}",
@@ -2659,6 +2735,10 @@ def plan_messages(
     material = [f"# Research question\n{task.instruction}"]
     if contract is not None:
         material.append(f"# Answer contract\n{render_answer_contract(contract)}")
+    if reader_answers:
+        material.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
+    if reader_notes:
+        material.append(f"# Reader notes\n{reader_notes}")
     if task.guidance.strip():
         material.append(f"# Context\n{task.guidance}")
     material.append(f"# Scoping notes\n{_render_notes(run)}")
@@ -2777,11 +2857,26 @@ def plan_review_messages(
     sub_topics: Sequence[SubTopic],
     *,
     repair: str | None = None,
+    reader_answers: Sequence[ReaderAnswer] = (),
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
-    """Build the one tool-free request that reviews a plan's meaning."""
+    """Build the one tool-free request that reviews a plan's meaning.
+
+    ``reader_answers`` add the same ``# Reader answers`` section the plan
+    request carries, only when there are any, so the review does not flag a
+    narrowing the reader asked for as a missing dimension (spec §4.4).
+    ``reader_notes`` adds the plan request's ``# Reader notes`` block after
+    them, for the same reason, only when it is not empty (spec §4.6).
+    """
     sections = [
         f"# Original question (frozen)\n{contract.question}",
         f"# Answer contract\n{render_answer_contract(contract)}",
+    ]
+    if reader_answers:
+        sections.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
+    if reader_notes:
+        sections.append(f"# Reader notes\n{reader_notes}")
+    sections += [
         f"# Plan under review\n{render_plan_for_review(sub_topics)}",
         f"# Review requirements\n{PLAN_REVIEW_INSTRUCTION}",
     ]
@@ -2824,7 +2919,12 @@ def memory_recalled_event(memory_context: MemorySnapshot) -> ResearchEvent:
 
 
 def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent:
-    """Report the finished plan's size and how the scoping loop stopped."""
+    """Report the finished plan's size, its sub-topics and how the scoping loop stopped.
+
+    ``sub_topics`` lists each planned sub-topic's ``coverage_id`` and title, the
+    title capped at 160 characters (live-briefs spec AC2): plan content a console
+    shows the reader, never provider error text (``agents/events.py``).
+    """
     plan = outcome.result
     return agent_event(
         agent_name=PLANNER_NAME,
@@ -2832,6 +2932,15 @@ def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent
         message="Planning complete.",
         metadata={
             "sub_topic_count": 0 if plan is None else len(plan.sub_topics),
+            "sub_topics": []
+            if plan is None
+            else [
+                {
+                    "coverage_id": sub_topic.coverage_id,
+                    "title": summarize_text(sub_topic.title, limit=160),
+                }
+                for sub_topic in plan.sub_topics
+            ],
             "repair_attempted": False if plan is None else plan.repair_attempted,
             "stop_reason": outcome.react.stop_reason,
             "iterations": outcome.react.iterations,
@@ -3037,6 +3146,13 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         # handed: the contract this session already froze, if any.
         self._frozen_contract: AnswerContract | None = None
         # Set for the duration of one run by ``run`` from the state it was
+        # handed: the reader's answers to the one-time check, if any.
+        self._reader_answers: tuple[ReaderAnswer, ...] = ()
+        # Set for the duration of one run by ``run`` from the state it was
+        # handed: the reader's notes received before planning started. Notes
+        # that arrive while the planner runs are read from the run's board.
+        self._reader_notes: tuple[ReaderNote, ...] = ()
+        # Set for the duration of one run by ``run`` from the state it was
         # handed: the coverage ids this session already planned, so a later
         # non-extension pass cannot re-emit one beside itself.
         self._planned_coverage_ids: frozenset[str] = frozenset()
@@ -3063,6 +3179,32 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             instruction=state.original_question,
             guidance=planner_guidance(state.memory_context),
         )
+
+    def reader_notes_block(self) -> str:
+        """The ``# Reader notes`` block as of now, or ``""`` (live-briefs spec §4.6).
+
+        The notes the run was handed plus any that arrived since, from the
+        run's board, so a note sent while the planner scopes the question
+        reaches the plan it is about to draft.
+        """
+        return render_reader_notes(
+            live_reader_notes(self._reader_notes), instruction=PLANNING_NOTES
+        )
+
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        """The scoping loop's per-turn context: the reader's notes, when there are any.
+
+        Empty without notes, so the scoping turn's request is exactly what it
+        was before notes existed (live-briefs spec §4.6).
+        """
+        del task, iteration, steps
+        return self.reader_notes_block()
 
     @property
     def frozen_contract(self) -> AnswerContract | None:
@@ -3104,6 +3246,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             else None
         )
         self._frozen_contract = state.answer_contract
+        self._reader_answers = tuple(state.reader_answers)
+        self._reader_notes = tuple(state.reader_notes)
         self._planned_coverage_ids = frozenset(
             sub_topic.coverage_id for sub_topic in state.sub_topics
         )
@@ -3112,13 +3256,18 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
+        # Published live (live-briefs spec E3); the same objects are returned below.
+        for event in events:
+            publish_live(event)
         try:
             outcome = await super().run(state)
         except ProviderError as error:
             raise planning_provider_error("react_decision") from error
         finally:
             self._restricted_toolset = None
-        events.append(planning_completed_event(outcome))
+        completed = planning_completed_event(outcome)
+        publish_live(completed)
+        events.append(completed)
         return AgentRun(
             agent_name=outcome.agent_name,
             result=outcome.result,
@@ -3136,7 +3285,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         later planning pass cannot re-anchor the as-of date, widen the scope,
         or fill a field the frozen question never asked for.
         """
-        derived = derive_answer_contract(question=question, now=self._clock())
+        derived = derive_answer_contract(
+            question=question,
+            now=self._clock(),
+            reader_answers=self._reader_answers,
+        )
         if self._frozen_contract is None:
             return derived
         return frozen_contract_for(self._frozen_contract, derived)
@@ -3159,6 +3312,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     contract=contract,
                     repair=repair,
                     plan_under_repair=plan_under_repair,
+                    reader_answers=self._reader_answers,
+                    reader_notes=self.reader_notes_block(),
                 ),
                 ResearchPlanDraft,
                 operation="plan_draft",
@@ -3241,7 +3396,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         try:
             return await self._complete_plan_request(
                 plan_review_messages(
-                    contract, sub_topics, repair=already_requested
+                    contract,
+                    sub_topics,
+                    repair=already_requested,
+                    reader_answers=self._reader_answers,
+                    reader_notes=self.reader_notes_block(),
                 ),
                 PlanReviewDraft,
                 operation="plan_review",
