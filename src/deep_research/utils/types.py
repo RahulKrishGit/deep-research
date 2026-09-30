@@ -17,8 +17,11 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_validator,
     model_validator,
 )
+
+from deep_research.utils.text import collapse_whitespace
 
 
 def _validate_aware_iso8601(value: str) -> str:
@@ -1159,6 +1162,13 @@ class ReaderNoteScope(ContractModel):
     geography: str | None = Field(default=None, min_length=1, max_length=120)
     period: str | None = Field(default=None, min_length=1, max_length=120)
 
+    @field_validator("geography", "period", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        """A note's scope becomes its own sub-topic's target (``note_sub_topic``), so
+        it is one single-spaced line, whatever produced it."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
 
 class ReaderNote(ContractModel):
     """One interpreted reader note (live-briefs spec §4.6).
@@ -1183,6 +1193,25 @@ class ReaderNote(ContractModel):
     reviewed: bool = False
     passed: bool = False
     redrafted: bool = False
+
+    @field_validator("restatement", mode="before")
+    @classmethod
+    def restatement_is_one_line(cls, value: object) -> object:
+        """Every agent's request prints the restatement as one ``- `` line (the shared
+        renderer), so a newline followed by ``# ...`` must never open a section of its
+        own: collapsed here, every producer is covered, not only the interpreter."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+    @field_validator("new_questions", mode="before")
+    @classmethod
+    def new_questions_are_one_line(cls, value: object) -> object:
+        """The questions become a note sub-topic's queries and targets (``note_sub_topic``)."""
+        if isinstance(value, list):
+            return [
+                collapse_whitespace(question) if isinstance(question, str) else question
+                for question in value
+            ]
+        return value
 
 
 class NoteDisposition(ContractModel):

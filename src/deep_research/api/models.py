@@ -17,11 +17,14 @@ from pydantic import (
 from deep_research.utils.config import ConfigSettings, apply_config_overrides
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
+    MAX_NOTES_PER_RUN,
+    ClarityDimension,
     FigureAttribution,
     FigureDropReason,
     FigureKind,
     FindingDropReason,
     FindingStatus,
+    ReaderAnswerSource,
     ResearchError,
     SourceEvaluationStatus,
 )
@@ -125,6 +128,71 @@ class ClarificationAnswersRequest(ApiModel):
     skip: bool = False
 
 
+class NoteRequest(ApiModel):
+    """``POST /research/{id}/notes``: one reader note, 1-500 characters after trim (spec §4.6).
+
+    Collapsed to one single-spaced line first, as an answer's text is: a note
+    kept as written becomes its own restatement, and a restatement is one line
+    of an agent's request, so reader text can never start a line of its own.
+    """
+
+    text: str = Field(min_length=1, max_length=500)
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def one_line(cls, value: object) -> object:
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+
+class NoteAcceptedResponse(ApiModel):
+    """The ``202`` a note earns: its id, and that it was received (not yet read)."""
+
+    note_id: str = Field(min_length=1)
+    status: Literal["received"] = "received"
+
+
+class ReaderNoteResponse(ApiModel):
+    """One accepted note in the session response (live-briefs spec §4.6).
+
+    ``restatement`` is the run's reading of it, ``None`` until the note is
+    interpreted. ``outcome`` is the finished run's conclusion — ``covered``,
+    ``not_found``, ``not_addressed`` (the report still does not follow the
+    note, though the findings bore on it) or ``replaced`` — and ``pending``
+    while the run is going or when no review judged the note.
+    """
+
+    note_id: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+    restatement: str | None = None
+    outcome: Literal["covered", "not_found", "not_addressed", "pending", "replaced"]
+
+
+class ClarificationQuestionResponse(ApiModel):
+    """One question the one-time check asked (live-briefs spec §4.4)."""
+
+    id: str = Field(min_length=1)
+    dimension: ClarityDimension
+    text: str = Field(min_length=1)
+    short: str = Field(min_length=1)
+    options: list[str] = Field(default_factory=list)
+    best_guess: str = Field(min_length=1)
+
+
+class ClarificationAnswerResponse(ApiModel):
+    """The value one question's answer resolved to, and where it came from."""
+
+    question_id: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    source: ReaderAnswerSource
+
+
+class ClarificationRecordResponse(ApiModel):
+    """The one-time check a session asked: its questions, then the answers the run started with."""
+
+    questions: list[ClarificationQuestionResponse] = Field(default_factory=list)
+    answers: list[ClarificationAnswerResponse] = Field(default_factory=list)
+
+
 class CoverageProgressResponse(ApiModel):
     """Required-target progress, and what the report could not answer.
 
@@ -225,6 +293,18 @@ class ResearchSessionResponse(ApiModel):
 
     evidence_counts: EvidenceCountsResponse | None = None
     """The distinct counts, or ``None`` without a composition to count."""
+
+    notes: list[ReaderNoteResponse] = Field(default_factory=list)
+    """Every note the reader added, in the order it was received (spec §4.6)."""
+
+    notes_remaining: int = Field(default=MAX_NOTES_PER_RUN, ge=0, le=MAX_NOTES_PER_RUN)
+    """How many more notes this session accepts (D11a): ten less the accepted ones."""
+
+    note_passes: int = Field(default=0, ge=0)
+    """The targeted research passes the reader's notes bought (D11)."""
+
+    clarification: ClarificationRecordResponse | None = None
+    """The one-time check the session asked, or ``None`` when it asked nothing."""
 
 
 class SessionListResponse(ApiModel):
