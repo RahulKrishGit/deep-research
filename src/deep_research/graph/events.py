@@ -172,6 +172,49 @@ def redraft_requested_event(
     )
 
 
+def note_pass_started_event(
+    *,
+    iteration: int,
+    note_passes: int,
+    note_ids: Sequence[str],
+    targets: Sequence[str],
+) -> ResearchEvent:
+    """Announce the targeted pass the reader's notes just bought (spec §4.6).
+
+    Ids only: the notes it researches and the targets their own sub-topics
+    carry. ``iteration`` is unchanged by a note pass, and ``note_passes`` is
+    the run's count including this one.
+    """
+    return graph_event(
+        event_type="graph.note_pass.started",
+        message=f"Note pass {note_passes} started.",
+        metadata={
+            "iteration": iteration,
+            "note_passes": note_passes,
+            "note_ids": list(note_ids),
+            "targets": list(targets),
+        },
+    )
+
+
+def note_redraft_requested_event(
+    *,
+    iteration: int,
+    note_ids: Sequence[str],
+) -> ResearchEvent:
+    """Announce the writer re-run the reader's notes just bought (spec §4.6).
+
+    Its own event, not ``graph.report.redraft_requested``: a note redraft
+    spends none of the review's own writer re-runs, and the writer drafts
+    afresh with the notes rather than patching the parts a defect named.
+    """
+    return graph_event(
+        event_type="graph.note_redraft.requested",
+        message="Writer re-run requested for the reader's notes.",
+        metadata={"iteration": iteration, "note_ids": list(note_ids)},
+    )
+
+
 def quality_assessed_event(
     *,
     iteration: int,

@@ -105,6 +105,7 @@ from deep_research.utils.types import (
     Finding,
     GapKind,
     GapSeverity,
+    ReaderNoteKind,
     ReportPoint,
     ReportSection,
     ReportStatement,
@@ -115,6 +116,7 @@ from deep_research.utils.types import (
     ReviewDefect,
     StatementReviewDisposition,
     UnitScore,
+    active_reader_notes,
 )
 
 REPORT_REVIEWER_ROLE = "report_reviewer"
@@ -549,6 +551,15 @@ class ReviewDeterministic(ContractModel):
     uncited_settled_points: int = Field(default=0, ge=0)
 
 
+class ReviewNoteView(ContractModel):
+    """One reader note as the review reads it (live-briefs spec §4.6): its id,
+    so the reply can name it, and the run's own reading of it."""
+
+    note_id: str = Field(min_length=1)
+    restatement: str = Field(min_length=1)
+    kinds: list[ReaderNoteKind] = Field(min_length=1)
+
+
 class ReportReviewInput(ContractModel):
     """Everything one semantic review is allowed to judge, and nothing else.
 
@@ -586,6 +597,10 @@ class ReportReviewInput(ContractModel):
     account of what the question required.
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
+    reader_notes: list[ReviewNoteView] = Field(default_factory=list)
+    """The reader's active notes (live-briefs spec §4.6), which the review
+    judges one by one into ``note_dispositions``; ``[]`` for a run without
+    notes, whose packet and fingerprint are then exactly what they were."""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this packet was built from.
 
@@ -672,6 +687,14 @@ def build_report_review_input(
             uncited_settled_points=quality.uncited_settled_points if quality else 0,
         ),
         required_target_ids=list(quality.required_target_ids) if quality else [],
+        reader_notes=[
+            ReviewNoteView(
+                note_id=note.note_id,
+                restatement=note.restatement,
+                kinds=list(note.kinds),
+            )
+            for note in active_reader_notes(state.reader_notes)
+        ],
         composition_fingerprint=composition_semantic_fingerprint(composition),
     )
     return packet.model_copy(
@@ -997,8 +1020,11 @@ def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
     presentation field: ``quality_status`` is a generated badge this packet
     never reads, so stamping "accepted" onto a composition cannot invalidate a
     judgement of its content, while a content or reference change always does.
+    ``reader_notes`` is left out while it is empty, so a packet without notes
+    keeps the fingerprint it had before notes existed (live-briefs spec §4.6).
     """
-    payload = packet.model_dump(mode="json", exclude={"fingerprint"})
+    exclude = {"fingerprint"} | (set() if packet.reader_notes else {"reader_notes"})
+    payload = packet.model_dump(mode="json", exclude=exclude)
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -2126,8 +2152,13 @@ def scoped_report_review_input_fingerprint(scoped: ScopedReportReviewInput) -> s
     """The scoped packet's own fingerprint: distinct from
     ``scoped.base.fingerprint`` because the material a scoped re-review reads
     -- the changed/unchanged split and the carried previous defects -- is not
-    the material a full review reads, even over an identical report."""
-    payload = scoped.model_dump(mode="json", exclude={"fingerprint"})
+    the material a full review reads, even over an identical report. The
+    base packet's reader notes are left out while empty, so a scoped packet
+    without notes keeps the fingerprint it had before notes existed (spec §4.6)."""
+    exclude: dict[str, object] = {"fingerprint": True}
+    if not scoped.base.reader_notes:
+        exclude["base"] = {"reader_notes": True}
+    payload = scoped.model_dump(mode="json", exclude=exclude)
     encoded = json.dumps(
         payload,
         sort_keys=True,
@@ -2833,6 +2864,7 @@ __all__ = [
     "ReviewDeterministic",
     "ReviewDimensionScores",
     "ReviewFindingView",
+    "ReviewNoteView",
     "ReviewStatementView",
     "ScopedReportReviewDraft",
     "ScopedReportReviewInput",

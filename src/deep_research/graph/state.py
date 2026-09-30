@@ -27,12 +27,16 @@ from pydantic import JsonValue
 
 from deep_research.agents.report_reviewer import semantic_review_passes
 from deep_research.utils.types import (
+    MAX_NOTES_PER_RUN,
+    NOTE_COVERAGE_PREFIX,
     QUALITY_CONTRACT_VERSION,
     QUALITY_STATUS_ACCEPTED,
     QUALITY_STATUS_PARTIAL,
     MemorySnapshot,
     ReaderAnswer,
+    ReaderNote,
     ResearchState,
+    active_reader_notes,
 )
 
 GRAPH_SOURCE = "graph"
@@ -43,15 +47,18 @@ SOURCE_EVALUATOR_NODE = "source_evaluator"
 EVIDENCE_VERIFIER_NODE = "evidence_verifier"
 REPORT_WRITER_NODE = "report_writer"
 REPORT_REVIEWER_NODE = "report_reviewer"
+NOTE_PASS_NODE = "note_pass"
 EXTRA_PASS_NODE = "extra_pass"
 REDRAFT_NODE = "writer_redraft"
 FINALIZE_NODE = "finalize_report"
 
-# Execution order, with the terminal review, the two one-hop continuations,
+# Execution order, with the terminal review, the three one-hop continuations,
 # and the terminal publication step last. Node names deliberately equal agent
 # names so a LangSmith trace reads the same as this tuple; ``report_reviewer``
 # is the graph's own reviewer rather than one of the five agents,
-# ``extra_pass`` is the hop that carries the iteration increment,
+# ``note_pass`` is the hop that opens the reader's notes' targeted research
+# pass (live-briefs spec §4.6), ``extra_pass`` is the hop that carries the
+# iteration increment,
 # ``writer_redraft`` is the hop that hands the reviewer's defects back to the
 # writer, and ``finalize_report`` is the one node with no model call at all.
 NODE_NAMES = (
@@ -61,6 +68,7 @@ NODE_NAMES = (
     EVIDENCE_VERIFIER_NODE,
     REPORT_WRITER_NODE,
     REPORT_REVIEWER_NODE,
+    NOTE_PASS_NODE,
     EXTRA_PASS_NODE,
     REDRAFT_NODE,
     FINALIZE_NODE,
@@ -72,6 +80,12 @@ NODE_NAMES = (
 # accepted after the single re-run.
 MAX_WRITER_REDRAFTS = 1
 
+# The supersteps one writer re-run takes: the redraft hop, the writer, the
+# reviewer. A reader note buys at most one such re-run and one targeted pass
+# (live-briefs spec §4.6), which is what the recursion limit allows for.
+NOTE_REDRAFT_STEPS = 3
+
+ROUTE_NOTE_PASS = "note_pass"
 ROUTE_EXTRA_PASS = "extra_pass"
 ROUTE_REDRAFT = "redraft"
 ROUTE_FINALIZE = "finalize"
@@ -109,6 +123,17 @@ GRAPH_ROUTES = {
         "and the one writer re-run a defect list buys has not been spent; the "
         "writer drafts again with those defects fed back."
     ),
+    "note_pass_requested": (
+        "The review found no evidence for a reader note that has not had its "
+        "one targeted research pass; the researcher runs for the notes that "
+        "owe one, outside the extra-pass budget."
+    ),
+    "note_redraft_requested": (
+        "The review found a reader note the report ignores although its "
+        "findings bear on it, or a note arrived after the review input was "
+        "built, and that note has not had its one redraft; the writer drafts "
+        "again with the reader's notes."
+    ),
     "halted": "The run stopped on a non-recoverable error.",
 }
 
@@ -133,6 +158,10 @@ _STATUS_BY_ROUTE_REASON = {
     # more draft, so this is the same "not accepted yet" reading an extra pass
     # carries.
     "redraft_requested": "incomplete",
+    # Both note routes continue the run (live-briefs spec §4.6), so they read
+    # as the loops above do; neither is ever a run's last decision.
+    "note_pass_requested": "incomplete",
+    "note_redraft_requested": "incomplete",
     "halted": "failed",
 }
 
@@ -245,6 +274,11 @@ def extra_pass_target_ids(state: ResearchState) -> list[str]:
     ``graph_route``'s decision and the pass's own job list can never
     diverge: whichever one is asked "is anything missing?" or "for what?",
     both read the same targets.
+
+    A reader note's own targets (``note-…``, live-briefs spec §4.6) are never
+    part of it: a note buys its one targeted pass through the note route,
+    outside the extra-pass budget (D11), so a note target still missing after
+    its pass neither buys an extra pass nor ends the run as exhausted.
     """
     review = state.report_review
     if review is None:
@@ -257,9 +291,49 @@ def extra_pass_target_ids(state: ResearchState) -> list[str]:
         for target_id in defect.target_ids
         if target_id in required
     ]
-    return list(
-        dict.fromkeys([*review.missing_required_target_ids, *coverage_target_ids])
-    )
+    return [
+        target_id
+        for target_id in dict.fromkeys(
+            [*review.missing_required_target_ids, *coverage_target_ids]
+        )
+        if not target_id.startswith(NOTE_COVERAGE_PREFIX)
+    ]
+
+
+def note_dispositions(state: ResearchState) -> dict[str, str]:
+    """The latest review's verdict on each reader note it judged, by note id."""
+    review = state.report_review
+    if review is None:
+        return {}
+    return {entry.note_id: entry.status for entry in review.note_dispositions}
+
+
+def notes_due_a_pass(state: ResearchState) -> list[ReaderNote]:
+    """Active notes the review found no evidence for, not yet passed (D11)."""
+    verdicts = note_dispositions(state)
+    return [
+        note
+        for note in active_reader_notes(state.reader_notes)
+        if verdicts.get(note.note_id) == "no_evidence" and not note.passed
+    ]
+
+
+def notes_due_a_redraft(state: ResearchState) -> list[ReaderNote]:
+    """Active notes owed their one redraft (live-briefs spec §4.6).
+
+    A note the report ignores although its findings bear on it, or a note no
+    review input carried because it arrived after the input was built.
+    """
+    verdicts = note_dispositions(state)
+    return [
+        note
+        for note in active_reader_notes(state.reader_notes)
+        if not note.redrafted
+        and (
+            verdicts.get(note.note_id) == "ignored_with_evidence"
+            or not note.reviewed
+        )
+    ]
 
 
 def graph_route(state: ResearchState) -> tuple[str, str]:
@@ -294,9 +368,21 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     obligations are *listed* under Not found. Only a scored report that was
     not accepted and still owes a target that the ceiling can no longer buy
     for ends as ``extra_passes_exhausted`` (status ``max_iterations``).
+
+    The reader's notes are read right after a halt (live-briefs spec §4.6,
+    D11): first a note the review found no evidence for buys its one targeted
+    pass (``ROUTE_NOTE_PASS``), then a note the report ignores, or one no
+    review has read yet, buys its one redraft (``ROUTE_REDRAFT`` with the
+    reason ``note_redraft_requested``, which spends no writer re-run of the
+    review's own). Each note is flagged when its route is taken, so neither
+    check can loop; with no note due, every rule below reads as it always did.
     """
     if is_halted(state):
         return ROUTE_END, "halted"
+    if notes_due_a_pass(state):
+        return ROUTE_NOTE_PASS, "note_pass_requested"
+    if notes_due_a_redraft(state):
+        return ROUTE_REDRAFT, "note_redraft_requested"
     review = state.report_review
     missing = review is not None and bool(extra_pass_target_ids(state))
     if missing and state.iteration < state.max_extra_passes:
@@ -349,7 +435,14 @@ def graph_recursion_limit(max_extra_passes: int) -> int:
     Always passed explicitly. LangGraph 1.2 defaults this generously, but
     earlier releases defaulted to 25 — under what the first pass plus one extra
     pass over eight nodes need — and an explicit value documents the shape.
+    Every reader note may buy one targeted pass and one redraft (live-briefs
+    spec §4.6, D11a), so the notes' own worst case is added on top: the limit
+    is never what stops a run the notes lengthened.
     """
     if max_extra_passes < 0:
         raise ValueError("max_extra_passes must not be negative")
-    return (max_extra_passes + 1) * len(NODE_NAMES) + _RECURSION_MARGIN
+    return (
+        (max_extra_passes + 1) * len(NODE_NAMES)
+        + MAX_NOTES_PER_RUN * (len(NODE_NAMES) + NOTE_REDRAFT_STEPS)
+        + _RECURSION_MARGIN
+    )

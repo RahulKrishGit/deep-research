@@ -9,7 +9,8 @@ Graph shape:
 
     START -> planner -> researcher -> source_evaluator -> evidence_verifier
           -> report_writer -> report_reviewer
-          -> {extra_pass -> researcher | finalize_report -> END}
+          -> {note_pass -> researcher | extra_pass -> researcher
+              | writer_redraft -> report_writer | finalize_report -> END}
 
 ``report_reviewer`` is the terminal review: it judges the report the Report
 Writer just composed, and it runs before the route because the missing
@@ -47,6 +48,7 @@ from deep_research.graph.nodes import (
     agent_node,
     extra_pass_node,
     finalize_report_node,
+    note_pass_node,
     report_reviewer_node,
     report_writer_node,
     route_after_review,
@@ -58,6 +60,7 @@ from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
     NODE_NAMES,
+    NOTE_PASS_NODE,
     PLANNER_NODE,
     REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
@@ -66,6 +69,7 @@ from deep_research.graph.state import (
     ROUTE_END,
     ROUTE_EXTRA_PASS,
     ROUTE_FINALIZE,
+    ROUTE_NOTE_PASS,
     ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     ResearchGraphState,
@@ -174,6 +178,7 @@ def build_research_graph(
     builder.add_node(
         REPORT_REVIEWER_NODE, report_reviewer_node(agents.report_reviewer)
     )
+    builder.add_node(NOTE_PASS_NODE, note_pass_node)
     builder.add_node(EXTRA_PASS_NODE, extra_pass_node)
     builder.add_node(REDRAFT_NODE, writer_redraft_node)
     builder.add_node(
@@ -196,6 +201,7 @@ def build_research_graph(
         REPORT_REVIEWER_NODE,
         route_after_review,
         {
+            ROUTE_NOTE_PASS: NOTE_PASS_NODE,
             ROUTE_EXTRA_PASS: EXTRA_PASS_NODE,
             ROUTE_REDRAFT: REDRAFT_NODE,
             ROUTE_FINALIZE: FINALIZE_NODE,
@@ -206,6 +212,10 @@ def build_research_graph(
     # exists for the targets that were missing, and the topics that already
     # answered their own obligations are not part of it.
     builder.add_edge(EXTRA_PASS_NODE, RESEARCHER_NODE)
+    # A reader note's targeted pass (live-briefs spec §4.6) loops back the same
+    # way, confined to the notes' own sub-topics; its redraft reuses the
+    # writer-redraft hop below.
+    builder.add_edge(NOTE_PASS_NODE, RESEARCHER_NODE)
     # The redraft hop loops back to the writer alone: its defects are about the
     # report, not about the evidence, so no research or verification re-runs —
     # the writer drafts again and the reviewer judges that draft.

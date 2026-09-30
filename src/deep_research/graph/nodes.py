@@ -33,7 +33,7 @@ from deep_research.agents.quality import (
     compute_report_quality,
     review_status_fields,
 )
-from deep_research.agents.reader_notes import board_notes
+from deep_research.agents.reader_notes import board_notes, notes_settled
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     evidence_report_filename,
@@ -71,6 +71,8 @@ from deep_research.graph.events import (
     node_completed_event,
     node_skipped_event,
     node_started_event,
+    note_pass_started_event,
+    note_redraft_requested_event,
     quality_assessed_event,
     redraft_requested_event,
     report_published_event,
@@ -82,6 +84,7 @@ from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
     MAX_WRITER_REDRAFTS,
+    NOTE_PASS_NODE,
     REDRAFT_NODE,
     REPORT_REVIEWER_NODE,
     REPORT_WRITER_NODE,
@@ -93,13 +96,19 @@ from deep_research.graph.state import (
     graph_status,
     is_halted,
     load_state,
+    notes_due_a_pass,
+    notes_due_a_redraft,
 )
 from deep_research.observability import RunTelemetryCollector
 from deep_research.providers import ProviderConfigurationError, ProviderError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
+    NOTE_TOPIC_TITLE_PREFIX,
+    EvidenceTarget,
     Finding,
+    ReaderNote,
     ReportComposition,
     ReportQualitySnapshot,
     ReportReview,
@@ -107,6 +116,8 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
+    SubTopic,
+    active_reader_notes,
     advance_research_iteration,
     merge_research_state,
     with_board_notes,
@@ -367,13 +378,29 @@ def _arrived_via_redraft_hop(events: Sequence[ResearchEvent]) -> bool:
     through the researcher, the source evaluator and the evidence verifier
     first (``graph.extra_pass.started``). Scanning from the most recent event
     for whichever marker comes first settles it without a new state field.
+
+    A reader note's own loops (live-briefs spec §4.6) read like the extra
+    pass: after ``graph.note_pass.started`` the writer drafts over new
+    evidence, and after ``graph.note_redraft.requested`` it drafts afresh with
+    the notes, so neither judgement may be carried over as a scoped one.
     """
     for event in reversed(events):
         if event.event_type == "graph.report.redraft_requested":
             return True
-        if event.event_type == "graph.extra_pass.started":
+        if event.event_type in _FRESH_DRAFT_MARKERS:
             return False
     return False
+
+
+# The loop markers after which the writer's next draft is not a redraft of the
+# previous one: the reviewer's extra pass and both of a reader note's loops.
+_FRESH_DRAFT_MARKERS = frozenset(
+    {
+        "graph.extra_pass.started",
+        "graph.note_pass.started",
+        "graph.note_redraft.requested",
+    }
+)
 
 
 @runtime_checkable
@@ -797,6 +824,13 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
 
     A reused or skipped call is recorded as such in the review event, so the
     trace says whether a model was asked this pass.
+
+    The reader's notes (live-briefs spec §4.6): the node starts from every note
+    received so far, and each active one is in the review input, so each is
+    marked ``reviewed``. Before the route is read the node waits for any note
+    still being interpreted — for ``_REVIEW_NOTES_WAIT_S`` at most — and takes
+    in every note that arrived meanwhile, unreviewed, which is what buys a
+    note sent during Reviewing its redraft.
     """
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
@@ -811,7 +845,8 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                     node_started_event(
                         REPORT_REVIEWER_NODE, iteration=state.iteration
                     )
-                ]
+                ],
+                **_board_notes_update(state),
             },
         )
         review, errors, reused = await _review_report(started, reviewer)
@@ -824,12 +859,14 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                 else []
             }
         )
+        await notes_settled(timeout=_REVIEW_NOTES_WAIT_S)
         merged = merge_research_state(
             started,
             {
                 "report_review": review,
                 "quality": _quality_with_review(started, review),
                 "errors": list(errors),
+                **_reviewed_notes_update(started),
             },
         )
         destination, reason = graph_route(merged)
@@ -1038,6 +1075,39 @@ async def _review_report(
     return review, errors, False
 
 
+# The longest the review node waits for a note still being read before it reads
+# its route (live-briefs spec §4.8 "A note arrives during Reviewing"): twice
+# ``hitl.note_interpret_timeout_s``'s default of 15 s, so with the default every
+# reading in flight when the wait begins has ended first (a note received
+# mid-wait can still be pending when the wait ends), and a raised timeout (up to
+# ten minutes) can hold the route for this long at most. A note still being read
+# then is left out of this decision, unreviewed; a loop's next node takes it in
+# once it is read.
+_REVIEW_NOTES_WAIT_S = 30.0
+
+
+def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
+    """The review's notes marked reviewed, then any that arrived since, or ``{}``.
+
+    Every active note of ``started`` was in the review input
+    (``build_report_review_input`` reads them), so each is marked
+    ``reviewed``; a note on the board that ``started`` did not hold is added
+    unreviewed (live-briefs spec §4.6). ``{}`` for a run with no notes, so its
+    merge is exactly what it was.
+    """
+    reviewed = {note.note_id for note in active_reader_notes(started.reader_notes)}
+    marked = [
+        note.model_copy(update={"reviewed": True})
+        if note.note_id in reviewed
+        else note
+        for note in started.reader_notes
+    ]
+    notes = with_board_notes(marked, board_notes())
+    if not notes:
+        return {}
+    return {"reader_notes": notes}
+
+
 def _unreviewed(packet: ReportReviewInput, reason: str, *, status: str) -> ReportReview:
     """An explicit "nothing judged this report" record, with no score.
 
@@ -1195,6 +1265,11 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
     must not be able to loop the writer — and the guard is the second lock on
     that door: a run that somehow arrives with the re-run spent records
     ``graph_invalid_route`` rather than paying for a draft its bound forbids.
+
+    A reader note's redraft (live-briefs spec §4.6) comes through this same
+    hop and spends none of that bound: the notes it is for are flagged
+    ``redrafted`` — each note buys one — and ``graph.note_redraft.requested``
+    tells the writer to draft afresh with the notes.
     """
     state = load_state(channel)
     if is_halted(state):
@@ -1203,6 +1278,35 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
         state,
         {"events": [node_started_event(REDRAFT_NODE, iteration=state.iteration)]},
     )
+    if graph_route(state)[1] == "note_redraft_requested":
+        due = {note.note_id for note in notes_due_a_redraft(state)}
+        return _with(
+            started,
+            {
+                "reader_notes": [
+                    note.model_copy(update={"redrafted": True})
+                    if note.note_id in due
+                    else note
+                    for note in state.reader_notes
+                ],
+                "events": [
+                    note_redraft_requested_event(
+                        iteration=state.iteration,
+                        note_ids=[
+                            note.note_id
+                            for note in state.reader_notes
+                            if note.note_id in due
+                        ],
+                    ),
+                    node_completed_event(
+                        REDRAFT_NODE,
+                        iteration=state.iteration,
+                        event_count=1,
+                        error_count=0,
+                    ),
+                ],
+            },
+        )
     if state.writer_redrafts >= MAX_WRITER_REDRAFTS:
         return _halt(
             started,
@@ -1227,6 +1331,109 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
                 ),
                 node_completed_event(
                     REDRAFT_NODE,
+                    iteration=state.iteration,
+                    event_count=1,
+                    error_count=0,
+                ),
+            ],
+        },
+    )
+
+
+def note_sub_topic(note: ReaderNote, *, priority: int) -> SubTopic:
+    """The sub-topic one reader note's targeted pass researches (live-briefs spec §4.6).
+
+    Titled ``Your note: {restatement}``, with coverage id ``note-{note_id}``
+    and one required target per question the note raised — or, for a note that
+    raised none, the note's own restatement — each carrying the note's scope.
+    """
+    coverage_id = f"{NOTE_COVERAGE_PREFIX}{note.note_id}"
+    questions = list(note.new_questions) or [note.restatement]
+    geography = note.scope.geography if note.scope else None
+    period = note.scope.period if note.scope else None
+    return SubTopic(
+        coverage_id=coverage_id,
+        title=f"{NOTE_TOPIC_TITLE_PREFIX}{note.restatement}",
+        rationale=(
+            "The reader asked for this in a note, and the review found no "
+            "evidence for it yet."
+        ),
+        search_queries=questions,
+        success_criteria=[
+            f"A checked source answers: {question}" for question in questions
+        ],
+        priority=priority,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=f"{coverage_id}-target-{number:02d}",
+                coverage_id=coverage_id,
+                question=question,
+                required=True,
+                measure=question,
+                geography=geography,
+                period=period,
+            )
+            for number, question in enumerate(questions, start=1)
+        ],
+    )
+
+
+async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
+    """Open the one targeted pass the uncovered reader notes buy (spec §4.6, D11).
+
+    Its own hop, as ``extra_pass`` is, because the route cannot write: it
+    appends one sub-topic per note the review found no evidence for, confines
+    the researcher to those sub-topics' targets exactly as an extra pass is
+    confined (``extra_pass_target_ids``), flags each note ``passed`` and counts
+    the pass in ``note_passes`` — never in ``iteration``, so the extra-pass
+    budget is untouched. A run that arrives with no note due records
+    ``graph_invalid_route`` rather than researching nothing.
+    """
+    state = load_state(channel)
+    if is_halted(state):
+        return _skipped(state, NOTE_PASS_NODE)
+    started = merge_research_state(
+        state,
+        {"events": [node_started_event(NOTE_PASS_NODE, iteration=state.iteration)]},
+    )
+    due = notes_due_a_pass(state)
+    if not due:
+        return _halt(
+            started,
+            invalid_route_error(
+                node=NOTE_PASS_NODE,
+                iteration=state.iteration,
+                max_extra_passes=state.max_extra_passes,
+            ),
+        )
+    priority = max((topic.priority for topic in state.sub_topics), default=0) + 1
+    topics = [note_sub_topic(note, priority=priority) for note in due]
+    targets = [
+        target.target_id for topic in topics for target in topic.evidence_targets
+    ]
+    passed = {note.note_id for note in due}
+    note_passes = state.note_passes + 1
+    return _with(
+        started,
+        {
+            "sub_topics": topics,
+            "extra_pass_target_ids": targets,
+            "reader_notes": [
+                note.model_copy(update={"passed": True})
+                if note.note_id in passed
+                else note
+                for note in state.reader_notes
+            ],
+            "note_passes": note_passes,
+            "events": [
+                note_pass_started_event(
+                    iteration=state.iteration,
+                    note_passes=note_passes,
+                    note_ids=[note.note_id for note in due],
+                    targets=targets,
+                ),
+                node_completed_event(
+                    NOTE_PASS_NODE,
                     iteration=state.iteration,
                     event_count=1,
                     error_count=0,
