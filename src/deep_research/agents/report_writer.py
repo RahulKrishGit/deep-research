@@ -43,6 +43,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.reader_notes import WRITING_NOTES, render_reader_notes
 from deep_research.agents.report import (
     _carried_rows,
     _figure_label_for,
@@ -106,6 +107,7 @@ from deep_research.utils.types import (
     SubTopic,
     UnreachablePage,
     WriterPointDraft,
+    active_reader_notes,
 )
 
 REPORT_WRITER_NAME = "report_writer"
@@ -514,6 +516,10 @@ class ReportWriterTask(AgentTask):
     """D11: the reader-length point budget's word count -- the frozen
     contract's own ``requested_word_limit`` when the question asked for
     one, else ``agents.report_target_words`` (spec §6.3)."""
+    reader_notes: str = ""
+    """The rendered reader-notes block (live-briefs spec §4.6), printed as
+    ``# Reader notes`` in every section and bottom-line request; ``""`` for a
+    run without notes, whose requests are then exactly what they were."""
     authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR
     """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
     per-statement floor filter (``_statement_meets_authority_floor``): a
@@ -1013,8 +1019,20 @@ def _is_redraft_hop(state: ResearchState) -> bool:
     evidence, not against this iteration's own draft, so carrying it here
     would silently apply "minimal edits" to a part that instead needs its
     new finding written from scratch.
+
+    A reader note's loops keep the iteration (live-briefs spec §4.6) and read
+    as a fresh draft too: after a note pass the draft is over new evidence,
+    and a note redraft drafts every part afresh with the notes. The latest
+    loop marker decides.
     """
-    return state.composition is not None and state.composition.iteration == state.iteration
+    if state.composition is None or state.composition.iteration != state.iteration:
+        return False
+    for event in reversed(state.events):
+        if event.event_type == "graph.report.redraft_requested":
+            return True
+        if event.event_type in ("graph.note_pass.started", "graph.note_redraft.requested"):
+            return False
+    return True
 
 
 def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
@@ -1108,8 +1126,12 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
     material = [
         f"# Question\n{task.question}",
         f"# Answer form\n{_answer_form_line(task)}",
-        f"# This part of the question\n{job.sub_topic_title}\n{targets_block}",
     ]
+    if task.reader_notes:
+        material.append(f"# Reader notes\n{task.reader_notes}")
+    material.append(
+        f"# This part of the question\n{job.sub_topic_title}\n{targets_block}"
+    )
     material.append(
         f"# Point budget\n{_point_budget_line(task, job, own_finding_ids)}"
     )
@@ -1192,8 +1214,10 @@ def bottom_line_messages(
     material = [
         f"# Question\n{task.question}",
         f"# Answer form\n{_answer_form_line(task)}",
-        f"# Checked statements\n{statements_block}",
     ]
+    if task.reader_notes:
+        material.append(f"# Reader notes\n{task.reader_notes}")
+    material.append(f"# Checked statements\n{statements_block}")
     if dispute_lines:
         material.append(
             "# Disputed: state both sides, or leave the disputed step, figure or "
@@ -3219,6 +3243,9 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             previous=state.composition if _is_redraft_hop(state) else None,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
+            reader_notes=render_reader_notes(
+                active_reader_notes(state.reader_notes), instruction=WRITING_NOTES
+            ),
             authority_floor=authority_floor,
         )
 

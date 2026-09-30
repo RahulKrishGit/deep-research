@@ -1169,7 +1169,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Live briefs (live-briefs spec E3, 2026-09-28): both evaluation events
     # are published live. Module code only; no prompt string changed and
     # agents.prompts was untouched. Moved `0d96c48eae29` -> `fb7f60d73873`.
-    "source_evaluator": "fb7f60d73873",
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the source
+    # evaluator puts the reader's notes, only when there are any, in the
+    # scoring request's # Context slot, for relevance only. Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `fb7f60d73873` -> `24809aa975a3`.
+    "source_evaluator": "24809aa975a3",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1345,7 +1350,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Live briefs (live-briefs spec E3, 2026-09-28): report.written is
     # published live. Module code only; no prompt string changed and
     # agents.prompts was untouched. Moved `ee5199095402` -> `0dcd4a41a378`.
-    "report_writer": "0dcd4a41a378",
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the writer puts
+    # the reader's notes, only when there are any, in a # Reader notes section
+    # of the section and bottom-line requests, and drafts afresh after a note
+    # pass or a note redraft. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
+    "report_writer": "6e1aedc2888e",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

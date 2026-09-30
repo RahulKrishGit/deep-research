@@ -55,6 +55,7 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
+from deep_research.agents.reader_notes import SOURCE_NOTES, render_reader_notes
 from deep_research.agents.sources import (
     SourceGroup,
     group_findings_by_url,
@@ -76,6 +77,7 @@ from deep_research.utils.types import (
     ResearchStateUpdate,
     ScoredSource,
     SubTopic,
+    active_reader_notes,
 )
 
 SOURCE_EVALUATOR_NAME = "source_evaluator"
@@ -1100,6 +1102,11 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         }
         return SourceEvaluationTask(
             instruction=state.original_question,
+            # live-briefs spec §4.6: the reader's notes fill the request's
+            # ``# Context`` slot, for relevance only; ``""`` without notes.
+            guidance=render_reader_notes(
+                active_reader_notes(state.reader_notes), instruction=SOURCE_NOTES
+            ),
             groups=groups,
             reputations=reputations,
             dossiers=dossiers,

@@ -155,3 +155,29 @@ async def test_the_planner_and_every_research_turn_carry_the_notes(tmp_path: Pat
     extractions = packets_for(sequence, "researcher:SubTopicFindingsDraft")
     assert extractions and all("# Reader notes\n" in text and EMPHASIS_LINE in text for text in extractions)
     assert not any(ANGLE_LINE in text for text in extractions)
+
+
+@pytest.mark.asyncio
+async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Path) -> None:
+    """spec §4.6: the scoring request's ``# Context`` slot carries the notes, for
+    relevance only; the writer's section and bottom-line requests carry
+    ``# Reader notes`` right after the answer form."""
+    with guarded():
+        status, sequence, _ = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE))
+
+    assert status == "completed"
+    scoring = packets_for(sequence, "source_evaluator:SourceScoresDraft")
+    assert scoring and all(
+        "# Context\nThe reader added these notes while the run was going. They bear on how relevant"
+        in text and EMPHASIS_LINE in text and ANGLE_LINE in text
+        for text in scoring
+    )
+    for key, after in (
+        ("report_writer:SectionDraft", "# This part of the question\n"),
+        ("report_writer:BottomLineDraft", "# Checked statements\n"),
+    ):
+        texts = packets_for(sequence, key)
+        assert texts, key
+        for text in texts:
+            assert text.index("# Answer form\n") < text.index("# Reader notes\n") < text.index(after), key
+            assert EMPHASIS_LINE in text and ANGLE_LINE in text, key
