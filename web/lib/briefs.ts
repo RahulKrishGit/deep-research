@@ -1,6 +1,7 @@
 // The live step briefs (live-briefs spec §4.3; picks 1A, 2C, 3B): what each spine row says while it
 // runs, once it is done, and when a loop reopens it. Pure — a function of RunState only, so a burst,
 // a tick and a replay from event 1 paint the same brief (DESIGN.md §5.7).
+import { earlierNotesText, visibleAcks, type Ack } from "./notes";
 import { STAGES, countPhrase, plural, type NodeId, type PaintedMark, type ReopenLine, type RunState, type Topic, type TopicState } from "./run-state";
 
 export type RowState = PaintedMark | "pending";
@@ -16,6 +17,8 @@ export interface RowBrief {
   sentence: string | null;         /* the one plain sentence of every step but Researching */
   topics: TopicLine[] | null;      /* Researching's checklist */
   titles: string[] | null;         /* Planning's final brief: the sub-topic titles */
+  acks: Ack[];                     /* the active row only: the latest two notes, acknowledged (§4.7) */
+  earlier: string | null;          /* the active row only: "and {n} earlier notes" past two */
 }
 
 export const STATIC_META: Readonly<Record<NodeId, string>> = Object.fromEntries(STAGES.map((s) => [s.id, s.meta])) as Record<NodeId, string>;
@@ -52,17 +55,20 @@ export function rowBrief(run: RunState, id: NodeId, state: RowState): RowBrief {
   const why = run.reopen[id] ?? null;
   const outcome = run.outcomes[id] ?? STATIC_META[id];
   const text: Subtitle = { kind: "text", text: STATIC_META[id] };
+  // live-briefs spec §4.7: the reader's notes are acknowledged in the row that is running now.
+  const noted = id === run.active ? visibleAcks(run.notes) : { acks: [], earlier: 0 };
+  const notes = { acks: noted.acks, earlier: noted.earlier > 0 ? earlierNotesText(noted.earlier) : null };
   if (id === "researcher") {
     return {
       subtitle: { kind: "research", topics: run.topics.length, done: run.topics.filter((t) => t.state === "done").length,
         pages: run.pagesRead ?? 0, findings: run.findingsSoFar ?? 0 },
-      outcome, why, sentence: null, titles: null,
+      outcome, why, sentence: null, titles: null, ...notes,
       topics: run.topics.map((t, i) => ({ key: t.coverageId, n: i + 1, title: t.title, state: t.state, fact: topicFact(t) })),
     };
   }
   if (id === "planner" && finished && run.plan.length > 0) {
-    return { subtitle: text, outcome, why, sentence: null, topics: null, titles: run.plan.map((p) => p.title) };
+    return { subtitle: text, outcome, why, sentence: null, topics: null, titles: run.plan.map((p) => p.title), ...notes };
   }
   const sentence = id === "evidence_verifier" ? verifyingSentence(run.passFindings) : SENTENCES[id];
-  return { subtitle: text, outcome, why, sentence, topics: null, titles: null };
+  return { subtitle: text, outcome, why, sentence, topics: null, titles: null, ...notes };
 }

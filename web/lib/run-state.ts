@@ -6,6 +6,7 @@
 // not the stream, writes.
 import type { ResearchEvent, SessionStatus } from "./api";
 import { fmtScore } from "./format";
+import { noteRedraftLine, notePassLine } from "./notes";
 
 export type NodeId = "planner" | "researcher" | "source_evaluator" | "evidence_verifier" | "report_writer" | "report_reviewer" | "finalize_report";
 export type Mark = "done" | "loop" | "skipped";
@@ -22,9 +23,12 @@ export const STAGES: readonly Stage[] = [
   { id: "finalize_report", label: "Publishing", meta: "report · evidence log · quality record" },
 ];
 export const AGENT_ORDER: readonly NodeId[] = STAGES.map((s) => s.id);
-export const ARCS: Record<"extra_pass" | "redraft", { from: NodeId; to: NodeId }> = {
+/* live-briefs spec §4.7: a note pass returns to Researching like the extra pass, drawn with the
+   redraft's stroke (--meta), because a note pass is not a warning. */
+export const ARCS: Record<"extra_pass" | "redraft" | "note_pass", { from: NodeId; to: NodeId }> = {
   extra_pass: { from: "report_reviewer", to: "researcher" },
   redraft: { from: "report_reviewer", to: "report_writer" },
+  note_pass: { from: "report_reviewer", to: "researcher" },
 };
 export const BLURB: Record<NodeId, string> = {
   planner: "Turning the question into sub-topics and evidence targets.",
@@ -49,7 +53,13 @@ export type TopicState = "waiting" | "running" | "done";
 export interface Topic { coverageId: string; title: string; state: TopicState; findings: number | null }
 export interface PlannedTopic { coverageId: string; title: string }
 /* The first line of a row a loop reopened: why it reopened (the old loop tag's content). */
-export interface ReopenLine { kind: "extra_pass" | "redraft"; text: string }
+export interface ReopenLine { kind: "extra_pass" | "redraft" | "note_pass" | "note_redraft"; text: string }
+/* One reader note (live-briefs spec §4.6-§4.7): as received, then as the run read it. `where` is the
+   row that was active when session.note.interpreted arrived — the step the acknowledgement names. */
+export interface NoteState {
+  id: string; text: string; interpreted: boolean; restatement: string | null;
+  replaces: string | null; fallback: boolean; where: NodeId | null;
+}
 /* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from
    session.clarification.requested, then the answers the run starts with from .answered. */
 export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
@@ -60,7 +70,7 @@ export interface RunState {
   active: NodeId | null;                  /* the "Now" row: the successor of the last graph.node.completed */
   openNode: NodeId | null;                /* the last graph.node.started with no graph.node.completed — the halting row */
   pass: number; maxPasses: number;
-  loop: "off" | "flowing" | "settled"; arc: "extra_pass" | "redraft" | null;
+  loop: "off" | "flowing" | "settled"; arc: "extra_pass" | "redraft" | "note_pass" | null;
   loopPending: boolean;                   /* a loop was routed; the reviewer's own completion is inert */
   tag: LoopTag | null;
   rearmed: Partial<Record<NodeId, true>>; rearmedFirst: NodeId | null;
@@ -76,6 +86,7 @@ export interface RunState {
   outcomes: Partial<Record<NodeId, string>>;  /* each row's outcome line once it is done */
   open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
   clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
+  notes: NoteState[];                     /* the reader's notes, in receipt order */
 }
 export interface RunEvent { type: string; metadata: Record<string, unknown> }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,7 +106,7 @@ export function newRunState(passes: number | null | undefined): RunState {
     rearmed: {}, rearmedFirst: null, captions: {}, blurbs: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
     plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
-    reopen: {}, outcomes: {}, open: new Set(), clarify: null,
+    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [],
   };
 }
 function nextRow(node: NodeId): NodeId | null {
@@ -117,7 +128,7 @@ function rearm(run: RunState, fromIndex: number): void {
 export function plural(n: number, one: string, many: string): string { return n + " " + (n === 1 ? one : many); }
 /* The label of the row a node runs on, for the chip's "Running · {step}" (live-briefs spec §4.2).
    The two hops lead back into a row, so they read as that row; anything else is not a row. */
-const HOP_ROW: Readonly<Record<string, NodeId>> = { extra_pass: "researcher", writer_redraft: "report_writer" };
+const HOP_ROW: Readonly<Record<string, NodeId>> = { extra_pass: "researcher", note_pass: "researcher", writer_redraft: "report_writer" };
 export function stepLabel(node: string | null | undefined): string | null {
   if (!node) return null;
   const id = HOP_ROW[node] ?? node;
@@ -148,6 +159,8 @@ function topicFor(run: RunState, md: Md): Topic {
 }
 /* Reviewing's outcome line, read at the route decision (the review's score arrived just before it). */
 function reviewOutcome(run: RunState, md: Md): string {
+  if (md.reason === "note_pass_requested") return "Sent back to research your note";
+  if (md.reason === "note_redraft_requested") return "Sent back to the writer for your note";
   if (md.destination === "extra_pass") {
     const k = Array.isArray(md.missing_required_target_ids) ? md.missing_required_target_ids.length : 0;
     return k > 0 ? "Sent back to fill " + plural(k, "gap", "gaps") : "Sent back for more research";
@@ -185,7 +198,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   "graph.node.completed": (run, md) => {
     const node: NodeId = md.node;
     if (run.openNode === node) run.openNode = null;
-    if ((node as string) === "extra_pass" || (node as string) === "writer_redraft") return;          /* hops never map to a row */
+    if ((node as string) === "extra_pass" || (node as string) === "note_pass" || (node as string) === "writer_redraft") return; /* hops never map to a row */
     if (node === "report_reviewer" && run.loopPending) { run.loopPending = false; return; }         /* inert after a loop decision */
     run.marks[node] = run.rearmed[node] ? "loop" : "done";
     if (node === "finalize_report") run.outcomes.finalize_report = "Published";
@@ -260,6 +273,12 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
       /* the pass about to run starts its own checklist; the writer's next draft is not a redraft */
       run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
       delete run.reopen.report_writer;
+    } else if (md.destination === "note_pass") {
+      /* live-briefs spec §4.6: the note pass re-runs Researching onward, as the extra pass does */
+      rearm(run, 1); run.active = "researcher";
+      run.loopPending = true; run.arc = "note_pass"; run.loop = "flowing";
+      run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
+      delete run.reopen.report_writer;
     } else if (md.destination === "redraft") {
       rearm(run, 4); run.active = "report_writer";
       run.loopPending = true; run.arc = "redraft"; run.loop = "flowing";
@@ -291,6 +310,27 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const c = run.counters;
     c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
   },
+  /* live-briefs spec §4.7: the note pass researches only the notes' own sub-topics — "Your note: …" —
+     and its first line says which notes it is for. */
+  "graph.note_pass.started": (run, md) => {
+    const ids: string[] = Array.isArray(md.note_ids) ? md.note_ids.filter(isText) : [];
+    run.loop = "settled";
+    run.reopen.researcher = { kind: "note_pass", text: notePassLine(ids, run.notes) };
+    run.outcomes.report_reviewer = ids.length === 1 ? "Sent back to research your note" : "Sent back to research " + ids.length + " of your notes";
+    run.topics = ids.map((id) => {
+      const note = run.notes.find((n) => n.id === id);
+      return { coverageId: "note-" + id, title: "Your note: " + (note ? note.restatement ?? note.text : id), state: "waiting", findings: null };
+    });
+    run.pagesRead = null; run.findingsSoFar = null;
+  },
+  "graph.note_redraft.requested": (run, md) => {
+    const ids: string[] = Array.isArray(md.note_ids) ? md.note_ids.filter(isText) : [];
+    run.loop = "settled";
+    run.reopen.report_writer = { kind: "note_redraft", text: noteRedraftLine(ids, run.notes) };
+    run.outcomes.report_reviewer = ids.length === 1 ? "Sent back to the writer for your note" : "Sent back to the writer for " + ids.length + " of your notes";
+    const c = run.counters;
+    c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
+  },
   "graph.session.completed": (run, md) => {
     run.finalStatus = md.status;
     run.loop = "off"; run.arc = null; run.tag = null;
@@ -309,6 +349,22 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const listed: unknown[] = Array.isArray(md.answers) ? md.answers : [];
     const answers = listed.filter(isClarifyAnswer).map((a) => ({ questionId: a.question_id, value: a.value, source: a.source }));
     run.clarify = { questions: run.clarify?.questions ?? [], deadlineAt: run.clarify?.deadlineAt ?? "", answered: { answers, reason: typeof md.reason === "string" ? md.reason : "" } };
+  },
+  /* live-briefs spec §4.6-§4.7: a note is acknowledged as received at once, then as the run read
+     it; neither event moves a row. A replayed note is never counted twice. */
+  "session.note.received": (run, md) => {
+    if (!isText(md.note_id) || run.notes.some((n) => n.id === md.note_id)) return;
+    run.notes.push({ id: md.note_id, text: typeof md.text === "string" ? md.text : "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null });
+  },
+  "session.note.interpreted": (run, md) => {
+    if (!isText(md.note_id)) return;
+    let note = run.notes.find((n) => n.id === md.note_id);
+    if (!note) { note = { id: md.note_id, text: "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null }; run.notes.push(note); }
+    note.interpreted = true;
+    note.restatement = isText(md.restatement) ? md.restatement : null;
+    note.replaces = isText(md.replaces) ? md.replaces : null;
+    note.fallback = md.fallback === true;
+    note.where = run.active;
   },
 };
 export function applyEvent(run: RunState, ev: RunEvent): void {

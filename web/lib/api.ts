@@ -33,7 +33,22 @@ export interface ResearchSessionResponse {
   evidence_path: string | null; quality_path: string | null; quality_contract_version: string | null;
   semantic_review_status: string | null; semantic_review_score: number | null; duration_seconds: number | null;
   coverage: CoverageProgress | null; evidence_counts: EvidenceCounts | null;
+  /* live-briefs spec §4.6: the reader's notes, how many more the run takes (D11a), the note passes
+     it bought and the one-time check it asked. Optional because a response recorded before notes
+     existed (the replay captures under test/fixtures) carries none of them. */
+  notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
 }
+/* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the
+   finished run concluded ("pending" while it runs, or when no review judged it; "not_addressed"
+   when the report still does not follow it after its one redraft). */
+export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "replaced";
+export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome }
+export interface ClarificationRecord {
+  questions: { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string }[];
+  answers: { question_id: string; value: string; source: "chosen" | "typed" | "best_guess" }[];
+}
+/* POST /research/{id}/notes answers 202 with the note's id; its reading follows on the stream. */
+export interface NoteAcceptedResponse { note_id: string; status: "received" }
 export interface SessionListResponse { sessions: ResearchSessionResponse[] }
 /* POST /research/{id}/answers (api/models.py ClarificationAnswersRequest): each answer carries
    exactly one of an offered choice or the reader's own text (at most 200 characters). */
@@ -123,4 +138,10 @@ export async function getEvidence(sessionId: string): Promise<ApiResult<Evidence
 export async function submitAnswers(sessionId: string, body: ClarificationAnswersRequest): Promise<ApiResult<ResearchSessionResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
+}
+/* One reader note, posted once (live-briefs spec §4.6-§4.7): 409 notes_closed once publishing has
+   begun, 409 note_limit_reached past the tenth note. */
+export async function addNote(sessionId: string, text: string): Promise<ApiResult<NoteAcceptedResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/notes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
+  return { data: (await r.json()) as NoteAcceptedResponse, mode: modeOf(r) };
 }

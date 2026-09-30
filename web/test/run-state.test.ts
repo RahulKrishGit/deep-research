@@ -26,15 +26,17 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 const P = (c: Capture) => (c.events[0].metadata.max_extra_passes as number) + 1;
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the nineteen handlers", () => {
+  it("has the seven rows and the twenty-three handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
       "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
-      "graph.node.started", "graph.report.redraft_requested", "graph.report.reviewed", "graph.route.decided",
-      "graph.session.completed", "graph.session.started", "planner.planning.completed", "report_writer.report.written",
-      "researcher.research.completed", "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
-      "session.clarification.answered", "session.clarification.requested", "source_evaluator.evaluation.completed",
+      "graph.node.started", "graph.note_pass.started", "graph.note_redraft.requested", "graph.report.redraft_requested",
+      "graph.report.reviewed", "graph.route.decided", "graph.session.completed", "graph.session.started",
+      "planner.planning.completed", "report_writer.report.written", "researcher.research.completed",
+      "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
+      "session.clarification.answered", "session.clarification.requested", "session.note.interpreted", "session.note.received",
+      "source_evaluator.evaluation.completed",
     ]);
   });
 });
