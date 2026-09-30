@@ -77,6 +77,7 @@ export async function installMotionRecorder(page: Page): Promise<void> {
     const partOf = (el: Element, pseudo: string): string => {
       if (pseudo) return "connector";
       if (el.classList.contains("ps-x")) return "ps-x";
+      if (el.classList.contains("ack")) return "ack";
       if (el.classList.contains("ln")) return "line";
       if (el.classList.contains("bullet")) return "bullet";
       if (el.classList.contains("m-live")) return "m-live";
@@ -126,3 +127,36 @@ export async function installClarifyRecorder(page: Page): Promise<void> {
   });
 }
 export const clarifyRecord = (page: Page) => page.evaluate(() => (window as unknown as { __drClarify: ClarifyRecord }).__drClarify);
+
+/* live-briefs spec §4.7 (AC15, AC19): when each note POST was sent, when each acknowledgement was
+   first fully shown, and every caption the note line showed — recorded from before the page's
+   scripts run, because the "notes are closed" caption can be on screen for well under a second
+   before the report stage replaces the running one. Times are performance.now() in the page.
+   AC15 is timed from the send: `session.note.interpreted` is published only after the server has
+   the note, so it cannot reach the page before the POST left it, and a bound measured from the send
+   holds for the event too (the POST's 202 would not do: it and the event's frame reach the page
+   over separate connections, and nothing orders them). */
+export interface NoteRecord { sent: number[]; acks: { text: string; at: number }[]; closed: string[] }
+export async function installNoteRecorder(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __drNotes: NoteRecord };
+    w.__drNotes = { sent: [], acks: [], closed: [] };
+    const original = window.fetch.bind(window);
+    window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (init?.method === "POST" && /\/notes$/.test(url)) w.__drNotes.sent.push(performance.now());
+      return original(input, init);
+    };
+    const tick = () => {
+      for (const el of document.querySelectorAll<HTMLElement>(".ack")) {
+        const text = el.textContent ?? "";
+        if (text.startsWith("Got it") && Number(getComputedStyle(el).opacity) >= 0.99 && !w.__drNotes.acks.some((a) => a.text === text)) w.__drNotes.acks.push({ text, at: performance.now() });
+      }
+      const closed = document.getElementById("noteClosed")?.textContent ?? "";
+      if (closed && !w.__drNotes.closed.includes(closed)) w.__drNotes.closed.push(closed);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+export const noteRecord = (page: Page) => page.evaluate(() => (window as unknown as { __drNotes: NoteRecord }).__drNotes);
