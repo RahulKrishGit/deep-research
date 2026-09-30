@@ -320,7 +320,10 @@ from deep_research.agents.report_reviewer import (
     ReviewStatementView,
     ReviewFindingView,
     ReviewDefectDraft,
+    NoteDispositionDraft,
+    ReportReviewNotesDraft,
     ReviewNoteView,
+    ScopedReportReviewNotesDraft,
 )
 from deep_research.agents.report_table import (
     MAX_FINDING_ROWS,
@@ -808,7 +811,10 @@ __all__ = [
     "ReviewStatementView",
     "ReviewFindingView",
     "ReviewDefectDraft",
+    "NoteDispositionDraft",
+    "ReportReviewNotesDraft",
     "ReviewNoteView",
+    "ScopedReportReviewNotesDraft",
     "MAX_OPTION_ROWS",
     "MAX_OPTION_PART_COLUMNS",
     "MAX_FULL_PAGES_PER_CELL",

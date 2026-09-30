@@ -181,3 +181,38 @@ async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Pat
         for text in texts:
             assert text.index("# Answer form\n") < text.index("# Reader notes\n") < text.index(after), key
             assert EMPHASIS_LINE in text and ANGLE_LINE in text, key
+
+
+@pytest.mark.asyncio
+async def test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does(tmp_path: Path) -> None:
+    """AC16 / D10: the notes block reaches the planner, every research turn, the
+    source evaluator, the writer and the review — and never an evidence-verifier
+    request, whichever agent sends it."""
+    with guarded():
+        status, sequence, state = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE))
+
+    assert status == "completed"
+    consumers = {
+        "planner:react", "planner:ResearchPlanDraft", "planner:PlanReviewDraft",
+        "researcher:react", "researcher:SubTopicFindingsDraft",
+        "source_evaluator:SourceScoresDraft",
+        "report_writer:SectionDraft", "report_writer:BottomLineDraft",
+        "report_reviewer:ReportReviewNotesDraft",
+    }
+    keys = {key for key, _ in sequence}
+    assert consumers <= keys
+    assert "report_reviewer:ReportReviewDraft" not in keys
+    for key in consumers:
+        assert all(EMPHASIS_TEXT in text for text in packets_for(sequence, key)), key
+    review = packets_for(sequence, "report_reviewer:ReportReviewNotesDraft")[0]
+    assert "- n1: more weight on lithium-ion safety standards (emphasis)" in review
+    assert "- n2: how battery cells are recycled (new_angle)" in review
+    checks = [text for key, text in sequence if key.split(":")[1] in {"ContextCheckDraft", "StatementCheckDraft"}]
+    assert checks and {key for key, _ in sequence if key.startswith("evidence_verifier:")}
+    for text in checks:
+        assert "lithium-ion safety standards" not in text and "battery cells are recycled" not in text
+        assert "Reader notes" not in text and "reader added these notes" not in text
+    assert [(d.note_id, d.status) for d in state.report_review.note_dispositions] == [
+        ("n1", "honoured"), ("n2", "honoured"),
+    ]
+    assert [(note.note_id, note.reviewed) for note in state.reader_notes] == [("n1", True), ("n2", True)]
