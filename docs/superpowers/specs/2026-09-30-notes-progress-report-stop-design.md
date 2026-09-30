@@ -1,0 +1,1084 @@
+# Notes that land, live progress in every step, a report that answers first, and Stop
+
+**Status** designs picked by the human on a Claude Design canvas on 2026-09-30 (the picked options are listed in §2); spec written 2026-09-30 by the spec-plan-author agent; awaiting the human's review. Four phases, A–D, each independently plannable; each gets its own implementation plan, authored by `spec-plan-author` (Opus 5.5, max effort) and reviewed by `spec-plan-reviewer` (Fable 5.1, max effort) until clean · **Date** 2026-09-30 · **Branch** `feat/notes-progress-report-stop`, cut from `origin/main` `f4282818` (the merge of PR #28, "live step briefs, the one-time check, and reader notes (Phases 1–3)") · **Canvas** https://claude.ai/artifact/FmPfLZmGCk5wuAamVu8suT (private to the human; source files in `.superpowers/progress-canvas/project/`, which git ignores).
+
+**Sources of truth.** The human's decisions in §2 are closed, and nothing below reopens them; where one cannot be built exactly as worded, §13 says so rather than changing it. The picked designs are the canvas artboards named in §2, styled by `progress.css` over `theme.css` (a copy of `docs/design/running-stage-picks/theme.css`); only the picked options matter. The design the app implements is `docs/design/DESIGN.md` and `docs/design/api-gaps.md`. The previous spec is `docs/superpowers/specs/2026-09-28-live-briefs-and-reader-notes-design.md`, cited as "LB spec", with its decisions as LB-D1 … LB-D17. `web/app/globals.css` lines 1–1131 are the prototype's CSS verbatim; new rules go under the app-only header at `web/app/globals.css:1133` with no colour literal (`web/scripts/check-css-verbatim.mjs`).
+
+Every `path:line` below was read at `f4282818` on 2026-09-30. Engine paths are under `src/deep_research/` and written `agents/…`, `graph/…`, `api/…`, `runtime/…`, `utils/…`; web paths are under `web/`.
+
+**Legend.**
+- **[INFERENCE]** marks something not observed in code or in a command run for this spec. Each one names the test that proves or falsifies it.
+- **(I)** marks illustrative copy written for this spec. Use it as written unless the plan finds a shorter true sentence.
+- **Spec choice** marks a detail the human's decisions leave open, decided here with its reason.
+- A **research note** is an interpreted reader note, not replaced by a later note, whose `kinds` include `new_angle`. A **steering note** is any other such note (emphasis, exclude, scope, about_reader). A note whose kinds include `new_angle` and another kind is a research note; its other kinds still steer every step that reads notes (§5.1).
+
+---
+
+## 1. Problem and scope
+
+### 1.1 What the first live run of PR #28 showed
+
+Question "Where can we get the best tasting Lattes in san Jose", 2026-09-30. Published artifacts: `output/report-a02a75fd75d44d8481f34953a4ff52e1-0.md`, `-evidence.md`, `-quality.json`. The session's own event log is not in `output/`; rows marked *reported* come from the dispatch.
+
+| # | Observation | Evidence |
+|---|---|---|
+| E1 | The one-time check asked three questions (Area, Purpose, Scope), answered "San Jose plus nearby South Bay cities", "A place to go right now", "Top 3-5 standout spots". | *reported* |
+| E2 | Planning ran 20:02:59–20:10:25. The planner runs at `reasoning_effort: max`. | times *reported*; effort `config.yaml:32-34` |
+| E3 | Note n1 "dont include the ones that might closed right now" (exclude) arrived at 20:06:50 and n2 "I also want pastries in the cafe" (new_angle) at 20:08:01, both during planning. | *reported* |
+| E4 | The plan had four topics and no pastries topic. The confirming plan review flagged it, and the plan stood. | the quality record's `parts` are `topic-01`…`topic-04`; it holds two `planner_plan_defects_unresolved` records for plan `review_repair` (the plan-checks and confirming-review messages); the defect wording ("missing dimension: Pastries … the reader's new_angle note…") is *reported* |
+| E5 | The planner reads notes only when it builds a request, so a note that arrives during the long draft call misses the draft. | `reader_notes_block()` renders the board when called (`agents/planner.py:3183-3192`), from `_request_plan` (`:3316`), `_review_plan` (`:3403`) and the scoping turn (`:3194-3207`) |
+| E6 | Running research loops never see a new_angle note; it waits for the review's `no_evidence` and a `note_pass`. | `research_reader_notes` drops new_angle notes (`agents/reader_notes.py:113-115`); `notes_due_a_pass` requires `no_evidence` (`graph/state.py:311-318`) |
+| E7 | The provider ran out of credit: Statement Check batches failed, the bottom line failed twice, and the terminal review was `provider_failed`. | quality record: 8 × `evidence_verifier_statement_check_failed`, 2 × `report_writer_bottom_line_failed`, `review.status == "provider_failed"`, 1 × `graph_report_review_unavailable`; timings *reported* |
+| E8 | The route was `review_unavailable` → finalize. No note pass ran and both notes ended `pending` in a finished session. | `session_status: incomplete`; `_reviewed_notes_update` marks every active note `reviewed` whatever the review's status (`graph/nodes.py:1089-1108`), so no note is due a redraft, and `note_outcome` returns `pending` when no verdict exists (`api/notes.py:343-376`) |
+| E9 | The fallback bottom line is one sentence about three cafés' roasting. It answers nothing. | the report's `## Bottom line` holds that one sentence; `_bottom_line_fallback` takes the first kept, checked point of each part with a required target, then of the others, at most four (`agents/report_writer.py:2263-2350`), and most points were unchecked (E7) |
+| E10 | The figures table sits inside the bottom line, labels rows with raw Tripadvisor snippets, and prints two rows under one label. | the table follows the bottom-line paragraph with no heading (`agents/report.py:1623-1628`). Fact rows K003/K004 both have subject "Bijan Bakery", with values "4.2 of 5 bubbles" and "87 reviews". `_has_rival` compares kind, period, subject and value but never the unit (`agents/report_table.py:734-751`), so each row is the other's rival, and a rival is labelled with its quoted evidence words (`:769-785`, `:728-731`). Their `measure` is another target's ("cafés named in published best-latte or best-coffee guides"), picked as the first answered target that carries a measure (`agents/verified_facts.py:1378`). |
+| E11 | The running stage looked static: only Planning's start, recall and completion, the researcher's topics and tool calls, and each other agent's completion are live. | live sites: `graph/nodes.py:243`, `agents/planner.py:3261`, `:3269`, `agents/researcher.py:4445`, `:4504`, `:4628`, `agents/source_evaluator.py:1368`, `:1390`, `agents/evidence_verifier.py:1008`, `agents/report_writer.py:3371` |
+| E12 | One session cannot be stopped: only store shutdown cancels tasks. | `SessionStore.close` (`api/sessions.py:474-501`); no route cancels (`api/app.py:242-480`); api-gaps lists a cancel route as a gap not to close (`docs/design/api-gaps.md:164-166`) |
+
+### 1.2 Phases
+
+| Phase | Delivers |
+|---|---|
+| **A. Reader notes that land** | A new_angle note becomes its own required sub-topic, built by code. At planning time it is appended to the plan; during research it starts its own loop at once; after research it gets exactly one note pass, after which the writer drafts only the new part and the bottom line. Its coverage comes from its own targets. No note ends `pending` in a finished session. |
+| **B. Live progress per step** | Real progress events from each unit of work, and the picked brief for Planning, Evaluating sources, Verifying evidence, Writing report and Reviewing. |
+| **C. The report** | A bottom line that answers first, then one cited line per topic and one line per note; a fallback with the same shape; a "Key figures" section with labelled, merged rows; the report as cards with a contents list, in the web app and in the Markdown file's heading order. |
+| **D. Stop** | `POST /research/{id}/stop`, a terminal `stopped` status, and the Stop control, confirm popover and stopped state. |
+
+### 1.3 In and out of scope
+
+| In scope | Out of scope |
+|---|---|
+| `agents/`: planner, researcher, source evaluator, evidence verifier, report writer, report table and renderer, reviewer packet and progress events | Surfacing the DeepSeek out-of-credit error (a separate task already queued) |
+| `graph/`: note routing, note pass, live publication of the reviewer's start and result | The planner's `max` reasoning effort (`config.yaml:32-34`) |
+| `api/`: stop route, `stopped` status, note outcomes, report outline, replay pacing aids; `tools/web_search.py`: the async Tavily client, so a stop cancels a search in flight (§8.3) | The idle page; the page 1→2 and 2→3 journeys (kept exactly as PR #27 built them) |
+| `web/`: step briefs, notes copy, report layout, Stop control and stopped stage, chip, sidebar | A resume endpoint; re-running a stopped session in place ("Ask again" starts a new session) |
+| `docs/design/DESIGN.md`, `api-gaps.md`, README amendments listed per phase | The Evidence view; the Failed stage; the service-stopped stage (`web/components/SessionScreen.tsx:208-233`) |
+| Tests at every layer; visual captures at 1252 and 390 px | A live, paid run (governed by the existing spend rules); persistence across restarts (sessions stay in memory, `docs/design/api-gaps.md:154`) |
+
+---
+
+## 2. Decisions (human-approved 2026-09-30; closed)
+
+| # | Phase | Decision |
+|---|---|---|
+| D1 | A | **(A1)** Every new_angle note received before research ends becomes its own sub-topic "Your note: {restatement}", with coverage_id `note-{note_id}`, evidence targets from the note's `new_questions`, required, built deterministically and not left to the planner. The planner still sees all notes (emphasis, exclude and scope keep shaping the plan). |
+| D2 | A | **(A2)** Planning-time new_angle notes are held and appended when the plan is published. `planner.planning.completed` metadata includes them. The web shows them per Phase B's Planning design as "joins the plan", then "from your note". They are researched in the main round, with no extra pass. |
+| D3 | A | **(A3)** Research-time new_angle notes start their own research thread immediately inside the running researcher node, and the researcher does not finish until those threads finish. This replaces the Phase 3 rule that new_angle notes wait for the review's note pass. The spec decides the interaction with the semaphore, the sub-topic cap, the request budget, the events (`researcher.sub_topic.started` for the note thread), and a note that arrives after the researcher's last thread finished but before the node returns. |
+| D4 | A | **(A4)** Notes arriving after research finished (Evaluating, Verifying, Writing, Reviewing) keep exactly one note pass (the existing `note_pass` node). The writer then writes only the new note part and the bottom line and carries every other part over unchanged through the existing carry-over (`PartJob`, LB spec §6.9). Exception: exclude and scope notes still redraft the parts they affect (the note redraft route). |
+| D5 | A | **(A5)** A new_angle note's coverage is decided by its own sub-topic's targets (answered or not found), not by the reviewer. The reviewer still gives dispositions for emphasis, exclude, scope and about_reader notes. If the review is unavailable (`provider_failed`), any owed note pass still runs. No note ends `pending` in a terminal session: `not checked` when nothing could judge it. Kept: at most 10 notes (LB-D11a), one pass and one redraft per note, verification never sees notes (LB-D10), and the recursion-limit arithmetic stays exact. |
+| D6 | B | Progress is **real**: backend events published as each unit of work finishes. |
+| D7 | B | **Planning = `Main.dc.html` option B**: topic slots wait as quiet skeleton bars with a sheen, fill with titles when the plan draft returns, then tick as the plan check passes; the topic under repair shows "being fixed"; a status line cross-fades Reading → Drafting → Checking → Fixing → Plan ready; the row subtitle is the elapsed time; a planning-time note shows an ack line and its own slot "joins the plan" → "from your note". |
+| D8 | B | **Evaluating sources = `Evaluating.dc.html` option A**: "Rating 44 sources for trustworthiness and relevance", a determinate bar, stats Rated "n of N" / Strong / Fair / Weak ("not yet" before the first batch). |
+| D9 | B | **Verifying evidence = `Verifying.dc.html` option C**: a "Just checked" ticker showing one real finding at a time with its verdict (verified / corrected, with the corrected value / quoted as written / dropped, with the reason in plain words) and its source kind; a determinate bar; a tally line. |
+| D10 | B | **Writing report = `Writing.dc.html` option E**: a "Just written" ticker of real drafted sentences with ✓ "backed by k findings" or ✗ "removed — no verified finding says this", the section title, a determinate bar of sentences checked, "section k of 5". |
+| D11 | B | **Reviewing = `Reviewing.dc.html` (A revised; both A1 all-met and A2 one-not-met)**: seven criteria in plain words from `REVIEW_DIMENSIONS`, no scores; ✓ when the reviewer raised no material issue under a criterion, amber ✗ with the issue in plain words when it did; a "Your notes" list with ✓/✗ per note; an indeterminate bar, the elapsed time and "usually 1–3 min" while the single call runs; the outcome "Accepted · all 7 met" or "1 thing to fix · back to the writer". |
+| D12 | B | Researching keeps its current checklist (LB spec §4.3). |
+| D13 | C | **(C1)** The bottom line is a direct answer first (1–2 sentences, shaped by the reader's one-time-check answers), then one cited line per planned topic in plan order (labelled with a short topic name), then one line per note with ✓/✗ and how it was handled. Every existing honesty rule of `BOTTOM_LINE_INSTRUCTION` stays. |
+| D14 | C | **(C2)** When the bottom-line call fails, or every sentence is refused, the fallback builds the same shape from the sections — one kept, checked sentence per topic plus each note's status, labelled as assembled from the sections — replacing the "first point of required parts" rule and keeping its floor and dispute protections. |
+| D15 | C | **(C3)** The figures table moves out of the bottom line into its own "Key figures" section after the topics. Each row is labelled item · measure (never a raw snippet); rows about the same item merge ("4.7 of 5 · 20 reviews"); about 10 rows at most; the full list stays in the evidence log. |
+| D16 | C | **(C4)** Layout = `Report.dc.html` B+C: each section its own card on the page ground (bottom line card first, then topic cards with eyebrow "Topic n of N" / "· from your note", Key figures, What we couldn't confirm); a contents list to the left that jumps to headings with the current one marked; on a phone the list becomes a horizontally scrolling chip row under the header. The Review / Coverage / Evidence rail stays. The Markdown report file gets the same structure (heading order). |
+| D17 | D | `POST /research/{id}/stop` cancels the session's task at once (all in-flight provider and HTTP calls), writes no report, and ends the session in a new terminal status `stopped`, with the stream event `session.stopped` naming the step it was on. Report and evidence endpoints answer like a failed run (409 `report_unavailable`; §13 O13 on `/evidence`). `409` when already terminal or once `finalize_report` has started (the notes cutoff); `404` for an unknown session. Offered from the one-time check (`needs_input`) through Reviewing. |
+| D18 | D | Web = `Stop.dc.html`: a Stop button (ghost, small square icon) beside the running status chip; one confirm popover "Stop this research?" (I) with "Keep going" (quiet) and "Stop research" (red text); the stopped state: chip "Stopped by you · at <step>" with a neutral grey dot, a short card "You stopped this research at HH:MM, N minutes in. No report was written…" (I) with an "Ask again" button (the same question, fresh), finished rows still openable, the stopped row with its partial facts, later rows "not run"; the note line hidden; the sidebar shows the session as stopped, not failed; works in replay mode. |
+| D19 | all | DESIGN.md theme rules hold: tokens only; colour is status (green active/ok, amber warn, red danger, purple only on the one primary button); one surface per region; motion tokens; reduced motion turns movement into fades; unknown values read "not yet", never 0, —, or null. |
+
+---
+
+## 3. Ground truth
+
+### 3.1 Events and live publication
+
+| Fact | Where |
+|---|---|
+| `ResearchEvent` has `event_type`, `source`, `message`, `timestamp` (stamped at construction), `metadata` (finite JSON) and `event_id` (a fresh uuid hex per event). | `utils/types.py:1455-1465` |
+| `publish_live` hands an event to the run's sink and is a no-op when none is bound; agents call the wrapper in `agents/events.py`. | `graph/live.py:32-46`, `agents/events.py:44-56` |
+| The orchestrator binds the sink only when an event handler is supplied, publishes live events at once, and publishes snapshot events whose id it has not already published. | `graph/orchestrator.py:316-379` (sink `:350-352`, dedupe `:366-371`) |
+| `graph.node.completed.event_count` counts the events in the agent's state update. | `graph/nodes.py:276-288` |
+| Event metadata must never carry provider text or exception text; `graph.report.reviewed` carries "never the review's prose and never a defect's text". | `agents/events.py:27-31`, `graph/events.py:34-37`, `:262-266` |
+| `agent_node` publishes its `graph.node.started` live; the reviewer node merges its started event without publishing it live. | `graph/nodes.py:236-243`, `:841-851` |
+| `ResearchSession.publish` stores a deep copy in `session.events` and updates `current_agent`, `iteration`, `notes_closed` and `note_passes`. | `api/sessions.py:132-153` |
+| The CLI streams through the same handler; plain and verbose output show only `PROGRESS_EVENT_TYPES`, `.completed` events and three verbose types; `--debug` shows every type. | `cli.py:369-375`, `:381-392`, `:410-442` |
+| Replay runs the engine unpaced and releases each event through a queue, `delay` seconds apart (default 150 ms). | `api/replay.py:101-106`, `:136-140`; `api/__main__.py:26` |
+| Replay reads `X-Replay-Case` and `X-Replay-Clarify` on `POST /research` into ContextVars; the web proxy forwards only allowlisted request headers. | `api/replay.py:143-203`; `web/app/api/[...path]/route.ts:9` |
+
+### 3.2 Reader notes: API, board, routing, outcomes
+
+| Fact | Where |
+|---|---|
+| `NoteBoard` receives (numbers `n1`…`n10`), adds interpreted notes, drops, snapshots, and `settled()` waits for pending readings; it has no change notification. | `runtime/notes.py:47-131` |
+| The board is bound for the session's task through a ContextVar. | `api/sessions.py:311-327`, `runtime/notes.py:133-150` |
+| `add_note` refuses unless the session is `running`, not finished, not `notes_closed` and the store not closing; `notes_closed` is set by `graph.route.decided` with destination `finalize` or `end`. | `api/sessions.py:375-407`, `:146-149` |
+| A failed reading keeps the note as an emphasis in the reader's words. | `api/sessions.py:409-443`, `api/notes.py:129-131` |
+| The interpretation schema is `kinds`, `restatement`, `scope`, `new_questions`, `replaces`; restatements ≤ 120 chars; ≤ 3 new questions of ≤ 200 chars. | `api/notes.py:47-120`, `:134-174`, `:183-197` |
+| Replay's interpreter restates the note as written, as an emphasis; a replay run never applies a note (api-gaps 3.9). | `api/notes.py:267-275`; `docs/design/api-gaps.md:127` |
+| `ReaderNote` keeps `reviewed`, `passed`, `redrafted` flags; `MAX_NOTES_PER_RUN = 10`; prefixes `note-` and `Your note: `. | `utils/types.py:1145-1150`, `:1173-1214` |
+| Outcomes are `covered`, `not_found`, `not_addressed`, `pending`, `replaced`; `pending` when no state or no verdict. | `api/notes.py:53-55`, `:343-376`; `api/models.py:154-167`; `web/lib/api.ts:44`; `web/lib/notes.ts:70-76` |
+| Requests that carry notes: planning (`PLANNING_NOTES`), research loops without new_angle notes, extraction, source evaluation (relevance only), writing, review (with ids); verification carries none (LB-D10). | `agents/reader_notes.py:29-69`, `:113-115`; `agents/researcher.py:3190-3205`, `:4418-4437`; `agents/source_evaluator.py:1105-1109`; `agents/report_writer.py:3246-3248`; `agents/report_reviewer.py:715-722` |
+| `PLANNING_NOTES` tells the planner "a new_angle note can become a sub-topic of its own". | `agents/reader_notes.py:29-36` |
+| The review packet lists every active note; dispositions for unknown ids, repeats and unknown statuses are dropped. | `agents/report_reviewer.py:579-585`, `:625-628`, `:715-722`, `:1557-1580` |
+| The review node waits at most `_REVIEW_NOTES_WAIT_S = 30.0` for notes still being read, then marks every active note of its input `reviewed`. | `graph/nodes.py:862`, `:1086`, `:1089-1108` |
+| Route order: halted → `notes_due_a_pass` → `notes_due_a_redraft` → extra pass → `review_unavailable` → redraft → accepted → exhausted → not accepted. | `graph/state.py:339-406` |
+| A note is due a pass on a `no_evidence` verdict when not `passed`; due a redraft when not `redrafted` and `ignored_with_evidence` or not `reviewed`. | `graph/state.py:303-336` |
+| `note_pass_node` appends `note_sub_topic` topics, confines the researcher through `extra_pass_target_ids`, flags `passed`, counts `note_passes`. `note_sub_topic` builds one required target per new question (or the restatement) and a rationale that says "the review found no evidence for it yet". | `graph/nodes.py:1343-1378`, `:1381-1443` |
+| A note redraft goes through `writer_redraft_node` and spends no `MAX_WRITER_REDRAFTS`. | `graph/nodes.py:1281-1309` |
+| The recursion limit is `(max_extra_passes + 1) × len(NODE_NAMES) + MAX_NOTES_PER_RUN × (len(NODE_NAMES) + NOTE_REDRAFT_STEPS) + 10`. | `graph/state.py:64-86`, `:432-448` |
+| After a note pass or a note redraft the writer drafts every part afresh: `_is_redraft_hop` returns False after `graph.note_pass.started` or `graph.note_redraft.requested`, so `defects` and `previous` are empty. | `agents/report_writer.py:1013-1035`, `:3242-3243` |
+| The report's "What we couldn't confirm" names note targets by their note. | `agents/report.py:1486-1568` |
+| The report reviewer after a note loop runs a full review: note markers are fresh-draft markers. | `graph/nodes.py:365-403` |
+
+### 3.3 Planner
+
+| Fact | Where |
+|---|---|
+| 1–10 sub-topics; `ResearchPlan.sub_topics` is capped at 10 by validation. | `agents/planner.py:89-90`, `:847-866` |
+| Plan-side flow: draft; one repair of local problems; one review; at most one repair of the review's findings and one confirming review (`MAX_PLAN_REVIEW_CALLS = 2`). Any review or repair failure keeps the plan that stands. | `agents/planner.py:100`, `:3626-3842` |
+| Plan labels `draft`, `repair`, `review_repair`. | `agents/planner.py:105-107` |
+| `PlanReviewDraft` is `sound`, `missing_dimensions`, `atomicity_defects`, `unsupported_premises`, `repair_instruction` (provider text). | `agents/planner.py:804-818`, `:2607-2631` |
+| Coverage ids are positional `topic-NN`; target ids `{coverage_id}-target-NN`; every local problem starts with a coverage or target id; the review request prints ids. | `agents/planner.py:1467-1475`, `:1565-1572`, `:1924-2075`, `:2815-2852` |
+| `planning.started` and `memory.recalled` are published live before the loop; `planning.completed` carries `sub_topics: [{coverage_id, title ≤ 160}]` and is published live. | `agents/planner.py:2891-2949`, `:3255-3269` |
+| `state_update` appends the plan's new topics and stamps their target ids into `initial_target_ids`. | `agents/planner.py:3844-3882` |
+| `render_reader_answers` prints the check's answers; `report_writer` already imports from `agents.planner`. | `agents/planner.py:2685-2704`; `agents/report_writer.py:40` |
+
+### 3.4 Researcher
+
+| Fact | Where |
+|---|---|
+| Eligible topics are sorted by priority; on an extra or note pass only topics owning an `extra_pass_target_ids` target run. The cap is `eligible[:max_sub_topics]`. | `agents/researcher.py:314-349`, `:4692-4695` |
+| Topics run under `asyncio.Semaphore(sub_topic_concurrency)` via `asyncio.gather(..., return_exceptions=True)`; a loop's provider failure sets `stop`, and topics not yet started are recorded `provider_failure_stopped_processing`; attempt-limit refusals are re-raised after every loop settles. | `agents/researcher.py:4746-4808`, `:4841-4849` |
+| Each loop's `decide` closure reads the board before every model turn. | `agents/researcher.py:4418-4437` |
+| Planned targets for extraction are read from the state the node started with (`_run_source_state`), confined to `extra_pass_target_ids` on a pass; each loop reads them once when it starts. | `agents/researcher.py:3207-3238`, `:4378-4396` |
+| `researcher.sub_topic.started` metadata: `sub_topic`, `coverage_id`, `priority`, `index`, `existing_sources`; published live. | `agents/researcher.py:2590-2612`, `:4499-4504` |
+| `research_completed_event` counts planned, researched, skipped, findings. | `agents/researcher.py:2722-2751`, `:4859-4866` |
+| Config: `sub_topic_concurrency: 10`, `max_sub_topics: 10`, researcher tool budget 40, `max_iterations: 15`. | `config.yaml:120`, `:169`, `:158-160`, `:149` |
+| One `RequestBudget` per run; each attempt reserves a unit before any I/O and a refused attempt raises `RequestAttemptLimitError`. | `request_budget.py:111-157` |
+
+### 3.5 Source evaluator
+
+| Fact | Where |
+|---|---|
+| `evaluation.started` carries `finding_count` and `source_count = len(task.groups)` and is published live before scoring. | `agents/source_evaluator.py:922-936`, `:1362-1368` |
+| A source whose stored assessment still matches is reused; the cap `max_total_sources` applies only to sources needing an assessment; batches of `batch_size` (12, `DEFAULT_BATCH_SIZE`) run concurrently under `source_scoring_concurrency` (6). | `agents/source_evaluator.py:99`, `:1175-1201`, `:1257-1263`; `config.yaml:121`, `:144-145` |
+| A batch either scores its sources (`scored`, or `unscored_missing` for a row the reply omitted) or marks them all `unscored_provider`. | `agents/source_evaluator.py:1207-1255` |
+| `overall_score = 0.45·authority + 0.15·recency + 0.40·relevance`; `low_confidence = overall < 0.4` (`LOW_CONFIDENCE_THRESHOLD`). | `agents/source_evaluator.py:88-98`, `:240-251`, `:415-457` |
+| `evaluation.completed` carries `source_count`, `average_score`, `low_confidence_count` and status counts over the whole snapshot. | `agents/source_evaluator.py:939-965`, `:548-562` |
+| A scored source records `source_role` (`original_report`, `independent_research`, `derivative`, `company_statement`, `mixed`, `unknown`) and `serving_host`. | `utils/types.py:84-91`, `:634-705` |
+
+### 3.6 Evidence verifier
+
+| Fact | Where |
+|---|---|
+| It judges only findings not yet verified, or re-bound to a new target; the snapshot merges new verdicts over old. | `agents/evidence_verifier.py:990-1005`, `:1115-1134` |
+| Figure Match decides `read_not_found`, `snippet_not_on_page` and `quoted` before any model call; figure-bearing findings go to batched Context Checks (`verifier_batch_size` 5, `verifier_concurrency` 16). | `agents/evidence_verifier.py:1017-1049`; `config.yaml:122-123` |
+| A verdict is `verified`, `verified_corrected`, `quoted` or `dropped` (`read_not_found`, `snippet_not_on_page`, `all_figures_dropped`); a figure drops for `evidence_not_on_page`, `correction_not_on_page`, `context_rejected`, `context_unavailable`. | `utils/types.py:365-374`; `agents/evidence_verifier.py:770-918` |
+| A correction can set a period (or clear one), a scope, a subject or a kind; `FigureResult.reason` is the Context Check's own text (provider text). | `agents/evidence_verifier.py:786-875`; `utils/types.py:392-419` |
+| `check_statements` batches drafted sentences and returns `consistent`, `corrected`, `inconsistent` or `None` (unjudged) per label. Two writer tests replace it with fakes whose keyword lists are fixed. | `agents/evidence_verifier.py:1485-1536`; `tests/test_agents/test_report_writer.py:2684-2688`, `:3274-3287` |
+
+### 3.7 Report writer
+
+| Fact | Where |
+|---|---|
+| `BOTTOM_LINE_SYSTEM_PROMPT` asks for "two to four sentences"; the first rule of `BOTTOM_LINE_INSTRUCTION` is "The most direct answer first, then the question's parts in order."; `MAX_BOTTOM_LINE_SENTENCES = 4`. | `agents/report_writer.py:374-435`, `:131` |
+| The bottom-line request lists checked statements under `## {section.title}` blocks, plus `# Reader notes`, "Disputed" and "Outcome" blocks; it carries no reader answers. | `agents/report_writer.py:1154-1247` |
+| `BottomLineDraft` is `sentences: list[WriterPointDraft]`; `SectionDraft` is `title`, `points`. | `utils/types.py:1899-1921` |
+| Parts are drafted concurrently under `section_gate`; each part's Statement Check runs off its own draft through a shared `check_gate`; the bottom line runs after every part. | `agents/report_writer.py:3017-3042`, `:2171-2260` |
+| Carry-over: a job with `redraft=False` and a previous section returns that section and its verdicts with no call. | `agents/report_writer.py:907-934`, `:2180-2188`, `:3000-3015` |
+| The bottom line keeps only consistent/corrected statements, applies the authority floor when any statement meets it, guards disputed labels, re-asks once on refusals, and falls back to `_bottom_line_fallback` when the draft is `None` or nothing is kept; the fallback moves the chosen statements out of their sections. | `agents/report_writer.py:2519-2788`, `:2263-2350`, `:3044-3057` |
+| Statement ids are renumbered `S001…` in render order (bottom line, then sections). | `agents/report_writer.py:2791-2818` |
+| `report_written_event` carries statements, citations, refused, fact_rows, not_found, table, parts, failed_parts. | `agents/report_writer.py:3117-3137` |
+
+### 3.8 Report rendering and the figures table
+
+| Fact | Where |
+|---|---|
+| Markdown order today: title, evidence line, `## Bottom line`, the bottom-line paragraph, the table (no heading), one `##` per section, `## What we couldn't confirm`, `## Sources`, the evidence-log link. | `agents/report.py:1612-1650` |
+| `_bottom_line_block` joins the summary points into one paragraph. | `agents/report.py:1226-1273` |
+| `build_table`: an options table when one required part marks ≥ 2 options, else the findings table, else none. The findings table has columns What was measured / Result / Who reported it (and when) / Source, at most 12 rows, prioritised by explicit required answers, then bottom-line citation. | `agents/report_table.py:316-338`, `:51-70`, `:635-668`, `:847-926` |
+| `fact_rows` groups one fact across pages (primary + `duplicate_finding_ids`); `measure` is the first answered target's measure in target-id order, else a dimension label, else "stated figure". | `agents/verified_facts.py:1334-1405` |
+| `EvidenceTarget.measure` is required; `unit_dimension` is `None` for a qualitative target. | `utils/types.py:868-892` |
+| The review fingerprint projects statements, finding ids, fact rows, not-found, table, parts and unreachable pages only. | `agents/report_reviewer.py:979-1034` |
+| The evidence log keeps every verified figure. | `agents/report.py:1772-1832`, `:1943-1961` |
+
+### 3.9 Reviewer
+
+| Fact | Where |
+|---|---|
+| Seven dimensions: completeness, prioritization, evidence_quality, attribution, uncertainty, readability, actionability, with definitions. | `utils/types.py:1127-1137`; `agents/report_reviewer.py:244-288` |
+| `ReviewDefect` carries `kind` (10 `GapKind`s), `severity`, `target_ids`, `statement_ids`, `problem`, `coverage_ids`, `resolution`; **no dimension**. `material` = critical/major and not resolved. | `utils/types.py:1031-1117` |
+| `graph.report.reviewed` carries status, mean score, material defect count, reviewed statements, fingerprint, reused. | `graph/events.py:250-285`; `graph/nodes.py:873-884` |
+| The review reads `state.report` verbatim as its reader content. | `agents/report_reviewer.py:692-695` |
+
+### 3.10 Sessions, API, cancellation, replay
+
+| Fact | Where |
+|---|---|
+| `SessionStatus` is `running`, `needs_input`, `completed`, `max_iterations`, `incomplete`, `failed`; `TERMINAL_STATUSES` excludes `needs_input`. | `api/models.py:35-42`; `api/sessions.py:54-56` |
+| `_run` re-raises `CancelledError`; its `finally` turns `needs_input` back to `running` and sets `finished_at` and `current_agent = None`. | `api/sessions.py:503-577` |
+| `iter_events` returns once the status is terminal, or the task is done with `finished_at` set. | `api/sessions.py:445-472` |
+| `/report` answers 409 `session_not_complete` without an outcome and 409 `report_unavailable` with no report; `/evidence` answers 409 `evidence_unavailable` without a composition or ledger. | `api/app.py:396-451` |
+| Provider calls use `AsyncOpenAI`; page reads use `httpx.AsyncClient`; Tavily search runs in `asyncio.to_thread`. | `providers/deepseek_provider.py:96-125`; `tools/web_scraper.py:176`, `tools/document_reader.py:233`; `tools/web_search.py:162-166` |
+| The search tool's client protocol is synchronous, and its default client is tavily's `TavilyClient`, which posts with `requests`; cancelling the awaiting task cannot stop a request already running in the worker thread. Each attempt reserves its budget unit before the call. | `tools/web_search.py:37-46`, `:97`, `:134-140`, `:160-166`; installed `tavily/tavily.py:1`, `:225-228` |
+| The installed `tavily-python` 0.7.27 (`pyproject.toml:23` requires `>=0.7`) also ships `AsyncTavilyClient`, which posts with `httpx.AsyncClient`. Both clients map 400, 401, 403, 429, 432 and 433 to tavily's own exceptions; any other failing status raises the transport's error, `requests.HTTPError` for the sync client and `httpx.HTTPStatusError` for the async one. The tool retries timeouts and `httpx.HTTPStatusError` 429/5xx only. | installed `tavily/async_tavily.py:47-122`, `:162-171`, `:251-259`; `tavily/tavily.py:134-143`, `:225-232`; `tools/web_search.py:163-176`, `:194-202` |
+| Eight synchronous search clients are injected: the replay double, the evaluation harness, and six test fakes. One test asserts that controlled mode never constructs `TavilyClient`. | `e2e_evaluation/replay.py:1656`; `evaluation/dependencies.py:574-583`; `tests/research_fakes.py:31-41`; `tests/test_agents/test_researcher.py:6038-6050`; `tests/test_evaluation/conftest.py:1760-1761`, `:2023-2030`; `tests/test_tools/test_web_search.py:21-26`, `:447-457`; `tests/test_evaluation/test_dependencies_controlled.py:472-520` |
+| Long-term memory calls `asyncio.to_thread` for Chroma and embeddings, which are local by default (`local` builds `LocalEmbeddingProvider`, and the model name applies to the OpenAI adapter only). | `memory/long_term.py:239-314`; `config.yaml:8-9`; `providers/factory.py:133-145` |
+| LangGraph 1.2.10 submits node tasks with `__cancel_on_exit__=True`; its executor cancels and awaits them when the consumer exits. | installed `langgraph/pregel/_runner.py:471`, `:528`, `:925`; `langgraph/pregel/_executor.py:186-205` |
+| `ReplayRunner` cancels its drain task on cancellation and re-raises. | `api/replay.py:123-128` |
+| `run_research` cancels its loop-lag monitor in `finally`; publication and memory writes happen only in `finalize_report`. | `main.py:358-364`; `graph/nodes.py:554-654`, `:683-790` |
+
+### 3.11 Web app
+
+| Fact | Where |
+|---|---|
+| `STAGES` (seven rows, static metas), `RunState`, 22 handlers; `run-state.test.ts` asserts the exact handler keys and RunState keys. | `web/lib/run-state.ts:16-24`, `:57-78`, `:177-356`; `web/test/run-state.test.ts:29-41`, `:44-50` |
+| `RunEvent` is `{type, metadata}`; the timestamp is dropped. | `web/lib/run-state.ts:79`, `:382` |
+| `NoteState` keeps no `kinds`; ack "where" text depends only on the active step. | `web/lib/run-state.ts:48-51`, `:346-355`; `web/lib/notes.ts:22-41` |
+| `rowBrief` gives every step but Researching one sentence; Planning's finished brief lists the titles. | `web/lib/briefs.ts:25-31`, `:53-74` |
+| `BriefSpine` renders `li.spine-row` rows with `.ps-head` and `.ps-x > .ps-xi > .ps-brief` lines (`.ln`, `--i` stagger); the checklist is `.ps-topics > .ln[data-topic]` with `.mk` (ring, dot, drawn ✓). | `web/components/BriefSpine.tsx:30-141`; `web/app/globals.css:1231-1333` |
+| Reviewing's outcome line is "Accepted · {score}" / "Not accepted · {score}". | `web/lib/run-state.ts:149-159` |
+| `SessionScreen` stage order: not found → loading → service-stopped (`running` + `finished_at`) → Submitted → check → Running → Failed → Report. | `web/components/SessionScreen.tsx:194-205`, `:208-233` |
+| Chip: `STATUS` labels and dots; `isLive` is `running`/`needs_input`; the sidebar marks only live rows. | `web/lib/format.ts:24-36`, `:63-73`; `web/components/Sidebar.tsx:48-58`; `web/components/StatusChip.tsx:4-9` |
+| The topbar holds the status chip and the replay chip. | `web/components/Topbar.tsx:16-19` |
+| The report renders the whole Markdown in one `article.card` with a "Your notes" block above `.prose`; the evidence line is marked by a remark plugin. | `web/components/ReportBody.tsx:63-137`; `web/app/globals.css:826-832`, `:1406-1410` |
+| The report column and rail are centred as one group at `--report-card-w` (human decision "card hugs the text"). | `web/app/globals.css:1217-1229`; `web/e2e/layout.spec.ts:128-163` |
+| e2e tests assert the first `.prose p.avail` is the evidence line and `h2` "Bottom line"/"Sources" inside `.prose`; `waitTerminal` and the capture script list the terminal statuses. | `web/e2e/report.spec.ts:9-11`; `web/e2e/support.ts` (`waitTerminal`); `web/scripts/capture-replay-events.mjs:12` |
+
+### 3.12 Theme and motion
+
+| Fact | Where |
+|---|---|
+| Colour tokens (`--status-ok/warn/danger`, `--muted`, `--meta`, `--border(-soft)`, `--surface`, `--bg`, `--accent` only on `.btn-primary`); motion tokens `--motion-fast` 120, `--motion-base` 200, `--motion-fluid` 420, `--fill-line` 620, `--fill-solid` 700, `--motion-halo` 2200, eases. | `web/app/globals.css:5-48`, `:655-679` |
+| Reduced motion zeroes every duration and iteration, then restores opacity-only `enter`/`leave`/`arrive`. | `web/app/globals.css:991-1028` |
+| DESIGN §3.4 and §5.6: the halo is "the whole looping budget for this screen"; a second, edge-less loop was removed. | `docs/design/DESIGN.md:759-771`, `:1426-1430` |
+| The picked canvas CSS adds a skeleton sheen loop (`.sk::after`, 1800 ms), an indeterminate drift loop (`.pb.ind i`, 2400 ms), and a 600 ms bar fill, with reduced-motion rules that stop both loops. | `.superpowers/progress-canvas/project/progress.css:8-14`, `:30-35`, `:173-179` |
+
+---
+
+## 4. Contracts shared by more than one phase
+
+Whichever phase lands first implements the item; later phases reuse it.
+
+1. **Progress events are live-only.** A progress event (§6.1) is published through `publish_live` and is **not** returned in any `state_update["events"]`. So it is never in `state.events`, a checkpoint, the quality record or `node.completed.event_count`, and the CLI's plain and verbose output are unchanged (no progress type ends in `.completed` or is in `PROGRESS_EVENT_TYPES`). `ResearchSession.publish` records it, so a reconnect replays it. Metadata holds counts, ids, enumerated values, plan and section titles, finding contents, drafted sentences, hosts and page-word correction values only; never provider text, a model's reason text, or an exception message.
+2. **Terminal note outcomes.** `NoteOutcome` gains `not_checked`. `note_outcome(note_id, state, *, terminal)` never returns `pending` when `terminal` is true (§5.6). `ReaderNoteResponse.outcome` and `web/lib/api.ts` `ReaderNoteOutcome` gain `not_checked`; `OUTCOME_TEXT.not_checked` is "not checked". Phase A implements it. If Phase D lands first, D adds the literal and the `terminal` rule exactly as §5.6 states it.
+3. **Step ids.** A session's step is one of `check`, `planner`, `researcher`, `source_evaluator`, `evidence_verifier`, `report_writer`, `report_reviewer`, `finalize_report`. Labels come from `STAGES` (`web/lib/run-state.ts:16-24`); `check` reads "the questions" (I).
+4. **Event timestamps on the web.** `RunEvent` gains `timestamp: string` (`toRunEvent` copies `event.timestamp`), and `Handler` gains a third argument `timestamp`. Phase B implements it.
+
+---
+
+## 5. Phase A — reader notes that land
+
+### 5.1 Definitions and helpers
+
+- `is_research_note(note: ReaderNote) -> bool` is `"new_angle" in note.kinds`; it lives in `agents/reader_notes.py`.
+- `note_sub_topic` moves from `graph/nodes.py:1343-1378` to `agents/reader_notes.py` (agents cannot import `graph/`), with a keyword `reason: Literal["reader_note", "no_evidence"]`. Its rationale is "The reader asked for this in a note." for `reader_note`, and today's sentence for `no_evidence`. `graph/nodes.py` imports it from there. Everything else about the topic is unchanged: title `Your note: {restatement}`, coverage id `note-{note_id}`, one required target per new question (or the restatement when there is none), with the note's scope.
+- `research_topic_ids(state) -> set[str]` is the coverage ids in `state.sub_topics` that start with `note-`.
+- A research note's other kinds still steer: `research_reader_notes` (`agents/reader_notes.py:113-115`) is unchanged, so a running loop reads only steering notes, while the writer, evaluator and planner read every active note.
+
+### 5.2 Planning-time research notes (D1, D2)
+
+**Planner prompt.** `PLANNING_NOTES` (`agents/reader_notes.py:29-36`) becomes, exactly:
+
+> The reader added these notes while the run was going; each line is the note as the run understood it, and a later note replaces an earlier one it contradicts. Plan within them: an emphasis note gives its subject more weight, an exclude note leaves its subject out, a scope note narrows the plan to its scope, and an about_reader note says who the report is for. A new_angle note is researched as a sub-topic of its own that the run adds to this plan once it is final: do not plan a sub-topic for it, and a subject only a new_angle note asks for is not a missing part of the question.
+
+The plan request and the plan-review request both print it (`agents/planner.py:2740-2741`, `:2877-2878`), so the review stops reporting a note's subject as a missing dimension (E4).
+
+**Appending at publication.** In `PlannerAgent.run` (`agents/planner.py:3233-3278`), after `super().run(state)` returns and before `planning_completed_event` is built, with no `await` in between:
+1. `notes = live_reader_notes(self._reader_notes)` (state notes plus the board's newer ones, active only).
+2. `held = [n for n in notes if is_research_note(n) and f"note-{n.note_id}" not in known]`, where `known` is the coverage ids of `state.sub_topics` plus the plan's.
+3. `priority = max(t.priority for t in [*state.sub_topics, *plan.sub_topics]) + 1`, and `note_topics = [note_sub_topic(n, priority=priority, reason="reader_note") for n in held]`, in receipt order.
+4. The returned update appends `note_topics` after the plan's topics in `sub_topics` and their target ids after the plan's in `initial_target_ids`.
+5. `planning_completed_event(outcome, note_topics=note_topics, states=…)`: `sub_topics` lists the plan's topics, then each note topic as `{coverage_id, title, note_id}`; `sub_topic_count` counts both; a new `note_topic_count` counts the note topics. `states` is Phase B's (§6.3); before Phase B, no `state` key is emitted.
+
+A note interpreted after step 1 is picked up by the researcher (§5.3); the synchronous tail of the planner run leaves no gap.
+
+### 5.3 Research-time research notes (D3)
+
+**The dispatcher.** `ResearcherAgent.run` (`agents/researcher.py:4639-4882`) replaces its single `asyncio.gather` with a dispatcher:
+
+1. `selected` = the eligible non-note topics, capped at `max_sub_topics`, followed by every eligible note topic (never capped: at most 10 by LB-D11a). Today's cap line `:4694-4695` applies to the non-note list only.
+2. Each selected topic is started as its own task (`asyncio.create_task(research(index, topic, gated=True))`, where `gated` means it waits on the existing `Semaphore(sub_topic_concurrency)`).
+3. Loop:
+   - For every active research note on the board that is interpreted and whose `note-{id}` is neither in the node's state nor already started in this run, and while `stop` is not set: build `note_sub_topic(note, priority=max+1, reason="reader_note")`, add it to `self._run_note_topics`, and start `research(next_index, topic, gated=False)`. A note thread **does not wait on the semaphore**, so it starts at once even when `sub_topic_concurrency` loops are running.
+   - If any task is unfinished: `await asyncio.wait({*unfinished, board_change}, return_when=FIRST_COMPLETED)`, where `board_change` completes on the board's next add or drop (below). Continue the loop.
+   - Every task has finished. If the board has a note still being read (`board.pending`), `await notes_settled(timeout=30.0)` (the review node's own bound, `graph/nodes.py:1086`, shared as one constant `NOTES_WAIT_S` in `agents/reader_notes.py`) and continue the loop, so a note that arrives after the last thread finished but before the node returns still gets its thread. If the wait timed out, or nothing is pending, the research window **closes here**: the check that found no due note and the loop's exit run with no `await` between them.
+4. A research note interpreted after the window closed is due a note pass (§5.4). The boundary is exact because both the dispatcher and the notes route run on one event loop.
+
+**Board change notification.** `NoteBoard` gains `version: int`, incremented on every `add` and `drop`, and `async def wait_for_change(self, seen: int) -> int`, which returns the current version once it differs from `seen`. No wake-up is lost, because the dispatcher reads `version` before scanning. The researcher reaches the board through helpers in `agents/reader_notes.py`, imported at call time as today (`agents/reader_notes.py:80-105`). With no board bound (the CLI), the dispatcher waits on its tasks only.
+
+**What the thread sees.** `_planned_targets()` (`agents/researcher.py:3207-3238`) returns the planned targets as today (confined on a pass) plus every target of `self._run_note_topics`. The coverage titles map built at loop start (`:4378-4386`) includes them too. `bound_sub_topic_findings`' required ids (`:4580-4585`) read `_planned_targets()` and so include them. A loop that started before the note thread keeps the target list it started with.
+
+**Failures and cancellation.**
+- A thread that raises or ends in a provider failure sets `stop`, exactly as a planned loop does (`:4770-4783`). Once `stop` is set, no new note thread starts; such a note stays unresearched and is due a note pass.
+- Attempt-limit refusals are re-raised after every task has settled, and any other exception is re-raised after the refusals, in index order (today's `:4797-4808`).
+- The dispatcher wraps the loop in `try/finally`. On any exit by exception, `CancelledError` included, it cancels every unfinished thread task and awaits them (`return_exceptions=True`). Manual tasks, unlike `gather`, are not cancelled with their parent; this is what makes Phase D's stop reach every loop.
+
+**Budget.** Note threads reserve from the run's one `RequestBudget` like any loop (`request_budget.py:131-157`). There is no separate allowance; a spent ceiling halts the run as it does today.
+
+**Events and state.**
+- `sub_topic_started_event` (`agents/researcher.py:2590-2612`) gains `note_id` (the note's id; the key is omitted for a planned topic). Its `index` is the next index after the planned ones.
+- `research_completed_event.sub_topics_planned` counts `len(state.sub_topics) + len(self._run_note_topics)`.
+- The researcher's update appends `self._run_note_topics` to `sub_topics`. Inventories are untouched, as `note_pass_node` leaves them today.
+- The fold that builds findings, runs and events keeps index order (planned, then note threads by start order).
+
+### 5.4 Notes that arrive after research (D4)
+
+**Routing.** In `graph/state.py`:
+```python
+def notes_due_a_pass(state):
+    verdicts = note_dispositions(state)
+    topics = research_topic_ids(state)
+    return [
+        note for note in active_reader_notes(state.reader_notes)
+        if not note.passed and (
+            (is_research_note(note) and f"note-{note.note_id}" not in topics)
+            or (not is_research_note(note) and verdicts.get(note.note_id) == "no_evidence")
+        )
+    ]
+
+def notes_due_a_redraft(state):   # research notes never buy a redraft
+    verdicts = note_dispositions(state)
+    return [
+        note for note in active_reader_notes(state.reader_notes)
+        if not is_research_note(note) and not note.redrafted
+        and (verdicts.get(note.note_id) == "ignored_with_evidence" or not note.reviewed)
+    ]
+```
+The route order is unchanged (`graph/state.py:380-385`). Because both note checks come before `review_unavailable`, an owed pass runs whatever the review's status, `provider_failed` included (D5). `note_pass_node` (`graph/nodes.py:1381-1443`) calls `note_sub_topic(note, priority=…, reason="reader_note" if is_research_note(note) else "no_evidence")` and is otherwise unchanged.
+
+**Writer after a note pass (D4).**
+1. `ReportWriterTask` gains `note_pass_coverage_ids: list[str] = []`.
+2. In `build_task` (`agents/report_writer.py:3190-3250`), when the latest loop marker in `state.events` — the last of `graph.report.redraft_requested`, `graph.extra_pass.started`, `graph.note_pass.started` and `graph.note_redraft.requested` — is `graph.note_pass.started`, and `state.composition` is not `None` with `composition.iteration == state.iteration`:
+   - `note_pass_coverage_ids = [f"note-{i}" for i in marker.metadata["note_ids"]]`;
+   - `previous = state.composition`;
+   - `defects = []`.
+3. In `compose_written_report` (`:3000-3015`), when `note_pass_coverage_ids` is non-empty, `redraft_this = placement.coverage_id in note_pass_coverage_ids` and `defects_here = []`. `_run_part` then carries every other part over unchanged through `:2180-2188` (a part with no previous section is still drafted, per P2-1 at `:2190-2193`).
+4. `is_redraft` stays `bool(task.defects)`, so it is False and the bottom line is drafted fresh (`:2648-2649`).
+5. `_is_redraft_hop` (`:1013-1035`) is unchanged: `defects` stay empty after any note marker.
+6. The reviewer still runs a full review after a note pass (the note markers stay in `_FRESH_DRAFT_MARKERS`, `graph/nodes.py:397-403`).
+
+**The exception (D4).** An exclude, scope, emphasis or about_reader note the review finds `ignored_with_evidence`, or one no review input carried, takes the existing note redraft route (`graph/nodes.py:1281-1309`). That route keeps drafting every part afresh (`agents/report_writer.py:1033-1034`), because no record says which parts a note affects; §13 O2 records this reading of "the parts they affect".
+
+### 5.5 The review's view of notes (D5)
+
+- `build_report_review_input` (`agents/report_reviewer.py:715-722`) lists **steering notes only**. A disposition naming a research note is dropped, because its id is not in the packet (`:1573`).
+- `_reviewed_notes_update` (`graph/nodes.py:1089-1108`) is unchanged.
+- LB-D10 holds: no verifier request changes.
+
+### 5.6 Outcomes (D5)
+
+`note_outcome(note_id: str, state: ResearchState | None, *, terminal: bool) -> NoteOutcome` in `api/notes.py`, with `waiting = "not_checked" if terminal else "pending"`:
+
+| Case, checked top to bottom | Outcome |
+|---|---|
+| no state, or the note is not in `state.reader_notes` | `waiting` |
+| a later active note replaces it | `replaced` |
+| research note, no `note-{id}` topic in `state.sub_topics` | `waiting` |
+| research note, at least one of its topic's targets is in `state.quality.answered_target_ids` (no `state.quality` counts as none answered) | `covered` |
+| research note, `state.composition` lists at least one of its targets in `not_found` with `searched = true` | `not_found` |
+| research note, otherwise | `waiting` |
+| steering note, latest review verdict `honoured` | `covered` |
+| steering note, `ignored_with_evidence` | `not_addressed` |
+| steering note, `no_evidence` | `not_found` |
+| steering note, no verdict | `waiting` |
+
+- **Spec choice.** "Covered" means at least one of the note's targets is answered by a verified finding. The unanswered targets are still listed under "What we couldn't confirm" (`agents/report.py:1533-1551`); §13 O8.
+- `session_note_fields` (`api/sessions.py:214-254`) passes `terminal = session.status in TERMINAL_STATUSES or session.finished_at is not None`.
+- `ReaderNoteResponse.outcome` gains `not_checked`.
+
+### 5.7 Web changes (Phase A)
+
+- `NoteState` gains `kinds: string[]`, from `session.note.interpreted.metadata.kinds`.
+- `ackFor` (`web/lib/notes.ts:34-41`) uses this `where` table for a research note:
+
+| Active step | `{where}` (I) |
+|---|---|
+| Planning | ", as its own topic" |
+| Researching | ", researching it as its own topic now" |
+| Evaluating, Verifying, Writing | ", researched as its own topic after this draft is reviewed" |
+| Reviewing | ", researched as its own topic next" |
+
+  Steering notes keep today's `WHERE` table (`web/lib/notes.ts:22-29`).
+- Researching's checklist gains the note thread's row from `researcher.sub_topic.started` through the existing `topicFor` (`web/lib/run-state.ts:139-147`).
+- `OUTCOME_TEXT.not_checked` is "not checked".
+- The Planning slots are Phase B's (§6.3). Until B lands, the finished Planning brief lists the note topic's title with the plan's (`web/lib/briefs.ts:69-71`).
+
+### 5.8 Edge cases (Phase A)
+
+| Case | Behaviour |
+|---|---|
+| A research note is replaced by a later note before its topic exists | It never gets a topic; the later note is judged on its own kinds. |
+| A research note is replaced after its topic was researched | The topic's part stays in the report; the outcome is `replaced`. |
+| The same subject is also planned by the model despite the prompt | Two topics cover it; nothing is merged (§12 R3). |
+| Ten research notes during one researcher run | Ten threads start ungated; LB-D11a bounds the count. |
+| A research note arrives while an extra pass or a note pass runs | It gets a thread in that run (the dispatcher runs in every researcher node). |
+| Stop (Phase D) during research | The dispatcher's `finally` cancels every thread. |
+
+### 5.9 Documentation (Phase A)
+
+| Doc | Change |
+|---|---|
+| `DESIGN.md` §3.5 (`:878-888`) | A research note never waits for a review: planning-time notes join the plan; research-time notes start their own topic at once; later notes buy one note pass, after which only the note's part and the bottom line are rewritten. |
+| `DESIGN.md` §3 inventory (`:219-224`) | Note outcomes gain `not checked` for a finished run. |
+| `api-gaps.md` 3.9 (`:127`) | Unchanged in substance; replay still never applies a note. |
+
+---
+
+## 6. Phase B — live progress per step
+
+### 6.1 Event contract
+
+All new types are progress events (§4.1). Extended types keep every existing key.
+
+| Event | Emitted | Metadata |
+|---|---|---|
+| `planner.progress` (new) | at the start of each plan-side request: the draft, the local repair, each review, the review repair | `step`: `drafting` \| `fixing` \| `checking`; `check_round`: 0, 1 or 2; `sub_topics`: `[{coverage_id, title (≤ 160), state}]`, `[]` until a draft has returned. `state` is in the §6.3 table. |
+| `planner.planning.completed` (extended, still in state) | unchanged | each `sub_topics` entry gains `state` (final, §6.3) and, for a note topic, `note_id`; plus `note_topic_count` (§5.2) |
+| `source_evaluator.progress` (new) | once when the batches are planned, before the first scoring call; then after each batch settles | `to_rate`, `reused`, `capped`, `rated`, `strong`, `fair`, `weak`, `unrated`, `batches`, `batches_done` |
+| `source_evaluator.evaluation.completed` (extended) | unchanged | `strong_count`, `fair_count`, `weak_count` over the snapshot's scored sources |
+| `evidence_verifier.progress` (new) | once after the Figure Match pass, before the first Context Check; then after each batch settles | `total`, `checked`, `verified`, `corrected`, `quoted`, `dropped`, `batches`, `batches_done`, `sample` (below) or `null` |
+| `report_writer.progress` (new) | when the part jobs are built; when each part's draft returns; after each Statement Check batch of a part or of the bottom line; when the bottom-line call starts | `phase`: `sections` \| `bottom_line`; `parts_total`, `parts_returned`, `sentences_drafted`, `sentences_checked`, `backed`, `removed`, `unchecked`, `fraction` (0–1, 3 decimals); `sample` (below) or `null` |
+| `graph.report.reviewed` (extended; **now published live**, with the reviewer's `graph.node.started`) | right after `_review_report` returns, before the notes wait (`graph/nodes.py:852-862`) | `criteria`: 7 × `{dimension, met: true \| false \| null, kinds: [GapKind…]}`, in `DIMENSION_GUIDANCE` order; `notes`: `[{note_id, result: met \| not_met \| pending \| not_checked, reason}]` (§6.7) |
+
+Samples, bounded and never provider text:
+- **Verifier** `{text, verdict, correction, drop_reason, source}`: `text` is `summarize_text(finding.content, limit=160)`; `verdict` is the finding status; `correction` is `null` or `{field: period | period_cleared | scope | subject | kind | figure, value}` (value ≤ 60 chars; page words from the kept context); `drop_reason` is the enumerated finding or first figure drop reason; `source` is `{role: SourceRole | null, host}`.
+- **Writer** `{text, verdict: backed | removed, findings, section}`: `text` ≤ 200 chars (the corrected text for a `corrected` verdict); `findings` is the count of the sentence's cited labels; `section` is the section title, or "Bottom line".
+
+The `graph.node.started` of `report_reviewer` is published live (the same object stays in its snapshot) so Reviewing's elapsed time starts on time.
+
+### 6.2 Hooks (backend)
+
+| Agent | Hook |
+|---|---|
+| Planner | In `finalize` (`agents/planner.py:3626-3842`), publish `planner.progress` immediately before each of the five `_request_plan`/`_review_plan` calls, with the states in §6.3. A pure helper `plan_progress(sub_topics, *, flagged, repaired, step, check_round)` builds the metadata. `flagged` is the plan ids that match `topic-\d{2}` in the text being acted on: the attempt's labelled problems for a local repair; `requested_problems(review)` plus `repair_instruction` for a review repair. Only ids, never the text, leave the helper. `repaired` is the ids whose title or targets changed, or that are new, between the attempt before a repair and the one after. The planner does no provider or tool work between one plan-side call's return and the next call's start (`agents/planner.py:3664-3842`), so each start event also marks the previous call's return: the draft's titles, and the check's result. After the last call, `planning.completed` marks it (`:3268-3269`). |
+| Evaluator | `score_sources` (`agents/source_evaluator.py:1154-1301`) takes `on_progress: Callable[[dict], None] \| None`. It is called once after `batches` is built, then in `score_one`'s completion (success or provider failure), with cumulative counts in completion order. `run` passes a callback that builds and live-publishes the event. |
+| Verifier | `verify` (`agents/evidence_verifier.py:1017-1055`) takes `on_progress`: once after the Figure Match loop (`:1021-1040`), then after each `one(batch)` returns, before the merge. |
+| Writer | `check_statements` (`agents/evidence_verifier.py:1485-1536`) gains `on_batch: Callable[[Sequence[StatementCheckItem], Mapping[str, StatementVerdictDraft \| None]], None] \| None = None`, called after each batch returns. A `_WritingProgress` object (one per `compose_written_report`) holds the counters; `_run_part`, `_check` and `_run_bottom_line` update it and live-publish `report_writer.progress`. The two test fakes of `check_statements` gain `on_batch=None` (§11.2). |
+| Reviewer node | `report_reviewer_node` publishes its started event live, then builds `report_review_completed_event(..., criteria=…, notes=…)`, publishes it live, and returns it in its events as today. |
+
+**Sample choice.** Deterministic and tested:
+- Verifier: among the batch (or the Figure Match set, for the first event), the first finding in batch order by priority `verified_corrected` > `dropped` > `verified` > `quoted`.
+- Writer: the first sentence in batch order with a non-`None` verdict; `null` when the whole batch failed. The ticker keeps its last sample.
+
+**Writing fraction.** `P` = the parts this run drafts (jobs with `redraft` true and findings). Each drafted part and the bottom line weigh `1/(P+1)`. A part contributes `checked_i / drafted_i` once drafted (0 before); the bottom line contributes its own `checked / drafted` once drafted. The value never decreases. With `P = 0`, the bottom line alone fills the bar.
+
+**Evaluator split (spec choice).** On `overall_score`:
+
+| Word | Rule |
+|---|---|
+| Strong | ≥ 0.70 (new `STRONG_SOURCE_THRESHOLD = 0.70`) |
+| Fair | ≥ 0.40 and < 0.70 |
+| Weak | < 0.40 (exactly today's `low_confidence`) |
+| not rated | `unscored_*` statuses |
+
+These counts cover the sources scored in this pass; reused sources are counted in `reused`.
+
+**Criteria from defects (spec choice).** A criterion is `met: null` when the review is not `scored`; otherwise `met: false` when a material defect maps to it, and `met: true` otherwise. `kinds` lists the mapped kinds, one per material defect, in defect order. Mapping:
+
+| GapKind | Criterion |
+|---|---|
+| coverage, mechanism | completeness |
+| missing_support, acquisition, source_quality, freshness | evidence_quality |
+| identity | attribution |
+| contradiction | uncertainty |
+| semantic_duplicate, presentation | readability |
+
+prioritization and actionability have no kind, so they read ✓ on every scored review (§13 O7).
+
+### 6.3 Planning (D7, `Main.dc.html` option B)
+
+**Structure of the open row's brief**, in order:
+1. The status line: a stack of five `p` in one grid cell (`.xf`), one visible.
+2. Ack lines (existing).
+3. The slot list (`.ps-topics` markup): one row per topic, then one row per research note known to the page.
+
+**Slot states** (from `planner.progress` and the final `planning.completed` states):
+
+| State | When | Mark | Fact (I) |
+|---|---|---|---|
+| skeleton | before the first titles | ring; a skeleton bar in the title cell | "drafting" while `step = drafting`, else none |
+| drafted | titles known, not yet checked | ring | none |
+| checking | `step = checking` | green dot with halo | "checking" |
+| being_fixed | `step = fixing` and the slot is flagged | green dot with halo | "being fixed" |
+| passed | the last check was sound, or did not flag this slot | ✓ | none |
+| fixed | as passed, and a repair changed or added it | ✓ | "fixed" |
+| flagged | the last check flagged it and no repair is left | amber ✗ | "still flagged" |
+| not_checked | no check produced a verdict | ring | "not checked" |
+| note, pending | a research note interpreted while Planning is active | ring | "joins the plan" |
+| note, planned | `planning.completed` lists `note-{id}` | ✓ | "from your note" |
+
+- Before titles, the list shows **four** skeleton slots at widths 78 %, 64 %, 72 %, 52 % (canvas `widths`). This is a spec choice: the count is a placeholder, not a claim.
+- When titles arrive, the first `min(4, n)` slots cross-fade from bar to title, extra titles rise in, and surplus bars fade out.
+- A note slot appears when its note is interpreted as a research note while Planning is the active row. If `planning.completed` does not list it, the slot is removed, and the note appears as a thread in Researching (§5.3).
+
+**Status line** (I): "Reading your question and your answers…" (or "Reading your question…" when the check gave no answers) until the first `planner.progress`; then "Drafting a plan for your question…" (drafting), "Checking the plan covers everything you asked…" (round 1), "Checking the fixed plan…" (round 2), "Fixing {k} topic(s) the check flagged…" (`k` flagged, `k > 0`) or "Fixing what the check found…" (`k = 0`); "Plan ready · research starts now" on `planning.completed`.
+
+**Row subtitle.** The elapsed time `Xm SSs` (green while active), from the planner's `graph.node.started` timestamp. **Outcome:** "{n} sub-topics · {k} from your note(s) · {duration}" (the clause is left out when `k = 0`).
+
+**Motion.**
+- The skeleton sheen is `.sk::after`, a `color-mix(in oklch,var(--fg) 7%,transparent)` gradient translating over `--motion-halo`, infinite.
+- Title and fact cross-fades: opacity over `--motion-base`, `translateY(5px)` over `--motion-fluid`, `--ease-entrance`.
+- Slots stagger 60 ms, the brief's own rhythm (the canvas's 260 ms is replaced to match LB-D1).
+- Reduced motion: no sheen (static bar), fades only.
+
+### 6.4 Evaluating sources (D8, `Evaluating.dc.html` option A)
+
+- **Brief.** `b-now` "Rating {to_rate} sources for trustworthiness and relevance" (I); with `reused > 0`, "Rating {to_rate} new sources · {reused} already rated" (I); with `to_rate = 0`, "No new sources to rate" (I) and no bar or stats.
+- **Bar.** A determinate bar (`.pb`), `fraction = (rated + unrated) / to_rate`.
+- **Stats row.** Rated "{rated} of {to_rate}", Strong, Fair, Weak; each reads "not yet" before the first batch lands.
+- **Subtitle** (green): "starting · not yet rated" before the first batch, then "{rated} of {to_rate} rated".
+- **Outcome.** "{scored} sources rated · {strong} strong · {fair} fair · {weak} weak", plus " · {u} not rated" when some are unscored (I).
+- **Motion.** Numbers tween over 400 ms (`useTween`); the bar fills over `--fill-line`.
+
+### 6.5 Verifying evidence (D9, `Verifying.dc.html` option C)
+
+- **Brief.** Eyebrow "Just checked"; a `.tickbox` (hairlines above and below, `min-height:112px`) with the last two samples stacked, the newest showing. Before the first sample, one `b-sub` line "The first findings are being checked…" (I), which pairs with Writing E's placeholder (spec choice).
+- **Sample text.** `p.qt` shows the finding text, in curly quotes when the verdict is `quoted`.
+- **Verdict line.** `p.vd` shows the verdict words, then " · {source}". Verdicts (I):
+
+| Verdict | Words |
+|---|---|
+| verified | "verified" |
+| verified_corrected | "corrected — the page dates it {v}", "— the page states no period for it", "— the page says it covers {v}", "— the page says it is about {v}", "— the page states it as an actual/a forecast", or "— one of its figures was not on the page" |
+| quoted | "quoted as written" |
+| dropped | "dropped — {reason}": `read_not_found` "the page could not be read again"; `snippet_not_on_page` "the page does not say this"; `evidence_not_on_page` "the page does not show this figure"; `correction_not_on_page` "the page does not back its date or scope"; `context_rejected` "the page's context does not support it"; `context_unavailable` "its figures could not be checked" |
+
+- **Verdict colour.** `--status-ok` for kept verdicts, `--status-warn` for dropped (spec choice; the canvas coloured every verdict green, §13 O6).
+- **Source words** (I): `original_report` "an original report"; `independent_research` "independent research"; `derivative` "a round-up of other sources"; `company_statement` "the business's own words"; otherwise the host.
+- **Bar and tally.** `.pb` at `checked / total`; tally `b-facts` "{checked} of {total} checked · {v} verified · {c} corrected · {d} dropped".
+- **Subtitle** "starting · not yet checked", then "{checked} of {total} checked". **Outcome** unchanged (`web/lib/run-state.ts:236-240`).
+
+### 6.6 Writing report (D10, `Writing.dc.html` option E)
+
+- **Brief.** Eyebrow "Just written"; `.tickbox` with the placeholder "The first section is being drafted…" until the first sample, then samples: `p.qt` sentence; `p.vd` "✓ backed by {k} finding(s)" (`--status-ok`) or "✗ removed — no verified finding says this" (`--status-warn`), then " · {section}".
+- **Bar.** `.pb` at `fraction`.
+- **Tally** "{checked} of {drafted} sentences checked · ✓ {backed} backed · ✗ {removed} removed · section {parts_returned} of {parts_total}", plus " · {u} not checked" when `unchecked > 0`. `drafted` grows as sections return; the canvas's fixed 39 assumed a known total (§13 O12).
+- **Subtitle** "{parts_returned} of {parts_total} sections written"; in `phase = bottom_line`, "writing the bottom line". **Outcome** unchanged.
+
+### 6.7 Reviewing (D11, `Reviewing.dc.html` A revised)
+
+**Criteria rows** (I), in this order, with no score anywhere:
+1. completeness "Covers your whole question"
+2. prioritization "Puts the most important first"
+3. evidence_quality "Rests on strong evidence"
+4. attribution "Every claim is credited correctly"
+5. uncertainty "Honest about what is uncertain"
+6. readability "Easy to read"
+7. actionability "Useful for what you asked"
+
+Two names differ from the canvas (spec choice, §13 O14): its "Every claim is cited" becomes "Every claim is credited correctly", because attribution judges whether a claim's provenance reads as what it is — the publisher's own figure or a relay credited to its originator (`agents/report_reviewer.py:266-270`) — not whether a claim has a citation; and its "Useful for deciding where to go" was the latte question's own wording, while actionability asks whether the report is useful "for the task that was actually asked" (`:283-287`), so the row is worded for any question.
+
+**While the call runs:**
+- the status line "Reading the draft as a critical reader would · usually 1–3 min" (I);
+- the indeterminate bar (`.pb.ind`), a 28 % segment drifting over `--motion-halo`, infinite;
+- every criterion row a ring with fact "reading";
+- "Your notes" (eyebrow, after a `.b-rule`; left out when there are none) lists every interpreted, not-replaced note the page knows, in receipt order, named by its restatement with the first letter capitalised, each "reading";
+- subtitle "reading the draft · {elapsed}".
+
+**On `graph.report.reviewed`:**
+- the bar hides;
+- criteria reveal 60 ms apart as ✓ (met, no fact), amber ✗ (issue text: one kind → its words, more → "{n} issues · {first kind's words}"), or ring "not checked" (`met: null`);
+- each listed note takes its result from the event's `notes`; a listed note the event does not name (it arrived after the review input was built) reads ring "not checked";
+- the status line reads "Review done · deciding what happens next…" (I) until the route decision.
+
+Issue words by kind (I): coverage "a part of your question has no answer"; mechanism "a step in the explanation is missing"; missing_support "a sentence says more than its sources"; acquisition "a needed source could not be read"; source_quality "a claim rests on a weak source"; freshness "a figure is out of date"; identity "a source is credited to the wrong publisher"; contradiction "sources disagree and the draft does not say so"; semantic_duplicate "the same point is made twice"; presentation "a sentence is hard to follow".
+
+Note results in the event (§6.1):
+
+| Note | `result` / `reason` | Mark, fact (I) |
+|---|---|---|
+| research note, a target answered | met / covered | ✓ "covered" |
+| research note with a topic, none answered | not_met / not_found | ✗ "not found" |
+| research note with no topic yet | pending / to_research | ring "researched next" |
+| steering note `honoured` | met / honoured | ✓ "honoured" |
+| steering note `ignored_with_evidence` | not_met / ignored_with_evidence | ✗ "not followed" |
+| steering note `no_evidence` | not_met / no_evidence | ✗ "no evidence found" |
+| steering note, no verdict | not_checked / not_judged | ring "not checked" |
+
+Verdict line and outcome, set on `graph.route.decided` (I). `d` is `material_defects`; `k` is the missing targets; `m` is the criteria met; `n` is the notes listed.
+
+| Route reason | Verdict line | Outcome |
+|---|---|---|
+| report_accepted | "Accepted · all 7 criteria met" + notes clause | "Accepted · all 7 met" |
+| redraft_requested | "{d} thing(s) to fix · sending the draft back to the writer" | "{d} thing(s) to fix · back to the writer" |
+| extra_pass_requested | "{k} gap(s) to fill · going back to research" | "Sent back to fill {k} gaps" |
+| note_pass_requested | "Going back to research your note(s)" | today's (`web/lib/run-state.ts:150`) |
+| note_redraft_requested | "Sending the draft back to the writer for your note(s)" | today's (`:151`) |
+| review_unavailable | "The review could not be completed · publishing as partial" | "Review unavailable" |
+| report_not_accepted | "Not accepted · {m} of 7 met" | same |
+| extra_passes_exhausted | "Not accepted · {k} gaps still open" | same |
+
+- The notes clause: " · your note met" / " · your note not met" (`n = 1`); " · both your notes met" (`n = 2`, both met); " · all {n} of your notes met"; otherwise " · {met} of your {n} notes met". It is left out with no notes.
+- The outcome gains " · {duration}".
+- The pending Reviewing row's static meta is unchanged.
+- What follows the verdict keeps today's loop presentation (spec choice): the spine's seven rows stay fixed, a redraft re-arms the Writing row with its reopen line "Rewriting to fix {n} issue(s) the review found" (`web/lib/run-state.ts:287-289`), and the arc lights as today. The canvas's seventh row, "Writing report · fixing 1 thing" / "only the affected section is rewritten", stands for that hand-off; it is not a new row.
+
+### 6.8 Researching (D12)
+
+Unchanged; note threads appear as rows (§5.7).
+
+### 6.9 Web state and rendering
+
+- `RunState` gains:
+  - `startedAt` and `durations` per row;
+  - `planning {step, round, slots, noteSlots}`;
+  - `evaluating`, `verifying` (with `samples`, the last two), `writing` (with `samples`), `reviewing {criteria, notes, reason, defects}`.
+- Each block resets on its node's `graph.node.started`, so a re-armed row starts clean.
+- New handlers: `planner.progress`, `source_evaluator.progress`, `evidence_verifier.progress`, `report_writer.progress`. Extended: `graph.node.started` and `graph.node.completed` (timestamps), `graph.report.reviewed`, `graph.route.decided` (Reviewing outcome), `planner.planning.completed` (slot states, note slots).
+- Every derivation stays burst-safe (DESIGN §5.7): cumulative snapshots, the latest wins.
+- `rowBrief` returns a discriminated `body` per row: `planning`, `research` (today's), `evaluating`, `verifying`, `writing`, `reviewing`, `sentence` (Publishing). `BriefSpine` renders each as `.ln` lines, so row open, close and hand-off (LB-D1, LB-D3) apply unchanged.
+- Elapsed values tick from `RunningPipeline`'s existing one-second timer (`web/components/RunningPipeline.tsx:16-22`), passed down.
+
+**CSS** (app-only section, ported from `progress.css` with app selectors; no colour literal):
+
+| Canvas rule | Port |
+|---|---|
+| `.pb`, `.pb i` (`:9-10`) | as is, fill `transition: transform var(--fill-line) var(--ease-entrance)` |
+| `.pb.ind i`, `@keyframes drift` (`:12-14`) | duration `var(--motion-halo)` |
+| `.sk`, `.sk::after`, `@keyframes sheen` (`:31-33`) | duration `var(--motion-halo)` |
+| `.xf`, `.fi` (`:23-24`, `:34-35`) | as is |
+| `.stats`, `.stat` (theme.css `:137-139`) | as is |
+| `.tickbox`, `.qt`, `.vd` (`:61-64`) | `.vd b` colour set per verdict (§6.5) |
+| `.mk svg.x`, `data-s="fail"` (`:82-88`) | as `[data-topic="fail"]` on `.ps-topics` rows |
+
+**Reduced motion** (extends the block at `web/app/globals.css:1320-1333`):
+- no sheen (static bar);
+- the indeterminate bar becomes a static full-width bar at opacity .35;
+- cross-fades are opacity only over 160 ms;
+- numbers jump.
+
+### 6.10 Replay
+
+1. **Timestamps.** `ReplayRunner._drain` publishes `event.model_copy(update={"timestamp": <now, ISO>})`, so paced replay shows realistic elapsed times. The engine's own state keeps its times, so `duration_seconds` is unchanged. Nothing else reads a published event's timestamp: no code under `api/`, nor `graph/orchestrator.py`, `graph/live.py` or `cli.py`, reads `timestamp` (a search finds only two comments, `api/sessions.py:521` and `cli.py:1078`), and the web drops it today (`web/lib/run-state.ts:79`, `:382`).
+2. **Hold for captures.** `X-Replay-Hold-After: <event_type>[#<n>]` on `POST /research` (replay only; read by `ReplayCaseMiddleware` into a ContextVar like `requested_clarify`; added to the proxy allowlist `web/app/api/[...path]/route.ts:9`). The drain releases events through the n-th event of that type (default 1), then holds until the session is stopped (Phase D) or the server shuts down. Visual captures use it, then `POST /stop`.
+3. Fixtures in `web/test/fixtures/events/` are re-captured with `npm run capture:events`.
+
+### 6.11 Documentation (Phase B)
+
+| Doc | Change |
+|---|---|
+| `DESIGN.md` §3.4 (`:724-741`, `:759-771`) | Each step's brief as §6.3–§6.7. The looping budget becomes: the halo; the skeleton sheen while the plan draft is in flight; the drift on Reviewing's bar while its call runs. Both stop under reduced motion (§13 O1). |
+| `DESIGN.md` §5.6 (`:1398-1431`) | Motion and reduced motion for the new briefs. |
+| `DESIGN.md` §5.7 (`:1597-1625`) | The progress events, live-only, and which brief each feeds. |
+| `DESIGN.md` §3.5 (`:811-826`) | The reviewer's start is live. |
+
+---
+
+## 7. Phase C — the report
+
+### 7.1 The bottom line's reply and request (D13)
+
+**Reply schema** (`utils/types.py:1911-1921`):
+- `SectionDraft` gains `short_title: str = ""`.
+- `BottomLineDraft` keeps `sentences` (now the direct answer) and gains `topics: list[TopicLineDraft] = []`, where `TopicLineDraft(WriterPointDraft)` adds `topic: str` (a coverage id).
+- The 51 existing `BottomLineDraft(...)` constructions in `src/` and `tests/` stay valid because `topics` has a default. Provider-facing drafts already carry defaulted fields (`WriterPointDraft.disputes`, `utils/types.py:1905`; `SourceScoreDraft.methods_score`, `agents/source_evaluator.py:147`). The new fields travel the same way: the configured DeepSeek provider (`config.yaml:5-6`) prints `model_json_schema()` into its system message and validates the reply with `model_validate_json`, which fills a missing defaulted field (`providers/deepseek_provider.py:150-160`, `:1447-1453`, `:1549`); its Responses path sends the schema without `strict` (`:1955-1966`) and validates the same way (`:2103`); the OpenAI provider's `responses.parse` (`providers/openai_provider.py:617`) already carries `WriterPointDraft.disputes`.
+
+**Prompts** (exact).
+
+`BOTTOM_LINE_SYSTEM_PROMPT` becomes:
+> Write the bottom line from the checked statements listed: first a direct answer to the question in one or two sentences, then one line for each topic listed, in the listed order. Each statement was checked against the findings it cites; state nothing they do not.
+
+In `BOTTOM_LINE_INSTRUCTION`, the first rule (`agents/report_writer.py:382`) is replaced by:
+> - sentences: one or two sentences that answer the question directly, the most direct answer first. When # Reader answers is listed, give the answer the form those answers ask for — how many options, which area, for what purpose — naming only options, figures and picks the listed statements carry, each credited as its statement credits it; the reader's answers narrow what is answered, never what a statement says.
+> - topics: one line per topic listed under # Checked statements, in the listed order, with topic set to the id at the start of that topic's heading: the one fact from that topic's own statements that best answers the question, citing only labels that topic's own statements cite. Leave a topic out only when none of its statements bears on the question.
+
+The mechanism rule's "within the two to four sentences" (`:384-385`) and the Outcome block's "within the two to four sentences" (`:1239`) become "within the answer's sentences". Every other rule is unchanged.
+
+`SECTION_INSTRUCTION` gains:
+> - short_title names the same part in one to three words for a contents list ("Published picks", "Opening hours"): no number, no judgement, at most 24 characters.
+
+**Request.**
+- `ReportWriterTask` gains `reader_answers: list[ReaderAnswer]` (from `state.reader_answers`).
+- `bottom_line_messages` adds `# Reader answers\n{render_reader_answers(...)}` after `# Answer form` when there are any.
+- Each block header becomes `## {coverage_id} · {section.title}` (`agents/report_writer.py:1207`).
+- On a redraft, `_rendered_previous_bottom_line` prefixes each point with `answer:` or `{coverage_id}:`.
+
+**Checks** (`_consider_bottom_line_point` and `_check_and_finalize_bottom_line`):
+
+| Draft item | Rule | Refusal reason (project text) |
+|---|---|---|
+| answer sentence | at most 2 kept candidates; extras refused before the check | "over the direct answer's two sentences" |
+| topic line with an unknown `topic` | refused | "a line for a topic the request did not list" |
+| second line for one topic | refused | "a second line for one topic" |
+| topic line citing a label its own section's kept statements do not cite | refused | "a topic line cites a finding its topic does not" |
+| any item | today's rules: labels cited by sections, disputed-label guard, 60 words, 1200 chars | unchanged |
+
+Every kept answer sentence and topic line goes through the Statement Check. The floor filter, the dispute block, the outcome guard and the one re-ask (`agents/report_writer.py:2682-2766`) apply to the whole bottom line; the re-ask's result replaces attempt 1 only when fully checked, as today.
+
+### 7.2 The composition and note lines (D13)
+
+- **`ReportComposition` gains:**
+  - `bottom_line: BottomLineLayout | None` = `{answer_ids: [statement id], topic_lines: [{coverage_id, label, statement_id}], assembled: bool}`;
+  - `reader_note_lines: list[ReportNoteLine]` = `[{note_id, label, outcome, statement_id | None, text}]`, stamped by the finalizer;
+  - `reader_answers: list[str]`: the values of `task.reader_answers` in question order, set by `compose_written_report` (both composition paths, `agents/report_writer.py:2956-2968` and `:3085-3096`).
+- **`ReportSection` gains `short_title`.** A drafted short title is kept when it has 1–3 words, ≤ 24 chars, no digit and no verdict word (`agents/report_writer.py:1648-1651`); otherwise the section's title stands in.
+- **`summary`** holds the answer points, then the non-note topic lines in plan order, then the note-topic lines in their notes' receipt order (`n1` first) — the order the Markdown prints them — so every consumer of `statements` (reviewer, gates, citations) is unchanged. `_renumber` remaps the layout's ids. Neither new field enters `composition_semantic_fingerprint` (`agents/report_reviewer.py:1001-1026`).
+- **No bottom line.** When `_run_bottom_line` returns no point on its early paths (`agents/report_writer.py:2608-2646`), `bottom_line` is `None` and `_bottom_line_block`'s existing sentences apply (`agents/report.py:1244-1273`).
+- **Labels.** A topic line's label is the section's `short_title`. A note topic's label is "Your note · {note short}": `ReportWriterTask` gains `note_labels: dict[str, str]` (`note-{id}` → label), built in `build_task` from the active notes.
+- **Note short.** The note interpreter gains `short` ("the note's subject in one to three words for a label, lower case", added to `NOTE_INSTRUCTION`; validated at 1–3 words and ≤ 24 chars). The fallback and replay derive it from the restatement's first three words, cut at 24 chars on a word boundary. `ReaderNote` gains `short: str = ""` and derives it when empty.
+- **Note lines at publication.** `_terminal_artifacts` (`graph/nodes.py:448-515`) stamps `reader_note_lines`: one per active note, in receipt order, with `outcome = note_outcome(..., terminal=True)`.
+  - A research note whose `note-{id}` has a kept topic line references it (`statement_id`).
+  - Any other note has code text (I): covered "Followed: {restatement}"; not_addressed "Not followed in this report: {restatement}"; not_found "No source we could check covers this: {restatement}"; not_checked "Not checked: {restatement}".
+  - Research notes without a kept line: covered "See the section below."; not_found "No source we could check covers this."; not_checked "Not researched."
+- **Marks.** ✓ for covered, ✗ for not_found and not_addressed, none for not_checked (§13 O17). Replaced notes have no line.
+
+### 7.3 The fallback (D14)
+
+`_bottom_line_fallback` (`agents/report_writer.py:2263-2350`) becomes: for each part outcome with a section, in plan order (note topics included), pick exactly as today — the first kept `consistent`/`corrected` point that meets the floor when any statement does, preferring the part's marked dispute point when the pick cites a disputed label — and move it into the bottom line as that topic's line. There is no cap of four, no answer sentences, and the layout has `assembled = true`. A part with no eligible point has no line. The error messages become "The bottom-line draft failed twice; one checked section point per topic stands in for it." and "Every drafted bottom-line sentence was refused; one checked section point per topic stands in for it." (I).
+
+### 7.4 Key figures (D15)
+
+A new `key_figures_table(composition) -> ReportTable | None` in `agents/report_table.py` replaces `findings_table` inside `build_table`; the options branch is unchanged.
+
+1. **Eligible rows** are exactly today's (`_row_eligible`, `agents/report_table.py:615-632`).
+2. **Label.**
+   - Item = `row.subject` when set and not starting with a pronoun.
+   - Measure, from the planned targets in `row.target_ids` ("plan order" is the order of `composition.sub_topics`, `utils/types.py:1774`, and of each topic's `evidence_targets`):
+     1. the row's sub-topic is the one owning the most of those targets, the earlier in plan order on a tie;
+     2. the measure is that sub-topic's first such target in plan order whose `unit_dimension` is set, else its first such target in plan order;
+     3. a row with no planned target keeps `row.measure`.
+   - Why: today's `row.measure` is the first target in sorted id order (`agents/verified_facts.py:1375-1378`), so the latte run's Tripadvisor rows, which answer `topic-01-target-01`, `topic-02-target-02` and `topic-02-target-03`, print topic-01's measure. The rule reads the row by the sub-topic it mostly answers, and prefers a target the planner stamped as a quantity; it does not depend on a stamp being present, because the planner stamps `unit_dimension` only as the model chooses (`agents/planner.py:493-496`, `:2367-2369`).
+   - Label = "{Item} · {measure}", or "{Measure}" with no item; plus ", {period}" when the row has a period the label does not already contain.
+   - A row whose measure is "stated figure" and has no item is not eligible.
+   - The quoted-snippet label is removed.
+3. **Merge.**
+   - Rows sharing (label, primary finding `row.finding_id`, kind) form a group: the values one passage states about one item. Rows from two passages never merge, so a value is never paired with another listing's.
+   - Within a group, a row whose value equals a value already in one of the group's merged rows (compared with `cosmetic_text`) only adds its finding ids to that merged row. Otherwise it goes into the first merged row holding no value with the same **value shape** (the value with each run of digits, dots and commas replaced by `#`, compared with `cosmetic_text`), else starts a new merged row. So K003 "4.2 of 5 bubbles" and K004 "87 reviews", which share their primary finding, merge; "4.7 of 5 bubbles" and "4.6 of 5 bubbles" never share a merged row.
+   - Figure = the values joined " · " in row order, each with today's `_result_text` suffixes (mixed kinds, earlier editions).
+   - Merged rows that end with the same label keep only the first by the cap's priority (4); the others stay in the evidence log. Spec choice (§13 O16): the table cannot tell such rows apart — the latte run has ten fact rows whose subject is "Starbucks", all from Tripadvisor, with ratings from 3.5 to 4.4 of 5 (K033–K051, K093) — and a repeated label with different figures reads as a contradiction.
+4. **Cap.** At most `MAX_KEY_FIGURE_ROWS = 10` merged rows, chosen by the best row's `_select_rows` priority, shown in `_display_order`.
+5. **Columns** "What" | "Figure" | "Source". The Source cell text is today's `_who_text` for the group's first row (publisher, relay credit, release or stated date); its `finding_ids` are the union of the rows'. The renderer prints "{text} {markers}" in the Source column (`agents/report.py:1348-1351`).
+6. **Caption.** "Showing {k} of {n} verified figures; all are in the evidence log." when truncated (`k` fact rows shown, `n` eligible), plus today's kind caption.
+7. The evidence log's "Verified figures" is unchanged.
+
+**Placement (spec choice, §13 O3).** The one table leaves the bottom line: `## Key figures` for a findings-shape table and `## Options compared` (I) for an options table, both after the topic sections.
+
+### 7.5 Markdown structure (D16)
+
+`render_written_report` (`agents/report.py:1612-1650`) emits, in order:
+1. `# {question}`
+2. The evidence line, "Evidence as of {date} · {n} sources", plus " · {value}" for each reader answer (I).
+3. `## Bottom line`, then the answer paragraph. When `assembled` is set, the paragraph is instead "*Assembled from the sections below; the summary could not be written this time.*" (I).
+4. A list: "- **{label}:** {line}" for each non-note topic line, then "- **{note label}:** {✓ |✗ }{line}" for each note line (✓ or ✗ only when the outcome has a mark). Until the finalizer stamps `reader_note_lines` — that is, in the writer's own render, which the reviewer reads — each note-topic line prints as "- **Your note · {short}:** {line}" with no mark, and steering notes have no line.
+5. One `## {title}` per section with points, in plan order.
+6. `## Key figures` or `## Options compared`, then the table and its caption.
+7. `## What we couldn't confirm`.
+8. `## Sources`.
+9. The evidence-log link.
+
+A composition without `bottom_line` (from before this change) renders as today.
+
+**Citation order.** `written_citations` (`agents/report.py:975-1013`) numbers pages as a reader meets them, and today walks bottom line → table → sections. With the table after the topics, it walks bottom line → sections → table.
+
+**Outline for the web.** `report_outline(composition) -> list[ReportOutlineEntry]` in `agents/report.py` returns one entry per `##` heading, in order: `{heading, kind: bottom_line | topic | key_figures | options | not_confirmed | sources, label, topic_index, topic_count, note_id}`.
+- Labels: "Bottom line"; each topic's short title, with note topics "{short} (your note)"; "Key figures"; "Options compared"; "Not confirmed"; "Sources".
+- `render_written_report` uses the same helper to emit headings, so they cannot disagree.
+- `ResearchSessionResponse` gains `report_outline: list[ReportOutlineEntryResponse] | None` via `outcome_response_fields` (`api/sessions.py:156-211`), from `outcome.composition`.
+
+### 7.6 Web layout (D16, `Report.dc.html` B+C)
+
+**Structure** (`web/components/ReportBody.tsx` is rewritten; `ReportStage` and `ReportRail` are unchanged except the props):
+```
+div.report-col                         (container: report column)
+  p.cap#reportEvidence                 the evidence line, lifted out of the Markdown
+  div.rep-layout[data-contents=rail|chips]
+    nav.rep-contents[aria-label="Report contents"]
+    div.rep-cards
+      section.card.rsec[data-kind][id=rep-…]  one per outline entry
+```
+
+- **Chunks.** The Markdown is split into chunks at lines starting with `## `. The chunk before the first heading holds `# question` (suppressed) and the evidence line. Chunks pair with `status.report_outline` by position; when a heading's text does not match its entry, or there is no outline, every card renders with its heading as the eyebrow and no topic numbering.
+- **Rendering.** Each chunk renders through `react-markdown` with `remarkGfm` and `remarkCitationAnchors`. The citation plugin gains a `sourceIds` option, computed first from the Sources chunk's list, so citations in every card link to `#src-n`.
+- **Cards.**
+  - Bottom line: eyebrow "Bottom line"; `p.lead` (`--text-lg`, 1.6) for the answer; an emphasis-only paragraph as a muted `b-sub` line; `ul.bl-list` rows `span.k` (mark + label, `--text-sm`, `--muted`; ✓ `--status-ok`, ✗ `--status-warn`) and the line. The key column is 132 px; it stacks at ≤ 480 px.
+  - Topic cards: eyebrow "Topic {i} of {N}" or "Topic {i} of {N} · from your note", then `h2` title and points.
+  - Key figures and Options compared: eyebrow, then the table.
+  - What we couldn't confirm: eyebrow.
+  - Sources: eyebrow; the list keeps its `src-n` ids; the evidence-log link line stays inside this card.
+  - Fixed sections render their heading as `h2.eyebrow`, so each card keeps an `h2`. Every card body sits in a `.prose`.
+- **Card box.** `.card` background and border, `--radius-lg`, padding `--space-6` (`--space-4` at ≤ 480 px), gap `--space-4`. `--report-card-w` becomes `calc(var(--reading-max) + 2 * var(--space-6) + 2px)` (`web/app/globals.css:1217`).
+- **Contents.**
+  - At a report-stage container width ≥ 1310 px (176 + 32 + 770 + 32 + 300), `data-contents="rail"`: a sticky 176 px column left of the cards (`.rail` rules of `progress.css:135-148`; the `aria-current="true"` link `--fg` on `--border-soft`, with `.tn` numbers).
+  - Below that — including the 1252 px capture width and every phone — `data-contents="chips"`: a horizontally scrolling row of chips (`progress.css:150-152`) directly above the cards, sticky under the topbar on `--bg` with a `--border` hairline below (§13 O4).
+  - The rail and the chips list the same entries, Sources included (spec choice: the canvas lists stop at "Not confirmed" on desktop and "Key figures" on the phone because its sample has no Sources card; the app's report has one, and every citation jumps to it).
+  - The group — contents when shown, cards, the Review rail — is centred as one group.
+- **Current section.** The last card whose top has passed `var(--topbar) + 56px + var(--space-4)` below the viewport's top, else the first. Clicking an entry sets it current, scrolls the card to the top (`smooth`; `auto` under reduced motion) with `scroll-margin-top` equal to that offset, and focuses the card's heading (`tabIndex=-1`, no ring). The current chip scrolls into view.
+- **Evidence line on a phone.** The web renders the line (`agents/report.py:1068-1074`, plus §7.5's answer parts) as spans: `span.ev-pre` "Evidence as of ", the date, " · {n} sources", then one `span.ev-ans` " · {answer}" per reader answer. At ≤ 480 px `.ev-pre` and `.ev-ans` are hidden, leaving "2026-09-30 · 29 sources" as on the canvas's phone artboard. A line that does not start with "Evidence as of " ("No source could be checked.") renders whole.
+- **Key figures on a phone.** At ≤ 480 px the Source column is hidden, and each What cell shows the source text under its label (`.kf-src`, `--text-xs`, `--muted`, hidden above 480 px), so the forecast issuer and release stay visible (§13 O10).
+- **Removed.** The "Your notes" block (`web/components/ReportBody.tsx:120-131`) and its CSS (`web/app/globals.css:1404-1410`); note lines now live in the bottom line.
+- **Types.** `web/lib/api.ts` `ResearchSessionResponse` gains `report_outline?: ReportOutlineEntry[] | null`, optional because a response recorded before this change carries none.
+
+**CSS** (app-only section, ported from `progress.css` with app selectors; no colour literal):
+
+| Canvas rule | Port |
+|---|---|
+| `.lead`, `.bl-list`, `.bl-list .k` (`:118-122`) | as is, scoped to `.rsec[data-kind="bottom_line"]`; `.bl-list li` stacks to one column at ≤ 480 px (`:155`) |
+| `.cards .rsec` (`:145-146`) | `.rep-cards > .rsec.card`, padding `--space-6`, `scroll-margin-top: calc(var(--topbar) + 56px + var(--space-4))` |
+| `.rBC`, `.rail`, `.rail a`, `.rail-h`, `.rmk` (`:135-148`) | `.rep-layout[data-contents="rail"]` grid `176px minmax(0,1fr)`, gap `--space-8`, inside `@container report (min-width:1310px)`, with `#stage-report{container:report / inline-size}` |
+| `.jump`, `.jump a` (`:150-152`) | `.rep-layout[data-contents="chips"] .rep-contents`, `position:sticky; top:var(--topbar)` |
+| `.rtab` (`:123-126`) | the key-figures table keeps the app's `.tbl` styles; only `.kf-src` is new |
+| the phone artboard's short header (`Report.dc.html:93`) | `#reportEvidence .ev-pre, #reportEvidence .ev-ans { display:none }` at ≤ 480 px |
+
+### 7.7 Replay double
+
+- `_reply_SectionDraft` (`e2e_evaluation/replay.py:1378-1437`) sets `short_title` to the title's first two words.
+- `_reply_BottomLineDraft` (`:1441-1466`) reads the `## {coverage_id} · {title}` blocks. It returns the first statement of the first block as the one answer sentence, and the first statement of each block as that topic's line.
+
+### 7.8 Documentation (Phase C)
+
+| Doc | Change |
+|---|---|
+| `DESIGN.md` §3 inventory row 4 (`:161`) and `:219-224` | The report as cards with contents; notes in the bottom line; no "Your notes" block. |
+| `DESIGN.md` §5.6 | Contents scrolling under reduced motion. |
+| `docs/superpowers/specs/2026-09-25-consumer-report-format.md` | A superseding note at the top pointing to §7 of this spec. |
+
+---
+
+## 8. Phase D — Stop
+
+### 8.1 API
+
+`POST /research/{session_id}/stop` takes no body.
+
+| Response | When |
+|---|---|
+| **202** with `ResearchSessionResponse` (`status: "stopped"`) | the session is `running` or `needs_input`, not finished, not publishing |
+| **409** `not_stoppable` (`reason`: `finished` \| `publishing` \| `closing`) | terminal or `finished_at` set; `notes_closed` (the route decided finalize or end); the store closing |
+| **404** `session_not_found` | unknown id |
+
+`_SAFE_MESSAGES["not_stoppable"]` is "Research session can no longer be stopped." A second stop gets 409 `finished`.
+
+### 8.2 `SessionStore.stop`
+
+It runs synchronously in the route and gives up control only after step 5:
+1. `require`; raise `NotStoppable` for the 409 cases.
+2. `step` = `"check"` if the status is `needs_input`, else `active_row(session.events)`: start `planner`; a `graph.node.completed` for `planner` … `report_writer` moves to the next row; a `graph.route.decided` moves to its destination's row (`extra_pass` and `note_pass` → `researcher`; `redraft` → `report_writer`). These are DESIGN §3.5's rules (`docs/design/DESIGN.md:819-826`).
+3. `session.publish(session_stopped_event(step, now, elapsed))`, with metadata `{step, stopped_at (ISO seconds), elapsed_seconds (int, now − started_at)}`, source `api`, message "The reader stopped the research."
+4. Set `status = "stopped"`, `stopped_step = step`, `finished_at = now`, `current_agent = None`. Cancel a pending clarification future and clear it.
+5. `task.cancel()` for the session task and every note task.
+
+**`ResearchSession.publish`** drops every event once `status == "stopped"`, so `session.stopped` is the last event (a replay drain may wake before its own cancellation).
+
+**`_run`'s `finally`** (`api/sessions.py:571-577`) sets `finished_at` only when it is `None`. Cancellation still propagates unchanged.
+
+### 8.3 What stops
+
+- The run task is cancelled at its current await.
+- LangGraph cancels and awaits its node tasks (§3.10).
+- The researcher's `finally` cancels its threads (§5.3); `gather`-based fan-outs cancel their children.
+- `AsyncOpenAI` and `httpx` requests are closed.
+- A Tavily search is cancelled with its task, once the search tool uses the async client (below).
+- Memory queries run Chroma and the embedder in worker threads (§3.10). With the default local embedder they make no request. With the non-default `embedding_provider: openai`, an embedding request already in a thread finishes there and its result is discarded; this spec leaves that configuration as it is (§13 O15).
+- Nothing more starts. `finalize_report` never runs, so no file and no memory entry is written.
+
+[INFERENCE] every in-flight fake provider call observes `CancelledError` within 1 s. Test `test_stop_cancels_inflight_calls`: a stub agent awaits an `asyncio.Event` forever and records cancellation; after `stop`, it is cancelled and no later node starts.
+
+**Making the search cancellable (D17: "all in-flight provider and HTTP calls").** Today a search runs tavily's synchronous client in a worker thread, which no cancellation can stop (§3.10). Phase D changes `tools/web_search.py`:
+1. A second protocol, `AsyncSearchClient`, has `async def search(self, *, query: str, search_depth: str, max_results: int) -> Mapping[str, Any]`. The `client` parameter accepts `SearchClient | AsyncSearchClient | None`.
+2. The default client (when `client` is `None`) becomes `AsyncTavilyClient(api_key=api_key)`, imported from `tavily`, in place of `TavilyClient(api_key=api_key)` (`:97`).
+3. In `_search_with_retries`, the awaited call is `self._client.search(query=…, search_depth=…, max_results=…)` itself when `inspect.iscoroutinefunction(self._client.search)` is true, and `asyncio.to_thread(search_once)` otherwise, still inside `asyncio.wait_for(..., timeout=self._timeout_s)`. The reservation stays before the call, outside the awaited call, exactly where it is (`:160-161`); the comment at `:144-159` is rewritten to cover both paths.
+4. Injected synchronous clients — the replay double, the evaluation harness and the test fakes (§3.10) — are unchanged and keep running in `asyncio.to_thread`; they return at once, so a stop never waits on one.
+5. Effect on errors: a Tavily reply with a status tavily does not map (it maps 400, 401, 403, 429, 432 and 433) now raises `httpx.HTTPStatusError`, so a 5xx is retried under the tool's own `_is_retryable` (each retry reserving a budget unit, as designed), where today's `requests.HTTPError` was not retried. Every other error behaves as today. §12 R9.
+6. The client is not closed at the end of a run, like the provider's `AsyncOpenAI` client today: a search for `aclose` and `close()` in `runtime/`, `main.py` and `providers/deepseek_provider.py` finds none.
+
+Tests: `test_default_search_client_is_async` (a tool built with an API key and no client holds an `AsyncTavilyClient`); `test_search_cancelled_with_task` (an async fake whose `search` awaits an `asyncio.Event` observes `CancelledError` when the awaiting task is cancelled, and the tool reserved exactly one unit); `test_sync_search_client_runs_in_thread` (a sync fake still works); `test_search_5xx_retried` (an async fake raising `httpx.HTTPStatusError` 503 twice, then answering, yields a result after three reserved units). In `tests/test_evaluation/test_dependencies_controlled.py`, the controlled-mode tests patch `TavilyClient` (`:490`) and check `isinstance(search._client, TavilyClient)` (`:510`, `:520`); they patch `AsyncTavilyClient` instead and check that the injected client is neither class.
+
+### 8.4 The status everywhere
+
+| Place | Change |
+|---|---|
+| `api/models.py:35-42` | `SessionStatus` gains `stopped`; `ResearchSessionResponse` gains `stopped_step: str \| None = None`; `TraceMetadata.status` follows. |
+| `api/sessions.py:54-56` | `TERMINAL_STATUSES` gains `stopped`, so `iter_events` ends after `session.stopped`, notes (`status != running`) and answers (`status != needs_input`) are refused, and outcomes are terminal. |
+| `api/app.py:396-451` | `/report` → 409 `report_unavailable` and `/evidence` (both formats) → 409 `evidence_unavailable` when `status == "stopped"`, before the outcome checks: the codes a graph-halted failed run returns. `/status`, `/trace` and `GET /research` answer normally. |
+| `web/lib/api.ts:3` | `SessionStatus` gains `stopped`; the response gains `stopped_step`. |
+| `web/lib/format.ts:6-36`, `:63-73` | `SessionView` gains `stoppedStep` (from `status.stopped_step` in `toSessionView`); `STATUS.stopped = {label: "Stopped by you", dot: "dot-neutral"}`; `statusNote` → "at {step label}" (§4.3); `isLive` unchanged (false). |
+| `web/components/ReportStage.tsx`, `ReportRail.tsx` | Never rendered for `stopped`: `SessionScreen` routes it to `UserStoppedStage` (below). No change. |
+| `web/components/Sidebar.tsx:48-58` | A stopped row has no running mark, opens the stopped stage (never Failed), and its accessible name ends " — stopped by you" (I); no visible status word (DESIGN §3.1; §13 O5). |
+| `web/lib/run-state.ts` | `RunState.stopped: {step, at, elapsedSeconds} \| null`; handler `session.stopped` sets it, `active = null`, `loop = "off"`, `arc = null`. |
+| `web/components/SessionScreen.tsx:194-205` | `status === "stopped"` → `UserStoppedStage`, before the Failed and Report branches. |
+| e2e `support.ts` `waitTerminal`; `web/scripts/capture-replay-events.mjs:12` | the terminal regexes gain `stopped`. |
+
+**The stored session keeps** its events up to and including `session.stopped`, its errors (a stop adds none), notes (all `not_checked`, §4.2), the check record, `stopped_step`, `iteration` and `finished_at`. It keeps no outcome, report path or trace URL.
+
+### 8.5 Web (D18, `Stop.dc.html`)
+
+**Files.** New `web/components/StopControl.tsx` and `web/components/UserStoppedStage.tsx`; `web/lib/api.ts` gains `stopResearch(sessionId): Promise<ApiResult<ResearchSessionResponse>>` (one POST to `/api/research/{id}/stop`, never retried, the file's own convention, `web/lib/api.ts:86-89`). The proxy needs no change: it already forwards POST (`web/app/api/[...path]/route.ts`).
+
+**Stop control.**
+- `ConsoleProvider` gains `stop: {sessionId, onStopped(response)} | null` and `setStop`.
+- `SessionScreen` sets it while `isLive(status)`, `finished_at === null`, and the stream shows neither Publishing active nor a finished graph (`chipStep(run) !== "finalize_report"` and `run.finalStatus === null`; from `/status`, `current_agent !== "finalize_report"`).
+- `Topbar` renders `StopControl` after the status chip and before the replay chip.
+- The button: `.btn.btn-ghost.btn-sm.btn-stop#stopBtn` with `span.stop-sq` (8 px `currentColor` square) and "Stop"; `aria-haspopup="dialog"`, `aria-expanded`; it keeps its label at every width.
+
+**Confirm popover.**
+- `div.stop-confirm[role=dialog][aria-labelledby=stopConfirmT]`, anchored below and right-aligned, 320 px, `--surface`, `--border`, `--radius-lg`, padding `--space-4`; it enters with `enter` over `--motion-base` (a fade only under reduced motion).
+- Content: `p.confirm-t#stopConfirmT` "Stop this research?" (I); `p.b-sub` "It stops right away and starts nothing new. What's done so far stays here, but no report is written." (I; §13 O9); "Keep going" (`.btn.btn-quiet.btn-sm`, focused on open); "Stop research" (`.btn.btn-sm.btn-danger`: `--status-danger` text, `--border` edge, danger edge on hover).
+- Escape, an outside click or "Keep going" closes it and returns focus to Stop.
+- "Stop research" disables both buttons and POSTs once:
+  - 202 closes the popover, calls `onStopped` (the screen adopts the response's status at once) and `refreshSessions()`;
+  - 409 replaces the body with "Too late to stop — the research is finishing." (I) and a "Close" button;
+  - any other failure shows "Couldn't stop — try again" (I) and re-enables the buttons.
+
+**Stopped stage** `#stage-user-stopped` (the service-stopped `#stage-stopped` is unchanged):
+- `.ask-head`: eyebrow "Stopped by you" (I), the question as `h1.ask-q.ask-locked#user-stopped-h`, the settings strip.
+- `div.stopped-note[role=status]` (`progress.css:171`): `p.b-now` "You stopped this research at {HH:MM}, {N} minutes in." (I), local 24-hour time; `N` from `elapsed_seconds` — "less than a minute in" under 60 s, "1 minute in". At step `check`: "You stopped this research at {HH:MM}, before it started." (I). Then `p.b-sub` "No report was written. The plan and what research found so far are kept below until the service restarts." (I), and "Ask again" (`.btn.btn-ghost.btn-sm#askAgain`), which POSTs `buildRequest(status.query, submission?.settings ?? DEFAULT_SETTINGS)`, records the submission and navigates to the new session.
+- The pipeline card (omitted at step `check`, §13 O11): `BriefSpine` with `frozen={step}`:
+  - done and loop rows as recorded, openable;
+  - the stopped row `data-state="stopped"` (node border `--muted`, `--fg` digit, `--surface` fill, name `--fg`, no halo), with subtitle "Stopped · {its live facts}" (I) — Researching's live facts line (e.g. "Stopped · 3 of 5 topics done · 41 pages read · 212 findings") and, once Phase B has landed, the step's live subtitle from §6.3–§6.7; a row with no live facts (every row but Researching before Phase B) reads "Stopped". It is openable to its frozen brief (running topics read "stopped" with a ring);
+  - later rows `data-state="off"` (`--meta`), "not run", or "not run again" for rows a loop had re-armed (I);
+  - no arcs, no hand-off, no note line.
+
+**CSS** (app-only section, ported from `progress.css:159-171`; no colour literal): `.btn-stop`, `.stop-sq`, `.btn-danger` (and its hover), `.stop-confirm` (from `.confirm`, `.confirm-t`, `.confirm-btns`), `.stopped-note`, the rows `.spine-lg.briefs > li[data-state="stopped"]` and `[data-state="off"]`, and `.chip .dot-neutral{background:var(--muted)}`. Reduced motion: the popover fades without rising (the existing `enter` redefinition, `web/app/globals.css:1003-1005`).
+
+### 8.6 Documentation (Phase D)
+
+| Doc | Change |
+|---|---|
+| `DESIGN.md` §4 status table (`:969-983`) | A seventh interface status: **Stopped by you** · `stopped` · `stopped_step` · `--fg` label, neutral `--muted` dot · "Stopped by you · at {step}". The count of statuses in the heading text becomes seven. |
+| `DESIGN.md` §3 inventory (`:155-163`) | A stage for a stopped session: the stopped note, the frozen pipeline, "Ask again". |
+| `DESIGN.md` §3.1 sidebar (`:298-330`) | A stopped row's accessible name ends "— stopped by you"; still no visible status word. |
+| `api-gaps.md` existing surface (`:20-52`) and "Gaps the front end should not close" (`:164-166`) | Add `POST /research/{id}/stop`; the cancel gap is closed by it: no partial artifact is written. |
+| `README.md` / `web/README.md` "Run the app" | Mention Stop and `X-Replay-Hold-After`. |
+
+---
+
+## 9. Implementation order
+
+1. **D — Stop.** The smallest phase: nothing a run researches or writes changes, and its one engine-side change is the search tool's transport (§8.3). It is the most urgent control (the live run could not be stopped once credit ran out), and it gives Phase B's visual captures their end-of-hold (§6.10).
+2. **A — Notes.** It fixes the correctness failure the run exposed (E3–E8) and defines what B and C display: research notes, note threads and terminal outcomes.
+3. **C — Report.** It changes the writer's bottom line and the table. B's Writing progress counts parts and the bottom line, so C comes first to avoid re-capturing fixtures twice.
+4. **B — Progress.** The largest web surface. It builds on A's threads and outcomes and C's bottom-line phase, and it re-captures the replay fixtures once.
+
+Each phase stays independently shippable. §4 lists what a phase implements when an earlier one has not landed.
+
+---
+
+## 10. Acceptance criteria
+
+**Phase A**
+- **AC1.** A research note interpreted before the planner's run returns is in `planning.completed.metadata.sub_topics` as `{coverage_id: "note-{id}", title: "Your note: {restatement}", note_id}`, and in `state.sub_topics` with one required target per new question. The plan and plan-review requests carry the new `PLANNING_NOTES` text.
+- **AC2.** With 10 planned topics, `max_sub_topics = 10` and one note topic, the first researcher run researches 11 topics and records no `cap` skip.
+- **AC3.** In a stub-agent test with `sub_topic_concurrency = 1` and a planned loop blocked, a research note added to the board starts its loop within one scheduler turn: its `researcher.sub_topic.started` (with `note_id`) is published before the blocked loop completes. `graph.node.completed` for the researcher follows that loop's `researcher.sub_topic.completed`.
+- **AC4.** A note received while every loop has finished and interpreted within 30 s gets a thread in the same run. One interpreted after the window closed is returned by `notes_due_a_pass` after the review.
+- **AC5.** `notes_due_a_pass` returns a research note without a topic whatever the review's status (`scored`, `incomplete`, `provider_failed`), and never one with a topic. `notes_due_a_redraft` never returns a research note.
+- **AC6.** After a note pass, the writer makes one section call per `note-*` part the pass added and one bottom-line call. Every other section is byte-identical to the previous composition's, with the same verdicts; the reviewer runs a full review.
+- **AC7.** A steering note `ignored_with_evidence` buys exactly one note redraft that drafts every part and leaves `writer_redrafts` unchanged.
+- **AC8.** The review packet's `reader_notes` hold steering notes only, and a disposition naming a research note is dropped.
+- **AC9.** `note_outcome` follows §5.6 row by row. No session in a terminal status (including `stopped`) reports `pending` for any note.
+- **AC10.** A stub graph with ten research notes arriving during Writing, each buying one pass, and ten steering notes each buying one redraft, completes without hitting the unchanged recursion limit.
+- **AC11.** No evidence-verifier request contains a note (LB AC16 still passes).
+- **AC12.** Web: the research-note ack reads per §5.7 in each step; the thread appears in the Researching checklist; the report reads "not checked" for `not_checked`.
+
+**Phase B**
+- **AC13.** Each progress type carries exactly the §6.1 keys, is absent from `state.events` and from `node.completed.event_count`, and every string value is a title, a finding content, a drafted sentence, a host, a page-word correction value or an enumerated value. CLI plain and verbose outputs are unchanged (`is_streamed_event` is false for the four new types).
+- **AC14.** Planning: slots go skeleton → drafted → checking → passed/fixed/flagged per §6.3 for scripted runs covering: sound on round 1; a local repair; a review repair then sound; a failed review. The status line shows the §6.3 text for each step. A planning-time research note shows "joins the plan", then "from your note". The subtitle ticks; the outcome includes the note clause and duration.
+- **AC15.** Evaluating: the stats read "not yet" before the first batch, then counts that sum to `rated` with the §6.2 thresholds. The bar reaches 1 exactly when every batch has settled. The outcome follows §6.4.
+- **AC16.** Verifying: the first event arrives before any Context Check call; the ticker shows one real finding per event with §6.5 words; dropped is amber. The tally equals the completed event's counts at the end.
+- **AC17.** Writing: samples show real drafted sentences with ✓/✗ from Statement Check verdicts; `fraction` never decreases; the subtitle switches to "writing the bottom line".
+- **AC18.** Reviewing: no number from a review score appears in the brief. The criteria follow §6.2's mapping; notes follow §6.7; the verdict line and outcome follow the route table.
+- **AC19.** Replaying each captured fixture from event 1 paints the same final briefs as the live stream (burst safety).
+- **AC20.** Motion: token durations only. Under `reducedMotion: "reduce"` there is no sheen or drift animation and no transform transition in any new brief element.
+- **AC21.** Replay: published timestamps are the release times; `X-Replay-Hold-After` holds at the named event until `POST /stop`; e2e at 1252 and 390 px has no horizontal scroll.
+
+**Phase C**
+- **AC22.** The bottom-line request carries `# Reader answers` when there are answers and `## {coverage_id} · {title}` headers; the reply's answer (≤ 2) and topic lines pass the §7.1 rules and the Statement Check.
+- **AC23.** The published Markdown's `## Bottom line` holds the answer paragraph and a list with one line per kept topic line (label = short title) and one per active note (label "Your note · {short}", mark per outcome).
+- **AC24.** With the bottom-line call failing twice, the bottom line is the assembled label plus one checked line per topic that has one, with floor and dispute protections as today.
+- **AC25.** Given the latte run's fact rows, the label-and-merge step (before eligibility and the cap) yields the merged row "Bijan Bakery · aggregate customer rating" | "4.2 of 5 bubbles · 87 reviews", no merged row holds values from two primary findings, and no label is a quoted snippet. With every row treated as eligible, the printed Key figures section comes after the topics, has at most 10 rows, no two with the same label, and the What / Figure / Source columns.
+  - **Fixture.** `output/` is git-ignored (`.gitignore:224`), so the plan copies all 140 fact rows and the findings they name (id, label, source URL, verification) from the local `output/report-a02a75fd75d44d8481f34953a4ff52e1-0-quality.json` into a checked-in fixture `tests/fixtures/latte-key-figures.json`.
+  - **Targets.** The plan is in no artifact, so the fixture declares the nine targets the rows cite, each with `unit_dimension` null because no artifact records it. Seven measures are observed: each is the measure the quality record prints for the rows whose first sorted target it is, as `agents/verified_facts.py:1378` picks it (for example `topic-01-target-01` "cafés named in published best-latte or best-coffee guides" and `topic-02-target-02` "aggregate customer rating"). `topic-01-target-02` and `topic-02-target-03` are first for no row, so their measures are declared "not recorded"; the label rule never chooses either, because each follows another target of its sub-topic that the same rows cite.
+  - **Why this label.** K003 and K004 cite `topic-01-target-01`, `topic-02-target-02` and `topic-02-target-03`, two of them in topic-02, and share their primary finding.
+  - Eligibility reads each finding's own target binding (`agents/report_table.py:591-602`), which the quality record does not keep, so it is left to the existing table tests; the `unit_dimension` preference is covered by `test_key_figures_measure_rule`.
+- **AC26.** Markdown heading order is §7.5's, and `report_outline` matches the headings one to one.
+- **AC27.** Web: each section is its own card; the contents rail shows at ≥ 1310 px container width and chips below; the current entry is marked while scrolling; no "Your notes" block; the Review rail is present; at 390 px the evidence line reads "{date} · {n} sources" only; no horizontal scroll at 1252 or 390 px.
+
+**Phase D**
+- **AC28.** `POST /stop` on a `running` and on a `needs_input` session returns 202 with `status: "stopped"`. `session.stopped` is the last event, the stream closes, and `/status` shows `stopped_step` and `finished_at`.
+- **AC29.** An in-flight stub call is cancelled within 1 s; no later node starts; no file is written under the output directory; no memory write occurs. A search in flight through an async search client observes `CancelledError` when the session is stopped, and a tool built with no client holds an `AsyncTavilyClient`.
+- **AC30.** 409 `not_stoppable` for completed, failed, a second stop, after `graph.route.decided` to finalize, and during store close; 404 for an unknown id.
+- **AC31.** `/report` → 409 `report_unavailable`; `/evidence` (JSON and Markdown) → 409 `evidence_unavailable`; notes → 409 `notes_closed`; answers → 409 `not_waiting_for_input`.
+- **AC32.** Replay: stopping mid-stream records a `step` equal to the web's active row at that moment.
+- **AC33.** Web: Stop shows from the check through Reviewing and not while Publishing; the popover follows §8.5 (focus, Escape, 409, failure); the stopped stage shows the chip "Stopped by you · at {step}" with a neutral dot, the card, openable finished rows, the stopped row's facts and "not run" rows; the sidebar row is labelled stopped; "Ask again" starts a new session with the same question.
+
+---
+
+## 11. Test plan
+
+### 11.1 New tests
+
+| Phase | Layer | Tests |
+|---|---|---|
+| A | pytest | `test_planner_appends_research_notes` (AC1); `test_planning_notes_text`; `test_researcher_note_topics_uncapped` (AC2); `test_research_note_thread_starts_ungated` (AC3); `test_late_note_waits_then_threads`, `test_note_after_window_owes_pass` (AC4); `test_notes_due_a_pass_research_notes_any_review_status`, `test_research_notes_never_redraft` (AC5); `test_writer_carries_parts_after_note_pass` (AC6); `test_note_redraft_unchanged` (AC7); `test_review_packet_steering_notes_only` (AC8); `test_note_outcome_table`, `test_terminal_sessions_never_pending` (AC9); `test_recursion_limit_with_research_notes` (AC10); the existing verifier-never-sees-notes test (AC11); `test_dispatcher_cancels_threads_on_cancel` |
+| A | Vitest | `notes.test.ts`: research-note ack text per step; `run-state.test.ts`: `NoteState.kinds`; `reader-notes`/report outcome text `not_checked` |
+| B | pytest | per agent: progress keys, order and counts on scripted runs (`test_planner_progress_states` covering the four AC14 flows; `test_evaluator_progress_split`; `test_verifier_progress_samples`; `test_writer_progress_fraction_monotonic`); `test_progress_events_live_only` (AC13); `test_reviewed_event_criteria_mapping`; `test_reviewer_started_live`; `test_cli_unchanged_for_progress_types`; `test_replay_restamps_and_holds` (AC21) |
+| B | Vitest | handlers and burst safety over re-captured fixtures (AC19); brief bodies for each step (AC14–AC18); elapsed formatting; `brief-spine.test.tsx` rendering of each body. Planning note slots use synthesized event sequences, because a replay run never applies a note (api-gaps 3.9) and its interpreter never returns `new_angle` (`api/notes.py:267-275`). |
+| B | Playwright (replay) | `progress.spec.ts`: each step's brief appears with the §6 copy, using `X-Replay-Hold-After` at `planner.progress`, `source_evaluator.progress#2`, `evidence_verifier.progress#2`, `report_writer.progress#3` and `graph.report.reviewed`, then `POST /stop`; reduced motion (AC20) |
+| C | pytest | `test_bottom_line_request_reader_answers_and_ids` (AC22); `test_bottom_line_topic_line_rules`; `test_bottom_line_layout_and_markdown` (AC23); `test_note_lines_stamped_at_publication`; `test_fallback_one_line_per_topic` (AC24); `test_key_figures_labels_and_merge_latte` (AC25); `test_key_figures_measure_rule` (the majority sub-topic, the tie in plan order, the `unit_dimension` preference inside that sub-topic, a row with no planned target); `test_markdown_heading_order`, `test_report_outline_matches_headings` (AC26); `test_fingerprint_ignores_note_lines`; replay double tests for the new shapes |
+| C | Vitest | `report-body.test.tsx`: chunking, outline pairing, fallback without outline, citation anchors across cards, bottom-line list parsing, key-figures phone cells, evidence-line spans (and the whole "No source could be checked." line) |
+| C | Playwright (replay) | `report.spec.ts`/`report-layout.spec.ts`: cards, contents (1920 rail, 1252 and 390 chips), current marking on scroll, click-to-jump, no horizontal scroll (AC27) |
+| D | pytest | `test_stop_route_codes` (AC28, AC30, AC31); `test_stop_cancels_inflight_calls` (AC29); `test_default_search_client_is_async`, `test_search_cancelled_with_task`, `test_sync_search_client_runs_in_thread`, `test_search_5xx_retried` (AC29, §8.3); `test_stop_during_needs_input`; `test_publish_after_stop_dropped`; `test_active_row_matches_web_rule` over the fixtures (AC32); `test_replay_stop_mid_stream` |
+| D | Vitest | `format.test.ts` (chip), `status-chip.test.tsx`, `sidebar.test.tsx` (label), `run-state.test.ts` (`session.stopped`), `session-screen.test.tsx` (stage choice), `stop-control.test.tsx` (popover), `user-stopped-stage.test.tsx` |
+| D | Playwright (replay) | `stop.spec.ts`: confirm and stop mid-run; Keep going; Escape; 409 after the run ends; Ask again; phone (AC33) |
+
+### 11.2 Existing tests to update
+
+| Phase | Test | Change |
+|---|---|---|
+| A | `tests/test_graph/test_note_routing.py`, `test_reader_notes_replay.py`, `tests/test_agents/test_reader_notes_planning.py`, `test_reader_notes_review.py`, `test_reader_notes_writing.py`, `tests/test_api/test_notes.py`, `test_note_route.py` | the new pass and redraft rules, the prompt text, the packet, carry-over after a note pass, the outcome signature (`terminal`) |
+| B | `web/test/run-state.test.ts:29-41`, `:44-50` | handler keys (+4) and RunState keys |
+| B | `tests/test_agents/test_report_writer.py:2684-2688`, `:3274-3287` | the fakes accept `on_batch=None` |
+| B | `web/test/briefs.test.ts`, `web/test/components/brief-spine.test.tsx`, `running-pipeline.test.tsx`, e2e `briefs.spec.ts`, `reduced-motion.spec.ts`, `visual.spec.ts` | the new bodies, and `03-running` taken at the same state |
+| C | `web/e2e/report.spec.ts:9-11`, `web/e2e/layout.spec.ts:128-163` | the evidence line is `#reportEvidence`; `h2` checks inside the cards' `.prose`; the group includes the contents rail at 1920 |
+| C | `tests/test_agents/test_report_table.py`, `test_report.py`, `test_report_layout.py`, `test_report_writer.py` (bottom-line assertions), `tests/test_e2e_evaluation/test_replay_doubles.py` | the Key figures table, the Markdown order, the bottom-line layout |
+| C | `web/test/components/report-body.test.tsx`, `reader-notes.test.tsx`, e2e `notes.spec.ts` (report block), visual `12-report-notes` | notes now in the bottom line |
+| D | `web/e2e/support.ts` (`waitTerminal`), `web/scripts/capture-replay-events.mjs:12`, `web/test/components/session-screen.test.tsx` | the `stopped` status; the service-stopped tests are unchanged |
+| D | `tests/test_evaluation/test_dependencies_controlled.py:472-520` | patch and check `AsyncTavilyClient` (§8.3); `tests/test_tools/test_web_search.py` keeps its synchronous fakes, which now exercise the thread path |
+
+### 11.3 Visual captures
+
+Run `npm run capture:visual` at 1252×853 and 390×844 after each phase and each major UI change, with a new checkpoint each time.
+
+New captures:
+- `13-planning-brief(-phone)`, `14-evaluating-brief`, `15-verifying-brief`, `16-writing-brief`, `17-reviewing-brief` (taken with `X-Replay-Hold-After`, then stopped);
+- `18-report-cards(-phone)` and `18b-report-cards-1920`;
+- `19-stop-confirm(-phone)`, `20-stopped(-phone)`.
+
+`04-report` and `12-report-notes` are re-taken. Each capture is reviewed at full height against its canvas artboard.
+
+---
+
+## 12. Risks
+
+| # | Risk | Handling |
+|---|---|---|
+| R1 | Ungated note threads raise concurrency beyond `sub_topic_concurrency`. | Bounded at 10 by LB-D11a; the tool lock already serialises tools (`agents/researcher.py:4741-4746`); the budget is the spending stop. |
+| R2 | The window-closing wait adds up to 30 s at the end of research. | Only when a note is being read at that moment; readings time out at `hitl.note_interpret_timeout_s` (15 s). |
+| R3 | The model plans a topic for a new_angle subject despite the prompt, duplicating the note's topic. | Tested for the prompt text; duplication is visible, never wrong; no merge. |
+| R4 | Carried parts keep statements whose findings moved to the note part after re-partitioning. | Same property as §6.9 carry-over today; statements stay truthful; the review is full. |
+| R5 | The bottom line's larger shape makes "fully checked" rarer, so the re-ask is adopted less often. | Rule kept as is; attempt 1's kept lines stand. |
+| R6 | The kind → criterion map shows ✓ for prioritization and actionability on every scored review. | Recorded (§13 O7). |
+| R7 | Progress events lengthen paced replay by about 150 ms each. | About 20 per pass in the fixtures; e2e timeout is 90 s (`web/playwright.config.ts`). |
+| R8 | `check_statements` substitutes elsewhere break on `on_batch`. | Only the two known fakes (§3.6); the plan greps again. |
+| R9 | The async Tavily client changes the live search transport: a 5xx is now retried, spending up to two more budget units per search, and an httpx client replaces a `requests` session. | The retry rule is the tool's own `_is_retryable`, already covered by its tests with httpx errors; `test_search_5xx_retried`; the first live run after Phase D is watched for search failures. |
+
+---
+
+## 13. Open issues for the human
+
+| # | Issue | Handling in this spec |
+|---|---|---|
+| O1 | The picked Planning sheen and Reviewing drift are two new loops. DESIGN §3.4 records "one loop, and it is a ring", and a lesson that an edge-less moving shape "reads as dirt" (`docs/design/DESIGN.md:759-771`). | The picks are built; DESIGN §3.4 and §5.6 are amended to allow both, confined to the skeleton bars and the reviewing bar, stopped under reduced motion. Confirm the amendment. |
+| O2 | D4's exception, "exclude and scope notes still redraft the parts they affect": no record names which parts a note affects. | The note redraft keeps drafting every part afresh (today's behaviour). Narrowing it needs the review's note disposition to name the statements that break the note, which is a reviewer contract change. |
+| O3 | D15 moves "the figures table" to Key figures; the options table (comparison questions) is not mentioned. | The one table leaves the bottom line in both shapes: options as "Options compared" (I) in the same slot after the topics. |
+| O4 | Three columns (contents 176 px, cards 770 px, Review rail 300 px) need about 1310 px of report column, so at 1252 and 1568 px with the sidebar open the left contents list does not fit. | The chip row (the picked phone treatment) is used below 1310 px at every size. |
+| O5 | "The sidebar shows the session as stopped": DESIGN §3.1 forbids status words in rows (`docs/design/DESIGN.md:305-330`). | Accessible name only ("— stopped by you"); no visible mark. |
+| O7 | `ReviewDefect` carries no dimension. | A fixed kind → criterion map (§6.2); prioritization and actionability can only show ✓. A precise attribution needs a `dimension` on review defects (a reviewer contract change). |
+| O9 | The picked Stop popover says "It stops right away and nothing more is spent." Stopping closes every connection, but a request the provider or Tavily already received may still be billed; the spec cannot observe either service's billing on a closed connection. | The spec's copy is "It stops right away and starts nothing new." (I). Keep the canvas sentence instead if the human accepts that it can overstate by the calls already in flight. |
+| O13 | D17: "report/evidence endpoints answer like a failed run (409 report_unavailable)". A graph-halted failed run answers `/report` with `report_unavailable` but `/evidence` with `evidence_unavailable` (`api/app.py:440-448`). | A stopped session answers exactly as a halted run: `/report` 409 `report_unavailable`, `/evidence` 409 `evidence_unavailable`. If `/evidence` should also say `report_unavailable`, it is a one-line change. |
+| O15 | D17 cancels "all in-flight provider and HTTP calls". A Tavily search runs a synchronous `requests` call in a worker thread, which no cancellation can stop (§3.10). | Phase D switches the search tool's default client to tavily-python's `AsyncTavilyClient` (§8.3), a change to `tools/web_search.py` beyond the API and web work D17 names, with the retry effect in §12 R9. Without it, a search in flight when Stop is pressed finishes in its thread and its result is discarded. The same holds, unchanged by this spec, for an embedding request under the non-default `embedding_provider: openai` (§8.3). Confirm the switch. |
+| O16 | D15: "rows about the same item merge ('4.7 of 5 · 20 reviews')". Rows about one item can come from different passages that describe different listings: the latte run has ten "Starbucks" rows, all Tripadvisor, rated 3.5 to 4.4 of 5. Joining them by item pairs one listing's rating with another's review count. | Values merge when they come from one passage (one primary finding), and the table then shows one row per label: the first by priority (§7.4). Each item and measure appears once, and no cell mixes two listings. Cross-passage values stay in the evidence log. |
+
+Recorded spec choices that do not need a ruling unless the human disagrees:
+- O6: a dropped verdict is amber, where the canvas used green for every verdict.
+- O8: "covered" means at least one of a note's targets is answered.
+- O10: Key figures on a phone keep the source under the label.
+- O11: a stop during the one-time check shows no pipeline card.
+- O12: the Writing tally's sentence total grows as sections return.
+- O14: two Reviewing criteria are worded differently from the canvas ("Every claim is credited correctly", "Useful for what you asked"), to match what the attribution and actionability dimensions judge (§6.7).
+- O17: a bottom-line note line whose outcome is `not_checked` carries no mark; D13 names ✓/✗, and neither is true of a note nothing could judge (§7.2).
