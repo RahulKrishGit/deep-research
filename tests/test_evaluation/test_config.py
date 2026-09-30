@@ -993,7 +993,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # request is byte-identical; agents.prompts was untouched, so the other
     # four target pins and the Judge pin are unchanged. Moved `d40ffac43845`
     # -> `e9b74316ad14`.
-    "planner": "e9b74316ad14",
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the planner
+    # puts the reader's notes, only when there are any, in a # Reader notes
+    # section of the plan and plan-review requests and in the scoping turn's
+    # decision context. Without notes every request is byte-identical;
+    # agents.prompts was untouched, so the evidence_verifier pin and the Judge
+    # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
+    "planner": "d1ba46ce147f",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1144,7 +1150,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # live. Module code only; no prompt string changed and agents.prompts was
     # untouched, so the other four target pins and the Judge pin are
     # unchanged. Moved `a0691eedc3b2` -> `de7506bed63e`.
-    "researcher": "de7506bed63e",
+    # Live briefs Phase 3 (live-briefs spec §4.6, 2026-09-29): the researcher
+    # reads the reader's notes from the run's board before every decision turn
+    # (## Reader notes) and into its extraction requests (# Reader notes),
+    # only when there are any. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
+    "researcher": "a8c9528f0c20",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

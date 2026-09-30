@@ -54,6 +54,13 @@ from deep_research.agents.prompts import (
     render_structured_request,
 )
 from deep_research.agents.react import run_react_loop
+from deep_research.agents.reader_notes import (
+    EXTRACTION_NOTES,
+    RESEARCH_NOTES,
+    live_reader_notes,
+    render_reader_notes,
+    research_reader_notes,
+)
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import (
     ReActDecision,
@@ -1484,8 +1491,16 @@ def extraction_messages(
     disputed_statements: Sequence[Finding] = (),
     question: str | None = None,
     coverage_titles: Mapping[str, str] | None = None,
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
+
+    ``reader_notes`` is the rendered reader-notes block (live-briefs spec
+    §4.6), printed as ``# Reader notes`` so extraction respects a note's
+    scope; an empty block adds nothing. It is the last section, after the
+    retrieved evidence: no reader text then comes before the evidence's own
+    ``- target_id=`` line, which the replay harness reads as the first match
+    (``e2e_evaluation/replay.py``).
 
     ``planned_targets`` is the run's whole counted target inventory, not the
     active sub-topic's share of it. The read being mined was fetched for one
@@ -1728,6 +1743,8 @@ def extraction_messages(
             )
         )
     )
+    if reader_notes:
+        sections.append(f"# Reader notes\n{reader_notes}")
     static = [
         f"# Response contract\n{registry_contract}{_FINDING_DATES_CONTRACT}"
         f"{_FINDING_PROVENANCE_CONTRACT}",
@@ -3170,6 +3187,23 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             guidance=render_session_guidance(state),
         )
 
+    def _reader_notes_block(self, instruction: str) -> str:
+        """The reader's notes a request built now carries, or ``""`` (live-briefs spec §4.6).
+
+        The notes this pass was handed plus any that arrived since, from the
+        run's board, less ``new_angle`` notes: those wait for the review's
+        note pass rather than steering a loop already running.
+        """
+        state_notes = (
+            self._run_source_state.reader_notes
+            if self._run_source_state is not None
+            else ()
+        )
+        return render_reader_notes(
+            research_reader_notes(live_reader_notes(state_notes)),
+            instruction=instruction,
+        )
+
     def _planned_targets(self) -> list[EvidenceTarget]:
         """Every target this pass's extraction may bind a finding to.
 
@@ -3376,6 +3410,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         planned_targets=planned_targets,
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -3511,6 +3546,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         disputed_statements=dissent_statements or (),
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -3845,6 +3881,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         planned_targets=planned_targets,
                         question=question,
                         coverage_titles=coverage_titles,
+                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
                     ),
                     SubTopicFindingsDraft,
                     agent_name=self.name,
@@ -4382,12 +4419,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             iteration: int,
             steps: Sequence[ReActStep],
         ) -> tuple[ReActDecision, ...]:
+            # live-briefs spec §4.6: before each model call the loop reads the
+            # run's board, so a note that arrived since its last turn steers
+            # this one, under its own ``## Reader notes`` heading.
+            context = policy.context(
+                limit=self._decision_context_chars, for_decision=True
+            )
+            notes = self._reader_notes_block(RESEARCH_NOTES)
             return await self._complete_react_decision(
                 task,
                 iteration=iteration,
                 steps=steps,
-                decision_context=policy.context(
-                    limit=self._decision_context_chars, for_decision=True
+                decision_context=(
+                    f"{context}\n\n## Reader notes\n{notes}" if notes else context
                 ),
                 scratchpad=scratchpad,
             )

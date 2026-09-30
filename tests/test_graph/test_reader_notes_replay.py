@@ -123,3 +123,35 @@ async def test_without_notes_every_request_of_a_replay_run_is_byte_identical(tmp
     assert status == "completed"
     assert run_digest(sequence) == PINNED_RUN_DIGESTS[case_id]
     assert not any("Reader notes" in text or "reader added these notes" in text for _, text in sequence)
+
+
+@pytest.mark.asyncio
+async def test_the_planner_and_every_research_turn_carry_the_notes(tmp_path: Path) -> None:
+    """spec §4.6: planning reads every note; a running research loop reads the board
+    before each decision, so a note that lands mid-loop steers the loop's next turn,
+    and a ``new_angle`` note never reaches a running loop."""
+    board = noted_board(EMPHASIS, ANGLE)
+    late = fake_reader_note("n3", kinds=["exclude"], restatement="leave out pumped hydro")
+
+    def note_after_the_first_turn(turns: int) -> None:
+        if turns == 1:
+            board.receive(late.text, received_at=AT, received_during="researcher")
+            board.add(late)
+
+    with guarded():
+        status, sequence, _ = await replay_packets(
+            tmp_path, EXTRA_PASS_CASE, board=board, after_research_turn=note_after_the_first_turn
+        )
+
+    assert status == "completed"
+    for key in ("planner:react", "planner:ResearchPlanDraft", "planner:PlanReviewDraft"):
+        texts = packets_for(sequence, key)
+        assert texts and all(EMPHASIS_LINE in text and ANGLE_LINE in text for text in texts), key
+    turns = packets_for(sequence, "researcher:react")
+    assert "## Reader notes\n" in turns[0] and EMPHASIS_LINE in turns[0]
+    assert "pumped hydro" not in turns[0]
+    assert "- leave out pumped hydro (exclude)" in turns[-1]
+    assert not any(ANGLE_LINE in text for text in turns)
+    extractions = packets_for(sequence, "researcher:SubTopicFindingsDraft")
+    assert extractions and all("# Reader notes\n" in text and EMPHASIS_LINE in text for text in extractions)
+    assert not any(ANGLE_LINE in text for text in extractions)

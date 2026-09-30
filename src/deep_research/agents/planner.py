@@ -35,13 +35,18 @@ from deep_research.agents.errors import (
     planning_provider_error,
 )
 from deep_research.agents.events import agent_event, publish_live
+from deep_research.agents.reader_notes import (
+    PLANNING_NOTES,
+    live_reader_notes,
+    render_reader_notes,
+)
 from deep_research.agents.prompts import (
     AgentTask,
     render_memory_guidance,
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.steps import ReActRun, summarize_text
+from deep_research.agents.steps import ReActRun, ReActStep, summarize_text
 from deep_research.agents.toolset import AgentToolset
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
@@ -64,6 +69,7 @@ from deep_research.utils.types import (
     FigureKind,
     MemorySnapshot,
     ReaderAnswer,
+    ReaderNote,
     ResearchError,
     ResearchEvent,
     ResearchState,
@@ -2706,6 +2712,7 @@ def plan_messages(
     repair: str | None = None,
     plan_under_repair: Sequence[SubTopic] = (),
     reader_answers: Sequence[ReaderAnswer] = (),
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
     """Build the messages that request one structured plan draft.
 
@@ -2717,7 +2724,9 @@ def plan_messages(
     one; a caller that omits it gets the plan requirements without a frozen
     scope, which is what a replay of an older prompt looks like.
     ``reader_answers`` add a ``# Reader answers`` section after the contract,
-    only when there are any (live-briefs spec §4.4).
+    only when there are any (live-briefs spec §4.4). ``reader_notes`` is the
+    rendered ``# Reader notes`` block (``agents.reader_notes``), added after
+    them only when it is not empty (live-briefs spec §4.6).
     """
     static = [
         f"# Plan requirements\n{PLAN_INSTRUCTION}",
@@ -2728,6 +2737,8 @@ def plan_messages(
         material.append(f"# Answer contract\n{render_answer_contract(contract)}")
     if reader_answers:
         material.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
+    if reader_notes:
+        material.append(f"# Reader notes\n{reader_notes}")
     if task.guidance.strip():
         material.append(f"# Context\n{task.guidance}")
     material.append(f"# Scoping notes\n{_render_notes(run)}")
@@ -2847,12 +2858,15 @@ def plan_review_messages(
     *,
     repair: str | None = None,
     reader_answers: Sequence[ReaderAnswer] = (),
+    reader_notes: str = "",
 ) -> list[ChatMessage]:
     """Build the one tool-free request that reviews a plan's meaning.
 
     ``reader_answers`` add the same ``# Reader answers`` section the plan
     request carries, only when there are any, so the review does not flag a
     narrowing the reader asked for as a missing dimension (spec §4.4).
+    ``reader_notes`` adds the plan request's ``# Reader notes`` block after
+    them, for the same reason, only when it is not empty (spec §4.6).
     """
     sections = [
         f"# Original question (frozen)\n{contract.question}",
@@ -2860,6 +2874,8 @@ def plan_review_messages(
     ]
     if reader_answers:
         sections.append(f"# Reader answers\n{render_reader_answers(reader_answers)}")
+    if reader_notes:
+        sections.append(f"# Reader notes\n{reader_notes}")
     sections += [
         f"# Plan under review\n{render_plan_for_review(sub_topics)}",
         f"# Review requirements\n{PLAN_REVIEW_INSTRUCTION}",
@@ -3133,6 +3149,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         # handed: the reader's answers to the one-time check, if any.
         self._reader_answers: tuple[ReaderAnswer, ...] = ()
         # Set for the duration of one run by ``run`` from the state it was
+        # handed: the reader's notes received before planning started. Notes
+        # that arrive while the planner runs are read from the run's board.
+        self._reader_notes: tuple[ReaderNote, ...] = ()
+        # Set for the duration of one run by ``run`` from the state it was
         # handed: the coverage ids this session already planned, so a later
         # non-extension pass cannot re-emit one beside itself.
         self._planned_coverage_ids: frozenset[str] = frozenset()
@@ -3159,6 +3179,32 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             instruction=state.original_question,
             guidance=planner_guidance(state.memory_context),
         )
+
+    def reader_notes_block(self) -> str:
+        """The ``# Reader notes`` block as of now, or ``""`` (live-briefs spec §4.6).
+
+        The notes the run was handed plus any that arrived since, from the
+        run's board, so a note sent while the planner scopes the question
+        reaches the plan it is about to draft.
+        """
+        return render_reader_notes(
+            live_reader_notes(self._reader_notes), instruction=PLANNING_NOTES
+        )
+
+    def build_decision_context(
+        self,
+        task: AgentTask,
+        *,
+        iteration: int,
+        steps: Sequence[ReActStep],
+    ) -> str:
+        """The scoping loop's per-turn context: the reader's notes, when there are any.
+
+        Empty without notes, so the scoping turn's request is exactly what it
+        was before notes existed (live-briefs spec §4.6).
+        """
+        del task, iteration, steps
+        return self.reader_notes_block()
 
     @property
     def frozen_contract(self) -> AnswerContract | None:
@@ -3201,6 +3247,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
         self._frozen_contract = state.answer_contract
         self._reader_answers = tuple(state.reader_answers)
+        self._reader_notes = tuple(state.reader_notes)
         self._planned_coverage_ids = frozenset(
             sub_topic.coverage_id for sub_topic in state.sub_topics
         )
@@ -3266,6 +3313,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     repair=repair,
                     plan_under_repair=plan_under_repair,
                     reader_answers=self._reader_answers,
+                    reader_notes=self.reader_notes_block(),
                 ),
                 ResearchPlanDraft,
                 operation="plan_draft",
@@ -3352,6 +3400,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     sub_topics,
                     repair=already_requested,
                     reader_answers=self._reader_answers,
+                    reader_notes=self.reader_notes_block(),
                 ),
                 PlanReviewDraft,
                 operation="plan_review",
