@@ -334,12 +334,18 @@ def test_local_embedding_provider_never_builds_the_real_model_when_injected(
     injected function must make that path unreachable, which is what keeps
     this suite offline."""
     import chromadb.utils.embedding_functions as chroma_embedding_functions
+    import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as onnx_module
 
     from deep_research.providers import LocalEmbeddingProvider
 
     def exploding(*args, **kwargs):
         raise AssertionError("offline tests must not build the local model")
 
+    # The provider builds ONNXMiniLM_L6_V2 from the onnx_mini_lm_l6_v2 module
+    # (the class chromadb's DefaultEmbeddingFunction wraps), so that name is
+    # the one that must explode; the default-function patch stays as a second
+    # tripwire.
+    monkeypatch.setattr(onnx_module, "ONNXMiniLM_L6_V2", exploding)
     monkeypatch.setattr(
         chroma_embedding_functions, "DefaultEmbeddingFunction", exploding
     )

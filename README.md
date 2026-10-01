@@ -503,7 +503,7 @@ Two stages, and both are needed:
   period, scope, kind (actual or forecast), attribution and the page's own
   organisation, or rejecting it. Batches hold
   `agents.verifier_batch_size` findings (5) and at most
-  `agents.verifier_concurrency` batches are in flight (16). Code then applies
+  `agents.verifier_concurrency` batches are in flight (64). Code then applies
   the checks that cannot be a judgement: the corrected wording must be on the
   page, a relayed figure keeps its originator, and a page is credited with its
   own organisation only when code confirms the host is that organisation's own.
@@ -1005,7 +1005,7 @@ with no code edit and no re-run of anything:
 | `agents.sub_topic_concurrency` | 10 | researcher sub-topics in flight | `AGENTS_SUB_TOPIC_CONCURRENCY` |
 | `agents.source_scoring_concurrency` | 6 | source-evaluator scoring batches in flight | `AGENTS_SOURCE_SCORING_CONCURRENCY` |
 | `agents.verifier_batch_size` | 5 | Context Check and Statement Check items per call | `AGENTS_VERIFIER_BATCH_SIZE` |
-| `agents.verifier_concurrency` | 16 | verification calls in flight | `AGENTS_VERIFIER_CONCURRENCY` |
+| `agents.verifier_concurrency` | 64 | verification calls in flight | `AGENTS_VERIFIER_CONCURRENCY` |
 | `agents.extraction_concurrency` | 16 | one sub-topic's per-page extraction calls in flight (S6) | `AGENTS_EXTRACTION_CONCURRENCY` |
 | `agents.writer_section_concurrency` | 10 | the parallel writer's section drafts in flight (spec §6.10) | `AGENTS_WRITER_SECTION_CONCURRENCY` |
 
