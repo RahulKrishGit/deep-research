@@ -66,12 +66,15 @@ export function noteRedraftLine(ids: readonly string[], notes: readonly NoteStat
 
 /* The report's "Your notes" block: one caption per note (§4.7; "not addressed in the report",
    "not checked" and "replaced by a later note" are this plan's words for the three outcomes the
-   spec's table leaves unnamed). A note the report still ignores is never "covered". */
+   spec's table leaves unnamed). A note the report still ignores is never "covered". A session that
+   has ended reads "not_checked" for a note nothing judged, and "pending" — "not checked yet" — occurs
+   only while a run is going (notes-progress-report spec §4 item 2). */
 export const OUTCOME_TEXT: Readonly<Record<ReaderNoteOutcome, string>> = {
   covered: "covered",
   not_found: "couldn't find evidence",
   not_addressed: "not addressed in the report",
-  pending: "not checked",
+  pending: "not checked yet",
+  not_checked: "not checked",
   replaced: "replaced by a later note",
 };
 

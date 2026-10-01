@@ -106,8 +106,8 @@ test("the report lists every note above the prose, each with its outcome (AC19)"
   await expect(card.locator(".reader-notes li")).toHaveText(["More on fire-safety standards not checked", "Only the United States not checked"]);
   const status = await (await request.get(`${API}/research/${id}/status`)).json();
   expect(status.notes).toEqual([
-    { note_id: "n1", text: "More on fire-safety standards", restatement: "More on fire-safety standards", outcome: "pending" },
-    { note_id: "n2", text: "Only the United States", restatement: "Only the United States", outcome: "pending" },
+    { note_id: "n1", text: "More on fire-safety standards", restatement: "More on fire-safety standards", outcome: "not_checked" },
+    { note_id: "n2", text: "Only the United States", restatement: "Only the United States", outcome: "not_checked" },
   ]);
   expect([status.notes_remaining, status.note_passes]).toEqual([8, 0]);
 });

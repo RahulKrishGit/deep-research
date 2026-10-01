@@ -38,10 +38,11 @@ export interface ResearchSessionResponse {
      existed (the replay captures under test/fixtures) carries none of them. */
   notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
 }
-/* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the
-   finished run concluded ("pending" while it runs, or when no review judged it; "not_addressed"
-   when the report still does not follow it after its one redraft). */
-export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "replaced";
+/* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the run
+   concluded — "not_addressed" when the report still does not follow it after its one redraft; with
+   nothing to judge it by, "pending" while the session goes on and "not_checked" once it has ended
+   (notes-progress-report spec §4 item 2). */
+export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "not_checked" | "replaced";
 export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome }
 export interface ClarificationRecord {
   questions: { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string }[];

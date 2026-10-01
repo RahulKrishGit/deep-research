@@ -69,9 +69,11 @@ describe("lib/notes — the note line's copy and each note's acknowledgement (li
     expect(notePassLine(["n1"], run.notes)).toBe("Researching your note: fire safety");
     expect(notePassLine(["n1", "n2"], run.notes)).toBe("Researching your notes: fire safety; recycling");
     expect(noteRedraftLine(["n2"], run.notes)).toBe("Rewriting for your note: recycling");
+    // notes-progress-report spec §4 item 2: "pending" occurs only while a run is going, and a session
+    // that has ended reads "not_checked".
     expect(OUTCOME_TEXT).toEqual({
       covered: "covered", not_found: "couldn't find evidence", not_addressed: "not addressed in the report",
-      pending: "not checked", replaced: "replaced by a later note",
+      pending: "not checked yet", not_checked: "not checked", replaced: "replaced by a later note",
     });
     expect([notesLeft(undefined, 0), notesLeft(10, 3), notesLeft(7, 1), notesLeft(4, 9), notesLeft(0, 0)]).toEqual([10, 7, 7, 1, 0]);
   });

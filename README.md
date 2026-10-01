@@ -838,10 +838,11 @@ or the writer's own re-run. Notes close once `finalize_report` has started: the 
 published decision to publish (or to end) closes them (live-briefs Phase 3 plan,
 ambiguity 5). The status snapshot carries `notes` (each with its `text`, its
 `restatement` once read, and its `outcome`: `covered`, `not_found`, `not_addressed`
-when the report still does not follow the note after its one redraft, `replaced`, or
-`pending` while the run goes on or when no review judged it), `notes_remaining`,
-`note_passes`, and `clarification` (the one-time check's questions and the answers the
-run started with, or `null`).
+when the report still does not follow the note after its one redraft, `replaced`,
+`pending` while the session goes on with nothing to judge the note by yet, or
+`not_checked` once it has ended that way — no session that has ended reports `pending`),
+`notes_remaining`, `note_passes`, and `clarification` (the one-time check's questions and
+the answers the run started with, or `null`).
 
 A finished session's snapshot also carries the outcome's own readings, added
 to the response without changing any existing field: `evidence_path` and
@@ -920,7 +921,7 @@ records the case's own question. The one-time check asks nothing in replay mode 
 questions (Region, Period, For), so the check can be exercised offline. A reader note is
 read in replay mode by a scripted interpreter that keeps it as written, as an emphasis;
 replay runs the graph at full speed and paces only the stream, so a note added while the
-running stage plays arrives after the engine has finished and ends `pending`. In replay mode the topbar
+running stage plays arrives after the engine has finished and ends `not_checked`. In replay mode the topbar
 shows a muted `replay mode` chip.
 Sessions are held in the API process's memory: the sidebar's list empties when the API
 restarts.

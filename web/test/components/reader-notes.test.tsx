@@ -65,7 +65,7 @@ const MARKDOWN = "# Q\n\nEvidence as of 2026-09-16 · 1 source\n\n## Bottom line
 const NOTES = [
   { note_id: "n1", text: "More on fire safety", restatement: "more weight on fire-safety standards", outcome: "covered" as const },
   { note_id: "n2", text: "Recycling too", restatement: "how cells are recycled", outcome: "not_found" as const },
-  { note_id: "n3", text: "Actually only the US", restatement: "only the United States", outcome: "pending" as const },
+  { note_id: "n3", text: "Actually only the US", restatement: "only the United States", outcome: "not_checked" as const },
   { note_id: "n4", text: "Leave out pumped hydro", restatement: "leave out pumped hydro", outcome: "not_addressed" as const },
 ];
 

@@ -155,16 +155,20 @@ class ReaderNoteResponse(ApiModel):
     """One accepted note in the session response (live-briefs spec §4.6).
 
     ``restatement`` is the run's reading of it, ``None`` until the note is
-    interpreted. ``outcome`` is the finished run's conclusion — ``covered``,
+    interpreted. ``outcome`` is the run's conclusion — ``covered``,
     ``not_found``, ``not_addressed`` (the report still does not follow the
-    note, though the findings bore on it) or ``replaced`` — and ``pending``
-    while the run is going or when no review judged the note.
+    note, though the findings bore on it) or ``replaced`` — or, with nothing
+    to judge the note by, ``pending`` while the session goes on and
+    ``not_checked`` once it has ended: no session that has ended reports
+    ``pending`` (notes-progress-report spec §4 item 2).
     """
 
     note_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     restatement: str | None = None
-    outcome: Literal["covered", "not_found", "not_addressed", "pending", "replaced"]
+    outcome: Literal[
+        "covered", "not_found", "not_addressed", "pending", "not_checked", "replaced"
+    ]
 
 
 class ClarificationQuestionResponse(ApiModel):

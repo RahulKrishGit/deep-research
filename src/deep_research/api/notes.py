@@ -51,8 +51,10 @@ MAX_RESTATEMENT_CHARS = 120
 MAX_NEW_QUESTIONS = 3
 MAX_NEW_QUESTION_CHARS = 200
 NoteOutcome: TypeAlias = Literal[
-    "covered", "not_found", "not_addressed", "pending", "replaced"
+    "covered", "not_found", "not_addressed", "pending", "not_checked", "replaced"
 ]
+"""``pending`` only while a session goes on; ``not_checked`` once it has ended with nothing
+to judge the note by (notes-progress-report spec §4 item 2)."""
 
 
 class NoteScopeDraft(BaseModel):
@@ -340,8 +342,10 @@ def note_interpreted_event(note: ReaderNote, *, fallback: bool) -> ResearchEvent
     )
 
 
-def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
-    """What the finished run concluded about one note.
+def note_outcome(
+    note_id: str, state: ResearchState | None, *, terminal: bool
+) -> NoteOutcome:
+    """What the run concluded about one note.
 
     ``covered`` when the last review judged that the report follows it
     (``honoured``); ``not_found`` when it found no evidence bearing on it;
@@ -349,15 +353,19 @@ def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
     findings bore on the note and the report still does not follow it, after
     its one redraft or because the run ended before it — which is never
     ``covered`` (live-briefs Phase 3, open issue O8); ``replaced`` when a later
-    note replaced it; and ``pending`` while the run is going or when no review
-    judged it (a note that arrived too late, or a review that could not be
-    made).
+    note replaced it. With nothing to judge it by — no state yet, a note the
+    state does not hold, or no verdict (a note that arrived too late, a review
+    that could not be made) — it waits: ``pending`` while its session goes on,
+    and ``not_checked`` once it has ended (``terminal``), so a finished, failed
+    or stopped session never reports ``pending`` (notes-progress-report spec
+    §4 item 2).
     """
+    waiting: NoteOutcome = "not_checked" if terminal else "pending"
     if state is None:
-        return "pending"
+        return waiting
     notes = [note for note in state.reader_notes if note.note_id == note_id]
     if not notes:
-        return "pending"
+        return waiting
     if note_id not in {note.note_id for note in active_reader_notes(state.reader_notes)}:
         return "replaced"
     review = state.report_review
@@ -373,13 +381,16 @@ def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
         return "not_addressed"
     if verdict == "honoured":
         return "covered"
-    return "pending"
+    return waiting
 
 
 def note_records(
-    board: NoteBoard, state: ResearchState | None
+    board: NoteBoard, state: ResearchState | None, *, terminal: bool
 ) -> list[tuple[ReceivedNote, str | None, NoteOutcome]]:
-    """Every accepted note in receipt order: as received, its restatement once read, its outcome."""
+    """Every accepted note in receipt order: as received, its restatement once read, its outcome.
+
+    ``terminal`` says the session has ended, so no outcome is ``pending``.
+    """
     records: list[tuple[ReceivedNote, str | None, NoteOutcome]] = []
     for received in board.received():
         interpreted = board.interpreted(received.note_id)
@@ -387,7 +398,7 @@ def note_records(
             (
                 received,
                 interpreted.restatement if interpreted is not None else None,
-                note_outcome(received.note_id, state),
+                note_outcome(received.note_id, state, terminal=terminal),
             )
         )
     return records

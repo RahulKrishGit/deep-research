@@ -188,17 +188,24 @@ def _finished(*notes: Any, verdicts: dict[str, str]) -> ResearchState:
 
 def test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending() -> None:
     """A note the report still ignores after its one redraft is ``not_addressed``, never
-    ``covered`` (live-briefs Phase 3, open issue O8)."""
+    ``covered`` (live-briefs Phase 3, open issue O8). A note nothing judged waits — no state,
+    a note the state does not hold, or no verdict: ``pending`` while its session goes on,
+    ``not_checked`` once it has ended (notes-progress-report spec §4 item 2)."""
     state = _finished(
         fake_reader_note("n1"), fake_reader_note("n2"), fake_reader_note("n3"),
         fake_reader_note("n4", replaces="n3", reviewed=True, redrafted=True), fake_reader_note("n5"),
         verdicts={"n1": "honoured", "n2": "no_evidence", "n4": "ignored_with_evidence"},
     )
 
-    assert [note_outcome(f"n{i}", state) for i in range(1, 7)] == [
+    assert [note_outcome(f"n{i}", state, terminal=False) for i in range(1, 7)] == [
         "covered", "not_found", "replaced", "not_addressed", "pending", "pending",
     ]
-    assert note_outcome("n1", None) == "pending"
+    assert [note_outcome(f"n{i}", state, terminal=True) for i in range(1, 7)] == [
+        "covered", "not_found", "replaced", "not_addressed", "not_checked", "not_checked",
+    ]
+    assert (note_outcome("n1", None, terminal=False), note_outcome("n1", None, terminal=True)) == (
+        "pending", "not_checked",
+    )
 
 
 def test_the_records_list_every_accepted_note_in_order_read_or_not() -> None:
@@ -207,12 +214,14 @@ def test_the_records_list_every_accepted_note_in_order_read_or_not() -> None:
     board.receive("second", received_at=RECEIVED.received_at, received_during="researcher")
     board.add(fake_reader_note("n1", restatement="more weight on fire-safety standards"))
 
-    records = note_records(board, None)
+    running = note_records(board, None, terminal=False)
+    ended = note_records(board, None, terminal=True)
 
-    assert [(r.note_id, r.text, restatement, outcome) for r, restatement, outcome in records] == [
+    assert [(r.note_id, r.text, restatement, outcome) for r, restatement, outcome in running] == [
         ("n1", "first", "more weight on fire-safety standards", "pending"),
         ("n2", "second", None, "pending"),
     ]
+    assert [outcome for _received, _restatement, outcome in ended] == ["not_checked", "not_checked"]
 
 
 def test_the_note_shapes_trim_bound_and_default_as_the_spec_says() -> None:
@@ -224,6 +233,7 @@ def test_the_note_shapes_trim_bound_and_default_as_the_spec_says() -> None:
     assert NoteAcceptedResponse(note_id="n1").model_dump() == {"note_id": "n1", "status": "received"}
     with pytest.raises(ValidationError):
         ReaderNoteResponse(note_id="n1", text="t", outcome="lost")
+    assert ReaderNoteResponse(note_id="n1", text="t", outcome="not_checked").outcome == "not_checked"
     fields = ResearchSessionResponse.model_fields
     assert fields["notes"].default_factory() == []  # type: ignore[misc]
     assert (fields["notes_remaining"].default, fields["note_passes"].default, fields["clarification"].default) == (
