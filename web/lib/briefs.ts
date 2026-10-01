@@ -1,6 +1,10 @@
-// The live step briefs (live-briefs spec §4.3; picks 1A, 2C, 3B): what each spine row says while it
-// runs, once it is done, and when a loop reopens it. Pure — a function of RunState only, so a burst,
-// a tick and a replay from event 1 paint the same brief (DESIGN.md §5.7).
+// The live step briefs: what each spine row says while it runs, once it is done, when a loop reopens
+// it and when the reader stopped the run on it. live-briefs spec §4.3 (picks 1A, 2C, 3B) built the
+// frame; notes-progress-report spec §6 (2026-09-30) gives every step its own body: Planning's slots
+// (Main.dc.html B), Evaluating's bar and split (Evaluating.dc.html A), Verifying's and Writing's
+// tickers (Verifying.dc.html C, Writing.dc.html E) and Reviewing's checks (Reviewing.dc.html A
+// revised). Pure — a function of RunState and the clock only, so a burst, a tick and a replay from
+// event 1 paint the same brief (DESIGN.md §5.7).
 import { fmtSeconds } from "./format";
 import { earlierNotesText, visibleAcks, type Ack } from "./notes";
 import {
@@ -11,28 +15,23 @@ import {
 
 /* "stopped" and "off" occur only on the stopped stage's frozen spine (notes-progress-report spec §8.5). */
 export type RowState = PaintedMark | "pending" | "stopped" | "off";
-/* The subtitle a row shows until it is done: its static meta, or Researching's live facts line. */
+/* The subtitle a row shows until it is done: a line of text, or Researching's live facts line. */
 export type Subtitle =
   | { kind: "text"; text: string }
   | { kind: "research"; topics: number; done: number; pages: number; findings: number };
 export interface TopicLine { key: string; n: number; title: string; state: TopicState; fact: string }
 export interface RowBrief {
-  subtitle: Subtitle;              /* pending and active rows; green while active */
+  subtitle: Subtitle;              /* pending, active, stopped and off rows; green while active */
   outcome: string;                 /* done and loop rows */
   why: ReopenLine | null;          /* the first line of a row a loop reopened */
-  sentence: string | null;         /* the one plain sentence of every step but Researching */
-  topics: TopicLine[] | null;      /* Researching's checklist */
-  titles: string[] | null;         /* Planning's final brief: the sub-topic titles */
-  acks: Ack[];                     /* the active row only: the latest two notes, acknowledged (§4.7) */
+  body: BriefBody;                 /* the step's own lines (§6.3-§6.7) */
+  acks: Ack[];                     /* the active row only: the latest two notes, acknowledged */
   earlier: string | null;          /* the active row only: "and {n} earlier notes" past two */
 }
 
 export const STATIC_META: Readonly<Record<NodeId, string>> = Object.fromEntries(STAGES.map((s) => [s.id, s.meta])) as Record<NodeId, string>;
-export const SENTENCES: Readonly<Record<Exclude<NodeId, "researcher" | "evidence_verifier">, string>> = {
-  planner: "Breaking your question into sub-topics…",
-  source_evaluator: "Rating sources for trustworthiness and relevance",
-  report_writer: "Writing the report from verified findings only",
-  report_reviewer: "Reviewing the draft on 7 dimensions",
+/* §6.9: Publishing keeps its one plain sentence; every other step has its own body. */
+export const SENTENCES: Readonly<Pick<Record<NodeId, string>, "finalize_report">> = {
   finalize_report: "Saving the report and evidence log",
 };
 
@@ -40,13 +39,6 @@ export function topicFact(topic: Topic): string {
   if (topic.state === "waiting") return "not yet";
   if (topic.state === "running") return "reading";
   return countPhrase(topic.findings ?? 0, "finding", "findings");
-}
-/* Verifying's sentence, from researcher.research.completed.findings of the pass being verified. */
-export function verifyingSentence(findings: number | null): string {
-  if (findings === null) return "Checking findings against their pages";
-  if (findings === 0) return "No findings to check";
-  if (findings === 1) return "Checking 1 finding against its page";
-  return "Checking " + findings + " findings against their pages";
 }
 export function subtitleText(subtitle: Subtitle): string {
   if (subtitle.kind === "text") return subtitle.text;
@@ -56,40 +48,67 @@ export function subtitleText(subtitle: Subtitle): string {
   return done + " of " + topics + " " + (topics === 1 ? "topic" : "topics") + " done · "
     + countPhrase(pages, "page read", "pages read") + " · " + countPhrase(findings, "finding", "findings");
 }
-export function rowBrief(run: RunState, id: NodeId, state: RowState): RowBrief {
-  const finished = state === "done" || state === "loop";
-  const why = run.reopen[id] ?? null;
-  const outcome = run.outcomes[id] ?? STATIC_META[id];
-  const text: Subtitle = { kind: "text", text: STATIC_META[id] };
+function subtitleFor(run: RunState, id: NodeId, state: RowState, nowMs: number): Subtitle {
+  if (state === "stopped") return { kind: "text", text: stoppedSubtitle(run, id) };
+  if (state === "off") return { kind: "text", text: notRunText(run, id) };
+  if (id === "researcher") return researchSubtitle(run);
+  if (state === "active") {
+    const live = liveSubtitle(run, id, nowMs);
+    if (live !== null) return { kind: "text", text: live };
+  }
+  /* §6.7 (review 2, M-4): Reviewing's static meta names the notes while the run holds one. */
+  if (id === "report_reviewer" && listedNotes(run.notes).length > 0) return { kind: "text", text: STATIC_META.report_reviewer + " · your notes" };
+  return { kind: "text", text: STATIC_META[id] };
+}
+function outcomeFor(run: RunState, id: NodeId): string {
+  const outcome = run.outcomes[id];
+  if (outcome === undefined) return STATIC_META[id];
+  const seconds = run.durations[id];
+  /* §6.3, §6.7: Planning's and Reviewing's outcomes end with the row's duration. */
+  return (id === "planner" || id === "report_reviewer") && typeof seconds === "number" ? outcome + " · " + fmtSeconds(seconds) : outcome;
+}
+function bodyFor(run: RunState, id: NodeId, stopped: boolean): BriefBody {
+  switch (id) {
+    case "planner": return { kind: "planning", status: planningStatus(run), slots: planningSlots(run, stopped) };
+    case "researcher":
+      return { kind: "research", topics: run.topics.map((t, i) => ({ key: t.coverageId, n: i + 1, title: t.title, state: t.state, fact: topicFact(t) })) };
+    case "source_evaluator": return evaluatingBody(run);
+    case "evidence_verifier": return verifyingBody(run);
+    case "report_writer": return writingBody(run);
+    case "report_reviewer": return reviewingBody(run, stopped);
+    default: return { kind: "sentence", text: SENTENCES.finalize_report };
+  }
+}
+/* `nowMs` is the page's one-second clock (RunningPipeline), so the elapsed times tick; a burst, a tick
+   and a replay given the same clock paint the same brief. */
+export function rowBrief(run: RunState, id: NodeId, state: RowState, nowMs: number = Date.now()): RowBrief {
   // live-briefs spec §4.7: the reader's notes are acknowledged in the row that is running now.
   const noted = id === run.active ? visibleAcks(run.notes, run.active) : { acks: [], earlier: 0 };
-  const notes = { acks: noted.acks, earlier: noted.earlier > 0 ? earlierNotesText(noted.earlier) : null };
-  if (id === "researcher") {
-    return {
-      subtitle: { kind: "research", topics: run.topics.length, done: run.topics.filter((t) => t.state === "done").length,
-        pages: run.pagesRead ?? 0, findings: run.findingsSoFar ?? 0 },
-      outcome, why, sentence: null, titles: null, ...notes,
-      topics: run.topics.map((t, i) => ({ key: t.coverageId, n: i + 1, title: t.title, state: t.state, fact: topicFact(t) })),
-    };
-  }
-  if (id === "planner" && finished && run.plan.length > 0) {
-    return { subtitle: text, outcome, why, sentence: null, topics: null, titles: run.plan.map((p) => p.title), ...notes };
-  }
-  const sentence = id === "evidence_verifier" ? verifyingSentence(run.passFindings) : SENTENCES[id];
-  return { subtitle: text, outcome, why, sentence, topics: null, titles: null, ...notes };
+  return {
+    subtitle: subtitleFor(run, id, state, nowMs),
+    outcome: outcomeFor(run, id),
+    why: run.reopen[id] ?? null,
+    body: bodyFor(run, id, state === "stopped"),
+    acks: noted.acks,
+    earlier: noted.earlier > 0 ? earlierNotesText(noted.earlier) : null,
+  };
 }
 
 /* notes-progress-report spec §8.5: the stopped row's subtitle — "Stopped", then the live facts the row
-   had when the reader stopped it. Before Phase B only Researching has live facts; its stopped line always
-   counts the topics done ("none of 3", rather than its running "3 topics · researching", which would
-   contradict "Stopped", and never a bare 0). A Researching row with no topics yet, and every other row,
-   reads "Stopped"; Phase B gives each step its own facts here (§6.3–§6.7). */
+   had when the reader stopped it, frozen at the stop (§6.3-§6.7). Researching's always counts the topics
+   done ("none of 3", rather than its running "3 topics · researching", which would contradict
+   "Stopped", and never a bare 0); a row with no live facts reads "Stopped". */
 export function stoppedSubtitle(run: RunState, id: NodeId): string {
-  const topics = run.topics.length;
-  if (id !== "researcher" || topics === 0) return "Stopped";
-  const done = run.topics.filter((t) => t.state === "done").length;
-  return "Stopped · " + (done === 0 ? "none" : String(done)) + " of " + plural(topics, "topic", "topics") + " done · "
-    + countPhrase(run.pagesRead ?? 0, "page read", "pages read") + " · " + countPhrase(run.findingsSoFar ?? 0, "finding", "findings");
+  if (id === "researcher") {
+    const topics = run.topics.length;
+    if (topics === 0) return "Stopped";
+    const done = run.topics.filter((t) => t.state === "done").length;
+    return "Stopped · " + (done === 0 ? "none" : String(done)) + " of " + plural(topics, "topic", "topics") + " done · "
+      + countPhrase(run.pagesRead ?? 0, "page read", "pages read") + " · " + countPhrase(run.findingsSoFar ?? 0, "finding", "findings");
+  }
+  const at = run.stopped?.at ? Date.parse(run.stopped.at) : NaN;
+  const live = liveSubtitle(run, id, Number.isNaN(at) ? null : at);
+  return live === null ? "Stopped" : "Stopped · " + live;
 }
 /* A row after the stopped one: "not run", or "not run again" when the loop the run was in had re-armed
    it — it ran in an earlier pass. */

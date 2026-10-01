@@ -83,7 +83,7 @@ describe("the stopped stage (notes-progress-report spec §8.5; D18)", () => {
     vi.stubGlobal("fetch", serve(STOPPED, RESEARCHING));
     render(<ConsoleProvider><SessionScreen sessionId="s1" /></ConsoleProvider>);
     await waitFor(() => expect(ROWS.map(said)).toEqual([
-      ["done", "2 sub-topics"],
+      ["done", "2 sub-topics · 0m 00s"],
       ["stopped", "Stopped · 1 of 2 topics done · 3 pages read · 4 findings"],
       ["off", "not run"], ["off", "not run"], ["off", "not run"], ["off", "not run"], ["off", "not run"],
     ]));

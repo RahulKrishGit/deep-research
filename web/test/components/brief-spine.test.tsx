@@ -60,7 +60,7 @@ describe("BriefSpine — row anatomy (live-briefs spec §4.3, AC4, AC5)", () => 
     expect(planning.getAttribute("data-open")).toBe("1");
     expect(head.getAttribute("aria-expanded")).toBe("true");
     expect(planning.querySelector("#brief-planner")!.hasAttribute("aria-hidden")).toBe(false);
-    expect([...planning.querySelectorAll(".ps-titles > .ln")].map((t) => t.textContent)).toEqual(["1Adoption rate", "2Widget funding", "3Widget exports"]);
+    expect([...planning.querySelectorAll(".ps-slots > .ln:not([data-gone]) .tt")].map((t) => t.textContent)).toEqual(["1Adoption rate", "2Widget funding", "3Widget exports"]);
   });
   it("never opens a pending row, even if asked", () => {
     const run = researching();
@@ -148,7 +148,8 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
     expect(container.querySelector("[data-handoff]")).toBeNull();
   });
-  it("never awaits a row a loop sends the run back from", () => {
+  it("never awaits a row a loop sends the run back from: the hold's own timer hands it over (D39)", () => {
+    vi.useFakeTimers();
     const run = newRunState();
     for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
       applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
@@ -158,6 +159,10 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     const { container, rerender } = show(run);
     applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", missing_required_target_ids: ["topic-01-target-01"] } });
     rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
+    expect([row(container, "report_reviewer").getAttribute("data-state"), row(container, "report_reviewer").getAttribute("data-open")]).toEqual(["active", "1"]);
+    expect(row(container, "researcher").getAttribute("data-state")).toBe("pending");
+    // A loop's completion of the reviewer is inert, so none ever releases the row: the timer does.
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
     expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
     expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
     expect(row(container, "researcher").getAttribute("data-state")).toBe("active");
@@ -204,5 +209,89 @@ describe("BriefSpine — frozen at the stopped row (notes-progress-report spec �
     expect(topics.map((t) => [t.getAttribute("data-topic"), t.querySelector(".tf")!.textContent])).toEqual([
       ["running", "reading"], ["done", "2 findings"], ["waiting", "not yet"],
     ]);
+  });
+});
+
+describe("BriefSpine — a loop route holds Reviewing on its checks and verdict (decision D39)", () => {
+  /* Writing done and Reviewing's call running; then the review lands with one criterion not met and the
+     route sends the draft back to the writer, with `also` applied in the same render. */
+  function sentBack(also: Parameters<typeof applyEvent>[1][] = []) {
+    vi.useFakeTimers();
+    const run = newRunState();
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const onToggle = (id: NodeId) => toggleOpen(run, id);
+    const { container, rerender } = render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggle} />);
+    const again = () => rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggle} />);
+    const criteria = ["completeness", "evidence_quality", "attribution", "uncertainty", "readability"]
+      .map((dimension) => ({ dimension, met: dimension !== "completeness", kinds: dimension === "completeness" ? ["coverage"] : [] }));
+    applyEvent(run, { type: "graph.report.reviewed", metadata: { review_status: "scored", mean_score: 0.6, material_defects: 1, criteria, notes: [] } });
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "redraft", reason: "redraft_requested", missing_required_target_ids: [] } });
+    for (const event of also) applyEvent(run, event);
+    again();
+    return { run, container, again };
+  }
+  const VERDICT = "1 thing to fix · sending the draft back to the writer";
+
+  it("keeps Reviewing open on its five checks and its verdict while Writing waits closed; then hands over, and Reviewing reopens", () => {
+    const { run, container, again } = sentBack();
+    // The reviewer's own completion after a loop route is inert; the redraft's start says why Writing reopens.
+    applyEvent(run, { type: "graph.node.completed", metadata: { node: "report_reviewer" } });
+    applyEvent(run, { type: "graph.report.redraft_requested", metadata: { iteration: 0, redrafts: 1, material_defects: 1 } });
+    again();
+    const reviewing = row(container, "report_reviewer"), writing = row(container, "report_writer");
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open"), reviewing.hasAttribute("aria-current"), reviewing.hasAttribute("data-handoff")])
+      .toEqual(["active", "1", false, false]);
+    expect(reviewing.querySelectorAll(".rv-list > .ln")).toHaveLength(5);
+    expect([...reviewing.querySelectorAll(".rv-list > .ln[data-topic='fail'] .tt")].map((t) => t.textContent)).toEqual(["Covers your whole question"]);
+    expect(reviewing.querySelector(".b-now.xf > [data-on='1']")!.textContent).toBe(VERDICT);
+    expect([writing.getAttribute("data-state"), writing.getAttribute("data-open"), writing.hasAttribute("data-handoff"), writing.hasAttribute("aria-current")])
+      .toEqual(["pending", "0", false, false]);
+
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open"), reviewing.getAttribute("data-handoff")]).toEqual(["pending", "0", "from"]);
+    expect([writing.getAttribute("data-state"), writing.getAttribute("data-open"), writing.getAttribute("data-handoff"), writing.getAttribute("aria-current")])
+      .toEqual(["active", "1", "to", "step"]);
+    expect(writing.querySelector(".b-why")!.textContent).toBe("Rewriting to fix 1 issue the review found");
+
+    // The hollow row reopens from its head, on the same checks and verdict.
+    const toggle = reviewing.querySelector<HTMLButtonElement>("button.ps-toggle")!;
+    expect([reviewing.getAttribute("data-toggle"), toggle.getAttribute("aria-expanded")]).toEqual(["1", "false"]);
+    fireEvent.click(toggle);
+    again();
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open")]).toEqual(["pending", "1"]);
+    expect(reviewing.querySelector(".b-now.xf > [data-on='1']")!.textContent).toBe(VERDICT);
+    expect(reviewing.querySelectorAll(".rv-list > .ln[data-topic='fail']")).toHaveLength(1);
+
+    // Reviewing running again starts its block clean: nothing to reopen.
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 1 } });
+    again();
+    expect(reviewing.querySelector("button.ps-toggle")).toBeNull();
+  });
+
+  it("holds Reviewing even when the loop's own start event lands in the same render as the route decision", () => {
+    // The redraft's start settles the loop (run.loop "settled"); the lit arc still names Writing.
+    const { container } = sentBack([
+      { type: "graph.node.completed", metadata: { node: "report_reviewer" } },
+      { type: "graph.report.redraft_requested", metadata: { iteration: 0, redrafts: 1, material_defects: 1 } },
+    ]);
+    expect([row(container, "report_reviewer").getAttribute("data-state"), row(container, "report_reviewer").getAttribute("data-open")]).toEqual(["active", "1"]);
+    expect(row(container, "report_writer").getAttribute("data-state")).toBe("pending");
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(row(container, "report_writer").getAttribute("data-handoff")).toBe("to");
+  });
+
+  it("a Stop during the hold ends it: Reviewing paints pending and no row takes a hand-off role", () => {
+    const { run, container, again } = sentBack();
+    act(() => { vi.advanceTimersByTime(500); });
+    applyEvent(run, { type: "session.stopped", metadata: { step: "report_writer", stopped_at: "2026-09-30T12:00:00+00:00", elapsed_seconds: 60 } });
+    again();
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
+    expect(container.querySelector("[data-handoff]")).toBeNull();
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(container.querySelector("[data-handoff]")).toBeNull();
   });
 });
