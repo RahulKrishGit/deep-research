@@ -24,10 +24,16 @@ def agent_event(
 ) -> ResearchEvent:
     """Build one progress event attributed to a named agent.
 
-    ``metadata`` must never contain ``str(exception)`` or raw provider text:
-    these records are copied into ``ResearchState.events`` and provider text
-    can carry keys, URLs, and paths. Record counts, identifiers, and
-    enumerated reasons instead.
+    For a state-bound event -- one returned in an agent's state update, and so
+    copied into ``ResearchState.events`` -- ``metadata`` must never contain
+    ``str(exception)`` or raw provider text, which can carry keys, URLs, and
+    paths: record counts, identifiers, and enumerated reasons instead. A
+    live-only progress event (``*.progress``, notes-progress-report spec §4
+    item 1) is never copied there, and may also carry exactly these
+    reader-facing texts: plan and section titles (at most 160 characters), a
+    finding's content (160) and a drafted sentence (200), hosts, and page-word
+    correction values (60). Never an exception message, a URL path or query,
+    or a model's reason text.
     """
     if not agent_name.strip():
         raise ValueError("agent_name must not be blank")

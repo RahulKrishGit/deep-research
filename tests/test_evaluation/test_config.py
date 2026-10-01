@@ -1007,7 +1007,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
     # then-topics request and reply contract. Moved `3934bea57f61` ->
     # `55c1f86bac40`.
-    "planner": "55c1f86bac40",
+    # Phase B (notes-progress-report spec §6.1-§6.3, 2026-09-30): the planner
+    # publishes a live planner.progress before each plan-side request and
+    # stamps each slot's final state on planner.planning.completed. No request
+    # text changed; agents.prompts was untouched. Moved `55c1f86bac40` ->
+    # `75d84b30f360`.
+    "planner": "75d84b30f360",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required

@@ -31,9 +31,11 @@ def graph_event(
 ) -> ResearchEvent:
     """Build one progress event attributed to the graph or one of its nodes.
 
-    ``metadata`` must never contain ``str(exception)`` or raw provider text:
-    these records are copied into ``ResearchState.events``. Record counts,
-    identifiers, and enumerated reasons instead.
+    For a state-bound event -- every graph event is returned in its node's
+    update and copied into ``ResearchState.events`` -- ``metadata`` must never
+    contain ``str(exception)`` or raw provider text. Record counts,
+    identifiers, and enumerated reasons instead (notes-progress-report spec §4
+    item 1 lists the texts only a live-only progress event may carry).
     """
     if not event_type.strip():
         raise ValueError("event_type must not be blank")

@@ -288,6 +288,7 @@ async def test_mixed_kind_note_steers_and_researches(tmp_path: Path) -> None:
     [completed] = [event for event in state.events if event.event_type == "planner.planning.completed"]
     assert completed.metadata["sub_topics"][-1] == {
         "coverage_id": "note-n1", "title": "Your note: recycling, leaving out exports", "note_id": "n1",
+        "state": "planned",
     }
     assert completed.metadata["note_topic_count"] == 1
     assert any(

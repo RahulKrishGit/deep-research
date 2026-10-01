@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from deep_research.agents.events import agent_event
+from deep_research.graph.events import graph_event
 
 
 def test_agent_event_namespaces_the_source_by_agent_name() -> None:
@@ -65,3 +66,11 @@ def test_agent_event_rejects_blank_identifiers(
             event_type=event_type,
             message="Planning started.",
         )
+
+
+def test_the_no_provider_text_rule_binds_state_bound_events() -> None:
+    """notes-progress-report spec §4 item 1 (AC13): a live-only progress event is never
+    copied into ``ResearchState.events``, so both builders scope the rule to the
+    events that are."""
+    for builder in (agent_event, graph_event):
+        assert "state-bound" in (builder.__doc__ or "")

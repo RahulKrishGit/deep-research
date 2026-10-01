@@ -1958,3 +1958,19 @@ def test_an_incomplete_publication_advertises_no_path_and_says_which_write_faile
     )
     assert REPORT_PATH not in joined
     assert EVIDENCE_PATH not in joined
+
+
+def test_cli_unchanged_for_progress_types() -> None:
+    """notes-progress-report spec §4 item 1 (AC13): plain and verbose output never
+    stream a live-only progress event; none ends in ``.completed`` or is a
+    progress type."""
+    from deep_research.cli import is_streamed_event
+
+    for event_type in (
+        "planner.progress",
+        "source_evaluator.progress",
+        "evidence_verifier.progress",
+        "report_writer.progress",
+    ):
+        assert is_streamed_event(event_type, verbose=False) is False
+        assert is_streamed_event(event_type, verbose=True) is False

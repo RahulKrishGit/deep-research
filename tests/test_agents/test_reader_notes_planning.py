@@ -184,8 +184,8 @@ async def test_planner_appends_research_notes(tracker: Tracker) -> None:
     completed = outcome.state_update["events"][-1]
     assert completed.event_type == "planner.planning.completed"
     assert completed.metadata["sub_topics"][3:] == [
-        {"coverage_id": "note-n3", "title": "Your note: how battery cells are recycled", "note_id": "n3"},
-        {"coverage_id": "note-n4", "title": "Your note: recycling, leaving out exports", "note_id": "n4"},
+        {"coverage_id": "note-n3", "title": "Your note: how battery cells are recycled", "note_id": "n3", "state": "planned"},
+        {"coverage_id": "note-n4", "title": "Your note: recycling, leaving out exports", "note_id": "n4", "state": "planned"},
     ]
     assert (completed.metadata["sub_topic_count"], completed.metadata["note_topic_count"]) == (5, 2)
     plan_request = completer.calls[0][2][1].content
