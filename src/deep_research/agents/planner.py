@@ -37,7 +37,9 @@ from deep_research.agents.errors import (
 from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.reader_notes import (
     PLANNING_NOTES,
+    is_research_note,
     live_reader_notes,
+    note_sub_topic,
     render_reader_notes,
 )
 from deep_research.agents.prompts import (
@@ -62,6 +64,7 @@ from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
+    NOTE_COVERAGE_PREFIX,
     AnswerContract,
     AnswerKind,
     ContractModel,
@@ -2918,29 +2921,48 @@ def memory_recalled_event(memory_context: MemorySnapshot) -> ResearchEvent:
     )
 
 
-def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent:
+def planning_completed_event(
+    outcome: AgentRun["ResearchPlan"],
+    *,
+    note_topics: Sequence[SubTopic] = (),
+) -> ResearchEvent:
     """Report the finished plan's size, its sub-topics and how the scoping loop stopped.
 
     ``sub_topics`` lists each planned sub-topic's ``coverage_id`` and title, the
     title capped at 160 characters (live-briefs spec AC2): plan content a console
-    shows the reader, never provider error text (``agents/events.py``).
+    shows the reader, never provider error text (``agents/events.py``). The
+    reader's research notes the plan is published with follow, each with its
+    ``note_id`` (notes-progress-report spec §5.2); ``sub_topic_count`` counts
+    both, and ``note_topic_count`` the notes' alone.
     """
     plan = outcome.result
+    planned = [] if plan is None else list(plan.sub_topics)
     return agent_event(
         agent_name=PLANNER_NAME,
         event_type="planner.planning.completed",
         message="Planning complete.",
         metadata={
-            "sub_topic_count": 0 if plan is None else len(plan.sub_topics),
-            "sub_topics": []
-            if plan is None
-            else [
-                {
-                    "coverage_id": sub_topic.coverage_id,
-                    "title": summarize_text(sub_topic.title, limit=160),
-                }
-                for sub_topic in plan.sub_topics
+            "sub_topic_count": len(planned) + len(note_topics),
+            "sub_topics": [
+                *(
+                    {
+                        "coverage_id": sub_topic.coverage_id,
+                        "title": summarize_text(sub_topic.title, limit=160),
+                    }
+                    for sub_topic in planned
+                ),
+                *(
+                    {
+                        "coverage_id": sub_topic.coverage_id,
+                        "title": summarize_text(sub_topic.title, limit=160),
+                        "note_id": sub_topic.coverage_id.removeprefix(
+                            NOTE_COVERAGE_PREFIX
+                        ),
+                    }
+                    for sub_topic in note_topics
+                ),
             ],
+            "note_topic_count": len(note_topics),
             "repair_attempted": False if plan is None else plan.repair_attempted,
             "stop_reason": outcome.react.stop_reason,
             "iterations": outcome.react.iterations,
@@ -3265,17 +3287,58 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise planning_provider_error("react_decision") from error
         finally:
             self._restricted_toolset = None
-        completed = planning_completed_event(outcome)
+        # notes-progress-report spec §5.2 (D1, D2): every research note read so
+        # far joins the plan it is published with, as its own sub-topic. Nothing
+        # from here to the live publication below awaits, so a note read after
+        # this line is the researcher's to pick up (§5.3).
+        note_topics = self._note_topics_for(state, outcome.result)
+        completed = planning_completed_event(outcome, note_topics=note_topics)
         publish_live(completed)
         events.append(completed)
+        update: ResearchStateUpdate = {**outcome.state_update, "events": events}
+        if note_topics:
+            update["sub_topics"] = [*update.get("sub_topics", []), *note_topics]
+            update["initial_target_ids"] = [
+                *update.get("initial_target_ids", []),
+                *inventory_target_ids(note_topics),
+            ]
         return AgentRun(
             agent_name=outcome.agent_name,
             result=outcome.result,
             react=outcome.react,
             errors=outcome.errors,
-            state_update={**outcome.state_update, "events": events},
+            state_update=update,
             call_fingerprints=dict(outcome.call_fingerprints),
         )
+
+    def _note_topics_for(
+        self, state: ResearchState, plan: ResearchPlan | None
+    ) -> list[SubTopic]:
+        """The sub-topics of the research notes this plan is published with (spec §5.2).
+
+        Every active note read so far — the state's, then the board's newer ones —
+        whose kinds include ``new_angle`` and whose ``note-{id}`` neither the
+        session nor the plan holds yet, in receipt order, one priority after the
+        plan's last. None for a run that produced no plan: such a note is the
+        researcher's, or owes a note pass.
+        """
+        if plan is None:
+            return []
+        known = [*state.sub_topics, *plan.sub_topics]
+        known_ids = {topic.coverage_id for topic in known}
+        held = [
+            note
+            for note in live_reader_notes(self._reader_notes)
+            if is_research_note(note)
+            and f"{NOTE_COVERAGE_PREFIX}{note.note_id}" not in known_ids
+        ]
+        if not held:
+            return []
+        priority = max(topic.priority for topic in known) + 1
+        return [
+            note_sub_topic(note, priority=priority, reason="reader_note")
+            for note in held
+        ]
 
     def answer_contract_for(self, question: str) -> AnswerContract:
         """Freeze this run's answer contract from the injected clock.

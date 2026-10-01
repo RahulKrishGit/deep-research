@@ -262,3 +262,48 @@ async def test_steering_views_per_request(tmp_path: Path) -> None:
     for text in checks:
         assert "leaving out exports" not in text and "battery cells are recycled" not in text
         assert "Reader notes" not in text and "reader added these notes" not in text
+
+
+@pytest.mark.asyncio
+async def test_mixed_kind_note_steers_and_researches(tmp_path: Path) -> None:
+    """notes-progress-report spec AC34 (D20), on the real graph: a mixed note read before
+    planning joins the plan as its own topic, which the run researches; the planner's requests
+    print both its kinds; every loop, extraction, scoring, writing and review request carries it
+    as an exclude note; and the review's verdict on it is kept."""
+    alone = fake_reader_note(
+        "n1", kinds=["new_angle", "exclude"], received_during="planner", restatement="recycling, leaving out exports",
+        new_questions=["How are battery cells recycled without exporting them?"],
+    )
+    with guarded():
+        status, sequence, state = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(alone))
+
+    assert status == "completed"
+    topics = {topic.coverage_id: topic for topic in state.sub_topics}
+    assert "note-n1" in topics
+    assert (topics["note-n1"].title, [target.question for target in topics["note-n1"].evidence_targets]) == (
+        "Your note: recycling, leaving out exports", ["How are battery cells recycled without exporting them?"],
+    )
+    [completed] = [event for event in state.events if event.event_type == "planner.planning.completed"]
+    assert completed.metadata["sub_topics"][-1] == {
+        "coverage_id": "note-n1", "title": "Your note: recycling, leaving out exports", "note_id": "n1",
+    }
+    assert completed.metadata["note_topic_count"] == 1
+    assert any(
+        event.event_type == "researcher.sub_topic.started" and event.metadata["coverage_id"] == "note-n1"
+        for event in state.events
+    )
+    for key in ("planner:react", "planner:ResearchPlanDraft", "planner:PlanReviewDraft"):
+        texts = packets_for(sequence, key)
+        assert texts and all("- recycling, leaving out exports (new_angle, exclude)" in text for text in texts), key
+    for key in (
+        "researcher:react", "researcher:SubTopicFindingsDraft", "source_evaluator:SourceScoresDraft",
+        "report_writer:SectionDraft", "report_writer:BottomLineDraft",
+    ):
+        texts = packets_for(sequence, key)
+        assert texts, key
+        for text in texts:
+            assert "- recycling, leaving out exports (exclude)" in text, key
+            assert "(new_angle, exclude)" not in text, key
+    review = packets_for(sequence, "report_reviewer:ReportReviewNotesDraft")[0]
+    assert "- n1: recycling, leaving out exports (exclude)" in review
+    assert [(d.note_id, d.status) for d in state.report_review.note_dispositions] == [("n1", "honoured")]

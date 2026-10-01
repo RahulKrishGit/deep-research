@@ -61,8 +61,10 @@ PLANNING_NOTES = (
     "note as the run understood it, and a later note replaces an earlier one it "
     "contradicts. Plan within them: an emphasis note gives its subject more "
     "weight, an exclude note leaves its subject out, a scope note narrows the "
-    "plan to its scope, an about_reader note says who the report is for, and a "
-    "new_angle note can become a sub-topic of its own."
+    "plan to its scope, and an about_reader note says who the report is for. A "
+    "new_angle note is researched as a sub-topic of its own that the run adds to "
+    "this plan once it is final: do not plan a sub-topic for it, and a subject "
+    "only a new_angle note asks for is not a missing part of the question."
 )
 RESEARCH_NOTES = (
     "The reader added these notes while the run was going. From your next "

@@ -999,7 +999,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # decision context. Without notes every request is byte-identical;
     # agents.prompts was untouched, so the evidence_verifier pin and the Judge
     # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
-    "planner": "d1ba46ce147f",
+    # notes-progress-report Phase A (spec §5.2, 2026-09-30): the reader's
+    # research notes join the plan as their own sub-topics when it is
+    # published, planning.completed lists them, and the planning lead says the
+    # run adds them. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `d1ba46ce147f` -> `3934bea57f61`.
+    "planner": "3934bea57f61",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
