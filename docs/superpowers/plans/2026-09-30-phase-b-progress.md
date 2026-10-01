@@ -2,29 +2,32 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status** draft for review, written 2026-09-30 by the spec-plan-author agent from the approved spec at `73b4d7a6` (reviewed clean by Fable in three rounds); to be reviewed by `spec-plan-reviewer` (Fable 5.1, max effort) until clean. Items for the human are under "Open issues". · **Branch** `feat/notes-progress-report-stop`, executed last, after Phases D, A and C are merged into it (spec §9).
+**Status** reviewed once: written 2026-09-30 by the spec-plan-author agent from the approved spec at `73b4d7a6` (reviewed clean by Fable in three rounds); spec-plan-reviewer's review 1 (of `e6a9c10b`, `.superpowers/reviews/2026-09-30-plan-b-review-1.md`) blocked it on two P1s, with P2s and P3s. Every finding is applied, with the human's ruling on O2 recorded as decision D39 and Phase C's plan (`bd48725c`) folded in; "Review round 1" at the end records each resolution and the re-run. Items for the human are under "Open issues". · **Branch** `feat/notes-progress-report-stop`, executed last, after Phases D, A and C are merged into it (spec §9).
 
 **Goal:** Every step of the running stage shows real progress while it works — Planning's slots and status line, Evaluating's bar and Strong / Fair / Weak split, Verifying's and Writing's tickers of real findings and sentences, and Reviewing's five checks and the reader's notes — from live-only progress events the agents publish as each unit of work starts or settles.
 
 **Architecture:**
 - **Engine.** Four new live-only event types, each built by a pure helper and published through `publish_live`, never returned in a state update (spec §4 item 1): `planner.progress` before each plan-side request (`_PlanProgress` in `agents/planner.py`), `source_evaluator.progress` from `score_sources(..., on_progress=)`, `evidence_verifier.progress` from `verify(..., on_progress=)`, and `report_writer.progress` from a `_WritingProgress` the composition binds in a ContextVar, fed by `check_statements(..., on_batch=)`. Counts are sets of keys, so they are cumulative and idempotent. `planner.planning.completed` stamps each slot's final state; `source_evaluator.evaluation.completed` gains the split; the reviewer node publishes its `graph.node.started` and `graph.report.reviewed` live, the latter with five criteria and each note's result from `graph/review_brief.py`.
 - **Replay and proxy.** `ReplayRunner._drain` re-stamps each event with its release time and holds after the event `X-Replay-Hold-After` names, until Phase D's `POST /stop` ends the session; the web proxy forwards the header. The replay fixtures are re-captured once.
-- **Web.** `RunState` keeps each step's latest progress snapshot, the rows' start times and durations, and the latest hard failures; `lib/briefs.ts` derives a discriminated `body` per row; `components/StepBodies.tsx` renders the bodies inside `BriefSpine`'s existing `.ln` rhythm; `lib/ticker.ts` paces the tickers at one sample per 1,200 ms; `RunningPipeline`'s one-second clock ticks the elapsed times. CSS ports the picked canvas rules with two loops (the sheen, the drift), each only while its step runs.
+- **Web.** `RunState` keeps each step's latest progress snapshot, the rows' start times and durations, and the latest hard failures; `lib/briefs.ts` derives a discriminated `body` per row; `components/StepBodies.tsx` renders the bodies inside `BriefSpine`'s existing `.ln` rhythm; `lib/ticker.ts` paces the tickers at one sample per 1,200 ms; `RunningPipeline`'s one-second clock ticks the elapsed times. On a loop route `BriefSpine` holds Reviewing open on its checks and its verdict for `HANDOFF_HOLD_MS` before the hand-off, and the hollow row stays reopenable (decision D39). CSS ports the picked canvas rules with two loops (the sheen, the drift), each only while its step runs.
 
 **Tech Stack:** Python 3.12 (`.venv`), pydantic 2 (`JsonValue`), LangGraph 1.2.10, pytest + pytest-asyncio; Node 24, Next.js 16, React 19, Vitest 5 + Testing Library + jsdom, Playwright 1.63 (Chromium) against the API in replay mode. Windows 11, Git Bash, the main checkout.
 
-**Spec:** `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` (commit `73b4d7a6`), Phase B only: §4 items 1 and 4, §6 (6.1–6.11), the Phase-B rows of §9, §10 (AC13–AC21), §11.1–§11.3 and §12 R7. Decisions D6–D12, D19, D21, D23, D30, D34 and D35 (§2) are closed; nothing here reopens them. Where this plan had to choose, the choice is under "Spec ambiguities resolved here"; where a spec statement could not be kept as written, it is an entry under "Open issues".
+**Spec:** `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` (commit `73b4d7a6`), Phase B only: §4 items 1 and 4, §6 (6.1–6.11), the Phase-B rows of §9, §10 (AC13–AC21), §11.1–§11.3 and §12 R7. Decisions D6–D12, D19, D21, D23, D30, D34 and D35 (§2) are closed; nothing here reopens them. The human's ruling of 2026-09-30 on this plan's O2 is decision D39 (below), closed the same way; it amends §6.7's last bullet. Where this plan had to choose, the choice is under "Spec ambiguities resolved here"; where a spec statement could not be kept as written, it is an entry under "Open issues".
 
 **Starting point: D, A and C merged.** §9 orders the phases D → A → C → B, so B starts from the branch with the other three merged. Every anchor below is text the tree holds then:
 - Text Phase D's plan writes (`docs/superpowers/plans/2026-09-30-phase-d-stop.md`): `web/lib/briefs.ts` (`RowState`, `stoppedSubtitle`, `notRunText`), `web/components/BriefSpine.tsx` (`frozen`), `web/lib/run-state.ts` (`StoppedRun`, `session.stopped`), `web/test/run-state.test.ts` (the handler and key lists), `web/test/components/user-stopped-stage.test.tsx`, `web/README.md` (the Stop note) and `docs/design/DESIGN.md`.
 - Text Phase A's plan writes (`docs/superpowers/plans/2026-09-30-phase-a-notes.md`, revised 2026-09-30 19:01): `agents/planner.py` (`planning_completed_event(..., note_topics=)` and its call), `web/lib/briefs.ts` (`visibleAcks(run.notes, run.active)`), `web/lib/run-state.ts` (`NoteState.kinds`), `web/test/briefs.test.ts`, `tests/test_agents/test_reader_notes_planning.py` and `tests/test_graph/test_reader_notes_replay.py`.
-- Phase C's plan was not available when this plan was written. B's writer hooks were placed so that they do not touch the functions §7.1–§7.3 rewrite (`_run_bottom_line`, `_check_and_finalize_bottom_line`, `_consider_bottom_line_point`, `_bottom_line_fallback`): see ambiguity 7. Task 1 Step 2 checks every anchor on the merged tree before anything is edited, and stops on any that moved.
+- Text Phase C's plan writes (`docs/superpowers/plans/2026-09-30-phase-c-report.md` at `bd48725c`, still in review): `tests/test_imports.py`'s `submodules` line, which gains `note_outcomes` (Task 6 anchors on that line), and `graph/nodes.py`'s `from deep_research.graph.note_outcomes import report_note_lines` (Task 6 inserts its import before `graph.state`'s, so it sorts after C's). B's writer hooks stay off the functions §7.1–§7.3 rewrite (`_run_bottom_line`, `_check_and_finalize_bottom_line`, `_consider_bottom_line_point`, `_bottom_line_fallback`): see ambiguity 7; C's bottom-line `_check` call stays valid because `part=None` is the default. Every other B anchor is untouched by C's blocks. Task 1 Step 2 checks every anchor on the merged tree before anything is edited, and stops on any that moved; a later revision of C's plan may move one (O4).
 
 **Evidence.** Planning executed this plan, block by block, on 2026-09-30:
 - **Engine, task by task.** On an export of `73b4d7a6` with Phase D's and Phase A's plans applied by their own blocks (D: `anchors: 118 exactly once; creates: 12 absent; appends: 11 onto files present`; A: `anchors: 144 exactly once; spans: 6 found; creates: 1 absent; appends: 10 onto files present`), each of Tasks 2–7 was applied in its order, its tests run first (failing), then its code, then its tests and its regression files. Every pytest Expected line of Tasks 2–7 is that run's output.
-- **Web, task by task.** On the same tree, Tasks 7 (proxy), 8–14 were applied the same way; every Vitest, typecheck, check:css and `playwright --list` Expected line is that run's output. Task 8's capture was replaced by the fixtures planning had captured earlier the same day (below).
-- **One pass of the whole plan** on a fresh export with D and A (revised) applied: every block applied with each anchor exactly once; then `726 passed` (Phase B's pytest files), `36 passed (36)` / `316 passed (316)` (Vitest), typecheck exit 0, `OK` (check:css), and the full Python suite `5057 passed, 2 deselected` (the baseline was `5017 passed, 2 deselected`: B adds 40).
+- **Web, task by task.** On the same tree, Tasks 7 (proxy), 8–14 were applied the same way; every Vitest, typecheck, check:css and `playwright --list` Expected line was that run's output, and review round 1 re-ran them on D + A + C (the lines now give both, or that run's). Task 8's capture was replaced by the fixtures planning had captured earlier the same day (below).
+- **One pass of the whole plan, before review 1's revision,** on a fresh export with D and A (revised) applied: every block applied with each anchor exactly once; then `726 passed` (Phase B's pytest files), `36 passed (36)` / `316 passed (316)` (Vitest), typecheck exit 0, `OK` (check:css), and the full Python suite `5057 passed, 2 deselected` (the baseline was `5017 passed, 2 deselected`: B adds 40).
 - **Replay.** pytest's replay tests run the scripted offline cases in-process (network denied). Earlier the same day planning also ran `npm run capture:events` once against a replay server in a scratch export (offline, no provider, no key, no cost) to count the progress events (R7): `98` and `67` events. After that, following the dispatch's "do not run any research session", planning started no server and ran no Playwright test: every Playwright and capture line below is marked **[not run in planning]** and reasoned from that capture; `playwright test --list` (which starts no server) was run.
+- **Review round 1, on D + A + C.** The revised plan's edited steps were re-run task by task on an export of `73b4d7a6` with Phase D's, Phase A's (revised) and Phase C's (`bd48725c`) plans applied by their own blocks.
+  - Task 8's capture ran in-process (TestClient, network denied, offline credentials), as pytest's replay tests do.
+  - Every Expected line that names D + A + C is that run's output. "Review round 1" at the end lists the results and two export artifacts (O4).
 
 ## Global Constraints
 
@@ -56,7 +59,8 @@
   | Planning subtitle / outcome | `Xm SSs`; `{n} sub-topics · {k} from your note(s) · {duration}` |
   | Evaluating (I) | `Rating {n} sources for trustworthiness and relevance`; `Rating {n} new sources · {r} already rated`; `No new sources to rate`; stats `Rated` `{rated} of {n}`, `Strong`, `Fair`, `Weak`, each `not yet` before the first batch; subtitle `starting · not yet rated`, `{rated} of {n} rated`; outcome `{scored} sources rated · {s} strong · {f} fair · {w} weak` (+ ` · {u} not rated`) |
   | Verifying (I) | eyebrow `Just checked`; placeholder `The first findings are being checked…`; verdicts `verified`, `quoted as written`, `corrected — the page dates it {v}` / `— the page states no period for it` / `— the page says it covers {v}` / `— the page says it is about {v}` / `— the page states it as an actual` / `— the page states it as a forecast` / `— one of its figures was not on the page`, `dropped — {reason}` (`the page could not be read again`, `the page does not say this`, `the page does not show this figure`, `the page does not back its date or scope`, `the page's context does not support it`, `its figures could not be checked`); sources `an original report`, `independent research`, `a round-up of other sources`, `the business's own words`, else the host; tally `{checked} of {total} checked · {v} verified · {c} corrected · {d} dropped`; subtitle `starting · not yet checked`, `{checked} of {total} checked` |
-  | Writing (I) | eyebrow `Just written`; placeholder `The first section is being drafted…`; `✓ backed by {k} finding(s)`, `✗ removed — no verified finding says this`; tally `{checked} of {drafted} sentences checked · ✓ {backed} backed · ✗ {removed} removed · section {k} of {n}` (+ ` · {u} not checked`); subtitle `{k} of {n} sections written`, `writing the bottom line` |
+  | Writing (I) | eyebrow `Just written`; placeholder `The first section is being drafted…`, then, once a section has returned and until the first checked sentence, `The first sentences are being checked…` (this plan's, O3); `✓ backed by {k} finding(s)`, `✗ removed — no verified finding says this`; tally `{checked} of {drafted} sentences checked · ✓ {backed} backed · ✗ {removed} removed · section {k} of {n}` (+ ` · {u} not checked`); subtitle `{k} of {n} sections written`, `writing the bottom line` |
+  | Subtitles this plan adds (I, not in the spec; `liveSubtitle`, Task 10) | Evaluating with nothing to rate `nothing new to rate`; Verifying with nothing to check `nothing to check`; Writing before its first event `starting · not yet written`; Writing with no section to draft this pass `no section to rewrite` |
   | Reviewing criteria (I, D35) | `Covers your whole question`, `Rests on strong evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`, `Easy to read` |
   | Reviewing lines (I) | `Reading the draft as a critical reader would · usually 1–3 min`; `Review done · deciding what happens next…`; eyebrow `Your notes`; facts `reading`, `not checked`, `covered`, `not found`, `researched next`, `honoured`, `not followed`, `no evidence found`; a mixed note `{research words} · {steering words}`; issue words per §6.7, more than one `{n} issues · {first}` |
   | Reviewing verdicts and outcomes (§6.7 table) | `Accepted · all 5 criteria met` + notes clause / `Accepted · all 5 met`; `{d} thing(s) to fix · sending the draft back to the writer` / `… · back to the writer`; `{k} gap(s) to fill · going back to research` / `Sent back to fill {k} gaps`; `Going back to research your note(s)`; `Sending the draft back to the writer for your note(s)`; `The review could not be completed · publishing as partial` / `Review unavailable`; `Not accepted · {m} of 5 met`, `Not accepted · a check the run makes itself failed`, `Not accepted · the reviewer's overall judgement fell short`; `Not accepted · {k} gaps still open` |
@@ -64,7 +68,7 @@
 - **Theme (D19, D21, D30).** Tokens only: `(cd web && npm run -s check:css)` prints `OK`; new rules go at the very end of `web/app/globals.css`, with no colour literal. Green (`--status-ok`) is the active step's own progress and a kept verdict; amber (`--status-warn`) a check not met, a flagged slot, a dropped finding or a removed sentence. Two loops besides the halo, each only while its step is the active row: the sheen on Planning's skeleton slots, the drift on Reviewing's bar while its call runs.
 - **Reduced motion (§6.9).** No sheen (a still bar); Reviewing's bar a static full-width bar at opacity .35; every cross-fade opacity only over 160 ms; counts jump.
 - **Viewports.** `1252 × 853` desktop, `390 × 844` phone; captures are `fullPage: true`.
-- **Out of Phase B.** No change to what a run researches, writes or decides; no new session status; no prompt text change (`agents/prompts.py` untouched, every request byte-identical); the status chip's own score (`DESIGN.md` §4) is unchanged.
+- **Out of Phase B.** No change to what a run researches, writes or decides; no new session status; no prompt text change (`agents/prompts.py` untouched since Task 1, and every request byte-identical to what the tree sent at Task 1); the status chip's own score (`DESIGN.md` §4) is unchanged.
 
 ### Conventions every task uses
 
@@ -91,6 +95,31 @@
 4. **Reviewing never shows a score; its notes follow §6.7** (AC18). Five criteria, the kind map, a mixed note's two halves, an unnamed research note `researched next`, a spent pass `not found`. → `test_reviewed_event_five_criteria_mapping`, `test_reviewed_event_mixed_note_steering`, `step-briefs.test.ts` (Reviewing), the burst-safety and no-score tests in `briefs.test.ts`.
 5. **Burst safety** (AC19, DESIGN §5.7). The state after event *k* equals a replay of events 1..*k*, on synthesized runs and on both re-captured fixtures. → `progress-state.test.ts` (burst safety), `briefs.test.ts` (burst safety over the captures).
 6. **Motion budget** (AC20, D21). Only the two new loops, only while their step runs; reduced motion stops both and drops every transform. → `progress.spec.ts` ("the two loops"), `motion.spec.ts` (its reduced-motion test now records the new elements too).
+7. **The loop route's hold** (D39). Reviewing holds its checks and verdict for `HANDOFF_HOLD_MS` on a loop route, only then hands over, never marks the row, and stays reopenable; a Stop ends the hold. → `brief-spine.test.tsx` (the D39 describe and the rewritten "never awaits…" case), `progress.spec.ts` (D39's case), the "Decision D39" section's trigger.
+
+## Decision D39 — a loop route holds Reviewing on its verdict (the human's ruling, 2026-09-30)
+
+| # | Phase | Decision |
+|---|---|---|
+| D39 | B | **(This plan's O2, ruled by the human on 2026-09-30; closed)** When the review sends the run back — a redraft, an extra pass, a note pass or a note redraft — the Reviewing row holds open about 2 s on its ✓/✗ list and its verdict line (the canvas's A2 artboard), then hands over to the row the run returns to, and stays reopenable afterwards. This amends spec §6.7's last bullet ("What follows the verdict keeps today's loop presentation"): today's loop presentation follows the hold. |
+
+How Task 11 builds it in `web/components/BriefSpine.tsx` (review 1's P1-1):
+- **The hold rides the hand-off's own clock.** `Handoff` gains `held: boolean`. In the render where the active row changes, when the row left is Reviewing and the row now active is the lit arc's own destination (`run.arc !== null && run.active === ARCS[run.arc].to`, `ARCS` from `web/lib/run-state.ts`), the hand-off is `{ from: null, to: <the destination>, awaiting: "report_reviewer", held: true }`. While held, Reviewing paints as today's awaited row: `data-state="active"`, open, its subtitle `reading the draft · {elapsed}` frozen at `reviewedAt`, its body `reviewingBody` with the verdict shown (`status.on = 2`) above the five checks and the notes, but no `aria-current`. The destination row paints `pending`, closed, with no role; no row carries `data-handoff`. An effect ends the hold after `HANDOFF_HOLD_MS` (2,000 ms) with `{ from: "report_reviewer", to, awaiting: null, held: false }`. Then the ordinary hand-off runs: Reviewing folds with the from-role timings (`globals.css`'s `li[data-handoff="from"]` rules), the destination opens with the to-role's, and the roles clear after another `HANDOFF_HOLD_MS`. The awaited branch that waits for a completion is guarded with `!handoff.held`. The arc flows during the hold.
+- **The trigger is the lit arc's destination, not review 1's suggested `run.loop === "flowing"`.** This is a deliberate deviation from the review's wording, with the same intent.
+  - **Why not `loop`.** `graph.route.decided` sets `loop = "flowing"` only for a loop destination. But the loop's own start event (`graph.extra_pass.started`, `graph.report.redraft_requested`, `graph.note_pass.started`, `graph.note_redraft.requested`) sets `loop = "settled"`. When that event lands in the same React render as the route decision (a reconnect's burst, or two SSE messages batched into one render), a `loop` test misses the hold.
+  - **Why the arc's destination.** `run.arc` is set by the same four loop routes. It is cleared only by a `finalize` or `end` route, `graph.session.completed` and `session.stopped` (their handlers in `web/lib/run-state.ts`). No other event moves the active row off Reviewing to another row: the reviewer's own `graph.node.completed` returns before moving it. So "the row left is Reviewing, and the row now active is the lit arc's destination" holds exactly on a loop route, burst or not. A burst that has already carried the run past the destination (Researching done, Evaluating running) gets the ordinary hand-off, not a hold on a row the run has left behind.
+  - **Observed.** The case "holds Reviewing even when the loop's own start event lands in the same render as the route decision" fails under the review's condition (`1 failed | 13 passed (14)`) and passes under this one.
+- **The hollow row reopens.** After the hold Reviewing has no mark: the loop's `rearm` deleted it, and DESIGN §3.5 item 2 forbids marking it `done` or `loop` above the hollow rows. A pending Reviewing row is `reopenable` when `run.rearmed.report_reviewer` and `run.reviewing.landed` are both true. It then gets the head's toggle and `data-toggle`, and opens on `run.open` like a done row, on `reviewingBody(run, false)` unchanged. Its head keeps the pending treatment: hollow node, static meta `5 checks`. `rearm()` already deletes `run.open.report_reviewer`, and Task 9's reset of `run.reviewing` on Reviewing's `graph.node.started` removes the toggle when Reviewing runs again. Nothing changes in `lib/briefs.ts` or `lib/run-state.ts`.
+- **Reduced motion.** The hold is a dwell on a timer, like the hand-off's own `HANDOFF_HOLD_MS`, so it is kept under `prefers-reduced-motion`. The fold and the open that follow are the hand-off's existing opacity fades. DESIGN §5.6 says so (Task 14).
+- **Stop during the hold.** `session.stopped` sets `run.active = null`. The next render replaces the held hand-off with `{ from: null, to: null, awaiting: null, held: false }`, and the effect's cleanup clears the hold's timer. The stopped stage's `BriefSpine` is `frozen` and derives no hand-off. No API change.
+- **What else moves with it.**
+  - The existing Vitest case "never awaits a row a loop sends the run back from" asserted the old drop (Reviewing pending at once). It now asserts the hold and the timer's hand-over (Task 11).
+  - `motion.spec.ts`'s Reviewing window is re-derived. The default replay case (`missing-target-triggers-one-extra-pass`, `src/deep_research/api/__main__.py:25`) takes an extra pass, so Reviewing's first from-role is the hold's end, 2 s after `graph.route.decided`. Only the verdict's cross-fade (an `xf` record) falls between its last to-role transition and that one. Its assertions are unchanged (Task 12).
+  - `briefs.spec.ts`'s arc test, titled "after Researching reopens", now waits for Researching to reopen before it measures (Task 12).
+  - The `09-running-extra-pass` capture waits for Researching to reopen too, so it keeps the design reference's subject (Task 13).
+- **Tests.**
+  - `brief-spine.test.tsx`, Task 11: "BriefSpine — a loop route holds Reviewing on its checks and verdict (decision D39)", with three cases: the hold, the hand-over, the reopen and the reset; the hold when the loop's start event lands in the same render; a Stop 500 ms into the hold. Also the rewritten "never awaits…" case.
+  - `progress.spec.ts`, Task 12: "a loop route holds Reviewing open on its checks and verdict, then hands over; Reviewing reopens (D39, AC18)", on the redraft case held at `graph.route.decided`.
 
 ## Spec ambiguities resolved here
 
@@ -102,7 +131,7 @@
 4. **The evaluator's numbers.** `to_rate` is the sources `score_sources` scores this pass (after the cap), `reused` the stored assessments it keeps, `capped` the sources the cap left out; `rated` counts `scored`, `unrated` the `unscored_provider` and `unscored_missing` ones of the settled batches. With nothing to rate one event reads `to_rate: 0`, `batches: 0`.
 5. **The verifier's first event and its sample.** `total` is the findings this pass judges (those Figure Match decided and those it sends to a Context Check); the first event follows the Figure Match loop and already counts its decisions. The sample is the first finding of the batch (or of the Figure Match set) by priority `verified_corrected` > `dropped` > `verified` > `quoted`; `correction.field` is `period`, `period_cleared`, `scope`, `subject`, `kind` or `figure` (the first corrected figure's first changed field); `drop_reason` is the finding's own, else its first dropped figure's.
 6. **The verifier's batch hook.** `one(batch)` computes `verify_finding(item, replies[key])` (pure) for its own items to count them; the merge after the gather is unchanged. `check_statements(..., on_batch=)` reports each batch's items and verdicts after `_check_statement_batch` returns, outside the gate.
-7. **The writer's counts ride in a ContextVar.** `compose_written_report` builds `_WritingProgress(P)` once the part jobs exist and binds it in `_WRITING_PROGRESS`; the part tasks it creates copy that context. `_check` reports through it under `part=(coverage_id, section title)` or, with `part=None`, under the bottom line, and `_attempt_bottom_line_draft` marks each bottom-line call's start. So B adds no parameter to `_run_bottom_line` or `_check_and_finalize_bottom_line`, which Phase C rewrites (§7.1–§7.3); the ContextVar stays set for the rest of the composing task, which calls neither function again. `P` counts the jobs `_run_part` drafts this pass (§6.2: `redraft` or no previous section, with findings).
+7. **The writer's counts ride in a ContextVar.** `compose_written_report` builds `_WritingProgress(P)` once the part jobs exist and binds it in `_WRITING_PROGRESS`; the part tasks it creates copy that context. `_check` reports through it under `part=(coverage_id, section title)` or, with `part=None`, under the bottom line, and `_attempt_bottom_line_draft` marks each bottom-line call's start. So B adds no parameter to `_run_bottom_line` or `_check_and_finalize_bottom_line`, which Phase C rewrites (§7.1–§7.3); the ContextVar stays set for the rest of the composing task, which calls neither function again. `P` counts the jobs `_run_part` drafts this pass (§6.2: `redraft` or no previous section, with findings). A part whose draft fails counts as returned, with no sentence (`_run_part` reports `part_returned(job.coverage_id, ())` before returning its failed outcome), so `parts_returned` reaches `P` once every part has come back, and the bar and `{k} of {n} sections written` end full. There, "written" means "came back from the writer", the spec's (I) wording kept (review 1, P3).
 8. **The writer's sample and its text.** The first newly counted sentence with a verdict, in batch order; its text is the corrected text for a `corrected` verdict; `findings` is the count of its cited labels. A key no batch reported (a substituted checker returns verdicts without calling `on_batch`) is counted once the check returns, so the last event still reads every sentence checked.
 9. **Reviewing's builders live in `graph/review_brief.py`.** They read Phase A's `is_research_note`, `has_steering_kind` and `researched_note_topic_ids`; `agents/` cannot import `graph/`. A research note's half: `covered` when a verified finding answers one of its targets (D31); `not_found` when its topic was researched **or its note is already `passed`** (Fable's final note on §6.7: the unfunded refusal of §5.4 leaves a passed note with no researched topic, and it reads `not found`, not `researched next`); else `pending` / `to_research`.
 10. **The reviewer node's two live events.** The started event is the object in the node's update, published live once merged; `graph.report.reviewed` is built after the review's `missing_required_target_ids` is stamped, published live before the notes wait, and returned in the snapshot as the same object (the orchestrator skips its id).
@@ -110,25 +139,50 @@
 
 **Web**
 
-12. **`RunEvent.timestamp` is optional** (`timestamp?: string`, §4 item 4 says `timestamp: string`): `toRunEvent` always copies the frame's, and the many synthesized events in the existing tests carry none. A handler receives `string | null`. Open issue O1 records it.
+12. **`RunEvent.timestamp` is optional** (`timestamp?: string`, §4 item 4 says `timestamp: string`): `toRunEvent` always copies the frame's, and the many synthesized events in the existing tests carry none. A handler receives `string | null`. O1 records it as a spec amendment line (accepted by review 1).
 13. **Where each row's time comes from.** `RunState.startedAt[node]` is the node's latest `graph.node.started` timestamp; `durations[node]` the seconds from it to the node's `graph.node.completed` (kept for a loop's reviewer too). Planning's and Reviewing's outcomes add `· {duration}`; Reviewing's elapsed time stops when its review lands (`reviewedAt`).
 14. **Each block resets on its node's `graph.node.started`** (§6.9). A research note's slot read before the planner starts is kept; a re-armed row starts clean.
 15. **The stopped row's facts (Phase D §8.5).** B extends Phase D's `stoppedSubtitle`: every row but Researching reads `Stopped · {its live subtitle}` frozen at `run.stopped.at` (`Stopped` when it has none); Researching keeps D's counted form. A slot still running at the stop reads `stopped` with the ring (`data-topic="stopped"`), as D's topics do.
 16. **`SENTENCES` keeps only Publishing's** (§6.9): `{ finalize_report: "Saving the report and evidence log" }`; `verifyingSentence` goes.
 17. **The briefs switch in two tasks.** Task 10 adds the bodies' types and derivations to `lib/briefs.ts` without changing `rowBrief` (the old API still compiles), with the components that render them; Task 11 switches `rowBrief` to `body` and `BriefSpine` to the components. Each task ends green.
-18. **The e2e hold points.** §11.1's five (`planner.progress`, `source_evaluator.progress#2`, `evidence_verifier.progress#2`, `report_writer.progress#3`, `graph.report.reviewed`), plus `planner.progress#2` (titles), `report_writer.progress#4` (the first checked sentence: at `#3` the replay case has returned both sections and checked none) and `graph.node.started#6` (Reviewing's call running, for the drift). `reduced-motion.spec.ts` needs no change: AC20's reduced-motion checks are in `progress.spec.ts`, and `motion.spec.ts`'s reduced-motion test records the new elements' transitions too.
+18. **The e2e hold points.** §11.1's five (`planner.progress`, `source_evaluator.progress#2`, `evidence_verifier.progress#2`, `report_writer.progress#3`, `graph.report.reviewed`), plus `planner.progress#2` (titles), `report_writer.progress#4` (the first checked sentence: at `#3` the replay case has returned both sections and checked none) and `graph.node.started#6` (Reviewing's call running, for the drift), and `graph.route.decided` on the redraft case (D39's hold). `reduced-motion.spec.ts` needs no change: AC20's reduced-motion checks are in `progress.spec.ts`, and `motion.spec.ts`'s reduced-motion test records the new elements' transitions too.
 19. **Captures.** §11.3 names `13-planning-brief(-phone)` and `14`–`17` at desktop: Planning at both widths, the other four at 1252 px, held at `planner.progress#2`, `source_evaluator.progress#2`, `evidence_verifier.progress#2`, `report_writer.progress#4` and `graph.report.reviewed`.
-20. **Lint.** The new Python lines add no `F`, `E741` or `I001` finding to `ruff check --ignore E501` (the repository is not E501-clean, and no test runs ruff).
+20. **Lint.** The new Python lines add no `F`, `E741` or `I001` finding to `ruff check --ignore E501` (the repository is not E501-clean, and no test runs ruff). With Phase C's `from deep_research.graph.note_outcomes import report_note_lines` in `graph/nodes.py`, Task 6 inserts `review_brief`'s import right before `graph.state`'s, so the block stays sorted (review 1, P2-4).
+21. **How AC13's allow-list is tested: by exclusion, not by enumeration** (review 1, P3). AC13 says it "tests this allow-list". The tests do this:
+    - `test_progress_events_live_only` (Task 7) asserts that no string in any progress event's metadata, over the real graph's replay, holds `://`, so no URL path or query.
+    - Three planted secrets never appear in a progress event: a plan review's `repair_instruction` (`SECRET-REVIEW-WORDS`, Task 2), a Context Check `reason` (`SECRET-CONTEXT-REASON`, Task 4) and a Statement Check verdict `reason` (`SECRET-VERDICT-REASON`, Task 5).
+    - `test_a_slot_title_is_capped_at_160_characters` holds the plan-title cap.
+
+    Two things are not tested: the other caps (a finding ≤ 160, a sentence ≤ 200, a correction value ≤ 60) are the builders' own truncation and are not asserted, and no test checks every metadata field against the list. `graph.report.reviewed` is not a progress event; `test_review_brief.py` checks that a defect's `problem` never reaches its `criteria`.
 
 ## Open issues (for the human)
 
-- **O1 — `RunEvent.timestamp` is optional, not `string` (§4 item 4).** Making it required would change every synthesized `{ type, metadata }` event in the existing Vitest files for no behaviour; the frames always carry it. Same visible result. Say if the required form is wanted.
-- **O2 — A loop route's verdict line is on screen only briefly (pre-existing).** §6.7's last bullet keeps today's loop presentation, so a route that loops (`redraft_requested`, `extra_pass_requested`, the note routes) re-arms the rows at once and Reviewing closes as a pending row: its verdict line (`1 thing to fix · …`) cross-fades in while the row folds. The outcome line keeps it for the next pass. Kept as specified; noted because the canvas's A2 artboard shows the line held.
-- **O3 — Writing's placeholder in one transient state.** §6.6 keeps `The first section is being drafted…` until the first checked sentence. When every section has returned and none is checked yet, it shows under `2 of 2 sections written` (one 150 ms beat in replay; until the first Statement Check batch returns, live). Kept as specified; a shorter true line would be `The first sentences are being checked…` (I) — say if wanted.
-- **O4 — Phase C's plan was not available.** Ambiguity 7 keeps the writer's hooks off the functions §7 rewrites, but `_check`, `_run_part`, `_attempt_bottom_line_draft` and `compose_written_report` are anchored on today's text, and Task 5's regression counts and the `report_writer` pin depend on C. Task 1 Step 2 stops on any anchor C moved.
-- **O5 — Playwright was not run in planning** (dispatch: no research session). Tasks 12–13's Playwright and capture Expected lines are reasoned from the planning capture and the Vitest runs; each is marked **[not run in planning]**. Planning did run one offline `capture:events` against a replay server before applying that rule (Evidence).
-- **O6 — The latency workstream (D38).** If `perf/latency` merges before this plan runs, its `_check` / `_check_statement_batch` changes may move Task 4's anchors in `evidence_verifier.py`; Task 1 Step 2 stops, and the hooks need re-anchoring. Its smaller batch size changes only how many events arrive, never the counts (review M13).
-- **O7 — R7's estimate.** The re-captured fixtures carry 26 and 18 progress events (about 13 per pass, not 20), so paced replay grows by about 4 s and 3 s; the e2e timeout (90 s) is unaffected.
+- **O1 — closed (review 1): a spec amendment line.** `RunEvent.timestamp` is optional, not `string` (ambiguity 12): making it required would change every synthesized `{ type, metadata }` event in the existing Vitest files for no behaviour, and the frames always carry it. Review 1 accepted it. The amendment line for spec §4 item 4: "`RunEvent` is `{ type, metadata, timestamp?: string }`; `toRunEvent` always copies the frame's `timestamp`, and a handler receives `string | null`."
+- **O2 — closed: decision D39.** The human ruled on 2026-09-30 that a loop route holds Reviewing open about 2 s on its checks and its verdict, then hands over, and that the row stays reopenable. Built in Task 11, as the "Decision D39" section above sets out.
+- **O3 — closed (review 1): `The first sentences are being checked…`.** §6.6's `The first section is being drafted…` would stand under `2 of 2 sections written` once every section had returned and none was checked yet (one 150 ms beat in replay; until the first Statement Check batch returns, live). Writing's placeholder now reads `The first sentences are being checked…` (I) once `partsReturned > 0` and no sample has arrived (`writingBody`'s `placeholder`, Task 10). No human ruling was needed (review 1, P3).
+- **O4 — Phase C's plan is in review; B anchors on its current text (`bd48725c`).**
+  - **Anchors.** Simulated D → A → C → B on an export of `73b4d7a6`, every B anchor holds exactly once (Task 1 Step 2's Expected line). That is after two re-anchors in Task 6: `tests/test_imports.py`'s line and the `graph/nodes.py` import (review 1, P1-2 and P2-4).
+  - **C's pending revisions.** C's review asks for three: the request-count wording of its Expected lines, `noteCaption`'s deletion (`web/lib/notes.ts`, `web/test/notes.test.ts`) and `web/README.md`'s `capture:visual` line. None touches a B anchor: B edits neither notes file, and B no longer edits the `capture:visual` line (Task 7; its own bullet names the captures). A later C revision that edits any other file B anchors on may need Task 1 Step 2 again; it stops on any anchor moved.
+  - **Expected lines C shifts (review 1, P2-3).** These were observed on D + A + C:
+    - Task 1 Step 3's pins: `planner` `55c1f86bac40` and `report_writer` `f11d61b869d9` (C's), `source_evaluator` `cc5a310b0aa0` and `evidence_verifier` `4a3d56fab932` (unchanged). Also F0/V0 `33` / `277` and L0/L1 `76` / `17`.
+    - Task 2 Step 5's planner move, `55c1f86bac40 -> 75d84b30f360`, and Task 5 Step 5's, `f11d61b869d9 -> c4082e94159e`.
+    - Task 2 Step 6, `405 passed`, unchanged. Task 5 Step 6, `288 passed`, now with C's `test_report_bottom_line.py` too: `312 passed`. Task 6 Step 5, `256 passed`. Task 7 Step 6, `257 passed`.
+    - Task 8 Step 2's counts are unchanged: C changes the sentence counts inside a pass's last, bottom-line event (7 rather than 8 in either case's first pass, 5 rather than 6 in the redraft), not how many events arrive. No e2e hold point or capture reads that event.
+    - Task 5's `test_the_report_written_event_is_published_live` asserts the sequence `[(1, 0, 0.0), (1, 1, 0.5)]`, which depends on `_run_bottom_line`'s early return that C rewrites. It holds on D + A + C (Task 5 Step 4's `4 passed`). On any other sequence, stop and report it.
+  - **Two failures that come from the export, not from C or B.**
+    - The export applies C's blocks but not C's re-pin steps, so its pins and its `PINNED_RUN_DIGESTS` were still D + A's. With C's digests (`593379964423addd`/`46` and `372fa419f195289b`/`29`), both byte-identical runs read the same with B applied, so B keeps every request byte-identical on C.
+    - `test_note_outcomes.py`'s subprocess imported the main checkout's package. With `PYTHONPATH=src` it passes with B applied.
+- **O5 — Playwright was not run in planning** (dispatch: no research session). Tasks 12–13's Playwright and capture Expected lines are reasoned from the planning capture and the Vitest runs; each is marked **[not run in planning]**. Planning did run one offline `capture:events` against a replay server before applying that rule (Evidence), and review round 1 ran Task 8's capture in-process (TestClient, network denied, offline credentials), as pytest's replay tests do.
+- **O6 — The latency workstream (D38).**
+  - **How Task 1 sees it.** If `perf/latency` (plan `docs/superpowers/plans/2026-09-30-latency.md`) merges before this plan runs, Task 1 Step 1's tool-lock line prints `0`. Do not stop; say so in the task summary.
+  - **Anchors that may have moved.**
+    - The import blocks of `agents/source_evaluator.py` (Task 3), `agents/evidence_verifier.py` (Task 4) and `agents/report_writer.py` (Task 5).
+    - `verify`'s signature, and its `one(batch)` wrapper under `gate = asyncio.Semaphore(self.config.verifier_concurrency)` (Task 4).
+    - `check_statements`' `one(batch)` wrapper (Task 4).
+
+    The latency plan edits those regions (its call labels, the halves asked together, the Statement Check capture, figure-bounded batches, the batched reputation lookups). Task 1 Step 2 prints each anchor that moved, and the standing remedy applies: stop, and the controller approves a plan amendment that re-anchors each edit on the text now in the file, keeping its replacement's meaning.
+  - **Counts and the prompt check.** The latency work's smaller batch size changes only how many events arrive, never the counts (review M13). `test_statement_check_reports_each_settled_batch` passes `batch_size=5` itself, so it does not depend on `CONTEXT_CHECK_BATCH_SIZE`. Task 15 Step 3 diffs `agents/prompts.py` against the commit Task 1 recorded (`BASE`), so the latency work's own prompt change (its O9) is not read as B's.
+- **O7 — R7's estimate (accepted by review 1).** The re-captured fixtures carry 26 and 18 progress events (about 13 per pass, not 20), so paced replay grows by about 4 s and 3 s; the e2e timeout (90 s) is unaffected.
 
 ## File map
 
@@ -147,10 +201,10 @@
 | `web/lib/run-state.ts` | `RunEvent.timestamp`; `startedAt`, `durations`, `planning`, `evaluating`, `verifying`, `writing`, `reviewing`, `hardFailures`; five new handlers; Reviewing's meta and outcomes | 9 |
 | `web/lib/briefs.ts` | the bodies' types and derivations (10); `rowBrief`'s `body`, subtitles, outcomes, stopped rows (11) | 10, 11 |
 | `web/lib/ticker.ts` (new), `web/components/StepBodies.tsx` (new) | `TICKER_HOLD_MS`, `useTicker`; the five bodies' markup | 10 |
-| `web/components/BriefSpine.tsx`, `web/components/RunningPipeline.tsx` | renders each body; the clock | 11 |
+| `web/components/BriefSpine.tsx`, `web/components/RunningPipeline.tsx` | renders each body; the clock; the loop route's hold and the reopenable hollow Reviewing row (D39) | 11 |
 | `web/app/globals.css` | the briefs' rules, the two loops, reduced motion | 12 |
-| `web/e2e/progress.spec.ts` (new), `briefs.spec.ts`, `motion.spec.ts`, `support.ts`, `visual.spec.ts` | the briefs on the replay stream; the new captures | 12, 13 |
-| `README.md`, `web/README.md`, `docs/design/DESIGN.md` | the hold header and replay timestamps; §3.4, §3.5, §5.6, §5.7 | 7, 14 |
+| `web/e2e/progress.spec.ts` (new), `briefs.spec.ts`, `motion.spec.ts`, `support.ts`, `visual.spec.ts` | the briefs on the replay stream, D39's case; the arc test and the 09 capture after the hold; the new captures | 12, 13 |
+| `README.md`, `web/README.md`, `docs/design/DESIGN.md` | the hold header and replay timestamps (the web README's own bullet names the step briefs' captures; its `capture:visual` line is Phase C's); §3.4, §3.5 (with D39), §5.6 (with D39), §5.7 | 7, 14 |
 | Tests | per task, listed in each task's Files | 2–13 |
 
 ---
@@ -161,7 +215,7 @@
 
 **Interfaces:**
 - Consumes: the branch with Phases D, A and C merged.
-- Produces: the proof that every block of Tasks 2–14 applies in order, and the baselines (`P0` pytest passed, `V0` Vitest tests, `F0` Vitest files, `L0`/`L1` Playwright tests, the four pins) later tasks add to.
+- Produces: the proof that every block of Tasks 2–14 applies in order, and the baselines (`BASE` the starting commit, `P0` pytest passed, `V0` Vitest tests, `F0` Vitest files, `L0`/`L1` Playwright tests, the four pins) later tasks add to or compare with.
 
 - [ ] **Step 1: Confirm the starting point**
 
@@ -172,11 +226,13 @@ grep -c "^def is_research_note\|^def has_steering_kind" src/deep_research/agents
 grep -c "^def researched_note_topic_ids" src/deep_research/graph/state.py
 grep -c "^MAX_ANSWER_SENTENCES" src/deep_research/agents/report_writer.py
 grep -c "^def report_outline" src/deep_research/agents/report.py
+test -e src/deep_research/graph/note_outcomes.py && echo "Phase C's note_outcomes is in"
 test ! -e src/deep_research/graph/review_brief.py && test ! -e web/components/StepBodies.tsx && echo "no Phase B file yet"
 git status --short --untracked-files=no | wc -l
+grep -c "One tool lock for the whole run" src/deep_research/agents/researcher.py
 ```
 
-Expected, line by line: `the spec commit is in this branch`; `Phase D is in`; `2`; `1` (Phase A is in); `1`; `1` (Phase C is in, §7.1, §7.5); `no Phase B file yet`; `0`. If any line differs, stop and report it.
+Expected, line by line: `the spec commit is in this branch`; `Phase D is in`; `2`; `1` (Phase A is in); `1`; `1` (Phase C is in, §7.1, §7.5); `Phase C's note_outcomes is in` (Task 6 anchors on its import and its `tests/test_imports.py` line); `no Phase B file yet`; `0`; `1` (the researcher's run-wide tool lock is still there: the latency work, D38, has not merged). If any line but the last differs, stop and report it. If the last prints `0`, the latency work merged first: do not stop, say so in the task summary, and read O6 before Step 2.
 
 - [ ] **Step 2: Check every block of this plan against the tree, in order**
 
@@ -219,13 +275,14 @@ print("\n".join(problems) or f"anchors: {counts['edit']} exactly once; creates: 
 EOF
 ```
 
-Expected: `anchors: 155 exactly once; creates: 10 absent; appends: 12 onto files present`.
+Expected: `anchors: 165 exactly once; creates: 10 absent; appends: 13 onto files present`.
 
-Anything else is a line per problem (`-1` means that the file is missing). Then stop, edit nothing, and report each line to the controller. The remedy is a plan amendment the controller approves: re-anchor that edit on the text now in the file and keep its replacement's meaning. Never guess an anchor during execution. (Planning observed exactly this line on `73b4d7a6` with Phases D and A applied; Phase C's merge is the one thing that can move an anchor, O4.)
+Anything else is a line per problem (`-1` means that the file is missing). Then stop, edit nothing, and report each line to the controller. The remedy is a plan amendment the controller approves: re-anchor that edit on the text now in the file and keep its replacement's meaning. Never guess an anchor during execution. (Planning observed exactly this line on `73b4d7a6` with Phases D, A and C — C's plan at `bd48725c` — applied by their own blocks. A later revision of C's plan, O4, or the latency work merged first, O6, is what can move an anchor.)
 
 - [ ] **Step 3: Record the baselines**
 
 ```bash
+git rev-parse HEAD
 grep -E '^    "(planner|source_evaluator|evidence_verifier|report_writer)": "[0-9a-f]{12}",$' tests/test_evaluation/test_config.py
 .venv/Scripts/python.exe -m pytest -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config 2>&1 | tail -1
 (cd web && npx vitest run 2>&1 | grep -E "Test Files|Tests  ")
@@ -234,7 +291,20 @@ grep -E '^    "(planner|source_evaluator|evidence_verifier|report_writer)": "[0-
 (cd web && npx playwright test --project=chromium --list 2>&1 | tail -1; npx playwright test --project=visual --list 2>&1 | tail -1)
 ```
 
-Expected: four pin lines (write the four 12-character values down: Tasks 2–5's re-pins start from them); `P0 passed, 2 deselected` with no `failed` or `error` (write `P0` down); `Test Files  F0 passed (F0)` and `Tests  V0 passed (V0)` (write both down); `typecheck exit 0`; `OK`; `Total: L0 tests in N files` and `Total: L1 tests in 1 file` (write `L0` and `L1` down). Planning observed, on `73b4d7a6` with D and A applied: pins `planner` `3934bea57f61`, `source_evaluator` `cc5a310b0aa0`, `evidence_verifier` `4a3d56fab932`, `report_writer` `a27544eee344`; `5017 passed`; `32` / `259`; `68` and `14` — Phase C changes several of these (its own tests, its captures, the `planner` and `report_writer` pins), so use what this step prints.
+Expected:
+- A 40-character commit id. Write it down as `BASE`: Task 15 Step 3 diffs `agents/prompts.py` against it, so "no prompt text change" means since this task (review 1, P2-1).
+- Four pin lines. Write the four 12-character values down: Tasks 2–5's re-pins start from them.
+- `P0 passed, 2 deselected`, with no `failed` or `error`. Write `P0` down.
+- `Test Files  F0 passed (F0)` and `Tests  V0 passed (V0)`. Write both down.
+- `typecheck exit 0`; `OK`.
+- `Total: L0 tests in N files` and `Total: L1 tests in 1 file`. Write `L0` and `L1` down.
+
+What planning observed on `73b4d7a6` with D, A and C applied:
+- Pins: `planner` `55c1f86bac40` and `report_writer` `f11d61b869d9` (the values C's re-pins leave), `source_evaluator` `cc5a310b0aa0`, `evidence_verifier` `4a3d56fab932`.
+- `33` / `277`; `76` and `17`.
+- `P0` was not observed on that tree; it was `5017 passed` on D + A.
+
+Use what this step prints.
 
 No commit: nothing changed.
 
@@ -1328,7 +1398,7 @@ EOF
 .venv/Scripts/python.exe -m pytest tests/test_evaluation/test_config.py -q -k fingerprint 2>&1 | tail -1
 ```
 
-Expected: `1 failed, 10 passed, 67 deselected` (`test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift`: the planner's module changed); then `planner: <the Task 1 value> -> <a new value>`; then `11 passed, 67 deselected`. Planning observed `planner: 3934bea57f61 -> def9ba2de30c` on D + A; with Phase C merged both values differ, which is expected: the snippet pins whatever the module now hashes to.
+Expected: `1 failed, 10 passed, 67 deselected` (`test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift`: the planner's module changed); then `planner: <the Task 1 value> -> <a new value>`; then `11 passed, 67 deselected`. Planning observed `planner: 55c1f86bac40 -> 75d84b30f360` on D + A + C (`3934bea57f61 -> def9ba2de30c` on D + A): the snippet pins whatever the module now hashes to.
 
 - [ ] **Step 6: Run the regression files**
 
@@ -1336,7 +1406,7 @@ Expected: `1 failed, 10 passed, 67 deselected` (`test_every_target_prompt_finger
 .venv/Scripts/python.exe -m pytest tests/test_agents/test_planner.py tests/test_agents/test_reader_notes_planning.py tests/test_graph/test_reader_notes_replay.py tests/test_agents/test_events.py tests/test_cli/test_render.py tests/test_imports.py -q 2>&1 | tail -1
 ```
 
-Expected: no `failed` or `error` (planning: `405 passed` on D + A; Phase C adds to `test_reader_notes_replay.py`).
+Expected: no `failed` or `error` (planning: `405 passed`, on D + A and on D + A + C).
 
 - [ ] **Step 7: Commit**
 
@@ -1957,7 +2027,7 @@ Run Step 2's command again. Expected: `6 passed`.
 
 Run Task 2 Step 5's snippet with the arguments `source_evaluator "Phase B (notes-progress-report spec §6.2, §6.4, 2026-09-30): live source_evaluator.progress once the batches are planned and as each settles, and the strong/fair/weak split on evaluation.completed. No request text changed."` in place of the planner's, between the same two fingerprint runs.
 
-Expected: `1 failed, 10 passed, 67 deselected`; `source_evaluator: <the Task 1 value> -> <a new value>` (planning: `cc5a310b0aa0 -> 356d1486f0e3`); `11 passed, 67 deselected`.
+Expected: `1 failed, 10 passed, 67 deselected`; `source_evaluator: <the Task 1 value> -> <a new value>` (planning, on D + A + C as on D + A: `cc5a310b0aa0 -> 356d1486f0e3`); `11 passed, 67 deselected`.
 
 - [ ] **Step 6: Run the regression files**
 
@@ -2209,7 +2279,7 @@ async def test_statement_check_reports_each_settled_batch() -> None:
     reports: list[tuple[list[str], list[str]]] = []
 
     results, errors = await check_statements(
-        completer, items, question="How much storage?",
+        completer, items, question="How much storage?", batch_size=5,
         on_batch=lambda batch, verdicts: reports.append(
             ([item.label for item in batch], sorted(verdicts))
         ),
@@ -2638,7 +2708,7 @@ Run Step 2's command again. Expected: `13 passed` (the tally test at batch sizes
 
 Run Task 2 Step 5's snippet with `evidence_verifier "Phase B (notes-progress-report spec §6.2, §6.5, 2026-09-30): live evidence_verifier.progress after Figure Match and as each Context Check batch settles, and check_statements' on_batch. No request text changed; LB-D10 holds."`.
 
-Expected: `1 failed, 10 passed, 67 deselected`; `evidence_verifier: <the Task 1 value> -> <a new value>` (planning: `4a3d56fab932 -> 2c360ecb7315`); `11 passed, 67 deselected`.
+Expected: `1 failed, 10 passed, 67 deselected`; `evidence_verifier: <the Task 1 value> -> <a new value>` (planning, on D + A + C as on D + A: `4a3d56fab932 -> 2c360ecb7315`); `11 passed, 67 deselected`.
 
 - [ ] **Step 6: Run the regression files**
 
@@ -2661,13 +2731,28 @@ git commit -m "feat(progress): Verifying's live progress, its samples and the St
 
 **Files:**
 - Modify: `src/deep_research/agents/report_writer.py` (imports, the progress block before `_answer_form_line`, `_check`, `_attempt_bottom_line_draft`, `_run_part`, `compose_written_report`), `src/deep_research/agents/__init__.py`
-- Test: `tests/test_agents/test_report_writer.py` (three substitutes, the live test, three new tests), `tests/test_agents/test_report_reviewer.py` (two substitutes); `tests/test_evaluation/test_config.py` (the pin)
+- Test: `tests/test_agents/test_report_writer.py` (three substitutes, the live test, three new tests), `tests/test_agents/test_report_reviewer.py` (two substitutes); `tests/test_evaluation/test_config.py` (the pin); Phase C's `tests/test_agents/test_report_bottom_line.py` (regression only: its `checker` fixture installs `test_report_writer.py`'s `_FakeChecker`)
 
 **Interfaces:**
 - Consumes: Task 4's `check_statements(..., on_batch=)`; today's `PartJob`, `_section_title`, `summarize_text`, `publish_live`.
 - Produces: `writing_progress_event(metadata) -> ResearchEvent` (exported); private `_WritingProgress(parts_total)` (`publish`, `part_returned`, `bottom_line_started`, `bottom_line_drafted`, `count`, `reporter`, `settle`), `_WRITING_PROGRESS: ContextVar[_WritingProgress | None]`, `_check(..., part: tuple[str, str] | None = None)`. The five `check_statements` substitutes spec §3.6 names (three in `test_report_writer.py`, two in `test_report_reviewer.py`) accept `on_batch=None` (§11.2, review I3; R8).
 
 - [ ] **Step 1: Write the failing tests**
+
+First list every substitute of `check_statements` the tests install (spec §12 R8; review 1, P2-2):
+
+```bash
+git grep -n -E "async def (fake|flaky)_check|def __call__\(self, provider|evidence_verifier\.check_statements[^_]|ev\.check_statements = " -- tests
+```
+
+Expected: these twelve lines. Planning saw the line numbers on D + A + C; a different line number is no problem.
+- `tests/test_agents/test_report_bottom_line.py:71`: Phase C's `checker` fixture, which installs `_FakeChecker`.
+- `tests/test_agents/test_report_reviewer.py:948` and `:2778`: the two `consistent` substitutes.
+- `tests/test_agents/test_report_writer.py:1117`, `:1132` and `:1156`: `_FakeChecker`'s docstring, its `__call__` and its fixture.
+- `tests/test_agents/test_report_writer.py:2685`, `:2689` and `:2696`: `fake_check`.
+- `tests/test_agents/test_report_writer.py:3276`, `:3288` and `:3294`: `flaky_check`.
+
+They are the five substitutes this step changes. If a line names any other substitute, stop and report it: it needs `on_batch=None` too, as a plan amendment.
 
 `tests/test_agents/test_report_writer.py` — replace
 
@@ -2694,8 +2779,7 @@ with
 with
 
 ```python
-    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None,
-                         on_batch=None):
+    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
 ```
 
 `tests/test_agents/test_report_writer.py` — replace
@@ -2707,8 +2791,7 @@ with
 with
 
 ```python
-    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None,
-                          on_batch=None):
+    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
 ```
 
 `tests/test_agents/test_report_reviewer.py` — replace
@@ -3342,21 +3425,29 @@ with
 
 - [ ] **Step 4: Run the tests to make sure they pass**
 
-Run Step 2's command again. Expected: `4 passed`.
+Run Step 2's command again. Expected: `4 passed`. `test_the_report_written_event_is_published_live` asserts the sequence `[(1, 0, 0.0), (1, 1, 0.5)]`. It depends on `_run_bottom_line`'s early return, which Phase C rewrites; planning observed it passing on D + A + C. On any other sequence, stop and report it (review 1, P2-3).
+
+Then check that every substitute accepts `on_batch`. Each one mirrors the real signature's `gate=None`, and this task puts `on_batch=None` on that same line:
+
+```bash
+git grep -n "gate=None" -- tests | grep -v on_batch
+```
+
+Expected: nothing.
 
 - [ ] **Step 5: Re-pin the report writer**
 
 Run Task 2 Step 5's snippet with `report_writer "Phase B (notes-progress-report spec §6.2, §6.6, 2026-09-30): live report_writer.progress as the parts and the bottom line are drafted and checked, through a per-composition ContextVar. No request text changed."`.
 
-Expected: `1 failed, 10 passed, 67 deselected`; `report_writer: <the Task 1 value> -> <a new value>` (planning, without Phase C: `a27544eee344 -> d3c8f197d765`); `11 passed, 67 deselected`.
+Expected: `2 failed, 9 passed, 67 deselected`: `test_every_target_prompt_fingerprint_is_pinned_against_prompt_drift`, and `test_the_target_fingerprint_covers_the_shared_prompt_module`, which compares the report writer's own fingerprint with its pin. Then `report_writer: <the Task 1 value> -> <a new value>` (planning, on D + A + C: `f11d61b869d9 -> c4082e94159e`); then `11 passed, 67 deselected`.
 
 - [ ] **Step 6: Run the regression files**
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/test_agents/test_report_writer.py tests/test_agents/test_report_reviewer.py tests/test_imports.py -q 2>&1 | tail -1
+.venv/Scripts/python.exe -m pytest tests/test_agents/test_report_writer.py tests/test_agents/test_report_bottom_line.py tests/test_agents/test_report_reviewer.py tests/test_imports.py -q 2>&1 | tail -1
 ```
 
-Expected: no failure (planning: `288 passed` without Phase C's tests).
+Expected: no failure (planning, on D + A + C: `312 passed`, of which Phase C's `test_report_bottom_line.py` is 24 — its `checker` fixture installs `test_report_writer.py`'s `_FakeChecker`, and its compose tests run under this task's hooks).
 
 - [ ] **Step 7: Commit**
 
@@ -3371,11 +3462,11 @@ git commit -m "feat(progress): Writing's live progress -- parts, sentences check
 
 **Files:**
 - Create: `src/deep_research/graph/review_brief.py`, `tests/test_graph/test_review_brief.py`
-- Modify: `src/deep_research/graph/events.py` (`report_review_completed_event`), `src/deep_research/graph/nodes.py` (import, the reviewer node), `src/deep_research/graph/__init__.py`, `tests/test_imports.py`
+- Modify: `src/deep_research/graph/events.py` (`report_review_completed_event`), `src/deep_research/graph/nodes.py` (an import placed right before `graph.state`'s, so it sorts after Phase C's `note_outcomes` import; the reviewer node), `src/deep_research/graph/__init__.py`, `tests/test_imports.py` (Phase C's `submodules` line, which already lists `note_outcomes`)
 - Test: `tests/test_graph/test_nodes.py`
 
 **Interfaces:**
-- Consumes: Phase A's `is_research_note`, `has_steering_kind` (`agents/reader_notes.py`) and `researched_note_topic_ids` (`graph/state.py`); today's `DIMENSION_GUIDANCE`, `ReportReview.material_defects`/`.note_dispositions`, `active_reader_notes`.
+- Consumes: Phase A's `is_research_note`, `has_steering_kind` (`agents/reader_notes.py`) and `researched_note_topic_ids` (`graph/state.py`); today's `DIMENSION_GUIDANCE`, `ReportReview.material_defects`/`.note_dispositions`, `active_reader_notes`. Not Phase C's `graph/note_outcomes.py`: its outcomes are a note's terminal outcome for the published report, while Reviewing's results are the middle of the run (§6.7's `researched next`, and a spent pass reading `not found`); `review_brief.py`'s docstring says so (review 1, P3).
 - Produces (`deep_research.graph`, exported): `CRITERIA: tuple[str, ...]` (the five, in `DIMENSION_GUIDANCE` order); `CRITERION_FOR_KIND: dict[GapKind, str]`; `review_criteria(review) -> list[dict[str, JsonValue]]`; `review_note_results(state, review) -> list[dict[str, JsonValue]]`; `report_review_completed_event(..., criteria=(), notes=())`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -3549,6 +3640,14 @@ Create `src/deep_research/graph/review_brief.py`:
 and what became of each of the reader's notes. Both are counts, ids and
 enumerated values only: never the review's prose, a defect's ``problem`` text
 or a score (spec §4 item 1, D11, D23).
+
+The notes' results are not Phase C's ``graph/note_outcomes.py`` outcomes, on
+purpose. Those are a note's terminal outcome for the published report
+(``covered`` / ``not_found`` / ``not_addressed`` / ``not_checked``). These are
+Reviewing's view in the middle of a run (spec §6.7): a research note with no
+researched topic reads ``researched next``, because the route still owes it
+its pass, and one whose pass is already spent (``passed``, the unfunded
+refusal of §5.4) reads ``not found``.
 """
 
 from __future__ import annotations
@@ -3745,16 +3844,16 @@ with
 `src/deep_research/graph/nodes.py` — replace
 
 ```python
-from deep_research.graph.live import publish_live
-
+from deep_research.graph.state import (
+    EXTRA_PASS_NODE,
 ```
 
 with
 
 ```python
-from deep_research.graph.live import publish_live
 from deep_research.graph.review_brief import review_criteria, review_note_results
-
+from deep_research.graph.state import (
+    EXTRA_PASS_NODE,
 ```
 
 `src/deep_research/graph/nodes.py` — replace
@@ -3886,14 +3985,14 @@ with
 `tests/test_imports.py` — replace
 
 ```python
-    submodules = ["errors", "events", "live", "nodes", "orchestrator", "state"]
+    submodules = ["errors", "events", "live", "note_outcomes", "nodes", "orchestrator", "state"]
 
 ```
 
 with
 
 ```python
-    submodules = ["errors", "events", "live", "nodes", "orchestrator", "review_brief", "state"]
+    submodules = ["errors", "events", "live", "note_outcomes", "nodes", "orchestrator", "review_brief", "state"]
 
 ```
 
@@ -3908,7 +4007,7 @@ Run Step 2's command again. Expected: `4 passed`.
 .venv/Scripts/python.exe -m pytest tests/test_graph tests/test_imports.py -q 2>&1 | tail -1
 ```
 
-Expected: no failure (planning: `247 passed`).
+Expected: no failure (planning: `256 passed` on D + A + C, `247` on D + A).
 
 - [ ] **Step 6: Commit**
 
@@ -4359,6 +4458,8 @@ Run Step 2's commands again. Expected: `6 passed`; `Tests  9 passed (9)`.
 
 - [ ] **Step 5: The README and the web README** (Phase D's plan, Open issue O1, hands this sentence to B)
 
+B leaves `web/README.md`'s `npm run capture:visual` line alone: Phase C's revision rewrites it (C's review, M5). B's own bullet names the five step briefs' captures instead.
+
 `README.md` — replace
 
 ```markdown
@@ -4374,21 +4475,6 @@ of that type (the first when `#<n>` is left out) and holds until the session is 
 server exits; the step briefs' captures use it (notes-progress-report spec §6.10). Replay
 publishes each event stamped with the moment it releases it, so the steps' elapsed times read
 as they would live.
-```
-
-`web/README.md` — replace
-
-```markdown
-- `npm run capture:visual` — the twenty-four full-page captures (12 stages/views × 1252 and
-  390 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
-```
-
-with
-
-```markdown
-- `npm run capture:visual` — the full-page captures into `visual/<VISUAL_CHECKPOINT>/` (default
-  `C4`): every stage and view at 1252 and 390 px, and each step's brief (`13`–`17`) held with
-  `X-Replay-Hold-After` (Planning's at 390 px too).
 ```
 
 `web/README.md` — replace
@@ -4423,8 +4509,10 @@ with
   `evidence_verifier.progress`, `report_writer.progress` — and Reviewing reads
   `graph.report.reviewed`, which is now published as the review lands. In replay mode
   `POST /research` may carry `X-Replay-Hold-After: <event type>[#<n>]` (the proxy forwards it):
-  the stream holds after that event until the session is stopped; `e2e/progress.spec.ts` and the
-  `13`–`17` captures use it, then `POST /research/{id}/stop`.
+  the stream holds after that event until the session is stopped. `e2e/progress.spec.ts` and the
+  step briefs' captures use it, then `POST /research/{id}/stop`: `npm run capture:visual` adds
+  `13-planning-brief` (with its `-phone` twin), `14-evaluating-brief`, `15-verifying-brief`,
+  `16-writing-brief` and `17-reviewing-brief`.
 - Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
 ```
 
@@ -4435,7 +4523,7 @@ with
 .venv/Scripts/python.exe -m pytest tests/test_api -q 2>&1 | tail -1
 ```
 
-Expected: no failure (planning: `255 passed`).
+Expected: no failure (planning: `257 passed` on D + A + C, `255` on D + A).
 
 - [ ] **Step 7: Commit**
 
@@ -4464,7 +4552,7 @@ MSYS_NO_PATHCONV=1 PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 node web/scripts/lau
 node web/scripts/launch.mjs stop api 8010
 ```
 
-`MSYS_NO_PATHCONV=1` keeps Git Bash from rewriting `/research` into a Windows path, and `cygpath -m` gives `launch.mjs`'s `cmd.exe` child a drive-letter interpreter path. Expected: `up: http://127.0.0.1:8010/research (pid …)`; two lines `test\fixtures\events\<case>.json: N events, completed/<iteration>`; `stopped: port 8010 refuses connections (pid … and its tree)`. Planning's capture (HEAD + B, before D, A and C) read `98 events` and `67 events`; with C's bottom line the counts differ.
+`MSYS_NO_PATHCONV=1` keeps Git Bash from rewriting `/research` into a Windows path, and `cygpath -m` gives `launch.mjs`'s `cmd.exe` child a drive-letter interpreter path. Expected: `up: http://127.0.0.1:8010/research (pid …)`; two lines `test\fixtures\events\<case>.json: N events, completed/<iteration>`; `stopped: port 8010 refuses connections (pid … and its tree)`. Planning's capture (HEAD + B, before D, A and C) read `98 events` and `67 events`, and review round 1's in-process capture of the same two cases on D + A + C + B read the same: `98 events, completed/1` and `67 events, completed/0`.
 
 - [ ] **Step 2: Check that the captures carry the progress events**
 
@@ -4479,7 +4567,7 @@ for case in ("missing-target-triggers-one-extra-pass", "scoped-redraft-after-a-n
 EOF
 ```
 
-Expected: each line names all four types. Planning: `{'evidence_verifier.progress': 4, 'planner.progress': 2, 'report_writer.progress': 16, 'source_evaluator.progress': 4}` and `{'evidence_verifier.progress': 2, 'planner.progress': 2, 'report_writer.progress': 12, 'source_evaluator.progress': 2}` (C can change the writer's counts).
+Expected: each line names all four types. Planning: `{'evidence_verifier.progress': 4, 'planner.progress': 2, 'report_writer.progress': 16, 'source_evaluator.progress': 4}` and `{'evidence_verifier.progress': 2, 'planner.progress': 2, 'report_writer.progress': 12, 'source_evaluator.progress': 2}` (the same on D + A + C: C changes the sentence counts inside a pass's last, bottom-line event — 7 rather than 8 in either case's first pass, 5 rather than 6 in the redraft — not how many events arrive).
 
 - [ ] **Step 3: Rewrite the active-row pin and run both AC32 tests**
 
@@ -5304,7 +5392,7 @@ export function toRunEvent(event: ResearchEvent): RunEvent { return { type: even
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  3 passed (3)`, `Tests  58 passed (58)`; `F0 + 1` files and `V0 + 16` tests passed (planning: `33` / `275`: this task's 15 and Task 7's proxy test); `typecheck exit 0`.
+Expected: `Test Files  3 passed (3)`, `Tests  58 passed (58)`; `F0 + 1` files and `V0 + 16` tests passed (this task's 15 and Task 7's proxy test; planning, on D + A + C: `34` / `293`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -5324,7 +5412,7 @@ git commit -m "feat(web): the run state keeps each step's progress, the rows' ti
 **Interfaces:**
 - Consumes: Task 9's state and types; `fmtSeconds` (`lib/format.ts`); `useTween` (`lib/tween.ts`).
 - Produces:
-  - `web/lib/briefs.ts` (additive): `CheckMark`, `SlotLine`, `CheckLine`, `TickerLine`, `StatusStack`, `EvaluatingStats`, `VerifyTally`, `WritingTally`, `BriefBody`; `VERIFY_PLACEHOLDER`, `WRITING_PLACEHOLDER`, `SKELETON_WIDTHS`, `REVIEW_CRITERIA`, `ISSUE_WORDS`, `NOTE_RESULT_WORDS`, `SOURCE_WORDS`, `DROP_WORDS`; `elapsedText`, `planningStatus`, `planningSlots`, `evaluatingBody`, `verifierVerdict`, `sourceWords`, `verifyingBody`, `verifyTallyText`, `writerVerdict`, `writingBody`, `writingTallyText`, `issueText`, `listedNotes`, `noteMet`, `notesClause`, `criterionLines`, `reviewNoteLines`, `reviewVerdict`, `reviewingBody`, `liveSubtitle(run, id, clock: number | null)`.
+  - `web/lib/briefs.ts` (additive): `CheckMark`, `SlotLine`, `CheckLine`, `TickerLine`, `StatusStack`, `EvaluatingStats`, `VerifyTally`, `WritingTally`, `BriefBody` (Writing's body carries its `placeholder`); `VERIFY_PLACEHOLDER`, `WRITING_PLACEHOLDER`, `WRITING_CHECKING_PLACEHOLDER` (O3), `SKELETON_WIDTHS`, `REVIEW_CRITERIA`, `ISSUE_WORDS`, `NOTE_RESULT_WORDS`, `SOURCE_WORDS`, `DROP_WORDS`; `elapsedText`, `planningStatus`, `planningSlots`, `evaluatingBody`, `verifierVerdict`, `sourceWords`, `verifyingBody`, `verifyTallyText`, `writerVerdict`, `writingBody`, `writingTallyText`, `issueText`, `listedNotes`, `noteMet`, `notesClause`, `criterionLines`, `reviewNoteLines`, `reviewVerdict`, `reviewingBody`, `liveSubtitle(run, id, clock: number | null)`.
   - `web/lib/ticker.ts`: `TICKER_HOLD_MS = 1200`, `useTicker<T extends { key: string }>(latest: T | null): { current: T | null; previous: T | null }`.
   - `web/components/StepBodies.tsx`: `Mark`, `StatusLine`, `PlanningSlots`, `EvaluatingLines`, `VerifyingLines`, `WritingLines`, `ReviewingLines` (each takes its body and `first`, the `--i` of its first line).
 
@@ -5496,6 +5584,14 @@ describe("Writing report (spec §6.6)", () => {
     applyEvent(run, ev("report_writer.progress", { phase: "bottom_line", ...counts, unchecked: 2, sample: null }));
     expect(liveSubtitle(run, "report_writer", NOW)).toBe("writing the bottom line");
     expect(writingTallyText(writingBody(run).tally!)).toBe("9 of 12 sentences checked · ✓ 8 backed · ✗ 1 removed · section 2 of 5 · 2 not checked");
+  });
+  it("waits on 'The first section is being drafted…', then, once a section has returned, on 'The first sentences are being checked…'", () => {
+    expect(writingBody(newRunState()).placeholder).toBe("The first section is being drafted…");
+    const counts = { parts_total: 2, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 0, sample: null };
+    const none = play([ev("report_writer.progress", { phase: "sections", parts_returned: 0, sentences_drafted: 0, ...counts })]);
+    expect(writingBody(none).placeholder).toBe("The first section is being drafted…");
+    const returned = play([ev("report_writer.progress", { phase: "sections", parts_returned: 2, sentences_drafted: 4, ...counts })]);
+    expect(writingBody(returned).placeholder).toBe("The first sentences are being checked…");
   });
   it("shows no tally before a sentence is drafted, and no section clause with no section to rewrite", () => {
     const run = play([ev("report_writer.progress", { phase: "sections", parts_total: 0, parts_returned: 0, sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 0, sample: null })]);
@@ -5707,9 +5803,12 @@ describe("StepBodies (notes-progress-report spec §6.3-§6.7)", () => {
     rerender(<VerifyingLines first={0} body={{ kind: "verifying", empty: "No findings to check", samples: [], bar: 0, tally: null }} />);
     expect(container.textContent).toBe("No findings to check");
   });
-  it("WritingLines: a removed sentence is not kept, and the tally reads as writingTallyText", () => {
+  it("WritingLines: the body's placeholder until a sample, a removed sentence not kept, the tally as writingTallyText", () => {
     const tally = { checked: 9, drafted: 12, backed: 8, removed: 1, unchecked: 2, partsReturned: 2, partsTotal: 5 };
-    const { container } = render(<WritingLines first={0} body={{ kind: "writing", samples: [tick({ key: "w1", verdict: "✗ removed — no verified finding says this", kept: false, where: "Where" })], bar: 0.3, tally }} />);
+    const placeholder = "The first sentences are being checked…";
+    const { container, rerender } = render(<WritingLines first={0} body={{ kind: "writing", placeholder, samples: [], bar: 0.1, tally }} />);
+    expect([container.querySelector(".tickbox .b-sub")!.textContent, container.querySelector(".tickbox .b-sub")!.getAttribute("data-on")]).toEqual([placeholder, "1"]);
+    rerender(<WritingLines first={0} body={{ kind: "writing", placeholder, samples: [tick({ key: "w1", verdict: "✗ removed — no verified finding says this", kept: false, where: "Where" })], bar: 0.3, tally }} />);
     expect(container.querySelector(".b-facts")!.textContent).toBe(writingTallyText(tally));
     expect(container.querySelector(".tickbox .vd")!.getAttribute("data-kept")).toBe("0");
   });
@@ -5791,11 +5890,13 @@ export type BriefBody =
   | { kind: "research"; topics: TopicLine[] }
   | { kind: "evaluating"; lead: string; bar: number | null; stats: EvaluatingStats | null }
   | { kind: "verifying"; empty: string | null; samples: TickerLine[]; bar: number; tally: VerifyTally | null }
-  | { kind: "writing"; samples: TickerLine[]; bar: number; tally: WritingTally | null }
+  | { kind: "writing"; placeholder: string; samples: TickerLine[]; bar: number; tally: WritingTally | null }
   | { kind: "reviewing"; status: StatusStack; waiting: boolean; criteria: CheckLine[]; notes: CheckLine[] }
   | { kind: "sentence"; text: string };
 export const VERIFY_PLACEHOLDER = "The first findings are being checked…";
 export const WRITING_PLACEHOLDER = "The first section is being drafted…";
+/* §6.6: once a section has returned, until the first sentence comes back checked. */
+export const WRITING_CHECKING_PLACEHOLDER = "The first sentences are being checked…";
 /* §6.3: four skeleton slots before the plan's titles; the count is a placeholder, not a claim. */
 export const SKELETON_WIDTHS: readonly string[] = ["78%", "64%", "72%", "52%"];
 /* §6.7, D23, D35: the five criteria a review can mark not met, in DIMENSION_GUIDANCE order. */
@@ -5968,9 +6069,10 @@ const writerLine = (s: WriterSample): TickerLine => ({
 });
 export function writingBody(run: RunState): Extract<BriefBody, { kind: "writing" }> {
   const w = run.writing;
-  if (w === null) return { kind: "writing", samples: [], bar: 0, tally: null };
+  if (w === null) return { kind: "writing", placeholder: WRITING_PLACEHOLDER, samples: [], bar: 0, tally: null };
   return {
-    kind: "writing", samples: w.samples.map(writerLine), bar: w.fraction,
+    kind: "writing", placeholder: w.partsReturned > 0 ? WRITING_CHECKING_PLACEHOLDER : WRITING_PLACEHOLDER,
+    samples: w.samples.map(writerLine), bar: w.fraction,
     tally: w.drafted > 0
       ? { checked: w.checked, drafted: w.drafted, backed: w.backed, removed: w.removed, unchecked: w.unchecked, partsReturned: w.partsReturned, partsTotal: w.partsTotal }
       : null,
@@ -6145,7 +6247,7 @@ Create `web/components/StepBodies.tsx`:
 // one step's `.ln` lines, numbered from `first` so a brief keeps one stagger (live-briefs pick 1A).
 import type { CSSProperties } from "react";
 import {
-  VERIFY_PLACEHOLDER, WRITING_PLACEHOLDER,
+  VERIFY_PLACEHOLDER,
   type BriefBody, type CheckLine, type SlotLine, type StatusStack, type TickerLine,
 } from "@/lib/briefs";
 import { useTicker } from "@/lib/ticker";
@@ -6256,7 +6358,7 @@ export function WritingLines({ body, first }: { body: Extract<BriefBody, { kind:
   return (
     <>
       <p className="ln eyebrow" style={lineStyle(first)}>Just written</p>
-      <TickerBox samples={body.samples} placeholder={WRITING_PLACEHOLDER} i={first + 1} />
+      <TickerBox samples={body.samples} placeholder={body.placeholder} i={first + 1} />
       <span className="ln pb" style={lineStyle(first + 2)}><i style={{ transform: `scaleX(${body.bar})` }} /></span>
       {t === null ? null : (
         <p className="ln b-facts" style={lineStyle(first + 3)}>
@@ -6315,7 +6417,7 @@ export function ReviewingLines({ body, first }: { body: Extract<BriefBody, { kin
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  3 passed (3)`, `Tests  33 passed (33)`; `F0 + 4` files and `V0 + 49` tests (planning: `36` / `308`); `typecheck exit 0`.
+Expected: `Test Files  3 passed (3)`, `Tests  34 passed (34)`; `F0 + 4` files and `V0 + 50` tests (planning, on D + A + C: `37` / `327`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -6329,12 +6431,12 @@ git commit -m "feat(web): each step's own brief -- the derivations, the ticker a
 ### Task 11: The rows show their bodies, and the steps' clock (spec §6.9, §8.5; AC14–AC19)
 
 **Files:**
-- Modify: `web/lib/briefs.ts` (header, `Subtitle`'s comment, `RowBrief`, `SENTENCES`, `verifyingSentence` removed, `rowBrief`, Phase D's `stoppedSubtitle`), `web/components/BriefSpine.tsx`, `web/components/RunningPipeline.tsx`
-- Test: `web/test/briefs.test.ts` (rewritten), `web/test/components/brief-spine.test.tsx` (Planning's slots), `web/test/components/running-pipeline.test.tsx` (the clock), Phase D's `web/test/components/user-stopped-stage.test.tsx` (Planning's outcome now ends with its duration)
+- Modify: `web/lib/briefs.ts` (header, `Subtitle`'s comment, `RowBrief`, `SENTENCES`, `verifyingSentence` removed, `rowBrief`, Phase D's `stoppedSubtitle`), `web/components/BriefSpine.tsx` (the bodies, the clock, and D39's hold: `Handoff`, the hand-off derivation and effect, the row state, `openable`, the role), `web/components/RunningPipeline.tsx`
+- Test: `web/test/briefs.test.ts` (rewritten), `web/test/components/brief-spine.test.tsx` (Planning's slots; D39's hold: the rewritten "never awaits…" case and a new describe with three cases), `web/test/components/running-pipeline.test.tsx` (the clock), Phase D's `web/test/components/user-stopped-stage.test.tsx` (Planning's outcome now ends with its duration)
 
 **Interfaces:**
 - Consumes: Task 10's derivations and components; Phase D's `RowState` (`"stopped" | "off"`), `notRunText` and `BriefSpine`'s `frozen`; Phase A's `visibleAcks(notes, active)`.
-- Produces: `RowBrief { subtitle; outcome; why; body: BriefBody; acks; earlier }`; `rowBrief(run, id, state, nowMs = Date.now())`; `SENTENCES = { finalize_report }`; `stoppedSubtitle` with each step's live facts; `BriefSpine`'s optional `now?: number` prop; `RunningPipeline` passes its one-second clock.
+- Produces: `RowBrief { subtitle; outcome; why; body: BriefBody; acks; earlier }`; `rowBrief(run, id, state, nowMs = Date.now())`; `SENTENCES = { finalize_report }`; `stoppedSubtitle` with each step's live facts; `BriefSpine`'s optional `now?: number` prop; `RunningPipeline` passes its one-second clock. Decision D39 in `BriefSpine` (which now imports `ARCS`): `Handoff.held`, the held derivation and its `HANDOFF_HOLD_MS` effect, the destination row pending while held, no role while held, and a `reopenable` hollow Reviewing row (the "Decision D39" section).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6698,6 +6800,138 @@ describe("RunningPipeline — the steps' clock (notes-progress-report spec §6.9
 });
 ```
 
+`web/test/components/brief-spine.test.tsx` — replace
+
+```tsx
+  it("never awaits a row a loop sends the run back from", () => {
+    const run = newRunState();
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const { container, rerender } = show(run);
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", missing_required_target_ids: ["topic-01-target-01"] } });
+    rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
+    expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
+    expect(row(container, "researcher").getAttribute("data-state")).toBe("active");
+  });
+```
+
+with
+
+```tsx
+  it("never awaits a row a loop sends the run back from: the hold's own timer hands it over (D39)", () => {
+    vi.useFakeTimers();
+    const run = newRunState();
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const { container, rerender } = show(run);
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", missing_required_target_ids: ["topic-01-target-01"] } });
+    rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
+    expect([row(container, "report_reviewer").getAttribute("data-state"), row(container, "report_reviewer").getAttribute("data-open")]).toEqual(["active", "1"]);
+    expect(row(container, "researcher").getAttribute("data-state")).toBe("pending");
+    // A loop's completion of the reviewer is inert, so none ever releases the row: the timer does.
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
+    expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
+    expect(row(container, "researcher").getAttribute("data-state")).toBe("active");
+  });
+```
+
+Append to `web/test/components/brief-spine.test.tsx`:
+
+```tsx
+
+describe("BriefSpine — a loop route holds Reviewing on its checks and verdict (decision D39)", () => {
+  /* Writing done and Reviewing's call running; then the review lands with one criterion not met and the
+     route sends the draft back to the writer, with `also` applied in the same render. */
+  function sentBack(also: Parameters<typeof applyEvent>[1][] = []) {
+    vi.useFakeTimers();
+    const run = newRunState();
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
+      applyEvent(run, { type: "graph.node.started", metadata: { node, iteration: 0 } });
+      applyEvent(run, { type: "graph.node.completed", metadata: { node } });
+    }
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 0 } });
+    const onToggle = (id: NodeId) => toggleOpen(run, id);
+    const { container, rerender } = render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggle} />);
+    const again = () => rerender(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggle} />);
+    const criteria = ["completeness", "evidence_quality", "attribution", "uncertainty", "readability"]
+      .map((dimension) => ({ dimension, met: dimension !== "completeness", kinds: dimension === "completeness" ? ["coverage"] : [] }));
+    applyEvent(run, { type: "graph.report.reviewed", metadata: { review_status: "scored", mean_score: 0.6, material_defects: 1, criteria, notes: [] } });
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "redraft", reason: "redraft_requested", missing_required_target_ids: [] } });
+    for (const event of also) applyEvent(run, event);
+    again();
+    return { run, container, again };
+  }
+  const VERDICT = "1 thing to fix · sending the draft back to the writer";
+
+  it("keeps Reviewing open on its five checks and its verdict while Writing waits closed; then hands over, and Reviewing reopens", () => {
+    const { run, container, again } = sentBack();
+    // The reviewer's own completion after a loop route is inert; the redraft's start says why Writing reopens.
+    applyEvent(run, { type: "graph.node.completed", metadata: { node: "report_reviewer" } });
+    applyEvent(run, { type: "graph.report.redraft_requested", metadata: { iteration: 0, redrafts: 1, material_defects: 1 } });
+    again();
+    const reviewing = row(container, "report_reviewer"), writing = row(container, "report_writer");
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open"), reviewing.hasAttribute("aria-current"), reviewing.hasAttribute("data-handoff")])
+      .toEqual(["active", "1", false, false]);
+    expect(reviewing.querySelectorAll(".rv-list > .ln")).toHaveLength(5);
+    expect([...reviewing.querySelectorAll(".rv-list > .ln[data-topic='fail'] .tt")].map((t) => t.textContent)).toEqual(["Covers your whole question"]);
+    expect(reviewing.querySelector(".b-now.xf > [data-on='1']")!.textContent).toBe(VERDICT);
+    expect([writing.getAttribute("data-state"), writing.getAttribute("data-open"), writing.hasAttribute("data-handoff"), writing.hasAttribute("aria-current")])
+      .toEqual(["pending", "0", false, false]);
+
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open"), reviewing.getAttribute("data-handoff")]).toEqual(["pending", "0", "from"]);
+    expect([writing.getAttribute("data-state"), writing.getAttribute("data-open"), writing.getAttribute("data-handoff"), writing.getAttribute("aria-current")])
+      .toEqual(["active", "1", "to", "step"]);
+    expect(writing.querySelector(".b-why")!.textContent).toBe("Rewriting to fix 1 issue the review found");
+
+    // The hollow row reopens from its head, on the same checks and verdict.
+    const toggle = reviewing.querySelector<HTMLButtonElement>("button.ps-toggle")!;
+    expect([reviewing.getAttribute("data-toggle"), toggle.getAttribute("aria-expanded")]).toEqual(["1", "false"]);
+    fireEvent.click(toggle);
+    again();
+    expect([reviewing.getAttribute("data-state"), reviewing.getAttribute("data-open")]).toEqual(["pending", "1"]);
+    expect(reviewing.querySelector(".b-now.xf > [data-on='1']")!.textContent).toBe(VERDICT);
+    expect(reviewing.querySelectorAll(".rv-list > .ln[data-topic='fail']")).toHaveLength(1);
+
+    // Reviewing running again starts its block clean: nothing to reopen.
+    applyEvent(run, { type: "graph.node.started", metadata: { node: "report_reviewer", iteration: 1 } });
+    again();
+    expect(reviewing.querySelector("button.ps-toggle")).toBeNull();
+  });
+
+  it("holds Reviewing even when the loop's own start event lands in the same render as the route decision", () => {
+    // The redraft's start settles the loop (run.loop "settled"); the lit arc still names Writing.
+    const { container } = sentBack([
+      { type: "graph.node.completed", metadata: { node: "report_reviewer" } },
+      { type: "graph.report.redraft_requested", metadata: { iteration: 0, redrafts: 1, material_defects: 1 } },
+    ]);
+    expect([row(container, "report_reviewer").getAttribute("data-state"), row(container, "report_reviewer").getAttribute("data-open")]).toEqual(["active", "1"]);
+    expect(row(container, "report_writer").getAttribute("data-state")).toBe("pending");
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(row(container, "report_writer").getAttribute("data-handoff")).toBe("to");
+  });
+
+  it("a Stop during the hold ends it: Reviewing paints pending and no row takes a hand-off role", () => {
+    const { run, container, again } = sentBack();
+    act(() => { vi.advanceTimersByTime(500); });
+    applyEvent(run, { type: "session.stopped", metadata: { step: "report_writer", stopped_at: "2026-09-30T12:00:00+00:00", elapsed_seconds: 60 } });
+    again();
+    expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("pending");
+    expect(container.querySelector("[data-handoff]")).toBeNull();
+    act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
+    expect(container.querySelector("[data-handoff]")).toBeNull();
+  });
+});
+```
+
 
 - [ ] **Step 2: Run them to make sure they fail**
 
@@ -6705,7 +6939,7 @@ describe("RunningPipeline — the steps' clock (notes-progress-report spec §6.9
 (cd web && npx vitest run test/briefs.test.ts test/components/brief-spine.test.tsx test/components/running-pipeline.test.tsx test/components/user-stopped-stage.test.tsx 2>&1 | grep -E "Test Files|Tests  ")
 ```
 
-Expected: `Test Files  4 failed (4)` — `rowBrief` has no `body`, Planning's brief still lists `.ps-titles`, the clock does not reach the rows, and the outcome has no duration.
+Expected: `Test Files  4 failed (4)` — `rowBrief` has no `body`, Planning's brief still lists `.ps-titles`, a loop route still drops Reviewing at once (D39), the clock does not reach the rows, and the outcome has no duration.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -7041,6 +7275,134 @@ with
 
 ```
 
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+import { STAGES, type NodeId, type PaintedMark, type RunState } from "@/lib/run-state";
+```
+
+with
+
+```tsx
+import { ARCS, STAGES, type NodeId, type PaintedMark, type RunState } from "@/lib/run-state";
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+   the active row, open; then it takes the `from` role and folds with the 3B timings. */
+interface Handoff { from: NodeId | null; to: NodeId | null; awaiting: NodeId | null }
+```
+
+with
+
+```tsx
+   the active row, open; then it takes the `from` role and folds with the 3B timings.
+   `held` (decision D39, notes-progress-report spec §6.7 as amended): a loop route — the extra pass, a
+   redraft, a note pass, a note redraft — holds Reviewing as the awaited row for HANDOFF_HOLD_MS, open on
+   its checks and its verdict, while the row the run goes back to waits, closed and pending, with no role;
+   then Reviewing takes the `from` role and the ordinary hand-off runs. The hold paints; it never marks. */
+interface Handoff { from: NodeId | null; to: NodeId | null; awaiting: NodeId | null; held: boolean }
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+  if (frozen === undefined && run.active !== prevActive) {
+    setPrevActive(run.active);
+    const from = prevActive && finishedState(marks[prevActive]) ? prevActive : null;
+    const successor = prevActive === null ? null : STAGES[STAGES.findIndex((s) => s.id === prevActive) + 1]?.id ?? null;
+    const awaiting = from === null && prevActive !== null && successor === run.active && run.finalStatus === null ? prevActive : null;
+    setHandoff({ from, to: run.active, awaiting });
+  } else if (handoff?.awaiting && handoff.from === null && handoff.to === run.active && finishedState(marks[handoff.awaiting])) {
+    setHandoff({ from: handoff.awaiting, to: run.active, awaiting: null });
+  }
+```
+
+with
+
+```tsx
+  if (frozen === undefined && run.active !== prevActive) {
+    setPrevActive(run.active);
+    if (prevActive === "report_reviewer" && run.arc !== null && run.active === ARCS[run.arc].to) {
+      // D39: a loop route — the run left Reviewing for the lit arc's own destination. A finalize or end
+      // route, graph.session.completed and session.stopped all clear the arc; it stays lit when the
+      // loop's own start event lands in the same render; a burst already past the destination hands
+      // over as usual.
+      setHandoff({ from: null, to: run.active, awaiting: "report_reviewer", held: true });
+    } else {
+      const from = prevActive && finishedState(marks[prevActive]) ? prevActive : null;
+      const successor = prevActive === null ? null : STAGES[STAGES.findIndex((s) => s.id === prevActive) + 1]?.id ?? null;
+      const awaiting = from === null && prevActive !== null && successor === run.active && run.finalStatus === null ? prevActive : null;
+      setHandoff({ from, to: run.active, awaiting, held: false });
+    }
+  } else if (handoff?.awaiting && !handoff.held && handoff.from === null && handoff.to === run.active && finishedState(marks[handoff.awaiting])) {
+    setHandoff({ from: handoff.awaiting, to: run.active, awaiting: null, held: false });
+  }
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+  useEffect(() => {
+    if (!handoff) return;
+    // An awaited hand-off
+```
+
+with
+
+```tsx
+  useEffect(() => {
+    if (!handoff) return;
+    // D39: the hold is a dwell on a timer, kept under reduced motion; when it ends Reviewing takes the
+    // `from` role (a loop's own completion of the reviewer is inert, so no mark would ever release it).
+    if (handoff.held) {
+      const to = handoff.to;
+      const held = setTimeout(() => setHandoff({ from: "report_reviewer", to, awaiting: null, held: false }), HANDOFF_HOLD_MS);
+      return () => clearTimeout(held);
+    }
+    // An awaited hand-off
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+      : awaited ? "active" : marks[s.id] || "pending";
+```
+
+with
+
+```tsx
+      : awaited ? "active" : handoff?.held && handoff.to === s.id ? "pending" : marks[s.id] || "pending";
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+    const openable = finished || st === "stopped";
+```
+
+with
+
+```tsx
+    // D39: once the hold has ended, the hollow Reviewing row (the loop's rearm took its mark) reopens to
+    // its checks and its verdict, until Reviewing runs again (graph.node.started resets run.reviewing).
+    const reopenable = s.id === "report_reviewer" && st === "pending" && run.rearmed.report_reviewer === true && run.reviewing.landed;
+    const openable = finished || st === "stopped" || reopenable;
+```
+
+`web/components/BriefSpine.tsx` — replace
+
+```tsx
+    const role = handoff?.from === s.id ? "from" : handoff?.to === s.id ? "to" : undefined;
+```
+
+with
+
+```tsx
+    const role = handoff?.held ? undefined : handoff?.from === s.id ? "from" : handoff?.to === s.id ? "to" : undefined;
+```
+
 `web/components/RunningPipeline.tsx` — replace
 
 ```tsx
@@ -7084,7 +7446,7 @@ with
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  4 passed (4)`, `Tests  37 passed (37)` (planning, with Phase D's stopped-stage tests); `F0 + 4` files and `V0 + 57` tests (planning: `36` / `316`); `typecheck exit 0`.
+Expected: `Test Files  4 passed (4)`, `Tests  40 passed (40)` (with Phase D's stopped-stage tests and D39's three); `F0 + 4` files and `V0 + 61` tests (planning, on D + A + C: `37` / `338`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -7098,7 +7460,7 @@ git commit -m "feat(web): the rows show each step's body; the elapsed times tick
 ### Task 12: The briefs' CSS, and the briefs on the replay stream (spec §6.9, §11.1 Playwright; AC14–AC18, AC20, AC21)
 
 **Files:**
-- Modify: `web/app/globals.css` (the live-briefs reduced-motion block; a new section at the end), `web/e2e/briefs.spec.ts`, `web/e2e/support.ts` (`installMotionRecorder`'s parts), `web/e2e/motion.spec.ts`
+- Modify: `web/app/globals.css` (the live-briefs reduced-motion block; a new section at the end), `web/e2e/briefs.spec.ts` (Planning's outcome and slots; the arc test waits for Researching to reopen after D39's hold), `web/e2e/support.ts` (`installMotionRecorder`'s parts), `web/e2e/motion.spec.ts` (the timings, and the Reviewing window re-derived for D39)
 - Create: `web/e2e/progress.spec.ts`
 
 **Interfaces:**
@@ -7277,13 +7639,13 @@ test("Verifying: a real finding with its verdict and its source, the bar and the
   await stop(request, id);
 });
 
-test("Writing: the tally grows as the sections return; the placeholder waits for a checked sentence (AC17)", async ({ page, context, request }) => {
+test("Writing: the tally grows as the sections return; the placeholder waits for the first checked sentence (AC17)", async ({ page, context, request }) => {
   await holdAt(context, "report_writer.progress#3");
   const id = await submit(page, "q");
   const writing = row(page, "report_writer");
   await expect(writing).toHaveAttribute("data-open", "1", { timeout: 20_000 });
   await expect(writing.locator(".eyebrow")).toHaveText("Just written");
-  await expect(writing.locator(".tickbox .b-sub")).toHaveText("The first section is being drafted…");
+  await expect(writing.locator(".tickbox .b-sub")).toHaveText("The first sentences are being checked…");
   await expect(writing.locator(".b-facts")).toHaveText("0 of 4 sentences checked · ✓ 0 backed · ✗ 0 removed · section 2 of 2");
   await expect(writing.locator(".m-live")).toHaveText("2 of 2 sections written");
   await stop(request, id);
@@ -7313,6 +7675,22 @@ test("Reviewing: five checks land with no score; the status line waits for the r
   await expect(reviewing.locator(".rv-notes-h")).toHaveCount(0);
   await expect(reviewing).not.toContainText(/\d\.\d\d/);
   await expect(reviewing.locator(".m-live")).toHaveText(/^reading the draft · \dm \d\ds$/);
+  await stop(request, id);
+});
+
+test("a loop route holds Reviewing open on its checks and verdict, then hands over; Reviewing reopens (D39, AC18)", async ({ page, context, request }) => {
+  await context.setExtraHTTPHeaders({ "X-Replay-Case": "scoped-redraft-after-a-named-defect", "X-Replay-Hold-After": "graph.route.decided" });
+  const id = await submit(page, "q");
+  const reviewing = row(page, "report_reviewer"), writing = row(page, "report_writer");
+  await expect(reviewing.locator(".b-now.xf > [data-on='1']")).toHaveText("1 thing to fix · sending the draft back to the writer", { timeout: 30_000 });
+  await expect(reviewing.locator(".rv-list > .ln[data-topic='fail'] .tt")).toHaveText(["Easy to read"]);
+  await expect(writing).toHaveAttribute("data-open", "0");
+  await page.waitForTimeout(2_300); // HANDOFF_HOLD_MS (2000 ms, components/BriefSpine.tsx) and a margin
+  await expect(writing).toHaveAttribute("data-open", "1");
+  await expect(reviewing).toHaveAttribute("data-open", "0");
+  await reviewing.locator("button.ps-toggle").click();
+  await expect(reviewing).toHaveAttribute("data-open", "1");
+  await expect(reviewing.locator(".b-now.xf > [data-on='1']")).toHaveText("1 thing to fix · sending the draft back to the writer");
   await stop(request, id);
 });
 
@@ -7407,6 +7785,22 @@ with
   await expect(planning.locator(".ps-slots > .ln:not([data-gone]) .tt")).toHaveText(ACME_TITLES.map((t, i) => `${i + 1}${t}`));
 ```
 
+`web/e2e/briefs.spec.ts` — replace
+
+```ts
+  await expect(page.locator('#spineWrap[data-arc="extra_pass"]')).toHaveAttribute("data-loop", "settled", { timeout: 30_000 });
+  await settledTransitions(page);
+```
+
+with
+
+```ts
+  await expect(page.locator('#spineWrap[data-arc="extra_pass"]')).toHaveAttribute("data-loop", "settled", { timeout: 30_000 });
+  // Decision D39: Reviewing holds its verdict for HANDOFF_HOLD_MS before Researching reopens.
+  await expect(page.locator('#spine li[data-stage="researcher"]')).toHaveAttribute("data-open", "1");
+  await settledTransitions(page);
+```
+
 `web/e2e/support.ts` — replace
 
 ```ts
@@ -7449,17 +7843,39 @@ with
 `web/e2e/motion.spec.ts` — replace
 
 ```ts
+  // Reviewing → Publishing. graph.route.decided moves the active row one event before Reviewing's own
+  // completion (150 ms apart in replay); Reviewing stays as it was — active, open — until then, so nothing
+  // on its row moves between its last to-role transition and its first from-role one (it is never painted pending)…
+  const onReviewing = records.filter((r) => r.stage === "report_reviewer");
+  const firstFrom = onReviewing.findIndex((r) => r.handoff === "from");
+  const lastTo = onReviewing.slice(0, Math.max(firstFrom, 0)).map((r) => r.handoff).lastIndexOf("to");
   expect(firstFrom).toBeGreaterThan(0);
   expect(onReviewing.slice(lastTo + 1, firstFrom)).toEqual([]);
+  // …and its completion folds it with the from-role timings. The subtitle cross-fade and the connector fill
+  // always run; its lines and height fold only as far as they had opened — Reviewing is active for about
+  // four paced events, less than its own 600/900 ms opening delays — so those are held to their timing,
+  // not their presence.
 ```
 
 with
 
 ```ts
+  // Reviewing's first hand-off is the default case's extra pass (decision D39): graph.route.decided holds
+  // Reviewing as it was — active, open, on its checks and its verdict — for HANDOFF_HOLD_MS, then it takes
+  // the from role. So nothing on its row moves between its last to-role transition (as the review lands) and
+  // its first from-role one, 2 s later (it is never painted pending)…
+  const onReviewing = records.filter((r) => r.stage === "report_reviewer");
+  const firstFrom = onReviewing.findIndex((r) => r.handoff === "from");
+  const lastTo = onReviewing.slice(0, Math.max(firstFrom, 0)).map((r) => r.handoff).lastIndexOf("to");
   expect(firstFrom).toBeGreaterThan(0);
-  // The one exception (notes-progress-report spec §6.7): the route decision's verdict cross-fades into
-  // the status line, an opacity change in place.
+  // …but the route decision's verdict, which cross-fades into the status line as the hold begins
+  // (notes-progress-report spec §6.7), an opacity change in place.
   expect(onReviewing.slice(lastTo + 1, firstFrom).filter((r) => r.part !== "xf")).toEqual([]);
+  // Both of its from-role folds keep the from-role timings: after the hold, as a pending row (its lines and
+  // height only), and at its completion before Publishing, when the subtitle cross-fade and the connector
+  // fill run too. Its lines and height fold only as far as they had opened — before Publishing, Reviewing
+  // is active for about four paced events, less than its own 600/900 ms opening delays — so those are
+  // held to their timing, not their presence.
 ```
 
 `web/e2e/motion.spec.ts` — replace
@@ -7507,7 +7923,7 @@ with
 (cd web && npx playwright test e2e/progress.spec.ts --project=chromium --list 2>&1 | tail -1; npx playwright test --project=chromium --list 2>&1 | tail -1)
 ```
 
-Expected: `typecheck exit 0`; `Total: 11 tests in 1 file`; `Total: L0 + 11 tests in` one more file than at Task 1 (planning: `79 tests in 21 files`).
+Expected: `typecheck exit 0`; `Total: 12 tests in 1 file`; `Total: L0 + 12 tests in` one more file than at Task 1 (planning, on D + A + C: `88 tests in 22 files`).
 
 - [ ] **Step 3: Run the briefs, motion and progress specs** **[not run in planning]**
 
@@ -7516,7 +7932,13 @@ netstat -ano | grep -E ':(8010|3010|3011) .*LISTENING'
 (cd web && npm run -s build && npx playwright test e2e/progress.spec.ts e2e/briefs.spec.ts e2e/motion.spec.ts e2e/reduced-motion.spec.ts --project=chromium 2>&1 | tail -3)
 ```
 
-Expected: the `netstat` line prints nothing; then `20 passed` (progress 11, briefs 5, motion 2, reduced motion 2). Reasoning: each hold point names an event the planning capture holds (Task 8 Step 2), every asserted text is one the Vitest tests derive from the same events, and each test ends with a `202` stop. If a `motion.spec.ts` timing differs, compare it with the CSS above before changing either.
+Expected: the `netstat` line prints nothing; then `21 passed` (progress 12, briefs 5, motion 2, reduced motion 2). Reasoning: each hold point names an event the planning capture holds (Task 8 Step 2), every asserted text is one the Vitest tests derive from the same events, and each test ends with a `202` stop. D39's case holds the redraft case after `graph.route.decided`: the hold is the page's own timer, so it ends while the stream is held. If a `motion.spec.ts` timing differs, compare it with the CSS above before changing either. The Reviewing window there (`onReviewing.slice(lastTo + 1, firstFrom)`) is re-derived for D39 [not run in planning]:
+- Reviewing's first from-role is now the extra pass's, at the hold's end.
+- Its last to-role transitions are the review landing (`graph.report.reviewed`, 150 ms after Reviewing starts, inside the to-role's 2 s).
+- The hold begins one event later and drops the role, so the verdict's cross-fade is recorded with no role. That cross-fade is the one `xf` record between the two.
+- After the hold Reviewing folds as a pending row: lines `0/180` and height `100/420`, with no `m-out` or connector transition, because those run only when a row turns done or loop. Every existing assertion on `reviewing` therefore still holds.
+
+If the window holds anything else, report it.
 
 - [ ] **Step 4: Run the whole chromium project** **[not run in planning]**
 
@@ -7524,7 +7946,7 @@ Expected: the `netstat` line prints nothing; then `20 passed` (progress 11, brie
 (cd web && npx playwright test --project=chromium 2>&1 | tail -2)
 ```
 
-Expected: `L0 + 11 passed`.
+Expected: `L0 + 12 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -7538,13 +7960,29 @@ git commit -m "feat(web): the briefs' styles and loops, and the briefs on the re
 ### Task 13: The step briefs' captures (spec §11.3)
 
 **Files:**
-- Modify: `web/e2e/visual.spec.ts` (appended)
+- Modify: `web/e2e/visual.spec.ts` (the `09-running-extra-pass` capture waits for Researching to reopen after D39's hold, keeping the design reference's subject; the step briefs' captures appended)
 
 **Interfaces:**
 - Consumes: Tasks 7–12.
 - Produces: `13-planning-brief`, `13-planning-brief-phone`, `14-evaluating-brief`, `15-verifying-brief`, `16-writing-brief`, `17-reviewing-brief`.
 
 - [ ] **Step 1: The captures**
+
+`web/e2e/visual.spec.ts` — replace
+
+```ts
+      await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
+      await shoot(page, `09-running-extra-pass${suffix}`);
+```
+
+with
+
+```ts
+      await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
+      // Decision D39: Reviewing holds its verdict for HANDOFF_HOLD_MS first; 09 shows Researching reopened.
+      await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"]')).toBeVisible();
+      await shoot(page, `09-running-extra-pass${suffix}`);
+```
 
 Append to `web/e2e/visual.spec.ts`:
 
@@ -7584,7 +8022,7 @@ for (const [suffix, viewport, briefs] of [["", null, BRIEFS], ["-phone", PHONE, 
 (cd web && npx playwright test --project=visual --list 2>&1 | tail -1)
 ```
 
-Expected: `typecheck exit 0`; `Total: L1 + 6 tests in 1 file` (planning: `20`).
+Expected: `typecheck exit 0`; `Total: L1 + 6 tests in 1 file` (planning, on D + A + C: `23`).
 
 - [ ] **Step 2: Take every capture** **[not run in planning]**
 
@@ -7616,7 +8054,7 @@ git commit -m "test(visual): the step briefs' captures, held with X-Replay-Hold-
 ### Task 14: The design record (spec §6.11)
 
 **Files:**
-- Modify: `docs/design/DESIGN.md` (§3.4 "What an open row says" and the loops; §3.5's active-row rule; §5.6's bullets; §5.7 "What each surface derives" and "Delivery is live")
+- Modify: `docs/design/DESIGN.md` (§3.4 "What an open row says", with D39's exception and Reviewing's hold, and the loops; §3.5's active-row rule and a new paragraph after item 3 on D39's hold, which paints and never marks; §5.6's bullets, D39's hold among them, kept under reduced motion; §5.7 "What each surface derives" and "Delivery is live")
 
 **Interfaces:**
 - Consumes: Tasks 2–13 (what the document now describes).
@@ -7653,7 +8091,7 @@ with
 **What an open row says** (picks 1A, 2C; notes-progress-report §6, 2026-09-30). The
 active row is always open; a done or loop row is closed on its outcome line and
 reopens from its head (a `button[aria-expanded]` over the head); a pending row never
-opens. While a row runs its subtitle is green and live: Planning's elapsed time
+opens, save Reviewing's after a loop route (D39, §3.5). While a row runs its subtitle is green and live: Planning's elapsed time
 (`Xm SSs`); Researching's `{done} of {n} topics done · {pages} pages read ·
 {findings} findings` (or `{n} topics · researching` before the first topic is done);
 `{rated} of {n} rated`; `{checked} of {n} checked`; `{k} of {n} sections written`,
@@ -7680,7 +8118,8 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
   `Easy to read`) and the reader's notes: rings that read `reading` under an
   indeterminate bar while the one call runs, then ✓, or an amber ✗ with the issue in
-  plain words. Never a score.
+  plain words. Never a score. When the route sends the run back, Reviewing stays open
+  on its checks and its verdict line for 2s before the run goes back (D39, §3.5).
 - **Publishing** — `Saving the report and evidence log`.
 
 Once done, a row's subtitle is its outcome: `{n} sub-topics · {k} from your note ·
@@ -7740,6 +8179,33 @@ why the two later loops are a line's sheen and a line's drift.
 `docs/design/DESIGN.md` — replace
 
 ```markdown
+3. **A step re-armed by a loop carries a `↺` mark**, not a label: on Researching
+   for an extra pass or a note pass, on Writing for a redraft, once the row has completed again.
+```
+
+with
+
+```markdown
+3. **A step re-armed by a loop carries a `↺` mark**, not a label: on Researching
+   for an extra pass or a note pass, on Writing for a redraft, once the row has completed again.
+
+**A loop route holds its verdict for 2s** (D39, the human's ruling of 2026-09-30 on
+notes-progress-report §6.7). The active row moves on the route decision as the table
+says, but the painting waits: Reviewing stays painted as the row that ran — open on its
+checks, its notes and the verdict line (`1 thing to fix · sending the draft back to the
+writer`, `1 gap to fill · going back to research`, a note route's line) — for
+`HANDOFF_HOLD_MS` (2,000ms), while the row the run returns to waits, closed and pending.
+Then the ordinary hand-off runs: Reviewing folds with the from-role timings and that row
+opens with the to-role's (§5.6). The hold paints and never marks: Reviewing stays
+hollow, as item 2's reset left it, and its own completion stays inert. Afterwards the
+hollow Reviewing row keeps a toggle on its head that reopens it on that review — the
+hollow node and `5 checks` stay — until Reviewing runs again. A Stop during the hold
+ends it.
+```
+
+`docs/design/DESIGN.md` — replace
+
+```markdown
 replays the whole log as one burst and the reviewer's own start arrives with its
 snapshot, so completions stay the rule and read the same either way.
 ```
@@ -7774,6 +8240,11 @@ with
   its checks change 60ms apart. **Under reduced motion** every cross-fade is opacity
   only over 160ms with no settle, a skeleton leaves at once, the bars jump, the ✓ and
   ✗ appear without drawing and counts jump.
+- **A loop route holds the verdict** (D39, 2026-09-30). When the route sends the run
+  back, Reviewing stays open on its checks and its verdict for `HANDOFF_HOLD_MS`
+  (2,000ms) before the hand-off runs (§3.5). The hold is a dwell on a timer, like the
+  hand-off's own hold, not an animation, so it is kept under reduced motion; the fold
+  and the open that follow are the hand-off's, opacity only under reduced motion.
 - **Three decorative loops, none load-bearing** (D21). `halo` runs at
   `--motion-halo: 2200ms` on the running node, on each running topic's and slot's dot
   and on the header status dot; Planning's skeleton sheen and Reviewing's drift run
@@ -7859,7 +8330,7 @@ Expected: `0`.
 
 ```bash
 git add docs/design/DESIGN.md
-git commit -m "docs(design): each step's brief, the two loops, live progress events"
+git commit -m "docs(design): each step's brief, the two loops, the loop route's hold, live progress events"
 ```
 
 ---
@@ -7884,16 +8355,16 @@ Expected: `P0 + 40 passed, 2 deselected` and nothing failed (planning: `5057 pas
 (cd web && npm run -s check:css)
 ```
 
-Expected: `F0 + 4` files and `V0 + 57` tests, all passed; `typecheck exit 0`; `OK`.
+Expected: `F0 + 4` files and `V0 + 61` tests, all passed; `typecheck exit 0`; `OK`.
 
 - [ ] **Step 3: Live-only, with no provider text, on the real graph (AC13)**
 
 ```bash
 .venv/Scripts/python.exe -m pytest "tests/test_api/test_replay.py::test_progress_events_live_only" "tests/test_cli/test_render.py::test_cli_unchanged_for_progress_types" "tests/test_agents/test_events.py::test_the_no_provider_text_rule_binds_state_bound_events" -q 2>&1 | tail -1
-git diff --stat 73b4d7a6 HEAD -- src/deep_research/agents/prompts.py | tail -1
+git diff --stat <BASE> HEAD -- src/deep_research/agents/prompts.py | tail -1
 ```
 
-Expected: `3 passed`; nothing (no prompt text changed).
+Type the commit id Task 1 Step 3 wrote down in place of `<BASE>`. Expected: `3 passed`; nothing (no prompt text changed since Task 1; a change the latency work made before this plan ran is not B's, O6).
 
 - [ ] **Step 4: Playwright, both projects** **[not run in planning]**
 
@@ -7903,7 +8374,7 @@ netstat -ano | grep -E ':(8010|3010|3011) .*LISTENING'
 (cd web && VISUAL_CHECKPOINT=phase-b-final npx playwright test --project=visual 2>&1 | tail -2)
 ```
 
-Expected: nothing; `L0 + 11 passed`; `L1 + 6 passed`.
+Expected: nothing; `L0 + 12 passed`; `L1 + 6 passed`.
 
 No commit: nothing changed.
 
@@ -7913,12 +8384,12 @@ No commit: nothing changed.
 
 | AC | Where it is proven |
 |---|---|
-| AC13 | Task 2 (`test_the_no_provider_text_rule_binds_state_bound_events`, `test_cli_unchanged_for_progress_types`, the planner tests' `SECRET` check), Tasks 3–5 (each agent's live test: progress published, never returned), Task 4 (`SECRET_REASON`), Task 5 (`SECRET_VERDICT`), Task 7 (`test_progress_events_live_only`: on the real graph, absent from `state.events` and every `event_count`, no `://` in any string) |
+| AC13 | Task 2 (`test_the_no_provider_text_rule_binds_state_bound_events`, `test_cli_unchanged_for_progress_types`, the planner tests' `SECRET` check), Tasks 3–5 (each agent's live test: progress published, never returned), Task 4 (`SECRET_REASON`), Task 5 (`SECRET_VERDICT`), Task 7 (`test_progress_events_live_only`: on the real graph, absent from `state.events` and every `event_count`, no `://` in any string). The allow-list is tested by exclusion, not field by field: ambiguity 21 |
 | AC14 | Task 2 (`test_planner_progress_states`: sound, local repair, review repair then sound, failed review, failed review repair), Tasks 9–11 (state, slots, status line, note slots, subtitle, outcome with note clause and duration), Task 12 (`progress.spec.ts` Planning) |
 | AC15 | Task 3 (`test_evaluator_progress_split`, reused and capped, idempotent, the completed split), Tasks 9–10 (`not yet`, the bar, the outcome), Task 12 |
 | AC16 | Task 4 (`test_verifier_first_event_counts_figure_match`, `test_verifier_tally_ends_on_the_completed_counts[2]`/`[5]`, `test_progress_counts_idempotent`, `test_verifier_progress_samples`), Task 10 (verdict words, amber `kept: false`, `ticker.test.tsx` pace), Task 12 |
-| AC17 | Task 5 (`test_writer_progress_fraction_monotonic`: real sentences, Statement Check verdicts, monotonic fraction, `bottom_line` phase), Task 10 (`writing the bottom line`), Task 12 |
-| AC18 | Task 6 (`test_reviewed_event_five_criteria_mapping`, `test_reviewed_event_mixed_note_steering`, `test_reviewer_started_live`, `test_an_unscored_review_marks_no_criterion`), Task 10 (`step-briefs.test.ts` Reviewing: five rows, issue words, notes, every route's verdict incl. both `m = 5` refusals), Task 11 (no score in any brief of either capture), Task 12 |
+| AC17 | Task 5 (`test_writer_progress_fraction_monotonic`: real sentences, Statement Check verdicts, monotonic fraction, `bottom_line` phase), Task 10 (`writing the bottom line`; the two placeholders, O3), Task 12 (`progress.spec.ts` Writing, with `The first sentences are being checked…` at `report_writer.progress#3`) |
+| AC18 | Task 6 (`test_reviewed_event_five_criteria_mapping`, `test_reviewed_event_mixed_note_steering`, `test_reviewer_started_live`, `test_an_unscored_review_marks_no_criterion`), Task 10 (`step-briefs.test.ts` Reviewing: five rows, issue words, notes, every route's verdict incl. both `m = 5` refusals), Task 11 (no score in any brief of either capture; D39's hold, hand-over, reopen and Stop in `brief-spine.test.tsx`), Task 12 (`progress.spec.ts` Reviewing, and D39's case on the redraft case held at `graph.route.decided`) |
 | AC19 | Task 9 (`progress-state.test.ts` burst safety), Task 11 (`briefs.test.ts` over both re-captured fixtures) |
 | AC20 | Task 12 (CSS: token durations only; `progress.spec.ts` "the two loops", with and without reduced motion; `motion.spec.ts`'s reduced-motion test), Task 10 (`TICKER_HOLD_MS` is a dwell) |
 | AC21 | Task 7 (`test_replay_restamps_and_holds`, `test_published_timestamps_are_the_release_times`, `test_hold_after_holds_the_stream_until_the_session_is_stopped`, the proxy test), Task 12 (`progress.spec.ts`: no horizontal scroll at 1252 and 390 px), Task 13 (captures) |
@@ -7935,7 +8406,7 @@ No commit: nothing changed.
 | §6.4 Evaluating | 3, 9, 10, 12 |
 | §6.5 Verifying (incl. D30, `TICKER_HOLD_MS`) | 4, 9, 10, 12 |
 | §6.6 Writing (incl. D34) | 5, 9, 10, 12 |
-| §6.7 Reviewing (D23, D35; the route table; Fable's `passed` → `not found`; "5 checks") | 6, 9, 10, 11 |
+| §6.7 Reviewing (D23, D35; the route table; Fable's `passed` → `not found`; "5 checks"); its last bullet as D39 amends it (the loop route's hold) | 6, 9, 10, 11, 12, 13, 14 |
 | §6.8 Researching unchanged | 11 (kept, tested) |
 | §6.9 web state, bodies, clock, CSS, the two loops, reduced motion | 9–12 |
 | §6.10 replay items 1–3 | 7, 8 |
@@ -7947,6 +8418,76 @@ No commit: nothing changed.
 
 ## Self-review
 
-- **Spec coverage.** Every §6 subsection, §4 items 1 and 4, AC13–AC21, the Phase B rows of §9 and §11, R7 and R8 map to a task above. Two statements are kept differently and are Open issues: `RunEvent.timestamp`'s optionality (O1), and the e2e/capture hold points beyond §11.1's five (ambiguity 18, recorded, not an issue). O2 and O3 are kept as specified and raised for the human's eye.
-- **Placeholder scan.** No step says "TBD", "similar to" or "add tests"; every code step carries its full code. `P0`, `V0`, `F0`, `L0`, `L1` and the four pins are values Task 1 Step 3 records on the merged tree, because Phase C (not available to planning) changes them; each later Expected line states the delta planning observed.
-- **Type consistency.** `planning_completed_event(..., states=)` (Task 2) is what `PlannerAgent.run` passes; `check_statements(..., on_batch=)` (Task 4) is what `_check` passes (Task 5) and what the five substitutes accept; `report_review_completed_event(..., criteria, notes)` (Task 6) takes `review_criteria`/`review_note_results`; `RunEvent.timestamp` and `Handler`'s third argument (Task 9) feed `startedAt`/`durations`, which `liveSubtitle` and `rowBrief` read (Tasks 10–11); `BriefBody`'s kinds (Task 10) are what `rowBrief` returns and `BriefSpine` switches on (Task 11); `StepBodies`' props take exactly the `Extract<BriefBody, …>` members; `CheckMark`'s `"stopped"` is the `data-topic` Phase D's frozen topics use.
+- **Spec coverage.** Every §6 subsection, §4 items 1 and 4, AC13–AC21, the Phase B rows of §9 and §11, R7 and R8 map to a task above, and D39 amends §6.7's last bullet as the human ruled. One statement is kept differently and recorded as a spec amendment line: `RunEvent.timestamp`'s optionality (O1). The e2e and capture hold points beyond §11.1's five are ambiguity 18, recorded, not an issue. O2 is closed by D39, O3 by review 1.
+- **Placeholder scan.** No step says "TBD", "similar to" or "add tests"; every code step carries its full code. `BASE`, `P0`, `V0`, `F0`, `L0`, `L1` and the four pins are values Task 1 Step 3 records on the merged tree, because the merge decides them; each later Expected line states the delta, and the values planning observed on D + A + C (C's plan at `bd48725c`). The one parameter in a command, Task 15 Step 3's `<BASE>`, is that recorded commit id.
+- **Type consistency.** `planning_completed_event(..., states=)` (Task 2) is what `PlannerAgent.run` passes; `check_statements(..., on_batch=)` (Task 4) is what `_check` passes (Task 5) and what the five substitutes accept; `report_review_completed_event(..., criteria, notes)` (Task 6) takes `review_criteria`/`review_note_results`; `RunEvent.timestamp` and `Handler`'s third argument (Task 9) feed `startedAt`/`durations`, which `liveSubtitle` and `rowBrief` read (Tasks 10–11); `BriefBody`'s kinds (Task 10) are what `rowBrief` returns and `BriefSpine` switches on (Task 11); `StepBodies`' props take exactly the `Extract<BriefBody, …>` members; `CheckMark`'s `"stopped"` is the `data-topic` Phase D's frozen topics use; Writing's body's `placeholder` (Task 10) is what `WritingLines` shows; `Handoff.held` (Task 11) is set and cleared only inside `BriefSpine`.
+
+## Review round 1 (2026-09-30): findings and how each was resolved
+
+spec-plan-reviewer reviewed `e6a9c10b` (`.superpowers/reviews/2026-09-30-plan-b-review-1.md`). It blocked the plan on two P1s, with four P2s and six P3s. Phase C's review (`.superpowers/reviews/2026-09-30-plan-c-review-1.md`, "Impact on Phase B's plan") listed what C's plan moves for B. The human ruled on O2: decision D39. Each item is resolved below.
+
+The edited steps were re-run once, task by task, on an export of `73b4d7a6` with Phase D's, Phase A's (revised) and Phase C's (`bd48725c`) plans applied by their own blocks. That export carries C's code but not C's re-pin steps (O4). Results:
+- Task 1 Step 2: `anchors: 165 exactly once; creates: 10 absent; appends: 13 onto files present`.
+- Tasks 2–7: every pytest Expected line as now written. The fingerprint and byte-identical lines read as O4 explains.
+- Task 8: the two cases captured in-process, `98` and `67` events with the same progress counts. The active-row pin read `2 failed | 1 passed (3)`, then `3 passed (3)` once rewritten; the API pin read `2 passed`.
+- Tasks 9–11, whole suite: `34` / `293`, `37` / `327`, `37` / `338`; typecheck exit 0 after each.
+- Task 12: `OK`; `Total: 12 tests in 1 file`; `Total: 88 tests in 22 files`. Task 13: `Total: 23 tests in 1 file`.
+- Task 6: `ruff check --select I001,F` printed `All checks passed!` on its three files.
+
+- **P1-1 — the human's O2 ruling (D39).** Applied as the review specified, with one deviation in the trigger.
+  - `BriefSpine.tsx` (Task 11) gains:
+    - `Handoff.held`, set by the held derivation;
+    - an effect that ends the hold after `HANDOFF_HOLD_MS`;
+    - the destination row painted pending while held, and no role while held;
+    - `!handoff.held` on the awaited branch;
+    - `reopenable` for the hollow Reviewing row.
+
+    Nothing changes in `lib/briefs.ts` or `lib/run-state.ts`.
+  - **The deviation.** The trigger is the lit arc's own destination (`run.arc !== null && run.active === ARCS[run.arc].to`), not `run.loop === "flowing"`. A loop's own start event in the same render would make the `loop` test miss the hold ("Decision D39"). A third Vitest case pins this: it fails under the review's condition and passes under this one.
+  - **Reduced motion and Stop.** As the review said; DESIGN §5.6 records the first (Task 14).
+  - **Tests.**
+    - (a) `brief-spine.test.tsx` has the review's two cases and the same-render case. The fixture's not-met criterion is completeness (`coverage`), so its ✗ reads `Covers your whole question`. Observed: with the D39 edits undone, the hold case and the rewritten "never awaits…" case fail (`2 failed | 11 passed (13)`, before the same-render case was added); with them, all pass (`14 passed`). The Stop case passes either way: it guards that the hold's timer does not outlive a stop.
+    - (b) `progress.spec.ts`'s D39 case runs on the redraft case. Its ✗ is `Easy to read` (`presentation`), read from the capture.
+    - (c) `motion.spec.ts`'s window is re-derived (Task 12 Step 3). Its assertions hold unchanged; its comments now say why.
+  - **Also moved by the hold**, found while applying it:
+    - the existing "never awaits a row a loop sends the run back from" case, which asserted the drop and now asserts the hold and the timer's hand-over;
+    - `briefs.spec.ts`'s arc test, whose title says "after Researching reopens" and which now waits for that;
+    - the `09-running-extra-pass` capture, which now waits for Researching to reopen and so keeps the design reference's subject.
+  - **Bookkeeping.**
+    - D39 is recorded in its own section and amends §6.7's last bullet; O2 is closed.
+    - DESIGN, Task 14: §3.4 (the pending row's exception, Reviewing's hold); §3.5 (a paragraph after item 3: the hold paints and never marks); §5.6 (the hold is a dwell, kept under reduced motion).
+    - AC18's row names the new tests.
+- **P1-2 — Phase C moves one anchor.** Task 6 now anchors `tests/test_imports.py` on C's line, which lists `note_outcomes`, and adds `review_brief` to it. A later revision of C's plan may move it again; Task 1 Step 2 stops if it does (O4).
+- **P2-1 — the latency work merged first.**
+  - (a) Task 1 Step 3 writes down `BASE` (`git rev-parse HEAD`). Task 15 Step 3 diffs `prompts.py` against it, and Global Constraints say "since Task 1".
+  - (b) Task 1 Step 1 adds the tool-lock line: "do not stop; say so in the summary".
+  - (c) O6 lists the anchors that may move and the standing remedy.
+  - (d) `test_statement_check_reports_each_settled_batch` passes `batch_size=5`.
+- **P2-2 — R8's substitute grep.**
+  - Task 5 Step 1 lists the substitutes: twelve lines on D + A + C, C's `checker` fixture among them. Its pattern also catches `flaky_check` and the `ev.check_statements = …` installs, which the review's pattern missed.
+  - Task 5 Step 4 checks that every `gate=None` line carries `on_batch`. For that check to mean something, `fake_check`'s and `flaky_check`'s new `on_batch=None` now sits on their `gate=None` line. On a continuation line, the check would have printed both.
+  - Observed: the inventory as listed, and the check printed nothing.
+- **P2-3 — Expected lines Phase C shifts.** O4 states them, with the values observed on D + A + C, and so does each step:
+  - Task 1 Step 3's pins and baselines;
+  - Task 2 Steps 5–6;
+  - Task 5 Steps 4–6: the live test's sequence holds, and on any other, stop and report;
+  - Task 6 Step 5 and Task 7 Step 6;
+  - Task 8 Steps 1–2, unchanged;
+  - Tasks 9–13's counts.
+
+  Found while re-running: Task 5 Step 5's "before" line was wrong, on D + A as on D + A + C. Changing the report writer's module also fails `test_the_target_fingerprint_covers_the_shared_prompt_module` (`tests/test_evaluation/test_config.py:1771` at `73b4d7a6`), which compares the report writer's fingerprint with its pin. The line now reads `2 failed, 9 passed, 67 deselected`. Observed with C's pin in place before the re-pin.
+- **P2-4 — `graph/nodes.py`'s import order.** Task 6 inserts `from deep_research.graph.review_brief import …` right before `from deep_research.graph.state import (`, so it lands after C's `note_outcomes` import. Observed: ruff's `I001` passes.
+- **P3.**
+  - **O3 closed.** Writing's placeholder reads `The first sentences are being checked…` once `partsReturned > 0` with no sample: `writingBody` has a new `placeholder`, and `WritingLines` shows it. `step-briefs.test.ts` gains one case, `step-bodies.test.tsx`'s Writing case checks the placeholder, and `progress.spec.ts` expects it at `report_writer.progress#3`.
+  - **The four invented subtitles** are listed as (I) in Global Constraints' copy table.
+  - **`parts_returned` counting a failed draft** is documented (ambiguity 7), not counted apart.
+  - **AC13.** Ambiguity 21 sets what the tests check against AC13's wording, and the AC13 row points to it.
+  - **`review_brief.py`'s docstring** says why its results are not Phase C's `note_outcomes` (Task 6).
+  - **O1** is recorded as a spec amendment line. **O7** is accepted and kept.
+- **Phase C's review, "Impact on Phase B's plan".**
+  - Items 1, 3, 5, 6 and 10: B's anchors are untouched (Task 1 Step 2).
+  - Item 2, the bottom line's counts: the number of progress events is unchanged (Task 8 Step 2). The counts inside a pass's last event change, and nothing B asserts reads them.
+  - Item 4: as P2-4 above.
+  - Item 7, the pins after C: Task 1 Step 3 and O4.
+  - Item 8, the web: B has no anchor in `ReportBody`. `visual.spec.ts`'s B edit (the 09 capture) and B's append hold with C's additions.
+  - Item 9, the docs: B's DESIGN anchors hold with C's new §5.6 bullet. B no longer edits `web/README.md`'s `capture:visual` line, which C's M5 rewrites; B's own bullet names its five captures (Task 7).
