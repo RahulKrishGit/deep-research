@@ -1,0 +1,120 @@
+"""Every provider request and every event of every replay row, pinned
+(latency plan, Task 1).
+
+The latency work moves when requests start, never what they say, and never
+which events a run records or in what order. These pins are the offline proof
+of that for the whole real-agent matrix. ``PINNED_REQUEST_DIGESTS`` holds each
+row's (full, timing_free, outside_research, count) request digests and
+``PINNED_EVENT_DIGESTS`` its (event types in order, count) digest
+(``tests/replay_digests.py``), as they stood at the start of the latency plan.
+A change that alters one byte of one request, or adds or drops one, moves
+full; timing_free moves only when something other than a live
+acquisition-state snapshot changed; outside_research moves only when a
+request of the planner, source evaluator, verifier, writer or reviewer
+changed. A task that moves a pin on purpose re-pins that row in its own commit
+and says why in a comment above the entry or the dictionary.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_MANIFEST
+from tests.replay_digests import event_digest, replay_run, request_digests
+
+PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
+    "blocked-html-pdf-fallback": ("4d1c9aad4edf0024", "db1f65725d21a6ff", "e6da9e506e3611cf", 36),
+    "broad-constraints": ("afe06aa9fb93414d", "e8b4c8b3530c2c76", "7284e3fb492f1474", 58),
+    "comparative-conflict": ("0b5d839369c0d26a", "ee30a028a71b6872", "705ad82f8c2ca49b", 33),
+    "comparison-target-names-both-products": ("495f338140060ea6", "7eb867a075de19a1", "dfcf5b3f4a03d8a9", 16),
+    "count-unit-period": ("add7bdaa7da74844", "eea8daec2e8872a2", "318c0f2e714a81e2", 39),
+    "decision-context-late-candidate": ("9f18a98071808291", "97cdc51975b1f775", "e656d712a7307628", 37),
+    "empty-but-clean": ("1c1c315f7aa46046", "698388ce5a7c44f7", "6b6d55286aa22e4b", 40),
+    "evidence-words-not-on-page-rejected": ("1072afa6902ecc0a", "b6bd4390da7a6726", "cefccba119b6b89a", 33),
+    "extra-pass-finds-nothing": ("d59a1d15500b3815", "18ebb999bde7e55c", "f38d7b18ebc53dda", 37),
+    "extra-pass-recovers-missing-target": ("cc4d4c93c0dcd75f", "f263e41636a8452e", "e3cd657e27a7db9a", 48),
+    "extra-pass-redrafts-the-gaining-part": ("472eb4eb9a52e922", "7cb5411d8b2d9a81", "83358bd57ccf2f08", 41),
+    "figure-not-on-page-dropped": ("f849b758f25ea7b0", "ce1b5fe9cb957870", "a47f0478ca0589f8", 33),
+    "forecast-versus-actual-kept-apart": ("e86d61d118eba332", "c0652aaf18123aba", "e4f8dcaf15866edd", 41),
+    "maker-notes-vs-relay": ("7c773b2b6a776b8c", "3e530c1246b93fbf", "e468184a2274cd6a", 20),
+    "memory-is-not-read": ("bdcf04685d9af0de", "3fd0f5bee828865f", "d8153bf008a4e5a9", 34),
+    "missing-target-triggers-one-extra-pass": ("271c9e9baa621249", "1f24dc4136dc4d03", "622613a384191f12", 46),
+    "non-constraint-answer": ("f8d97bc717d4fc9c", "662309350f5085db", "180551d103074c1e", 33),
+    "one-part-question": ("e4ef67c0f0d63d60", "fcb7ce1f08a13ba6", "74a3042d8bb99af5", 16),
+    "prose-only-question": ("215be06f95f0b548", "5a84a902de80cd04", "d8c01755432a06a0", 25),
+    "purchase-year-empty-period": ("66284e512d5fd16f", "d7ca14f09571703f", "6c567a743690ba09", 14),
+    "relative-period-resolved": ("ebf6a018b3b304eb", "1fd4167209b021d1", "ab8fee3beda50e6f", 18),
+    "report-relay-labelled-as-relay": ("8395dd5c4ef5bd72", "4434860a7419dc67", "f2670489eb870342", 32),
+    "report-scope-corrected-to-all-segments": ("ee1ae09aeaa3952e", "2d48770a346902a9", "5e2ad1b4ba74638d", 30),
+    "review-unavailable": ("2037ffbb5b60b4e3", "a17682fd1439a8e6", "d380ab2212280e0b", 33),
+    "revision-noted": ("ae52369f1ebb8506", "4f33ac8e9a1c0090", "a6962fe58fdf8b41", 33),
+    "same-work-mirror": ("7d0a85352cb64215", "d42d4539e5aaf8da", "9f15e252e6d56266", 33),
+    "scoped-redraft-after-a-named-defect": ("73164a8b0ab4b73e", "f8638fbcac6b57fc", "ca638df6049f7fee", 29),
+    "scoped-review-invalid-reply-falls-back": ("9582288a2e947aaf", "158a5ad023ee7078", "84dd2132c562fdcd", 30),
+    "single-subject-spellings": ("1c10afdb9fe40305", "96477bef674181a1", "5380145e2ad7a771", 18),
+    "statement-check-failure-keeps-sentences": ("127d76f63fb15d11", "85e4f30db40c90c5", "2c6b8dcc792f4316", 31),
+    "two-subjects-one-value": ("c5d33fb3ed1c96a0", "19fa8302aefe7794", "6894ad7112662bed", 16),
+    "two-versions-one-target": ("2da292adfbf6f3a5", "99e09c68b45beb38", "276e8d5713259403", 16),
+    "unattributed-relay-prose": ("1d61a04946b21368", "65734e85e6a8427a", "4c4cdb2f0d4eec05", 16),
+    "unsupported-mechanism": ("7365c993f129ba1a", "984ef9c189dfa288", "01c45530b86c2b50", 33),
+    "validated-cache-reuse": ("000d7e03a5297e4e", "b3454fd3a120c614", "0c47717eadc38841", 28),
+}
+
+PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {
+    "blocked-html-pdf-fallback": ("1cd71cdaa7b0b75c", 45),
+    "broad-constraints": ("13c97d5b450f42d9", 58),
+    "comparative-conflict": ("4300aed5bf981011", 43),
+    "comparison-target-names-both-products": ("3ec645826328d887", 33),
+    "count-unit-period": ("98ee4d9face9dfed", 64),
+    "decision-context-late-candidate": ("1cd71cdaa7b0b75c", 45),
+    "empty-but-clean": ("4c04aa44cdae0546", 67),
+    "evidence-words-not-on-page-rejected": ("4300aed5bf981011", 43),
+    "extra-pass-finds-nothing": ("441cde5a6daccc68", 65),
+    "extra-pass-recovers-missing-target": ("9e9e0f6bedf8126d", 73),
+    "extra-pass-redrafts-the-gaining-part": ("cc140d8a6608095f", 68),
+    "figure-not-on-page-dropped": ("4300aed5bf981011", 43),
+    "forecast-versus-actual-kept-apart": ("441cde5a6daccc68", 65),
+    "maker-notes-vs-relay": ("6fb5d6e45c766113", 36),
+    "memory-is-not-read": ("2f97159ff35b43a3", 64),
+    "missing-target-triggers-one-extra-pass": ("44a14f886a7379ff", 72),
+    "non-constraint-answer": ("4300aed5bf981011", 43),
+    "one-part-question": ("3ec645826328d887", 33),
+    "prose-only-question": ("74b50a3718c617d5", 40),
+    "purchase-year-empty-period": ("e64b199e8ba9f0b8", 32),
+    "relative-period-resolved": ("6fb5d6e45c766113", 36),
+    "report-relay-labelled-as-relay": ("4390264a9c4745ea", 44),
+    "report-scope-corrected-to-all-segments": ("3fd0a0e4474ecc7a", 42),
+    "review-unavailable": ("4300aed5bf981011", 43),
+    "revision-noted": ("4300aed5bf981011", 43),
+    "same-work-mirror": ("4300aed5bf981011", 43),
+    "scoped-redraft-after-a-named-defect": ("32e7f824f1a0c23c", 49),
+    "scoped-review-invalid-reply-falls-back": ("32e7f824f1a0c23c", 49),
+    "single-subject-spellings": ("9ea917f9bf5ae908", 34),
+    "statement-check-failure-keeps-sentences": ("4300aed5bf981011", 43),
+    "two-subjects-one-value": ("3ec645826328d887", 33),
+    "two-versions-one-target": ("3ec645826328d887", 33),
+    "unattributed-relay-prose": ("3ec645826328d887", 33),
+    "unsupported-mechanism": ("4300aed5bf981011", 43),
+    "validated-cache-reuse": ("a0eccf4e4860d113", 42),
+}
+
+
+def test_the_pins_cover_every_row_of_the_manifest() -> None:
+    rows = {entry.case_id for entry in REPLAY_CASE_MANIFEST}
+    assert set(PINNED_REQUEST_DIGESTS) == rows
+    assert set(PINNED_EVENT_DIGESTS) == rows
+
+
+@pytest.mark.parametrize("case_id", sorted(PINNED_REQUEST_DIGESTS))
+def test_every_request_and_event_of_every_replay_row_is_pinned(
+    tmp_path: Path, case_id: str
+) -> None:
+    run = replay_run(case_id, tmp_path)
+
+    assert (
+        request_digests(list(run.replay.completer.packet_sequence))
+        == PINNED_REQUEST_DIGESTS[case_id]
+    )
+    assert event_digest(run) == PINNED_EVENT_DIGESTS[case_id]
