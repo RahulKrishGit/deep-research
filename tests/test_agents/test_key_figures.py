@@ -164,6 +164,35 @@ def test_key_figures_measure_rule() -> None:
     ]
 
 
+def test_a_note_topics_row_is_labelled_by_the_notes_short_subject_not_its_question() -> None:
+    """Final review P3-1: a research note's target measure is its whole question
+    (``reader_notes._note_topic``), so a row it answered printed "Item · {whole question}".
+    The label takes the note topic's title without "Your note: ", trimmed; the target the
+    agents read keeps its measure."""
+    question = "Which San Jose cafés known for lattes also serve well-reviewed pastries?"
+    note_target = _target("note-n1-target-01", "note-n1", question)
+    note_topic = _topic("note-n1", note_target).model_copy(
+        update={"title": f"Your note: {question.removesuffix('?').lower()}"})
+    short_topic = _topic("note-n2", _target("note-n2-target-01", "note-n2", "pastries at the cafés?")).model_copy(
+        update={"title": "Your note: pastries at the  cafés."})
+    plan = ReportComposition(question="q", session_id="s", sub_topics=[
+        _topic("topic-01", _target("topic-01-target-01", "topic-01", "aggregate rating")),
+        note_topic, short_topic,
+    ])
+
+    assert _labels(
+        plan,
+        _fact("K001", subject="Bijan Bakery", target_ids=("note-n1-target-01",)),
+        _fact("K002", subject="Bijan Bakery", target_ids=("note-n2-target-01",)),
+        _fact("K003", subject="Bijan Bakery", target_ids=("topic-01-target-01",)),
+    ) == [
+        "Bijan Bakery \u00b7 which san jose caf\u00e9s known for lattes",
+        "Bijan Bakery \u00b7 pastries at the caf\u00e9s",
+        "Bijan Bakery \u00b7 aggregate rating",
+    ]
+    assert note_target.measure == question  # the target the agents read is unchanged
+
+
 def test_key_figure_labels_name_the_item_never_a_snippet() -> None:
     plan = ReportComposition(question="q", session_id="s")
     # D40: with no named item -- no subject, or one that starts with a pronoun -- the

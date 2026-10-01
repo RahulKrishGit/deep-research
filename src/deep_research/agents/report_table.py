@@ -29,6 +29,8 @@ from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.verified_facts import same_organisation
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
+    NOTE_TOPIC_TITLE_PREFIX,
     EarlierEdition,
     FactRow,
     Finding,
@@ -37,6 +39,7 @@ from deep_research.utils.types import (
     ReportComposition,
     ReportStatement,
     ReportTable,
+    SubTopic,
     TableCell,
     TableEntry,
 )
@@ -62,6 +65,10 @@ _RECOMMENDED_BY_COLUMN = "Recommended by"
 _KEY_FIGURE_COLUMNS = ["What", "Figure", "Source"]
 #: ``verified_facts.fact_rows``' measure for a figure no planned target or unit names.
 _STATED_FIGURE = "stated figure"
+#: A note topic's label in the Key figures table: at most this many characters, cut on a
+#: word boundary, so a planner-sized measure ("battery storage power capacity added")
+#: and a note's subject read alike.
+_NOTE_MEASURE_CHARS = 40
 #: A value's shape (spec §7.4 item 3): each run of digits, dots and commas reads ``#``.
 _VALUE_NUMBERS = re.compile(r"[\d.,]+")
 _OPTIONS_CAPTION = (
@@ -752,6 +759,20 @@ def _capitalised(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
+def _note_topic_measure(topic: SubTopic) -> str:
+    """Final review P3-1: a research note's own targets carry the note's whole question as
+    their measure (``reader_notes._note_topic``), which is no label for a table cell. Its
+    topic's title without the "Your note: " prefix names the same subject: whitespace
+    normalised, trailing punctuation dropped, cut at ``_NOTE_MEASURE_CHARS`` on a word
+    boundary. ``""`` when nothing is left."""
+    text = " ".join(topic.title.split()).removeprefix(NOTE_TOPIC_TITLE_PREFIX).rstrip(" .?!:;,")
+    if len(text) > _NOTE_MEASURE_CHARS:
+        cut = text[: _NOTE_MEASURE_CHARS + 1]
+        boundary = cut.rfind(" ")
+        text = (cut[:boundary] if boundary > 0 else text[:_NOTE_MEASURE_CHARS]).rstrip(" .?!:;,")
+    return text
+
+
 def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
     """Spec §7.4 item 2: read the row by the sub-topic owning the most of its
     planned targets (the earlier in plan order on a tie), and take that
@@ -759,7 +780,8 @@ def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
     set, else its first such target; a row answering no planned target keeps
     ``row.measure``. ``row.measure`` itself is the first answered target in
     sorted id order (``verified_facts.fact_rows``), which can name another
-    sub-topic's measure."""
+    sub-topic's measure. A note's own topic (``note-{id}``) is labelled by its
+    short title instead (``_note_topic_measure``); the target keeps its measure."""
     wanted = set(row.target_ids)
     owning = [
         (index, [target for target in topic.evidence_targets if target.target_id in wanted])
@@ -768,7 +790,12 @@ def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
     owning = [(index, targets) for index, targets in owning if targets]
     if not owning:
         return row.measure
-    _, targets = max(owning, key=lambda pair: (len(pair[1]), -pair[0]))
+    index, targets = max(owning, key=lambda pair: (len(pair[1]), -pair[0]))
+    topic = composition.sub_topics[index]
+    if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX):
+        short = _note_topic_measure(topic)
+        if short:
+            return short
     quantity = next((target for target in targets if target.unit_dimension is not None), None)
     return (quantity or targets[0]).measure
 
