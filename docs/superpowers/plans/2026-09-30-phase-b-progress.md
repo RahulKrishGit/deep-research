@@ -163,14 +163,14 @@ How Task 11 builds it in `web/components/BriefSpine.tsx` (review 1's P1-1):
 - **O4 — Phase C's plan is in review; B anchors on its current text (`bd48725c`).**
   - **Anchors.** Simulated D → A → C → B on an export of `73b4d7a6`, every B anchor holds exactly once (Task 1 Step 2's Expected line). That is after two re-anchors in Task 6: `tests/test_imports.py`'s line and the `graph/nodes.py` import (review 1, P1-2 and P2-4).
   - **C's pending revisions.** C's review asks for three: the request-count wording of its Expected lines, `noteCaption`'s deletion (`web/lib/notes.ts`, `web/test/notes.test.ts`) and `web/README.md`'s `capture:visual` line. None touches a B anchor: B edits neither notes file, and B no longer edits the `capture:visual` line (Task 7; its own bullet names the captures). A later C revision that edits any other file B anchors on may need Task 1 Step 2 again; it stops on any anchor moved.
-  - **Expected lines C shifts (review 1, P2-3).** These were observed on D + A + C:
-    - Task 1 Step 3's pins: `planner` `55c1f86bac40` and `report_writer` `f11d61b869d9` (C's), `source_evaluator` `cc5a310b0aa0` and `evidence_verifier` `4a3d56fab932` (unchanged). Also F0/V0 `33` / `277` and L0/L1 `76` / `17`.
+  - **Expected lines C shifts (review 1, P2-3).** These were observed on D + A + C with C's plan at `bd48725c`; where C's revision `c0951e35` changes a value, the line gives that revision's value and says so:
+    - Task 1 Step 3's pins: `planner` `55c1f86bac40` and `report_writer` `f11d61b869d9` (C's), `source_evaluator` `cc5a310b0aa0` and `evidence_verifier` `4a3d56fab932` (unchanged). Also F0/V0 `33` / `276` (`277` on `bd48725c`; `c0951e35` deletes `noteCaption`'s `notes.test.ts` case) and L0/L1 `76` / `17`; `P0` is `5069` after `c0951e35` (C's own count).
     - Task 2 Step 5's planner move, `55c1f86bac40 -> 75d84b30f360`, and Task 5 Step 5's, `f11d61b869d9 -> c4082e94159e`.
     - Task 2 Step 6, `405 passed`, unchanged. Task 5 Step 6, `288 passed`, now with C's `test_report_bottom_line.py` too: `312 passed`. Task 6 Step 5, `256 passed`. Task 7 Step 6, `257 passed`.
     - Task 8 Step 2's counts are unchanged: C changes the sentence counts inside a pass's last, bottom-line event (7 rather than 8 in either case's first pass, 5 rather than 6 in the redraft), not how many events arrive. No e2e hold point or capture reads that event.
     - Task 5's `test_the_report_written_event_is_published_live` asserts the sequence `[(1, 0, 0.0), (1, 1, 0.5)]`, which depends on `_run_bottom_line`'s early return that C rewrites. It holds on D + A + C (Task 5 Step 4's `4 passed`). On any other sequence, stop and report it.
   - **Two failures that come from the export, not from C or B.**
-    - The export applies C's blocks but not C's re-pin steps, so its pins and its `PINNED_RUN_DIGESTS` were still D + A's. With C's digests (`593379964423addd`/`46` and `372fa419f195289b`/`29`), both byte-identical runs read the same with B applied, so B keeps every request byte-identical on C.
+    - The export applies C's blocks but not C's re-pin steps, so its pins and its `PINNED_RUN_DIGESTS` were still D + A's. C's revision `c0951e35` pins the digests `d92891c23a2cfe2e`/`46` and `9ac8c34e25224206`/`29`. On `bd48725c`, whose digests were `593379964423addd` and `372fa419f195289b`, both byte-identical runs read the same with and without B, so B keeps every request byte-identical on C.
     - `test_note_outcomes.py`'s subprocess imported the main checkout's package. With `PYTHONPATH=src` it passes with B applied.
 - **O5 — Playwright was not run in planning** (dispatch: no research session). Tasks 12–13's Playwright and capture Expected lines are reasoned from the planning capture and the Vitest runs; each is marked **[not run in planning]**. Planning did run one offline `capture:events` against a replay server before applying that rule (Evidence), and review round 1 ran Task 8's capture in-process (TestClient, network denied, offline credentials), as pytest's replay tests do.
 - **O6 — The latency workstream (D38).**
@@ -301,8 +301,9 @@ Expected:
 
 What planning observed on `73b4d7a6` with D, A and C applied:
 - Pins: `planner` `55c1f86bac40` and `report_writer` `f11d61b869d9` (the values C's re-pins leave), `source_evaluator` `cc5a310b0aa0`, `evidence_verifier` `4a3d56fab932`.
-- `33` / `277`; `76` and `17`.
-- `P0` was not observed on that tree; it was `5017 passed` on D + A.
+- `33` / `276` with C's revision `c0951e35`, which deletes `noteCaption`'s `notes.test.ts` case (planning observed `277` with C at `bd48725c`); `76` and `17`.
+- `P0`: `5069` after C (`c0951e35`'s own count); planning observed `5017 passed` on D + A.
+- The absolute D + A + C Vitest totals in Tasks 9–11 are for `c0951e35`; planning observed each one higher with C at `bd48725c`.
 
 Use what this step prints.
 
@@ -5392,7 +5393,7 @@ export function toRunEvent(event: ResearchEvent): RunEvent { return { type: even
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  3 passed (3)`, `Tests  58 passed (58)`; `F0 + 1` files and `V0 + 16` tests passed (this task's 15 and Task 7's proxy test; planning, on D + A + C: `34` / `293`); `typecheck exit 0`.
+Expected: `Test Files  3 passed (3)`, `Tests  58 passed (58)`; `F0 + 1` files and `V0 + 16` tests passed (this task's 15 and Task 7's proxy test; on D + A + C: `34` / `292`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -6417,7 +6418,7 @@ export function ReviewingLines({ body, first }: { body: Extract<BriefBody, { kin
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  3 passed (3)`, `Tests  34 passed (34)`; `F0 + 4` files and `V0 + 50` tests (planning, on D + A + C: `37` / `327`); `typecheck exit 0`.
+Expected: `Test Files  3 passed (3)`, `Tests  34 passed (34)`; `F0 + 4` files and `V0 + 50` tests (on D + A + C: `37` / `326`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -7446,7 +7447,7 @@ with
 (cd web && npm run -s typecheck; echo "typecheck exit $?")
 ```
 
-Expected: `Test Files  4 passed (4)`, `Tests  40 passed (40)` (with Phase D's stopped-stage tests and D39's three); `F0 + 4` files and `V0 + 61` tests (planning, on D + A + C: `37` / `338`); `typecheck exit 0`.
+Expected: `Test Files  4 passed (4)`, `Tests  40 passed (40)` (with Phase D's stopped-stage tests and D39's three); `F0 + 4` files and `V0 + 61` tests (on D + A + C: `37` / `337`); `typecheck exit 0`.
 
 - [ ] **Step 5: Commit**
 
@@ -8345,7 +8346,7 @@ git commit -m "docs(design): each step's brief, the two loops, the loop route's 
 .venv/Scripts/python.exe -m pytest -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config 2>&1 | tail -1
 ```
 
-Expected: `P0 + 40 passed, 2 deselected` and nothing failed (planning: `5057 passed`, from `5017`).
+Expected: `P0 + 40 passed, 2 deselected` and nothing failed (planning: `5057 passed`, from `5017`, on D + A; after C's `c0951e35`, `P0` is `5069`, so `5109`).
 
 - [ ] **Step 2: The web**
 
@@ -8374,7 +8375,7 @@ netstat -ano | grep -E ':(8010|3010|3011) .*LISTENING'
 (cd web && VISUAL_CHECKPOINT=phase-b-final npx playwright test --project=visual 2>&1 | tail -2)
 ```
 
-Expected: nothing; `L0 + 12 passed`; `L1 + 6 passed`.
+Expected: nothing; `L0 + 12 passed`; `L1 + 6 passed`. The report captures are Phase C's: with C at `c0951e35` the default case's Key figures prints five rows labelled by source, with no "Showing…" caption (C's D40). That is C's, not a B change.
 
 No commit: nothing changed.
 
