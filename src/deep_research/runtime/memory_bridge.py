@@ -14,7 +14,7 @@ dependency on the tool layer.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 from uuid import uuid4
 
@@ -72,6 +72,40 @@ class LongTermMemoryBridge:
         any exception into a failed ``ToolResult``, which is what an agent
         must see when a write did not land.
         """
+        entry = self._entry(content, metadata)
+        if not await self._memory.save(entry):
+            raise RuntimeError(
+                "long-term memory is unavailable, so the finding was not "
+                "stored"
+            )
+        return entry.entry_id
+
+    async def save_many(
+        self,
+        findings: Sequence[tuple[str, Mapping[str, JsonValue]]],
+    ) -> list[str]:
+        """Store several findings in one write; return their entry ids in order.
+
+        Latency audit O2: the entries are exactly the ones ``save`` builds, one
+        by one, and the store embeds them in one batch and upserts them in one
+        call. Any entry the store refuses fails the whole call, so a caller
+        that must record each finding's own failure writes them one by one
+        instead.
+        """
+        entries = [self._entry(content, metadata) for content, metadata in findings]
+        if await self._memory.save_many(entries) != len(entries):
+            raise RuntimeError(
+                "long-term memory is unavailable, so the findings were not "
+                "stored"
+            )
+        return [entry.entry_id for entry in entries]
+
+    def _entry(
+        self,
+        content: str,
+        metadata: Mapping[str, JsonValue],
+    ) -> MemoryEntry:
+        """The one ``MemoryEntry`` a tool-supplied finding becomes."""
         payload: dict[str, Any] = {
             "entry_id": uuid4().hex,
             "content": content,
@@ -86,19 +120,12 @@ class LongTermMemoryBridge:
                 payload[key] = value
 
         try:
-            entry = MemoryEntry.model_validate(payload)
+            return MemoryEntry.model_validate(payload)
         except ValidationError as error:
             raise ValueError(
                 "the finding could not be stored in long-term memory "
                 "because its metadata was rejected"
             ) from error
-
-        if not await self._memory.save(entry):
-            raise RuntimeError(
-                "long-term memory is unavailable, so the finding was not "
-                "stored"
-            )
-        return entry.entry_id
 
     async def query(
         self,

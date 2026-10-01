@@ -27,14 +27,18 @@ sub-topic research and verification batches really do run concurrently (Task
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from math import isfinite
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from deep_research.observability.metrics import LLMOperation
 from deep_research.utils.types import (
     CallAttemptTelemetry,
+    CallRecordTelemetry,
     OperationTelemetry,
     RunTelemetry,
     StageTelemetry,
@@ -45,7 +49,9 @@ if TYPE_CHECKING:  # pragma: no cover - import cost only, never a cycle
 
 __all__ = [
     "RunTelemetryCollector",
+    "call_label",
     "cap_key_for",
+    "current_call_label",
     "render_telemetry_advice",
     "render_telemetry_line",
 ]
@@ -96,6 +102,29 @@ _NEAR_CAP_PERCENT = 90
 _LOOP_LAG_BLOCK_SECONDS = 5.0
 
 
+# The operation name a caller bound around its provider call (latency audit
+# O8): ``record_call`` reads it, so a stage's per-call records say which of an
+# agent's calls was slow without any provider signature changing.
+_CALL_LABEL: ContextVar[str | None] = ContextVar(
+    "deep_research_call_label", default=None
+)
+
+
+@contextmanager
+def call_label(label: str) -> Iterator[None]:
+    """Name the provider calls made inside this block, for the call records."""
+    token = _CALL_LABEL.set(label)
+    try:
+        yield
+    finally:
+        _CALL_LABEL.reset(token)
+
+
+def current_call_label() -> str | None:
+    """The operation name bound around the call being recorded, if any."""
+    return _CALL_LABEL.get()
+
+
 def cap_key_for(agent: str | None, operation: LLMOperation) -> str:
     """The config key that bounds one provider call's output tokens."""
     if operation == "react_tool_turn":
@@ -123,6 +152,7 @@ class _StageAccumulator:
     slowest_seconds: float = 0.0
     operations: dict[str, _OperationAccumulator] = field(default_factory=dict)
     slowest_call_attempts: tuple[CallAttemptTelemetry, ...] = ()
+    records: list[CallRecordTelemetry] = field(default_factory=list)
 
 
 class RunTelemetryCollector:
@@ -135,6 +165,8 @@ class RunTelemetryCollector:
     """
 
     def __init__(self) -> None:
+        # The zero of every call record's ``start_offset_s`` (latency audit O8).
+        self._started_at = perf_counter()
         self._lock = threading.Lock()
         self._calls_in_flight = 0
         self._peak_calls_in_flight = 0
@@ -263,9 +295,23 @@ class RunTelemetryCollector:
         ``attempts`` is this call's own per-transport-attempt records; the
         stage keeps only the attempts of whichever call is currently its
         slowest, since that is the only call the Telemetry line names.
+
+        Each call is also kept as one ``CallRecordTelemetry`` on its stage
+        (latency audit O8): the operation name its caller bound
+        (``call_label``), when it started, how long it took and its output and
+        reasoning tokens.
         """
         stage_name = agent or UNATTRIBUTED_AGENT
         cap_key = cap_key_for(agent, operation)
+        record = CallRecordTelemetry(
+            label=current_call_label() or operation,
+            start_offset_s=round(
+                max(perf_counter() - seconds - self._started_at, 0.0), 1
+            ),
+            seconds=round(max(seconds, 0.0), 1),
+            output_tokens=max(output_tokens, 0),
+            reasoning_tokens=max(reasoning_tokens, 0),
+        )
         with self._lock:
             self._input_tokens += input_tokens
             self._cached_input_tokens += cached_input_tokens
@@ -276,6 +322,7 @@ class RunTelemetryCollector:
                 self._stages[stage_name] = stage
             stage.calls += 1
             stage.seconds += seconds
+            stage.records.append(record)
             if seconds > stage.slowest_seconds:
                 stage.slowest_seconds = seconds
                 stage.slowest_call_attempts = tuple(attempts)
@@ -311,6 +358,7 @@ class RunTelemetryCollector:
                         for cap_key, usage in sorted(stage.operations.items())
                     ),
                     slowest_call_attempts=stage.slowest_call_attempts,
+                    call_records=tuple(stage.records),
                 )
                 for agent, stage in sorted(self._stages.items())
             )

@@ -48,6 +48,16 @@ _CONTENT_TYPE_FORMATS = {
     "text/markdown": "markdown",
     "text/plain": "text",
 }
+# Suffixes the acquisition policy sends to this reader (``_required_reader``)
+# that no parser here reads. A remote source whose own path ends in one is
+# refused before any request (latency audit O11), with the error type and
+# message its download would have ended in: the download was the whole cost of
+# learning that. Two things differ: the refusal comes before any transport
+# error the download could have met, and its details name the suffix with an
+# empty content type, since nothing was fetched. Only one case could have read
+# differently: a server that answers such a URL with a readable format, by its
+# content type or a redirect.
+_UNPARSED_SUFFIXES = frozenset({".doc", ".docx", ".xls", ".xlsx"})
 
 
 class DocumentReaderTool(BaseTool):
@@ -84,7 +94,12 @@ class DocumentReaderTool(BaseTool):
         chunk_chars: int = 8000,
         csv_rows_per_chunk: int = 100,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """``transport`` is the run's shared connection pool (latency audit O4):
+        each remote read still builds its own client, over it. ``None`` lets
+        each read's client build its own, as before; an injected ``client``
+        wins."""
         super().__init__(tracker)
         if (
             isinstance(timeout_s, bool)
@@ -119,6 +134,7 @@ class DocumentReaderTool(BaseTool):
         self._chunk_chars = chunk_chars
         self._csv_rows_per_chunk = csv_rows_per_chunk
         self._sleep = sleep
+        self._transport = transport
 
     async def _execute(self, context: ToolCallContext, **kwargs: Any) -> ToolExecution:
         source = kwargs.get("source")
@@ -129,6 +145,13 @@ class DocumentReaderTool(BaseTool):
                 recoverable=False,
             )
         source = source.strip()
+        if _is_remote(source) and _source_suffix(source) in _UNPARSED_SUFFIXES:
+            raise ToolExecutionError(
+                "unsupported document format",
+                error_type="unsupported_document_format",
+                recoverable=False,
+                details={"suffix": _source_suffix(source), "content_type": ""},
+            )
         content_type = ""
         resolved_source = source
         if _is_remote(source):
@@ -231,7 +254,9 @@ class DocumentReaderTool(BaseTool):
         if self._client is not None:
             return await self._get_remote(context, self._client, source)
         async with httpx.AsyncClient(
-            timeout=self._timeout_s, follow_redirects=True
+            timeout=self._timeout_s,
+            follow_redirects=True,
+            transport=self._transport,
         ) as client:
             return await self._get_remote(context, client, source)
 

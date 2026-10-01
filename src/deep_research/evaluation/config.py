@@ -81,13 +81,14 @@ _TARGET_REACT_TRANSPORT = {
     "openai": "openai_responses_tools_auto_v1",
 }
 
-# The thinking mode every evaluation run is executed under, target and judge
-# alike. The harness has no toggle for it — the evaluation block carries no
-# thinking knob — and the field exists so an artifact says which mode produced
-# its numbers. It participates in the production-parity comparison for the
-# same reason: a production declaration that names another mode describes a
-# configuration this harness cannot reproduce, so a run of it is an experiment
-# about that declaration rather than evidence for it.
+# The thinking mode the judge always runs under, and the target's unless the
+# ``agent`` command's ``--target-thinking-mode`` names another one for one
+# invocation (latency plan Task 19, audit O6: the researcher with thinking
+# disabled is measured on its controlled suite before any paired live run). The
+# evaluation block still carries no thinking knob. The mode participates in the
+# production-parity comparison: a production declaration that names another
+# mode than the run's target describes a configuration this run does not
+# reproduce, so the run is an experiment about it rather than evidence for it.
 RUNTIME_THINKING_MODE: ThinkingMode = "enabled"
 
 
@@ -371,9 +372,12 @@ class EvaluationRuntimeConfig(ContractModel):
     judge_model: str
     judge_reasoning_effort: ReasoningEffort
     judge_temperature: float | None
-    # Every evaluation case runs with thinking on; no case needs it off, so
-    # the field is deliberately single-valued rather than a free toggle.
+    # The judge always runs with thinking on, so the field is deliberately
+    # single-valued; it is also the target's mode unless the run overrode it.
     thinking_mode: Literal["enabled"]
+    target_thinking_mode: ThinkingMode = RUNTIME_THINKING_MODE
+    """The target's thinking mode: ``RUNTIME_THINKING_MODE`` unless the
+    ``agent`` command's ``--target-thinking-mode`` set another one."""
     embedding_provider: EmbeddingProviderName
     embedding_model: str
     dataset_name: str
@@ -413,6 +417,7 @@ def build_runtime_config(
     now: datetime,
     git: GitMetadata,
     production_parity: bool | None = None,
+    target_thinking_mode: ThinkingMode | None = None,
 ) -> EvaluationRuntimeConfig:
     """Resolve settings plus CLI overrides into one frozen runtime config.
 
@@ -457,7 +462,8 @@ def build_runtime_config(
     # reproduces, and labelling it production parity would report an experiment
     # about the shipped configuration as evidence for it.
     production = settings.llm.resolve_for(agent_name)
-    experiment_only = production.thinking_mode != RUNTIME_THINKING_MODE or (
+    target_mode = target_thinking_mode or RUNTIME_THINKING_MODE
+    experiment_only = production.thinking_mode != target_mode or (
         profile.source != "production"
         and (
             profile.model != production.model
@@ -490,21 +496,24 @@ def build_runtime_config(
         if evaluation.embedding_model is not None
         else settings.llm.embedding_model
     )
-    configuration_fingerprint = fingerprint(
-        {
-            "application": settings.model_dump(mode="json"),
-            "target_model": profile.model,
-            "target_reasoning_effort": profile.reasoning_effort,
-            "target_profile_source": profile.source,
-            "target_react_transport": target_react_transport(
-                settings.llm.provider
-            ),
-            "thinking_mode": RUNTIME_THINKING_MODE,
-            "dataset_version": evaluation.dataset_version,
-            "rubric_version": evaluation.rubric_version,
-            "package_version": EVALUATION_PACKAGE_VERSION,
-        }
-    )
+    fingerprinted: dict[str, JsonValue] = {
+        "application": settings.model_dump(mode="json"),
+        "target_model": profile.model,
+        "target_reasoning_effort": profile.reasoning_effort,
+        "target_profile_source": profile.source,
+        "target_react_transport": target_react_transport(
+            settings.llm.provider
+        ),
+        "thinking_mode": RUNTIME_THINKING_MODE,
+        "dataset_version": evaluation.dataset_version,
+        "rubric_version": evaluation.rubric_version,
+        "package_version": EVALUATION_PACKAGE_VERSION,
+    }
+    if target_mode != RUNTIME_THINKING_MODE:
+        # Only a run that changed the target's mode names it, so every other
+        # run keeps the fingerprint it had before the toggle existed.
+        fingerprinted["target_thinking_mode"] = target_mode
+    configuration_fingerprint = fingerprint(fingerprinted)
     judge_configuration_fingerprint = fingerprint(
         {
             "provider": settings.llm.provider,
@@ -539,6 +548,7 @@ def build_runtime_config(
         judge_reasoning_effort=judge_effort,
         judge_temperature=evaluation.judge_temperature,
         thinking_mode=RUNTIME_THINKING_MODE,
+        target_thinking_mode=target_mode,
         embedding_provider=resolved_embedding_provider,
         embedding_model=resolved_embedding_model,
         dataset_name=resolved_dataset_name,
@@ -590,7 +600,7 @@ def target_llm_config(
             or resolved.reasoning_effort != runtime.target_reasoning_effort
             or (
                 runtime.release_evidence
-                and resolved.thinking_mode != runtime.thinking_mode
+                and resolved.thinking_mode != runtime.target_thinking_mode
             )
         ):
             raise ValueError(
@@ -598,7 +608,7 @@ def target_llm_config(
                 f"configured llm for {runtime.agent_name}: this run was "
                 f"frozen at {runtime.target_model}/"
                 f"{runtime.target_reasoning_effort}/"
-                f"thinking {runtime.thinking_mode} and production now "
+                f"thinking {runtime.target_thinking_mode} and production now "
                 f"resolves {resolved.model}/{resolved.reasoning_effort}/"
                 f"thinking {resolved.thinking_mode}"
             )
@@ -608,7 +618,7 @@ def target_llm_config(
             "model": runtime.target_model,
             "model_overrides": {},
             "reasoning_effort": runtime.target_reasoning_effort,
-            "thinking_mode": runtime.thinking_mode,
+            "thinking_mode": runtime.target_thinking_mode,
         }
     )
 

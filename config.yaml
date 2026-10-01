@@ -120,7 +120,13 @@ agents:
   sub_topic_concurrency: 10        # researcher sub-topics in flight
   source_scoring_concurrency: 6    # source-evaluator scoring batches in flight
   verifier_batch_size: 5           # Context and Statement Check items per call
-  verifier_concurrency: 16         # verification calls in flight
+  # Raised from 16 to 64 on 2026-09-30 (latency audit O1): a run's Context
+  # Check batches all start at once instead of queueing behind 16 slots, so
+  # the verifier takes about as long as its slowest call. The batches and
+  # their requests are unchanged; the audited runs peaked at 25-37 calls in
+  # flight with 0 rate limits. Lower it again if the run telemetry reports
+  # rate limits.
+  verifier_concurrency: 64         # verification calls in flight
   # S6: one background extraction call per admitted read, started the
   # moment the read is admitted rather than after the whole loop finishes.
   # DeepSeek flash allows 2,500 concurrent requests, so this bound is about

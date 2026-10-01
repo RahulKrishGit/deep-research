@@ -154,7 +154,19 @@ PINNED_PACKETS = {
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    "report_reviewer:ReportReviewDraft": "ba466f328de6eb67",
+    # Latency plan Task 8 (audit O9): the last review's packet moved because
+    # the forced last research turn is never asked (see
+    # tests/test_graph/test_reader_notes_replay.py); no answer is involved.
+    # Was "824e2b4aa04d2944".
+    # Merge of origin/main (the latency work) into notes-progress-report-stop: both
+    # moves above apply to this one packet. The last review reads the report the
+    # writer drafted (Phase C's moves, `824e2b4aa04d2944` -> `ba466f328de6eb67` on the
+    # branch) over the evidence a run that never asks its forced last research turn
+    # leaves (the latency plan's O9, `824e2b4aa04d2944` -> `a173c40737e32644` on main).
+    # With ``SKIP_FINAL_ANSWER_TURN`` put back to False the merged tree prints the
+    # branch's `ba466f328de6eb67` again; the three planner packets are unchanged.
+    # Moved `ba466f328de6eb67` (branch) / `a173c40737e32644` (main) -> `79717e2e3e6a9ae0`.
+    "report_reviewer:ReportReviewDraft": "79717e2e3e6a9ae0",
 }
 
 

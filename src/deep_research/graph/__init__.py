@@ -47,6 +47,7 @@ from deep_research.graph.note_outcomes import (
     report_note_lines,
 )
 from deep_research.graph.nodes import (
+    BatchReportPublisher,
     GraphNode,
     ReportPublisher,
     ReportReviewerLike,
@@ -154,6 +155,7 @@ __all__ = [
     "STEERING_NOTE_TEXT",
     "GraphConfigurationError",
     "GraphError",
+    "BatchReportPublisher",
     "GraphNode",
     "GraphResumeError",
     "GraphRun",

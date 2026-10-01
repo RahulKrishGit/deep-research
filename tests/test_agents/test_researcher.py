@@ -90,6 +90,8 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import (
+    HoldingCompleter,
+    LabelRecordingCompleter,
     ScriptedCompleter,
     TargetKeyedCompleter,
     finish,
@@ -4284,8 +4286,11 @@ async def test_the_researcher_respects_its_iteration_bound(
     async with tracker.session_span("session-1", "q"):
         outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
 
-    assert outcome.react.stop_reason == "max_iterations"
-    assert outcome.react.iterations == 2
+    # Latency audit O9: the second turn is the forced tool-free one, which the
+    # loop never asks, so the loop ends after the first turn, as finished.
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.iterations == 1
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -8611,3 +8616,263 @@ async def test_the_researcher_publishes_topic_and_tool_call_events_live_in_step_
     assert [call(e) for e in returned if e.event_type == "researcher.tool_call"] == [
         call(e) for e in tool_call_events(state.sub_topics[0], outcome.react)
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_live_tool_call_event_carries_its_lock_wait_and_run_time(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: each live ``researcher.tool_call`` carries the seconds
+    the call waited for the run's tool lock and the seconds its tool ran; the
+    post-loop rebuild (``tool_call_events``) keeps its old shape."""
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(), outputs=[_findings_draft()]
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "q"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    live = [event for event in received if event.event_type == "researcher.tool_call"]
+    assert len(live) == 2
+    for event in live:
+        assert isinstance(event.metadata["lock_wait_s"], float)
+        assert isinstance(event.metadata["duration_s"], float)
+        assert event.metadata["lock_wait_s"] >= 0.0
+        assert event.metadata["duration_s"] >= 0.0
+    for event in tool_call_events(state.sub_topics[0], outcome.react):
+        assert "lock_wait_s" not in event.metadata
+        assert "duration_s" not in event.metadata
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_splits_the_tail_after_the_loop(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: ``researcher.sub_topic.completed`` says where the time
+    after the loop went -- the wait for the loop's own page extractions, the
+    one round of owed re-asks and how many calls it asked, and the slowest page
+    -- so the post-loop tail can be sized from a run's own events."""
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    outcome = await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    metadata = completed.metadata
+    # One page extraction, then one owed round of MAX_OWED_BATCHES packets.
+    assert metadata["owed_calls"] == MAX_OWED_BATCHES
+    for key in ("extraction_wait_s", "owed_round_s", "slowest_page_s"):
+        assert isinstance(metadata[key], float)
+        assert metadata[key] >= 0.0
+        assert metadata[key] == round(metadata[key], 1)
+
+
+@pytest.mark.asyncio
+async def test_each_extraction_call_is_named_for_the_call_records(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: a page's own extraction and its owed re-asks carry
+    their own names in the run's call records."""
+    completer = LabelRecordingCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    assert completer.labels == [
+        "page_extraction",
+        *["owed_extraction"] * MAX_OWED_BATCHES,
+    ]
+
+
+def _owed_batch_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """One finding from the packet's first weak passage, and one that names a
+    read the run never admitted, so each batch admits one and rejects one."""
+    del schema
+    read_id, locator, _ = _packet_passage_for(_OWED_WEAK, messages[1].content)
+    kept = FindingDraft(
+        # The locator keeps the two batches' findings distinct, so the
+        # per-sub-topic fold cannot merge them into one.
+        content=f"A registrant files an annual return (passage {locator}).",
+        source_url=_OWED_URL,
+        source_title=_OWED_TITLE,
+        confidence=0.8,
+        read_id=read_id,
+        locator=locator,
+        snippet=_OWED_WEAK,
+        target_ids=[PLANNED_TARGET_ID],
+    )
+    return SubTopicFindingsDraft(
+        findings=[kept, kept.model_copy(update={"read_id": "read-never-admitted"})]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pages_owed_batches_are_asked_together_and_admitted_in_batch_order(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O3: one page's owed batches are in flight together, and
+    the page's findings, rejections and dispositions are the ones in-order
+    replies give, even when the second batch answers first."""
+
+    async def run(holds: list[float]) -> tuple[HoldingCompleter, AgentRun[ResearchFindings]]:
+        completer = HoldingCompleter(
+            decisions=_owed_decisions(),
+            outputs=[
+                SubTopicFindingsDraft(findings=[]),
+                _owed_batch_reply,
+                _owed_batch_reply,
+            ],
+            holds=holds,
+        )
+        outcome = await _run_owed_topic(
+            tracker,
+            completer,
+            body=_owed_bulk_body(),
+            selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+        )
+        return completer, outcome
+
+    def summary(outcome: AgentRun[ResearchFindings]) -> tuple[object, ...]:
+        return (
+            [finding.model_dump() for finding in outcome.result.findings],
+            [(error.error_type, error.details) for error in outcome.errors],
+            outcome.state_update["evidence_dispositions"],
+        )
+
+    _, in_order = await run([0.0, 0.0, 0.0])
+    held, second_first = await run([0.0, 0.2, 0.0])
+
+    first_batch, second_batch = held.windows[1], held.windows[2]
+    assert second_batch[0] < first_batch[1]
+    assert second_batch[1] < first_batch[1]
+    assert len(in_order.result.findings) == MAX_OWED_BATCHES
+    assert summary(second_first) == summary(in_order)
+
+
+
+@pytest.mark.asyncio
+async def test_the_loop_never_asks_its_forced_final_answer_turn(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O9: no researcher request ever carries the last-turn
+    instruction, and a loop that uses every other turn ends as finished."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search.", "web_search", '{"query": "qec 2025"}'),
+            use_tool("Search again.", "web_search", '{"query": "qec 2026"}'),
+        ],
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=4),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    assert len(completer.react_calls) == 2
+    assert not any(
+        "This is the last iteration" in call.messages[1].content
+        for call in completer.react_calls
+    )
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_two_loops_download_two_different_pages_at_once(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O4: the gate no longer holds every loop while one page
+    downloads; two loops reading different pages have both downloads in
+    flight together."""
+    in_flight = 0
+    peak = 0
+    body = (
+        f"<html><head><title>{QEC_READ.title}</title></head>"
+        f"<body><p>{QEC_PASSAGE}</p></body></html>"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            in_flight -= 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=body,
+            request=request,
+        )
+
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha", _ALPHA_URL),
+            "topic-02": _loop_decisions("topic-02", "Beta", _BETA_URL),
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=research_tools(
+            tracker,
+            search=_QuerySearchClient(
+                {
+                    "Alpha 2025": search_response(title="Alpha report", url=_ALPHA_URL),
+                    "Beta 2025": search_response(title="Beta report", url=_BETA_URL),
+                }
+            ),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    assert peak == 2
+    assert outcome.react.tool_calls == 4

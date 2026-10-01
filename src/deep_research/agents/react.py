@@ -11,8 +11,9 @@ import asyncio
 import inspect
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
+from time import perf_counter
 from typing import TypeAlias
 
 from pydantic import JsonValue
@@ -43,6 +44,11 @@ SufficiencyCallback: TypeAlias = Callable[[Sequence[ReActStep]], bool]
 ToolPolicyCallback: TypeAlias = Callable[
     [ReActDecision, Mapping[str, JsonValue]], object
 ]
+# ``(proposal_id, lock_wait_s, duration_s)`` for one ``use_tool`` decision
+# (latency audit O8): the seconds it waited for the caller's tool lock, and the
+# seconds its tool ran -- zero for a call the policy refused, answered from the
+# run's cache, or the budget stopped.
+ToolTimingCallback: TypeAlias = Callable[[str, float, float], None]
 
 # The tool name the loop records for the calls a spent budget never reached.
 # It is project-authored on purpose: the count of dropped calls is what the
@@ -237,6 +243,75 @@ def _unexecuted_remainder_step(
     )
 
 
+class ToolGate(asyncio.Lock):
+    """The run-wide gate every sub-topic loop's tool section passes (D9, as
+    amended on 2026-09-30 by latency audit O4).
+
+    D9 ran each call's whole tool section -- the policy's admission decision,
+    the tool's execution, and the reducer that commits the result to the run's
+    cache and ledger -- under one run-wide lock, so one slow fetch held every
+    topic. The gate keeps what that bought and drops what it cost:
+
+    * a call's policy decision, and its reducer, each run under the gate
+      itself, which is an ``asyncio.Lock``: the run's commit lock, so no two
+      loops' admissions or commits interleave;
+    * a call the policy names a flight key for (a read's URL) runs its whole
+      section -- decision, fetch, reducer -- under that key's own lock, so a
+      second loop wanting the same page waits for the first one's admission
+      and then finds it in the run's cache: one body, one download;
+    * the execution itself runs under neither, so calls on different pages,
+      and every search, overlap.
+
+    Being a lock, the gate goes wherever D9's lock went, under the same type.
+    One gate per run, never a module global.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._flights: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def flight(self, key: str | None) -> AsyncIterator[None]:
+        """Hold ``key``'s own lock for the block; no lock for ``None``."""
+        if key is None:
+            yield
+            return
+        lock = self._flights.setdefault(key, asyncio.Lock())
+        async with lock:
+            yield
+
+
+def _flight_key(
+    tool_policy: ToolPolicyCallback | None, decision: ReActDecision
+) -> str | None:
+    """The key the policy single-flights this call on, or ``None``.
+
+    Read before the call's section begins, from the same arguments the section
+    parses; a call whose arguments do not parse has no key, and its section
+    then reports the parse failure as it always did.
+    """
+    flight_key = getattr(tool_policy, "flight_key", None)
+    if not callable(flight_key):
+        return None
+    try:
+        tool_input = parse_tool_input(decision.tool_input_json)
+    except ValueError:
+        return None
+    key = flight_key(decision.tool_name or "", tool_input)
+    return key if isinstance(key, str) and key else None
+
+
+@asynccontextmanager
+async def _waited(
+    context: AbstractAsyncContextManager[object], waits: list[float]
+) -> AsyncIterator[None]:
+    """Enter ``context``, adding how long entering took to ``waits``."""
+    started = perf_counter()
+    async with context:
+        waits.append(perf_counter() - started)
+        yield
+
+
 def build_proposal_id(job_id: str, turn_index: int, batch_index: int) -> str:
     """Build a local proposal identity from loop coordinates.
 
@@ -349,6 +424,8 @@ async def run_react_loop(
     tool_lock: asyncio.Lock | None = None,
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
     propagate_provider_errors: bool = True,
+    on_tool_timing: ToolTimingCallback | None = None,
+    skip_final_answer_turn: bool = False,
 ) -> ReActRun:
     """Run think -> act -> observe until a stop condition fires.
 
@@ -366,11 +443,28 @@ async def run_react_loop(
     reached in one extra step, so a budget stop never hides work the provider
     asked for and did not get.
 
-    ``tool_lock`` is the caller's run-wide lock (D9). A ``use_tool``
-    decision's whole tool section — the policy's admission decision, the
-    execution, and ``after_action``'s reduction of the result into the run's
-    cache and ledger — runs under it, so two loops sharing one run can never
-    both admit the same page. The model turn is never inside it.
+    ``tool_lock`` is the caller's run-wide lock (D9). When it is a
+    ``ToolGate`` (D9 as amended by latency audit O4), a ``use_tool``
+    decision's policy decision and ``after_action``'s reduction of its result
+    into the run's cache and ledger each run under the gate itself; when the
+    policy names a flight key for the call (``flight_key(tool_name,
+    tool_input)``, a read's URL), its whole section runs under that key's own
+    lock, so two loops sharing one run can never both download or both admit
+    the same page, and the execution is under neither lock. A plain
+    ``asyncio.Lock`` keeps D9's original rule: the whole section under it. The
+    model turn is never inside the section.
+
+    ``on_tool_timing`` is told, for every ``use_tool`` decision, how long it
+    waited for the gate's locks and how long its tool ran (latency audit O8).
+    It only observes: nothing a model reads, and no step, depends on it.
+
+    The last of ``max_iterations`` turns is the one whose prompt tells the
+    model to answer without calling a tool (``render_react_messages``). With
+    ``skip_final_answer_turn`` the loop never asks it: a loop still running
+    after the turn before it ends there, as ``finished``, having made one
+    model call fewer (latency audit O9). Only a caller that reads no final
+    answer may set it; with ``max_iterations`` of 1 it changes nothing, since
+    that one turn is also the first.
     """
     if not agent_name.strip():
         raise ValueError("agent_name must not be blank")
@@ -390,8 +484,13 @@ async def run_react_loop(
     charged_tool_calls = 0
     cache_hits = 0
     iteration = 0
+    turn_limit = (
+        max_iterations - 1
+        if skip_final_answer_turn and max_iterations > 1
+        else max_iterations
+    )
 
-    while iteration < max_iterations and stop_reason is None:
+    while iteration < turn_limit and stop_reason is None:
         iteration += 1
         turn_steps: list[ReActStep] = []
 
@@ -408,20 +507,28 @@ async def run_react_loop(
                         await value
                 decisions = await decide(iteration, steps)
                 for position, decision in enumerate(decisions):
-                    # D9: one turn's tool section runs under the caller's
-                    # run-wide lock: the policy's admission decision, the
-                    # execution it allows, and the reducer that commits the
-                    # outcome to the run's cache and ledger. A sibling
-                    # loop's own decision therefore cannot slip between this
-                    # loop's download and the admission that makes it a
-                    # cache hit. The model turn above is deliberately
-                    # outside it, so loops still overlap where it matters.
-                    async with (
-                        tool_lock
-                        if tool_lock is not None
-                        and decision.action == "use_tool"
-                        else nullcontext()
-                    ):
+                    # D9 as amended (latency audit O4): with a ToolGate, a
+                    # read's whole section runs under its URL's own flight
+                    # lock, so a sibling loop wanting the same page cannot slip
+                    # between this loop's download and the admission that
+                    # makes it a cache hit; the policy decision and the reducer
+                    # each run under the gate itself, and the execution under
+                    # neither, so calls on different pages overlap. A plain
+                    # lock keeps D9's original rule, the whole section under
+                    # it. The model turn above is outside all of it.
+                    gated = tool_lock is not None and decision.action == "use_tool"
+                    gate = tool_lock if gated and isinstance(tool_lock, ToolGate) else None
+                    waits: list[float] = []
+                    if gate is not None:
+                        section: AbstractAsyncContextManager[object] = _waited(
+                            gate.flight(_flight_key(tool_policy, decision)), waits
+                        )
+                    elif gated and tool_lock is not None:
+                        section = _waited(tool_lock, waits)
+                    else:
+                        section = nullcontext()
+                    async with section:
+                        duration_s = 0.0
                         proposal_id = build_proposal_id(
                             local_job_id, iteration, position
                         )
@@ -502,9 +609,14 @@ async def run_react_loop(
                                     policy_result: ToolResult | None = None
                                     charge_budget = True
                                     if tool_policy is not None:
-                                        policy_value = await _policy_result(
-                                            tool_policy, decision, tool_input
-                                        )
+                                        async with (
+                                            _waited(gate, waits)
+                                            if gate is not None
+                                            else nullcontext()
+                                        ):
+                                            policy_value = await _policy_result(
+                                                tool_policy, decision, tool_input
+                                            )
                                         (
                                             allowed,
                                             policy_reason,
@@ -602,11 +714,16 @@ async def run_react_loop(
                                         stop_reason = "tool_budget_exhausted"
                                         budget_spent = True
                                     else:
-                                        tool_result = (
-                                            policy_result
-                                            if policy_result is not None
-                                            else await tool.execute(**tool_input)
-                                        )
+                                        if policy_result is not None:
+                                            tool_result = policy_result
+                                        else:
+                                            executed_at = perf_counter()
+                                            tool_result = await tool.execute(
+                                                **tool_input
+                                            )
+                                            duration_s = (
+                                                perf_counter() - executed_at
+                                            )
                                         tool_calls += 1
                                         charged_tool_calls += 1
                                         observation = _tool_observation(
@@ -649,9 +766,23 @@ async def run_react_loop(
                         if tool_policy is not None:
                             after_action = getattr(tool_policy, "after_action", None)
                             if callable(after_action):
-                                value = after_action(turn_steps[-1], tool_input)
-                                if inspect.isawaitable(value):
-                                    await value
+                                async with (
+                                    _waited(gate, waits)
+                                    if gate is not None
+                                    else nullcontext()
+                                ):
+                                    value = after_action(turn_steps[-1], tool_input)
+                                    if inspect.isawaitable(value):
+                                        await value
+                        if (
+                            on_tool_timing is not None
+                            and decision.action == "use_tool"
+                        ):
+                            on_tool_timing(
+                                proposal_id,
+                                round(sum(waits), 3),
+                                round(duration_s, 3),
+                            )
                         span.set_outputs(
                             {
                                 "agent_name": agent_name,
@@ -748,7 +879,12 @@ async def run_react_loop(
             stop_reason = "sufficient"
 
     if stop_reason is None:
-        stop_reason = "max_iterations"
+        # A loop that ran out of turns before the one it skipped ends as the
+        # skipped turn would have ended it: with the final answer it was told
+        # to give, which nothing downstream of this caller reads.
+        stop_reason = (
+            "finished" if turn_limit < max_iterations else "max_iterations"
+        )
 
     return ReActRun(
         agent_name=agent_name,

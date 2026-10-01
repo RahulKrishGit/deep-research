@@ -63,7 +63,11 @@ from deep_research.utils.types import (
     ScoredSource,
     SourceTemporal,
 )
-from tests.agent_fakes import ScriptedCompleter
+from tests.agent_fakes import (
+    HoldingCompleter,
+    LabelRecordingCompleter,
+    ScriptedCompleter,
+)
 from tests.evidence_fakes import figure, make_finding, make_read
 
 SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
@@ -2662,3 +2666,99 @@ async def test_statement_check_reports_each_settled_batch() -> None:
     assert sorted(len(labels) for labels, _ in reports) == [2, 5, 5]
     assert all(labels == keys for labels, keys in ((sorted(batch_labels), keys_) for batch_labels, keys_ in reports))
     assert sorted(label for labels, _ in reports for label in labels) == sorted(results)
+
+
+@pytest.mark.asyncio
+async def test_the_two_checks_name_their_calls_for_the_call_records(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: a Context Check and a Statement Check call carry their
+    own names in the run's call records, so a slow verifier call says which
+    check it was."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+    context = LabelRecordingCompleter(outputs=[_confirm_reply])
+    async with tracker.session_span("session-1", "question"):
+        await _evidence_verifier(tracker, context).run(
+            _state(raw_findings=[finding], read_records={read.read_id: read})
+        )
+
+    statements = LabelRecordingCompleter(outputs=[_confirm_statement_reply])
+    await check_statements(
+        statements,
+        [_statement_item("S01", "Wood Mackenzie states 18.9 GW.", _statement_finding("18.9"))],
+        question="How much storage?",
+    )
+
+    assert context.labels == ["context_check"]
+    assert statements.labels == ["statement_check"]
+
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_batchs_two_halves_are_asked_together(tracker: Tracker) -> None:
+    """Latency audit O10: the re-ask's two halves are in flight at once, and
+    every finding still gets the verdict its own half returned."""
+    read = make_read(_metrics_page(4), url="https://example.test/halves", title="Halves")
+    findings = [_metric_finding(read, i) for i in range(4)]
+    completer = HoldingCompleter(
+        outputs=[_output_limit_error(), _confirm_reply, _confirm_reply],
+        holds=[0.0, 0.2, 0.0],
+    )
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    first_half, second_half = completer.windows[1], completer.windows[2]
+    assert second_half[0] < first_half[1]
+    judged = outcome.state_update["verified_findings"]
+    assert [f.verification.status for f in judged] == ["verified"] * 4
+    assert outcome.state_update["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_halves_errors_are_recorded_in_half_order(tracker: Tracker) -> None:
+    """Both halves fail, the second first; the records still list the first
+    half's failure (two findings) before the second's (three)."""
+    read = make_read(_metrics_page(5), url="https://example.test/halves", title="Halves")
+    findings = [_metric_finding(read, i) for i in range(5)]
+    completer = HoldingCompleter(
+        outputs=[
+            _output_limit_error(),
+            ProviderTimeoutError("timed out"),
+            ProviderTimeoutError("timed out"),
+        ],
+        holds=[0.0, 0.2, 0.0],
+    )
+    agent = _evidence_verifier(tracker, completer)
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        outcome = await agent.run(state)
+
+    assert completer.windows[2][1] < completer.windows[1][1]
+    assert [
+        error.details["findings"] for error in outcome.state_update["errors"]
+    ] == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_statement_batchs_halves_are_asked_together() -> None:
+    finding = _statement_finding("18.9", "GW")
+    items = [
+        _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(1, 4)
+    ]
+    completer = HoldingCompleter(
+        outputs=[_output_limit_error(), _confirm_statement_reply, _confirm_statement_reply],
+        holds=[0.0, 0.2, 0.0],
+    )
+
+    results, errors = await check_statements(completer, items, question="How much storage?")
+
+    assert completer.windows[2][0] < completer.windows[1][1]
+    assert errors == []
+    assert sorted(results) == ["S01", "S02", "S03"]
+    assert all(verdict is not None and verdict.verdict == "consistent" for verdict in results.values())

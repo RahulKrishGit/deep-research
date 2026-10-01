@@ -12,7 +12,7 @@ import pytest
 
 from deep_research.agents import react as react_module
 from deep_research.agents.acquisition import ToolPolicyDecision
-from deep_research.agents.react import run_react_loop
+from deep_research.agents.react import ToolGate, run_react_loop
 from deep_research.agents.steps import ReActDecision, ReActRun, ReActStep
 from deep_research.agents.toolset import AgentToolset
 from deep_research.observability import TokenUsage, Tracker
@@ -1652,7 +1652,8 @@ async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorde
 
 
 # ---------------------------------------------------------------------------
-# The run-wide tool lock (D9, §7.2)
+# The run-wide tool lock (D9, §7.2), and the ToolGate that amends it
+# (latency audit O4)
 # ---------------------------------------------------------------------------
 
 
@@ -1689,17 +1690,39 @@ class _ProbeTool(BaseTool):
         del context, kwargs
         self._trace.enter("tool")
         try:
-            await asyncio.sleep(0)
+            # Long enough that a sibling loop's call can start meanwhile.
+            await asyncio.sleep(0.02)
             return ToolExecution(data={"ok": True}, output_summary={"ok": True})
         finally:
             self._trace.exit("tool")
 
 
 class _ProbePolicy:
-    """The loop's policy hooks, traced the way the tool is."""
+    """The loop's policy hooks, traced the way the tool is.
 
-    def __init__(self, trace: _SectionTrace) -> None:
+    ``key`` is the flight key the policy names for every call (``None``: the
+    call is not single-flighted), and ``order`` records each section's entry
+    and exit in the order they happened.
+    """
+
+    def __init__(
+        self,
+        trace: _SectionTrace,
+        *,
+        key: str | None = None,
+        order: list[str] | None = None,
+        label: str = "",
+    ) -> None:
         self._trace = trace
+        self._key = key
+        self._order = order if order is not None else []
+        self._label = label
+
+    def flight_key(
+        self, tool_name: str, tool_input: Mapping[str, object]
+    ) -> str | None:
+        del tool_name, tool_input
+        return self._key
 
     async def __call__(
         self,
@@ -1709,6 +1732,7 @@ class _ProbePolicy:
     ) -> ToolPolicyDecision:
         del decision, tool_input
         self._trace.enter("policy")
+        self._order.append(f"{self._label} policy")
         try:
             await asyncio.sleep(0)
             return ToolPolicyDecision()
@@ -1718,9 +1742,14 @@ class _ProbePolicy:
     async def after_action(
         self, step: ReActStep, tool_input: Mapping[str, object]
     ) -> None:
-        del step, tool_input
+        del tool_input
+        if step.action != "use_tool":
+            # A finish commits nothing: the reducer the gate guards is a tool
+            # call's.
+            return
         self._trace.enter("after")
         await asyncio.sleep(0)
+        self._order.append(f"{self._label} after")
         self._trace.exit("after")
 
 
@@ -1775,3 +1804,200 @@ async def test_the_tool_lock_serialises_only_the_tool_section(
     assert trace.peak["after"] == 1
     assert [run.tool_calls for run in (first, second)] == [1, 1]
     assert [run.stop_reason for run in (first, second)] == ["finished", "finished"]
+
+
+async def _probe_loops(
+    tracker: Tracker, *, key: str | None
+) -> tuple[_SectionTrace, list[str], list[ReActRun]]:
+    """Two loops, one tool call each, through one gate; their policies name
+    ``key`` as every call's flight key."""
+    trace = _SectionTrace(("decide", "policy", "tool", "after"))
+    order: list[str] = []
+    gate = ToolGate()
+
+    async def loop(label: str) -> ReActRun:
+        queue = [
+            use_tool(f"Probe for {label}.", "probe"),
+            finish(f"{label} is done.", f"{label} answer."),
+        ]
+
+        async def decide(
+            iteration: int, steps: Sequence[ReActStep]
+        ) -> tuple[ReActDecision, ...]:
+            del iteration, steps
+            trace.enter("decide")
+            try:
+                # A real model turn suspends; without the yield the two loops
+                # could not overlap here even if the loop allowed it.
+                await asyncio.sleep(0)
+                return (queue.pop(0),)
+            finally:
+                trace.exit("decide")
+
+        async with agent_scope(tracker):
+            return await run_react_loop(
+                agent_name="researcher",
+                tracker=tracker,
+                tools=AgentToolset([_ProbeTool(tracker, trace)], allowed=["probe"]),
+                decide=decide,
+                max_iterations=4,
+                tool_budget=4,
+                tool_policy=_ProbePolicy(trace, key=key, order=order, label=label),
+                tool_lock=gate,
+            )
+
+    runs = list(await asyncio.gather(loop("A"), loop("B")))
+    return trace, order, runs
+
+
+@pytest.mark.asyncio
+async def test_the_gate_overlaps_two_pages_but_never_two_decisions_or_commits(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O4: two loops' calls on different pages execute at once,
+    while their model turns overlap too; the policy's admission decisions, and
+    the reducers that commit results, still never run two at a time."""
+    trace, _, runs = await _probe_loops(tracker, key=None)
+
+    assert trace.peak["decide"] == 2
+    assert trace.peak["tool"] == 2
+    assert trace.peak["policy"] == 1
+    assert trace.peak["after"] == 1
+    assert [run.tool_calls for run in runs] == [1, 1]
+    assert [run.stop_reason for run in runs] == ["finished", "finished"]
+
+
+@pytest.mark.asyncio
+async def test_two_loops_on_one_page_run_its_section_one_after_the_other(
+    tracker: Tracker,
+) -> None:
+    """One body, one download: a second loop asking for the same page decides
+    only after the first one has committed what it read (D9's other half)."""
+    trace, order, runs = await _probe_loops(tracker, key="https://example.test/page")
+
+    assert trace.peak["tool"] == 1
+    first = order[0].split()[0]
+    second = "B" if first == "A" else "A"
+    assert order == [
+        f"{first} policy",
+        f"{first} after",
+        f"{second} policy",
+        f"{second} after",
+    ]
+    assert [run.tool_calls for run in runs] == [1, 1]
+
+
+# ---------------------------------------------------------------------------
+# Tool timings (latency audit O8)
+# ---------------------------------------------------------------------------
+
+
+class _SlowEchoTool(EchoTool):
+    """Echo, after a pause long enough to measure."""
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        await asyncio.sleep(0.05)
+        return await super()._execute(context, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_every_use_tool_decision_reports_its_lock_wait_and_run_time(
+    tracker: Tracker,
+) -> None:
+    """O8: ``on_tool_timing`` hears, for each tool call, how long it waited for
+    the tool lock and how long its tool ran. A call no tool ran reports no run
+    time, and a finish is not a tool call. (Thresholds leave room for the
+    Windows event loop, whose timers can fire up to one 15.6 ms tick early.)"""
+    lock = asyncio.Lock()
+    timings: list[tuple[str, float, float]] = []
+
+    async def hold_the_lock() -> None:
+        async with lock:
+            await asyncio.sleep(0.05)
+
+    holder = asyncio.create_task(hold_the_lock())
+    await asyncio.sleep(0)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([_SlowEchoTool(tracker)], allowed=["echo"]),
+            decide=_decider(
+                [
+                    use_tool("Echo once.", "echo", json.dumps({"value": "a"})),
+                    use_tool("Ask for a tool that is not offered.", "missing"),
+                    finish("Done.", "The answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=4,
+            tool_lock=lock,
+            on_tool_timing=lambda *timing: timings.append(timing),
+        )
+    await holder
+
+    assert run.stop_reason == "finished"
+    assert [proposal for proposal, _, _ in timings] == [
+        step.proposal_id for step in run.steps[:2]
+    ]
+    (_, waited, ran), (_, unknown_waited, unknown_ran) = timings
+    assert waited >= 0.02
+    assert ran >= 0.02
+    assert unknown_ran == 0.0
+    assert unknown_waited < 0.02
+
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_final_answer_turn_ends_the_loop_one_turn_early(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O9: with ``skip_final_answer_turn`` the loop never asks the
+    forced tool-free last turn; a loop still running ends as ``finished``."""
+    asked: list[int] = []
+
+    async def decide(
+        iteration: int, steps: Sequence[ReActStep]
+    ) -> tuple[ReActDecision, ...]:
+        del steps
+        asked.append(iteration)
+        return (use_tool(f"Echo {iteration}.", "echo", json.dumps({"value": "a"})),)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([EchoTool(tracker)], allowed=["echo"]),
+            decide=decide,
+            max_iterations=3,
+            tool_budget=5,
+            skip_final_answer_turn=True,
+        )
+
+    assert asked == [1, 2]
+    assert (run.stop_reason, run.iterations, run.tool_calls) == ("finished", 2, 2)
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_final_answer_turn_changes_nothing_for_one_turn(
+    tracker: Tracker,
+) -> None:
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([EchoTool(tracker)], allowed=["echo"]),
+            decide=_decider([finish("Done.", "The answer.")]),
+            max_iterations=1,
+            tool_budget=5,
+            skip_final_answer_turn=True,
+        )
+
+    assert (run.stop_reason, run.iterations, run.final_answer) == (
+        "finished",
+        1,
+        "The answer.",
+    )

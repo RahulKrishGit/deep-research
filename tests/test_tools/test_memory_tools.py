@@ -196,3 +196,66 @@ async def test_query_backend_failure_is_structured_and_marks_metric_failed(
     )
     assert metric.success is False
     assert metric.error_type == "RuntimeError"
+
+
+
+class _BatchMemory(FakeMemory):
+    """The tool's backend, with the batch write the bridge provides."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[tuple[str, Mapping[str, object]]]] = []
+
+    async def save_many(
+        self, findings: Sequence[tuple[str, Mapping[str, object]]]
+    ) -> list[str]:
+        self.batches.append(list(findings))
+        return [f"entry-{index}" for index, _ in enumerate(findings)]
+
+
+@pytest.mark.asyncio
+async def test_save_many_writes_a_batch_in_one_backend_call_and_one_span() -> None:
+    """Latency audit O2: several findings, one backend write, one tool span."""
+    memory = _BatchMemory()
+    tracker = RecordingTracker()
+    tool = SaveToMemoryTool(tracker, memory)  # type: ignore[arg-type]
+
+    result = await tool.save_many(
+        [("First finding", {"confidence": 0.9}), ("Second finding", {})]
+    )
+
+    assert result.success is True
+    assert result.data == {"entry_ids": ["entry-0", "entry-1"]}
+    assert memory.batches == [
+        [("First finding", {"confidence": 0.9}), ("Second finding", {})]
+    ]
+    assert memory.save_calls == []
+    assert tracker.calls == [
+        {"name": "save_to_memory", "inputs": {"finding_count": 2}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_many_refuses_the_whole_batch_for_one_invalid_finding() -> None:
+    memory = _BatchMemory()
+    tool = SaveToMemoryTool(RecordingTracker(), memory)  # type: ignore[arg-type]
+
+    result = await tool.save_many([("A finding", {}), ("   ", {})])
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "ValidationError"
+    assert memory.batches == []
+
+
+@pytest.mark.asyncio
+async def test_save_many_fails_as_a_result_on_a_backend_without_a_batch_write() -> None:
+    """A backend with only ``save`` makes the batch a failed result, never an
+    exception, so the finalizer's one-by-one fallback can take over."""
+    tool = SaveToMemoryTool(RecordingTracker(), FakeMemory())  # type: ignore[arg-type]
+
+    result = await tool.save_many([("A finding", {})])
+
+    assert result.success is False
+    assert result.error is not None
+    assert result.error.type == "AttributeError"

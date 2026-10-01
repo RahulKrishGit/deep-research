@@ -805,3 +805,81 @@ async def test_reader_joins_a_heading_whose_continuation_starts_lower_case(
         "The Effect of a New Filing Rule on the Decline "
         "of the Regional Housing Market"
     )
+
+
+
+@pytest.mark.asyncio
+async def test_a_remote_format_no_parser_reads_is_refused_before_any_request(
+    tracker,
+) -> None:
+    """Latency audit O11: a .doc/.docx/.xls/.xlsx URL fails exactly as its
+    download would have failed, without the download."""
+    requests: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, content=b"PK\x03\x04", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with tracker.session_span("session-1", "question"):
+            results = [
+                await DocumentReaderTool(tracker, client=client).execute(
+                    source=f"https://example.test/report.{suffix}"
+                )
+                for suffix in ("doc", "docx", "xls", "xlsx")
+            ]
+
+    assert requests == []
+    for result in results:
+        assert result.success is False
+        assert result.error is not None
+        assert (result.error.type, result.error.message) == (
+            "unsupported_document_format",
+            "unsupported document format",
+        )
+
+
+def test_every_document_suffix_the_policy_routes_here_is_parsed_or_refused_unread() -> None:
+    """The routing table and the reader agree: a suffix the acquisition policy
+    sends to ``document_reader`` is one a parser reads or one refused before
+    any download."""
+    from deep_research.agents.acquisition import _required_reader
+    from deep_research.tools.document_reader import (
+        _SUFFIX_FORMATS,
+        _UNPARSED_SUFFIXES,
+    )
+
+    routed = [
+        suffix
+        for suffix in (
+            "pdf", "csv", "json", "txt", "md", "markdown",
+            "doc", "docx", "xls", "xlsx", "html", "htm", "xhtml", "png",
+        )
+        if _required_reader(f"https://example.test/a.{suffix}") == "document_reader"
+    ]
+
+    assert routed == [
+        "pdf", "csv", "json", "txt", "md", "markdown", "doc", "docx", "xls", "xlsx",
+    ]
+    for suffix in routed:
+        assert (f".{suffix}" in _SUFFIX_FORMATS) != (f".{suffix}" in _UNPARSED_SUFFIXES)
+
+
+
+@pytest.mark.asyncio
+async def test_a_remote_read_goes_through_the_runs_pool(tracker) -> None:
+    """Latency audit O4: the reader builds its own client over the pool it was
+    given, and its request is the one it always sent."""
+    seen: list[str | None] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent"))
+        return httpx.Response(200, content=b"remote document", request=request)
+
+    async with tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(
+            tracker, transport=httpx.MockTransport(handler)
+        ).execute(source="https://example.test/report.txt")
+
+    assert result.success is True
+    assert seen == [f"python-httpx/{httpx.__version__}"]

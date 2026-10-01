@@ -1012,7 +1012,17 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # stamps each slot's final state on planner.planning.completed. No request
     # text changed; agents.prompts was untouched. Moved `55c1f86bac40` ->
     # `75d84b30f360`.
-    "planner": "75d84b30f360",
+    # Latency plan Task 4 (audit O8, 2026-09-30): each plan-side request is
+    # named for the run's call records (plan_draft, plan_repair, plan_review,
+    # plan_review_repair, plan_confirming_review) through call_label. Module
+    # code only; no request changed and agents.prompts was untouched. Moved `d1ba46ce147f` -> `584e0a466031`.
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `75d84b30f360` (branch) / `584e0a466031` (main)
+    # -> `d7e79b55f97a`.
+    "planner": "d7e79b55f97a",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1174,7 +1184,36 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # extraction read the notes' steering views. Without notes every request is
     # byte-identical; agents.prompts was untouched. Moved `a8c9528f0c20` ->
     # `b9caf536e3f0`.
-    "researcher": "b9caf536e3f0",
+    # Latency plan Task 2 (audit O8, 2026-09-30): each live
+    # researcher.tool_call carries lock_wait_s and duration_s, handed over by
+    # run_react_loop's on_tool_timing. Module code only; no request changed
+    # (the replay digest pins hold) and agents.prompts was untouched. Moved `a8c9528f0c20` -> `dff19f853f51`.
+    # Latency plan Task 3 (audit O8): researcher.sub_topic.completed carries
+    # the tail split (extraction_wait_s, owed_round_s, owed_calls,
+    # slowest_page_s) from ExtractionTimings. Module code only; no request
+    # changed. Moved `dff19f853f51` -> `916dcb5f8a48`.
+    # Latency plan Task 4 (audit O8): each extraction call is named for the
+    # run's call records (page_extraction, owed_extraction,
+    # cross_topic_extraction, dissent_extraction, extraction). Module code
+    # only; no request changed. Moved `916dcb5f8a48` -> `65eac8e0e2d5`.
+    # Latency plan Task 7 (audit O3): one page's owed batches are asked
+    # together and admitted in batch order afterwards. Module code only; every
+    # request is the one the one-after-another order sent. Moved `65eac8e0e2d5` -> `8beb0c1b45c5`.
+    # Latency plan Task 8 (audit O9): a sub-topic loop never asks its forced
+    # tool-free last turn (SKIP_FINAL_ANSWER_TURN). Module code only;
+    # agents.prompts was untouched, so the turns the loop does ask are
+    # unchanged. Moved `8beb0c1b45c5` -> `3e34870d9d67`.
+    # Latency plan Task 12 (audit O4; D9 amended by the human on 2026-09-30):
+    # the run's loops share a ToolGate instead of one tool lock, so reads of
+    # different pages overlap while a page is still fetched once. Module code
+    # only; agents.prompts was untouched. Moved `3e34870d9d67` -> `f0378c699608`.
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `b9caf536e3f0` (branch) / `f0378c699608` (main)
+    # -> `aa4a1b519318`.
+    "researcher": "aa4a1b519318",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1202,7 +1241,16 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # source_evaluator.progress once the batches are planned and as each
     # settles, and the strong/fair/weak split on evaluation.completed. No
     # request text changed. Moved `cc5a310b0aa0` -> `356d1486f0e3`.
-    "source_evaluator": "356d1486f0e3",
+    # Latency plan Task 11 (audit O12): every source's remembered reputation
+    # is looked up at once and applied in source order. Module code only; no
+    # request changed and agents.prompts was untouched. Moved `24809aa975a3` -> `eceba70b743d`.
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `356d1486f0e3` (branch) / `eceba70b743d` (main)
+    # -> `272363eac42b`.
+    "source_evaluator": "272363eac42b",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1284,7 +1332,25 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # evidence_verifier.progress after Figure Match and as each Context Check
     # batch settles, and check_statements' on_batch. No request text changed;
     # LB-D10 holds. Moved `4a3d56fab932` -> `2c360ecb7315`.
-    "evidence_verifier": "2c360ecb7315",
+    # Latency plan Task 4 (audit O8, 2026-09-30): the Context Check and the
+    # Statement Check name their calls for the run's call records
+    # (context_check, statement_check) through call_label. Module code only;
+    # no request changed and agents.prompts was untouched. Moved `4a3d56fab932` -> `5c0f7e93e925`.
+    # Latency plan Task 9 (audit O10): a failed Context Check or Statement
+    # Check batch asks its two halves together, joining their error records in
+    # half order. Module code only; every request is the one the
+    # one-after-another re-ask sent. Moved `5c0f7e93e925` -> `34e275cf57f9`.
+    # Latency plan Task 16 (stage replay, X1): check_statements hands its
+    # question and items to capture_statement_check, which writes nothing
+    # unless an experiment bound a capture. Module code only; no request
+    # changed and agents.prompts was untouched. Moved `34e275cf57f9` -> `31bcab803a6a`.
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `2c360ecb7315` (branch) / `31bcab803a6a` (main)
+    # -> `3df423028612`.
+    "evidence_verifier": "3df423028612",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1434,7 +1500,17 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # ``parts_failed`` too, through ``_WritingProgress.part_failed``. Only this
     # module's own source moved; no request text changed and agents.prompts was
     # untouched. Moved `87e5ae8e9dc9` -> `e7e6f11e2c83`.
-    "report_writer": "e7e6f11e2c83",
+    # Latency plan Task 6 (audit O2, 2026-09-30): the writer, as the terminal
+    # publisher, saves every cited finding in one memory write
+    # (publish_findings over SaveToMemoryTool.save_many). Module code only; no
+    # request changed and agents.prompts was untouched. Moved `6e1aedc2888e` -> `879b0e4e2530`.
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `e7e6f11e2c83` (branch) / `879b0e4e2530` (main)
+    # -> `bb0586006fd8`.
+    "report_writer": "bb0586006fd8",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
@@ -2491,3 +2567,28 @@ def test_known_secret_values_still_redacts_a_present_openai_key() -> None:
 
     assert known_secret_values(environ) == ("sk-abcdefghijklmnop",)
 
+
+
+def test_a_target_thinking_mode_reaches_the_target_and_never_the_judge() -> None:
+    """Latency plan Task 19 (audit O6): one invocation can run its target with
+    thinking disabled; the judge keeps thinking, and the run is an experiment."""
+    settings = ConfigSettings()
+
+    runtime = build(settings=settings, target_thinking_mode="disabled")
+
+    assert runtime.target_thinking_mode == "disabled"
+    assert runtime.thinking_mode == "enabled"
+    assert target_llm_config(runtime, settings.llm).thinking_mode == "disabled"
+    assert judge_llm_config(runtime, settings.llm).thinking_mode == "enabled"
+    assert runtime.experiment_only is True
+    assert runtime.configuration_fingerprint != build(settings=settings).configuration_fingerprint
+
+
+def test_without_the_toggle_a_runtime_and_its_fingerprint_are_unchanged() -> None:
+    settings = ConfigSettings()
+
+    default = build(settings=settings)
+    explicit = build(settings=settings, target_thinking_mode="enabled")
+
+    assert default.target_thinking_mode == "enabled"
+    assert explicit == default

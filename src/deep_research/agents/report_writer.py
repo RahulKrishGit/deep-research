@@ -85,7 +85,8 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     StructuredOutputError,
 )
-from deep_research.tools.base import BaseTool, ToolResult
+from deep_research.tools.base import BaseTool, ToolError, ToolResult
+from deep_research.tools.memory_tools import SaveToMemoryTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     NOTE_COVERAGE_PREFIX,
@@ -3930,6 +3931,31 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         """
         tool = self._require_tool("save_to_memory")
         return await tool.execute(content=content, metadata=dict(metadata))
+
+    async def publish_findings(
+        self,
+        *,
+        findings: Sequence[tuple[str, Mapping[str, object]]],
+    ) -> ToolResult:
+        """Save every cited finding in one memory write (latency audit O2).
+
+        Called only by the terminal finalizer, for an accepted report. A
+        failed result -- any finding refused, or a memory tool without a batch
+        path -- is the finalizer's cue to write the findings one by one, so
+        each failure is still recorded against its own finding.
+        """
+        tool = self._require_tool("save_to_memory")
+        if not isinstance(tool, SaveToMemoryTool):
+            return ToolResult(
+                tool_name="save_to_memory",
+                success=False,
+                error=ToolError(
+                    type="batch_unsupported",
+                    message="the memory tool cannot save a batch",
+                ),
+                latency_ms=0.0,
+            )
+        return await tool.save_many(findings)  # type: ignore[arg-type]
 
     async def run(self, state: ResearchState) -> AgentRun[WrittenReport]:
         """Partition, draft and compose the report, recording every count.

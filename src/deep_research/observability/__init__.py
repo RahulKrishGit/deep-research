@@ -20,8 +20,15 @@ from deep_research.observability.metrics import (
 )
 from deep_research.observability.run_telemetry import (
     RunTelemetryCollector,
+    call_label,
+    current_call_label,
     render_telemetry_advice,
     render_telemetry_line,
+)
+from deep_research.observability.stage_capture import (
+    bind_stage_capture,
+    capture_node_input,
+    capture_statement_check,
 )
 from deep_research.observability.tracker import SpanHandle, TokenUsage, Tracker
 
@@ -40,8 +47,13 @@ __all__ = [
     "ToolMetric",
     "TraceContext",
     "Tracker",
+    "bind_stage_capture",
     "bind_trace_context",
     "build_trace_metadata",
+    "call_label",
+    "capture_node_input",
+    "capture_statement_check",
+    "current_call_label",
     "current_trace_context",
     "load_langsmith_runtime_config",
     "render_telemetry_advice",

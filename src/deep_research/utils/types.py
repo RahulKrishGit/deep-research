@@ -2626,6 +2626,28 @@ class OperationTelemetry(ContractModel):
     cap_key: str = Field(min_length=1)
 
 
+class CallRecordTelemetry(ContractModel):
+    """One provider call that returned, as the latency audit (O8) reads it.
+
+    ``label`` is what the call was for: the operation name its caller bound
+    (``plan_draft``, ``page_extraction``, ``context_check`` ...) or, when the
+    caller bound none, the call's operation (``structured_output``,
+    ``react_tool_turn``, ``chat``). ``start_offset_s`` is when the call started,
+    in seconds after the run's collector was created; ``seconds`` is its wall
+    time, retries included.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
+    )
+
+    label: str = Field(min_length=1)
+    start_offset_s: float = Field(ge=0.0)
+    seconds: float = Field(ge=0.0)
+    output_tokens: int = Field(default=0, ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
+
+
 class StageTelemetry(ContractModel):
     """One agent's provider calls in a run: how many, how long, and their caps.
 
@@ -2634,7 +2656,9 @@ class StageTelemetry(ContractModel):
     ``slowest_call_attempts`` is that same call's own transport attempts (P1-B):
     empty for a call recorded before per-attempt records existed, and never
     more than one call's worth, since only the current slowest call's attempts
-    are worth keeping.
+    are worth keeping. ``call_records`` is every call of the stage, in the
+    order they returned (latency audit O8): empty for a record written before
+    they existed.
     """
 
     model_config = ConfigDict(
@@ -2647,6 +2671,7 @@ class StageTelemetry(ContractModel):
     slowest_seconds: float = Field(ge=0.0)
     operations: tuple[OperationTelemetry, ...] = ()
     slowest_call_attempts: tuple[CallAttemptTelemetry, ...] = ()
+    call_records: tuple[CallRecordTelemetry, ...] = ()
 
 
 class RunTelemetry(ContractModel):

@@ -382,6 +382,13 @@ and the typed runtime configuration makes `disabled` unrepresentable. DeepSeek
 V4 Flash supports exactly `high` and `max` with thinking enabled, which is why
 the original `low`/`medium` levels map onto them as above.
 
+**Amended 2026-10-01 (latency plan Part 2 tooling, Task 19 / review):** `disabled` is no longer
+unrepresentable for the target: `python -m deep_research.evaluation agent
+<agent> --target-thinking-mode disabled` runs one agent with the target's
+thinking off (the `suite` command does not take the option). The judge always
+thinks (`enabled`). Such a run is `experiment_only`, because its target mode
+differs from production's, and is never release evidence.
+
 Target effort resolves in this order:
 
 1. an invocation-level `--reasoning-effort` override for the selected agent;

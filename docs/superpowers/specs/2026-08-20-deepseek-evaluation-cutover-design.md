@@ -39,6 +39,9 @@ uses, and the pieces of its runner that are hardcoded to OpenAI change.
   `medium` (Planner, Fact Checker, Synthesizer, Critic) and the judge
   (previously `high`) move to `max`. Thinking mode is always `enabled` for
   every case — no case needs `disabled`.
+  **Amended 2026-10-01 (latency plan Part 2 tooling, Task 19 / review):** `--target-thinking-mode
+  disabled` now exists for one `agent` run (target only; the judge always
+  thinks). Such a run is `experiment_only` and never release evidence.
 - Long-term memory's embedding provider becomes a local, offline model
   (chromadb's built-in default ONNX embedding function) instead of OpenAI's
   `text-embedding-3-small`. No API key, no per-call cost, no network call
@@ -184,6 +187,11 @@ evaluation:
 removed `reasoning_mode` field. `EvaluationRuntimeConfig.reasoning_mode`
 becomes `EvaluationRuntimeConfig.thinking_mode: Literal["enabled"]`, since no
 evaluation case uses `disabled`.
+
+**Amended 2026-10-01 (latency plan Part 2 tooling, Task 19 / review):** the target's mode can now
+be `disabled` for one `agent` run (`--target-thinking-mode disabled`), held in
+`EvaluationRuntimeConfig.target_thinking_mode`; the judge's mode stays
+`enabled`. Such a run is `experiment_only` and never release evidence.
 
 ## Evaluation Runner Provider Rework
 

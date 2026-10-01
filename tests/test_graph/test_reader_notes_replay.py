@@ -37,8 +37,31 @@ from tests.test_api.replay_support import EXTRA_PASS_CASE, REDRAFT_CASE, guarded
 PINNED_RUN_DIGESTS = {
     # notes-progress-report Phase C re-pinned these values: its writer requests and the report
     # the review reads changed (spec §7.1, §7.4, §7.5).
-    EXTRA_PASS_CASE: ("d92891c23a2cfe2e", 46),
-    REDRAFT_CASE: ("9ac8c34e25224206", 29),
+    # Latency plan Task 8 (audit O9): this row reaches its forced last turn,
+    # where the replay's script reads a page the prompt tells it not to; with
+    # that turn never asked the page is read on the extra pass. Was
+    # ("03e113e5584707da", 46);
+    # tests/test_e2e_evaluation/test_request_digests.py shows that a model
+    # obeying the instruction loses only the forced turn's own request.
+    # Latency plan Task 12 (audit O4): research loops no longer wait for each
+    # other's fetches, so a page extraction's request catches the loop's
+    # acquisition state a step later; every request outside research is
+    # byte-identical and every research request is identical up to that
+    # snapshot (tests/test_e2e_evaluation/test_request_digests.py, whose
+    # timing_free and outside_research pins did not move). Were
+    # ("8e5192b96744de3d", 46) and ("875313d15f3325f2", 29).
+    # Merge of origin/main (the latency work) into notes-progress-report-stop: the two
+    # moves above both apply, and each count is the baseline's own, unchanged by either.
+    # The branch moved the writer's, the Statement Check's and the reviewer's requests
+    # (Phase C); main moved the researcher's acquisition-state snapshot (O4) in both rows
+    # and, in the extra-pass row, the evidence the last review reads (O9). Against the
+    # branch's tree only researcher requests differ, plus the extra-pass row's last
+    # review; against main's tree only the writer's, the Statement Check's and the
+    # reviewers' requests differ. Moved `d92891c23a2cfe2e` (branch) / `d74a9e4a54496615`
+    # (main) -> `238ecc7b6e499434` and `9ac8c34e25224206` (branch) / `a40595f2464f3177`
+    # (main) -> `46213021a769e933`.
+    EXTRA_PASS_CASE: ("238ecc7b6e499434", 46),
+    REDRAFT_CASE: ("46213021a769e933", 29),
 }
 AT = "2026-09-29T10:00:00.000+00:00"
 

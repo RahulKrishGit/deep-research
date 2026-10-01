@@ -42,6 +42,7 @@ from deep_research.agents.source_evaluator import (
 from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import ReActRun
 from deep_research.graph.live import bind_live_sink
+from deep_research.memory.entries import SourceReputation
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
 from deep_research.providers import (
@@ -3202,3 +3203,45 @@ def test_evaluation_completed_carries_the_split() -> None:
 
     assert (metadata["strong_count"], metadata["fair_count"], metadata["weak_count"]) == (1, 1, 1)
     assert metadata["low_confidence_count"] == metadata["weak_count"]
+
+
+class _SlowReputationSource(FakeReputationSource):
+    """Answers each lookup after a pause, and counts lookups in flight."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.in_flight = 0
+        self.peak = 0
+
+    async def get_source_reputation(self, url: str) -> SourceReputation | None:
+        self.in_flight += 1
+        self.peak = max(self.peak, self.in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return await super().get_source_reputation(url)
+        finally:
+            self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_every_reputation_is_looked_up_at_once_and_applied_in_source_order(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O12: all lookups are in flight together, and the map they
+    build is the one-by-one map: the same scores, in source order."""
+    urls = [f"https://source{index}.example.test/page" for index in range(5)]
+    memory = _SlowReputationSource(
+        reputations={url: 0.1 * index for index, url in enumerate(urls, start=1)}
+    )
+    agent = _evaluator(tracker, ScriptedCompleter(), reputation=memory)
+    state = _eval_state([_eval_finding(url) for url in urls])
+
+    task, errors, hits = await agent.lookup_reputations(agent.build_task(state))
+
+    assert memory.peak == len(urls)
+    assert sorted(memory.queried) == sorted(urls)
+    assert list(task.reputations) == urls
+    assert task.reputations == pytest.approx(
+        {url: 0.1 * index for index, url in enumerate(urls, start=1)}
+    )
+    assert (hits, errors) == (5, [])

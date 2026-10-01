@@ -10,6 +10,7 @@ require them at collection time.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -115,10 +116,19 @@ class LocalEmbeddingProvider:
 
     ``embedding_function`` is injectable so tests never construct the real
     function, which is the object that would download the model.
+
+    Without one, the provider builds chromadb's ``ONNXMiniLM_L6_V2`` once and
+    keeps it (latency audit O2). That is the model chromadb's own
+    ``DefaultEmbeddingFunction`` builds afresh on every call, which reloaded the
+    ONNX session and tokenizer for every write and every query; the vectors are
+    the same, only the reload is gone. Calls run one at a time under a lock,
+    because the model is built on first use and callers reach it from worker
+    threads.
     """
 
     def __init__(self, *, embedding_function: Any | None = None) -> None:
         self._embedding_function = embedding_function
+        self._lock = threading.Lock()
 
     @property
     def dimension(self) -> int:
@@ -134,8 +144,8 @@ class LocalEmbeddingProvider:
             return []
         if any(not text.strip() for text in payload):
             raise ValueError("embedding input must not be blank")
-        vectors = self._get_embedding_function()(payload)
-        rows = list(vectors)
+        with self._lock:
+            rows = list(self._get_embedding_function()(payload))
         if len(rows) != len(payload):
             raise ValueError(
                 "the local embedding model returned an unexpected number "
@@ -148,13 +158,13 @@ class LocalEmbeddingProvider:
     def _get_embedding_function(self) -> Any:
         if self._embedding_function is None:
             try:
-                from chromadb.utils.embedding_functions import (
-                    DefaultEmbeddingFunction,
+                from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
+                    ONNXMiniLM_L6_V2,
                 )
             except ImportError as error:
                 raise RuntimeError(
                     "the chromadb package is required for local embeddings; "
                     'install the project with pip install -e ".[dev]"'
                 ) from error
-            self._embedding_function = DefaultEmbeddingFunction()
+            self._embedding_function = ONNXMiniLM_L6_V2()
         return self._embedding_function
