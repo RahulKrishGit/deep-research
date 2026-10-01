@@ -1,5 +1,31 @@
 # Handoff: carry out the latency plan, Part 1 (steps 0–4)
 
+> **Status (2026-10-01): Part 1 is done. Do not run it again.**
+> - **Branch.** Tasks 1–15 are on `perf/latency`, up to `59c4e4a`, all pushed.
+> - **Reviews.** Every task review is clean. The whole-branch review asked for three fixes, which are in `59c4e4a`, and its re-review is clean.
+> - **Verification on the cloud VM** (Linux):
+>   - Full suite: `9 failed, 5028 passed, 6 skipped, 1 deselected`. The 9 failures and the 6 skips are Windows-only tests in `tests/test_evaluation/` that fail and skip the same way on `main`.
+>   - Replay matrix: 35/35 rows accepted, with zero network.
+>   - `web/` and `agents/prompts.py`: unchanged.
+> - **Agent pins** (Task 1 → final):
+>
+>   | Agent | Task 1 | Final |
+>   |---|---|---|
+>   | planner | `d1ba46ce147f` | `584e0a466031` |
+>   | researcher | `a8c9528f0c20` | `f0378c699608` |
+>   | source_evaluator | `24809aa975a3` | `eceba70b743d` |
+>   | evidence_verifier | `4a3d56fab932` | `34e275cf57f9` |
+>   | report_writer | `6e1aedc2888e` | `879b0e4e2530` |
+>
+> - **Deviation from the plan.** Task 12's `tests/test_agents/test_react.py` replacement would have re-added the "Tool timings" header and `_SlowEchoTool`, which Task 2 already adds. They were left out, and no test was lost.
+> - **Merging.** PR #29 tracks this branch but still carries the audit's title. The owner retitles it to `perf: latency steps 0-4 — instrumentation, scheduling and the ToolGate (D9 amended)` with the prepared body, or opens a new PR, and merges it before any Part 2 work.
+> - **Waiting on the owner.** None of these is a regression against `main`:
+>   - **robots.txt lock.** Concurrent reads of a host whose robots.txt times out wait one after another (Task 14). The suggested fix keeps P6: waiters share the fetch in flight.
+>   - **One download per requested URL, not per page.** A redirect source and its target requested at once both download (Task 12).
+>   - **404s on unparsed formats.** A `.doc`, `.docx`, `.xls` or `.xlsx` link that would have returned 404 is now recorded as `unsupported_document_format`, not `not_found` (Task 10; OI-11 does not mention it).
+>   - **Transient robots.txt errors.** A 408 or 429 on robots.txt settles "no rules" for the whole run, as P6 says.
+> - **Next.** Part 2's tooling (Tasks 16–19) follows `docs/superpowers/handoffs/2026-10-01-latency-part2-tooling-cloud-handoff.md`, only after Part 1 has merged.
+
 **For:** a Claude Code **cloud** session (Opus 5.5). **From:** the local session that ran the latency audit, the plan and its Fable reviews. **Date:** 2026-09-30.
 
 Everything in this document and in `cloud-session/` is for the cloud session only. None of it applies to, or is loaded by, the owner's local sessions.
