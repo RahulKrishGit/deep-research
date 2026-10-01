@@ -8810,3 +8810,69 @@ async def test_the_loop_never_asks_its_forced_final_answer_turn(
     )
     assert outcome.react.stop_reason == "finished"
     assert outcome.react.iterations == 2
+
+
+@pytest.mark.asyncio
+async def test_two_loops_download_two_different_pages_at_once(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O4: the gate no longer holds every loop while one page
+    downloads; two loops reading different pages have both downloads in
+    flight together."""
+    in_flight = 0
+    peak = 0
+    body = (
+        f"<html><head><title>{QEC_READ.title}</title></head>"
+        f"<body><p>{QEC_PASSAGE}</p></body></html>"
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, peak
+        if request.url.path == "/robots.txt":
+            return httpx.Response(200, text="User-agent: *\nAllow: /", request=request)
+        in_flight += 1
+        peak = max(peak, in_flight)
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            in_flight -= 1
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=body,
+            request=request,
+        )
+
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha", _ALPHA_URL),
+            "topic-02": _loop_decisions("topic-02", "Beta", _BETA_URL),
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=research_tools(
+            tracker,
+            search=_QuerySearchClient(
+                {
+                    "Alpha 2025": search_response(title="Alpha report", url=_ALPHA_URL),
+                    "Beta 2025": search_response(title="Beta report", url=_BETA_URL),
+                }
+            ),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    assert peak == 2
+    assert outcome.react.tool_calls == 4

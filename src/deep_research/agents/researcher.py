@@ -4875,12 +4875,17 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 call_fingerprints=dict(self._call_fingerprints),
             )
 
-        # One tool lock for the whole run, never a module global (D9): every
-        # sub-topic loop of this run shares it, so two loops can never be
-        # inside a research tool's section -- and its admission to the run's
-        # cache and ledger -- at the same time. It is made per run and dies
-        # with it.
-        tool_lock = asyncio.Lock()
+        # One tool gate for the whole run, never a module global (D9, amended
+        # by latency audit O4): every sub-topic loop of this run shares it, so
+        # two loops can never admit or commit at the same time, and a page two
+        # loops want is fetched once, while reads of different pages overlap.
+        # The gate is itself an asyncio.Lock, so everything that hands it on
+        # keeps its type; it is imported here, beside its one use, so that the
+        # amendment touches nothing else in this module. It is made per run
+        # and dies with it.
+        from deep_research.agents.react import ToolGate
+
+        tool_lock = ToolGate()
         gate = asyncio.Semaphore(self._sub_topic_concurrency)
         # Set by the first loop whose work ends in a non-recoverable provider
         # failure. A loop that has not started yet checks it as it acquires

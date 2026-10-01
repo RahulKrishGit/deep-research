@@ -198,3 +198,21 @@ async def test_the_real_store_answers_many_reputation_reads_at_once(
         (index % 10) / 10 for index in range(40)
     ]
     assert memory.errors == ()
+
+
+
+@pytest.mark.asyncio
+async def test_the_real_store_answers_many_queries_at_once(tmp_path: Path) -> None:
+    """Latency audit O4: research loops' memory lookups no longer wait for one
+    another, so the real backend has to answer concurrent queries correctly."""
+    import asyncio
+
+    memory = LongTermMemory.from_config(_config(tmp_path), embeddings=FakeEmbeddings())
+    texts = [f"Finding number {index} about storage." for index in range(20)]
+    for text in texts:
+        assert await memory.save(_finding(text)) is True
+
+    results = await asyncio.gather(*(memory.query(text, top_k=1) for text in texts))
+
+    assert [result[0].entry.content for result in results] == texts
+    assert memory.errors == ()

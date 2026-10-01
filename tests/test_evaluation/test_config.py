@@ -1178,7 +1178,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # tool-free last turn (SKIP_FINAL_ANSWER_TURN). Module code only;
     # agents.prompts was untouched, so the turns the loop does ask are
     # unchanged. Moved `8beb0c1b45c5` -> `3e34870d9d67`.
-    "researcher": "3e34870d9d67",
+    # Latency plan Task 12 (audit O4; D9 amended by the human on 2026-09-30):
+    # the run's loops share a ToolGate instead of one tool lock, so reads of
+    # different pages overlap while a page is still fetched once. Module code
+    # only; agents.prompts was untouched. Moved `3e34870d9d67` -> `f0378c699608`.
+    "researcher": "f0378c699608",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

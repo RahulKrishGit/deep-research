@@ -1719,6 +1719,21 @@ class AcquisitionPolicy:
     ) -> ToolPolicyDecision:
         return self.before_action(decision, tool_input, *_args)
 
+    def flight_key(
+        self, tool_name: str, tool_input: Mapping[str, object]
+    ) -> str | None:
+        """The key a read is single-flighted on across the run's loops.
+
+        A read's URL, normalized exactly as the policy's own cache and ledger
+        key it (``_url_from_input``), so two loops asking for one page -- by
+        either reader -- take turns on it, and the second finds the first's
+        admission in the cache (D9 as amended by latency audit O4). A search
+        or a memory lookup has no key: it downloads no page.
+        """
+        if tool_name not in {"web_scraper", "document_reader"}:
+            return None
+        return _url_from_input(tool_input) or None
+
     def _queue_candidate(self, candidate: CandidateRecord) -> None:
         url = candidate.url
         existing = self.state.candidate_records.get(url)
