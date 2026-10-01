@@ -24,7 +24,7 @@ from deep_research.providers.contracts import (
     ProviderFailureOrigin,
     StructuredDiagnosticCategory,
 )
-from deep_research.utils.config import ReasoningEffort
+from deep_research.utils.config import ReasoningEffort, ThinkingMode
 from deep_research.utils.types import ContractModel, ResearchState, UnitScore
 
 ARTIFACT_SCHEMA_VERSION = 1
@@ -575,7 +575,8 @@ class TargetOutput(ContractModel):
     target_model_requested: str = Field(min_length=1)
     target_model_returned: str | None = None
     target_reasoning_effort: ReasoningEffort
-    thinking_mode: Literal["enabled"] = "enabled"
+    thinking_mode: ThinkingMode = "enabled"
+    """The target's thinking mode (latency plan Task 19)."""
 
     @property
     def has_evaluable_output(self) -> bool:

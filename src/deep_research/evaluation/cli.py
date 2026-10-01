@@ -143,6 +143,9 @@ class CliOptions:
     """``None`` means inherit config.yaml's own setting; a bool is a
     per-invocation override recorded as such in the run's own output
     (``production_parity_source``)."""
+    target_thinking_mode: str | None = None
+    """``agent`` only: the target's thinking mode for this run; ``None``
+    keeps the harness's ``RUNTIME_THINKING_MODE`` (latency plan Task 19)."""
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -256,6 +259,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="target-agent reasoning effort override",
     )
+    agent_parser.add_argument(
+        "--target-thinking-mode",
+        dest="target_thinking_mode",
+        choices=("enabled", "disabled"),
+        default=None,
+        help="target-agent thinking mode override (the judge always thinks)",
+    )
     _add_shared_options(agent_parser)
 
     suite_parser = subparsers.add_parser(
@@ -282,10 +292,12 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
     agent_name: AgentName | None = None
     case_id: str | None = None
     reasoning_effort: str | None = None
+    target_thinking_mode: str | None = None
     if namespace.command == "agent":
         agent_name = parse_agent_name(namespace.agent_name)
         case_id = namespace.case_id
         reasoning_effort = namespace.reasoning_effort
+        target_thinking_mode = namespace.target_thinking_mode
 
     return CliOptions(
         command=namespace.command,
@@ -299,6 +311,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> CliOptions:
         judge_reasoning_effort=namespace.judge_reasoning_effort,
         verbose=bool(namespace.verbose),
         production_parity=namespace.production_parity,
+        target_thinking_mode=target_thinking_mode,
     )
 
 
@@ -426,6 +439,7 @@ def _default_agent_runner(
     experiment_prefix: str | None,
     verbose: bool,
     production_parity: bool | None = None,
+    target_thinking_mode: str | None = None,
 ) -> ExperimentResult:
     del verbose  # rendering-only; it does not change what is executed
     from deep_research.evaluation.cases import case_by_id, cases_for
@@ -443,6 +457,7 @@ def _default_agent_runner(
         now=datetime.now(timezone.utc),
         git=resolve_git_metadata(),
         production_parity=production_parity,
+        target_thinking_mode=target_thinking_mode,  # type: ignore[arg-type]
     )
     cases = (
         [case_by_id(agent_name, tier, case_id)]
@@ -533,6 +548,7 @@ def _dispatch(
             experiment_prefix=options.experiment_prefix,
             verbose=options.verbose,
             production_parity=options.production_parity,
+            target_thinking_mode=options.target_thinking_mode,
         )
         emit(render_experiment(result, verbose=options.verbose))
         return EXPERIMENT_EXIT_CODES[result.status]

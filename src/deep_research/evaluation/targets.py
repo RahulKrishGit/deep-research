@@ -53,7 +53,7 @@ from deep_research.evaluation.models import (
     TrajectoryStep,
 )
 from deep_research.observability import TokenUsageMetric, ToolMetric, Tracker
-from deep_research.utils.config import ConfigSettings
+from deep_research.utils.config import ConfigSettings, ThinkingMode
 
 TRACE_TAG = "evaluation"
 
@@ -265,6 +265,7 @@ def _minimal_output(
     target_model: str,
     target_reasoning_effort: str,
     stage: FailureStage,
+    thinking_mode: ThinkingMode = "enabled",
     reason: str,
     message: str,
     exception_type: str | None,
@@ -291,6 +292,7 @@ def _minimal_output(
         result=None,
         target_model_requested=target_model,
         target_reasoning_effort=target_reasoning_effort,  # type: ignore[arg-type]
+        thinking_mode=thinking_mode,
     )
 
 
@@ -399,6 +401,7 @@ def _finish(
         result=None,
         target_model_requested=output.target_model_requested,
         target_reasoning_effort=output.target_reasoning_effort,
+        thinking_mode=output.thinking_mode,
     )
     return safe.model_dump(mode="json")
 
@@ -443,6 +446,7 @@ def build_target(
                 experiment_name=runtime.experiment_name,
                 target_model=runtime.target_model,
                 target_reasoning_effort=runtime.target_reasoning_effort,
+                thinking_mode=runtime.target_thinking_mode,
                 stage="unhandled",
                 reason="unhandled_failure",
                 message=_safe_failure_message("unhandled", "unhandled_failure"),
@@ -471,6 +475,7 @@ def build_target(
                 experiment_name=runtime.experiment_name,
                 target_model=runtime.target_model,
                 target_reasoning_effort=runtime.target_reasoning_effort,
+                thinking_mode=runtime.target_thinking_mode,
                 stage="setup",
                 reason="unknown_case",
                 message="The requested evaluation case is not registered.",
@@ -499,6 +504,7 @@ def build_target(
                 experiment_name=runtime.experiment_name,
                 target_model=runtime.target_model,
                 target_reasoning_effort=runtime.target_reasoning_effort,
+                thinking_mode=runtime.target_thinking_mode,
                 stage=stage,
                 reason=reason,
                 message=_safe_failure_message(stage, reason),
@@ -689,6 +695,7 @@ def _success_output(
         target_model_requested=runtime.target_model,
         target_model_returned=getattr(provider, "last_model_returned", None),
         target_reasoning_effort=runtime.target_reasoning_effort,
+        thinking_mode=runtime.target_thinking_mode,
     )
 
 

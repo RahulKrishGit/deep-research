@@ -2458,3 +2458,28 @@ def test_known_secret_values_still_redacts_a_present_openai_key() -> None:
 
     assert known_secret_values(environ) == ("sk-abcdefghijklmnop",)
 
+
+
+def test_a_target_thinking_mode_reaches_the_target_and_never_the_judge() -> None:
+    """Latency plan Task 19 (audit O6): one invocation can run its target with
+    thinking disabled; the judge keeps thinking, and the run is an experiment."""
+    settings = ConfigSettings()
+
+    runtime = build(settings=settings, target_thinking_mode="disabled")
+
+    assert runtime.target_thinking_mode == "disabled"
+    assert runtime.thinking_mode == "enabled"
+    assert target_llm_config(runtime, settings.llm).thinking_mode == "disabled"
+    assert judge_llm_config(runtime, settings.llm).thinking_mode == "enabled"
+    assert runtime.experiment_only is True
+    assert runtime.configuration_fingerprint != build(settings=settings).configuration_fingerprint
+
+
+def test_without_the_toggle_a_runtime_and_its_fingerprint_are_unchanged() -> None:
+    settings = ConfigSettings()
+
+    default = build(settings=settings)
+    explicit = build(settings=settings, target_thinking_mode="enabled")
+
+    assert default.target_thinking_mode == "enabled"
+    assert explicit == default
