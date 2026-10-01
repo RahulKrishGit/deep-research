@@ -87,6 +87,7 @@ from deep_research.graph.events import (
 )
 from deep_research.graph.live import publish_live
 from deep_research.graph.note_outcomes import report_note_lines
+from deep_research.graph.review_brief import review_criteria, review_note_results
 from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
@@ -845,17 +846,20 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
         if is_halted(state):
             return _skipped(state, REPORT_REVIEWER_NODE)
 
+        started_event = node_started_event(
+            REPORT_REVIEWER_NODE, iteration=state.iteration
+        )
         started = merge_research_state(
             state,
             {
-                "events": [
-                    node_started_event(
-                        REPORT_REVIEWER_NODE, iteration=state.iteration
-                    )
-                ],
+                "events": [started_event],
                 **_board_notes_update(state),
             },
         )
+        # notes-progress-report spec §6.1: published live, so Reviewing's elapsed
+        # time starts on time; the same object stays in this node's snapshot,
+        # which the orchestrator then skips by its event_id.
+        publish_live(started_event)
         review, errors, reused = await _review_report(started, reviewer)
         review = review.model_copy(
             update={
@@ -866,6 +870,20 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                 else []
             }
         )
+        reviewed_event = report_review_completed_event(
+            iteration=started.iteration,
+            review_status=review.status,
+            mean_score=review.mean_score,
+            material_defects=len(review.material_defects),
+            reviewed_statements=len(review.reviewed_statement_ids),
+            fingerprint=review.input_fingerprint,
+            reused=reused,
+            criteria=review_criteria(review),
+            notes=review_note_results(started, review),
+        )
+        # Published live before the notes wait (spec §6.1): Reviewing's checks land
+        # the moment the review does, not after a note still being read.
+        publish_live(reviewed_event)
         await notes_settled(timeout=NOTES_WAIT_S)
         merged = merge_research_state(
             started,
@@ -881,15 +899,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
             merged,
             {
                 "events": [
-                    report_review_completed_event(
-                        iteration=started.iteration,
-                        review_status=review.status,
-                        mean_score=review.mean_score,
-                        material_defects=len(review.material_defects),
-                        reviewed_statements=len(review.reviewed_statement_ids),
-                        fingerprint=review.input_fingerprint,
-                        reused=reused,
-                    ),
+                    reviewed_event,
                     route_decided_event(
                         destination=destination,
                         reason=reason,

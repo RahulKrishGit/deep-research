@@ -74,6 +74,12 @@ from deep_research.graph.orchestrator import (
     session_config,
     terminal_publisher,
 )
+from deep_research.graph.review_brief import (
+    CRITERIA,
+    CRITERION_FOR_KIND,
+    review_criteria,
+    review_note_results,
+)
 from deep_research.graph.state import (
     DEFAULT_MAX_EXTRA_PASSES,
     EVIDENCE_VERIFIER_NODE,
@@ -205,6 +211,10 @@ __all__ = [
     "report_note_lines",
     "report_published_event",
     "report_review_completed_event",
+    "CRITERIA",
+    "CRITERION_FOR_KIND",
+    "review_criteria",
+    "review_note_results",
     "report_review_unavailable_error",
     "report_reviewer_node",
     "report_writer_node",

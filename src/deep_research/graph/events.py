@@ -258,6 +258,8 @@ def report_review_completed_event(
     reviewed_statements: int,
     fingerprint: str,
     reused: bool,
+    criteria: Sequence[Mapping[str, JsonValue]] = (),
+    notes: Sequence[Mapping[str, JsonValue]] = (),
 ) -> ResearchEvent:
     """Record the terminal semantic review's outcome for one pass.
 
@@ -265,7 +267,10 @@ def report_review_completed_event(
     review's prose and never a defect's text, which are provider output. The
     status is one of ``scored``/``incomplete``/``provider_failed``: the first
     means a judgement exists, the other two are the honest record that none
-    does.
+    does. ``criteria`` and ``notes`` are what Reviewing's brief reads
+    (notes-progress-report spec §6.1, ``graph/review_brief.py``): the five
+    criteria with ``met`` and the defect kinds behind a miss, and each note's
+    enumerated result -- ids and enumerated values, never text.
     """
     return graph_event(
         event_type="graph.report.reviewed",
@@ -283,6 +288,8 @@ def report_review_completed_event(
             "reviewed_statements": reviewed_statements,
             "input_fingerprint": fingerprint,
             "reused": reused,
+            "criteria": [dict(criterion) for criterion in criteria],
+            "notes": [dict(note) for note in notes],
         },
     )
 
