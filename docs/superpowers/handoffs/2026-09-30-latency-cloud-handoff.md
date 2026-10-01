@@ -9,6 +9,11 @@ Everything in this document and in `cloud-session/` is for the cloud session onl
 > - **Never trade correctness for speed.** Every review loop runs to clean and every "Expected" output is checked.
 > - **Be honest in reports.** If something fails or was skipped, say so plainly.
 
+> **Keep the remote branch up to date at all times.** The owner follows progress from `origin`, so local-only work counts as not done.
+> - `git push` to `origin perf/latency` right after **every** commit: by implementers, by fixes after a review, and by you.
+> - Before starting each task, before each review and before reporting back, run `git status -sb`. It must show no `ahead` count and no uncommitted work you mean to keep. If it does, commit (if needed) and push first.
+> - If a push fails, fix the cause and push again. Never force-push, never push to `main`, never skip hooks. If it still fails, stop and report it.
+
 A second cloud session is carrying out the notes / progress / report / Stop plans on the branch `feat/notes-progress-report-stop` at the same time. **Never touch that branch.** This plan was written and reviewed to apply cleanly whichever branch merges first.
 
 ## Step 0: set up the session (do this first)
@@ -74,6 +79,7 @@ The plan's commands were dry-run on Windows. Translate them as follows:
 
 ## Report back with
 
+- the final `git status -sb` line, showing the branch level with `origin/perf/latency` (nothing ahead, nothing uncommitted);
 - the commits, with a one-line summary each;
 - the final full-suite count and Task 15's replay-matrix lines (`Suite: …`, `Network: …`);
 - the five agent pins: Task 1 baseline → final;
