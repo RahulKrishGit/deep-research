@@ -1236,7 +1236,10 @@ _ASSEMBLED_BOTTOM_LINE = (
 
 #: Review P2-1 (controller-ruled wording): the italic line a layout prints above its topic
 #: lines when no direct-answer sentence printed (none named, or none found in the summary).
-_NO_ANSWER_LINE = "*The direct answer could not be checked this time; each topic's checked line follows.*"
+_NO_ANSWER_LINE = (
+    "*The direct answer could not be checked this time; each topic's checked line "
+    "follows.*"
+)
 
 
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:

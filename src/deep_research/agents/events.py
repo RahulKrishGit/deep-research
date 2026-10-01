@@ -52,10 +52,15 @@ def publish_live(event: ResearchEvent) -> None:
 
     live-briefs spec E3: the same object must also be returned in the agent's
     ``state_update["events"]`` -- the orchestrator recognises it there by its
-    ``event_id`` and does not publish it twice. ``graph.live`` is imported at call
-    time: ``deep_research.graph`` imports every agent while its package
-    initialises, so a module-level import here would close an import cycle
-    whenever ``deep_research.agents`` is imported first.
+    ``event_id`` and does not publish it twice. The four live-only progress types
+    (``planner.progress``, ``source_evaluator.progress``,
+    ``evidence_verifier.progress`` and ``report_writer.progress``;
+    notes-progress-report spec §4 item 1) are the exception: they are published
+    here and never returned, so they are never in the run's state.
+    ``graph.live`` is imported at call time: ``deep_research.graph`` imports
+    every agent while its package initialises, so a module-level import here
+    would close an import cycle whenever ``deep_research.agents`` is imported
+    first.
     """
     from deep_research.graph import live  # noqa: PLC0415
 
