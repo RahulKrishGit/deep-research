@@ -62,7 +62,7 @@ from deep_research.utils.types import (
     ScoredSource,
     SourceTemporal,
 )
-from tests.agent_fakes import ScriptedCompleter
+from tests.agent_fakes import LabelRecordingCompleter, ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read
 
 SNIPPET = "Generators added 10.4 gigawatts (GW) of new battery storage capacity in 2024,"
@@ -2470,3 +2470,29 @@ async def test_the_verification_completed_event_is_published_live(tracker: Track
     [event] = outcome.state_update["events"]
     assert event.event_type == "evidence_verifier.verification.completed"
     assert [e.event_id for e in received] == [event.event_id]
+
+
+@pytest.mark.asyncio
+async def test_the_two_checks_name_their_calls_for_the_call_records(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: a Context Check and a Statement Check call carry their
+    own names in the run's call records, so a slow verifier call says which
+    check it was."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+    context = LabelRecordingCompleter(outputs=[_confirm_reply])
+    async with tracker.session_span("session-1", "question"):
+        await _evidence_verifier(tracker, context).run(
+            _state(raw_findings=[finding], read_records={read.read_id: read})
+        )
+
+    statements = LabelRecordingCompleter(outputs=[_confirm_statement_reply])
+    await check_statements(
+        statements,
+        [_statement_item("S01", "Wood Mackenzie states 18.9 GW.", _statement_finding("18.9"))],
+        question="How much storage?",
+    )
+
+    assert context.labels == ["context_check"]
+    assert statements.labels == ["statement_check"]

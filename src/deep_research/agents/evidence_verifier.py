@@ -77,6 +77,7 @@ from deep_research.agents.verified_facts import (
     same_subject,
 )
 from deep_research.agents.wording import stated_role, title_segments
+from deep_research.observability import call_label
 from deep_research.providers import (
     ChatMessage,
     ProviderConfigurationError,
@@ -1060,9 +1061,11 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         labelled = [replace(item, label=f"F{number:02d}") for number, item in enumerate(batch, 1)]
         try:
             self.fingerprint_call(ContextCheckDraft.__name__)
-            reply = await self.provider.complete_structured(
-                context_check_messages(labelled), ContextCheckDraft, agent_name=self.name
-            )
+            with call_label("context_check"):  # latency audit O8
+                reply = await self.provider.complete_structured(
+                    context_check_messages(labelled), ContextCheckDraft,
+                    agent_name=self.name,
+                )
             reply = ContextCheckDraft.model_validate(
                 reply.model_dump() if isinstance(reply, ContextCheckDraft) else reply
             )
@@ -1440,10 +1443,12 @@ async def _check_statement_batch(
     if fingerprint is not None:
         fingerprint(StatementCheckDraft.__name__)
     try:
-        reply = await provider.complete_structured(
-            statement_check_messages(batch, question=question), StatementCheckDraft,
-            agent_name=EVIDENCE_VERIFIER_NAME,
-        )
+        with call_label("statement_check"):  # latency audit O8
+            reply = await provider.complete_structured(
+                statement_check_messages(batch, question=question),
+                StatementCheckDraft,
+                agent_name=EVIDENCE_VERIFIER_NAME,
+            )
         reply = StatementCheckDraft.model_validate(
             reply.model_dump() if isinstance(reply, StatementCheckDraft) else reply
         )

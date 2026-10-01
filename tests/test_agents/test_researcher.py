@@ -90,6 +90,7 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import (
+    LabelRecordingCompleter,
     ScriptedCompleter,
     TargetKeyedCompleter,
     finish,
@@ -8678,3 +8679,30 @@ async def test_the_completed_event_splits_the_tail_after_the_loop(
         assert isinstance(metadata[key], float)
         assert metadata[key] >= 0.0
         assert metadata[key] == round(metadata[key], 1)
+
+
+@pytest.mark.asyncio
+async def test_each_extraction_call_is_named_for_the_call_records(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: a page's own extraction and its owed re-asks carry
+    their own names in the run's call records."""
+    completer = LabelRecordingCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    assert completer.labels == [
+        "page_extraction",
+        *["owed_extraction"] * MAX_OWED_BATCHES,
+    ]

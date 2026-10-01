@@ -999,7 +999,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # decision context. Without notes every request is byte-identical;
     # agents.prompts was untouched, so the evidence_verifier pin and the Judge
     # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
-    "planner": "d1ba46ce147f",
+    # Latency plan Task 4 (audit O8, 2026-09-30): each plan-side request is
+    # named for the run's call records (plan_draft, plan_repair, plan_review,
+    # plan_review_repair, plan_confirming_review) through call_label. Module
+    # code only; no request changed and agents.prompts was untouched. Moved `d1ba46ce147f` -> `584e0a466031`.
+    "planner": "584e0a466031",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1163,7 +1167,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the tail split (extraction_wait_s, owed_round_s, owed_calls,
     # slowest_page_s) from ExtractionTimings. Module code only; no request
     # changed. Moved `dff19f853f51` -> `916dcb5f8a48`.
-    "researcher": "916dcb5f8a48",
+    # Latency plan Task 4 (audit O8): each extraction call is named for the
+    # run's call records (page_extraction, owed_extraction,
+    # cross_topic_extraction, dissent_extraction, extraction). Module code
+    # only; no request changed. Moved `916dcb5f8a48` -> `65eac8e0e2d5`.
+    "researcher": "65eac8e0e2d5",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1260,7 +1268,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Live briefs (live-briefs spec E3, 2026-09-28): verification.completed is
     # published live. Module code only; no prompt string changed and
     # agents.prompts was untouched. Moved `0dc169302934` -> `4a3d56fab932`.
-    "evidence_verifier": "4a3d56fab932",
+    # Latency plan Task 4 (audit O8, 2026-09-30): the Context Check and the
+    # Statement Check name their calls for the run's call records
+    # (context_check, statement_check) through call_label. Module code only;
+    # no request changed and agents.prompts was untouched. Moved `4a3d56fab932` -> `5c0f7e93e925`.
+    "evidence_verifier": "5c0f7e93e925",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

@@ -50,7 +50,7 @@ from deep_research.agents.steps import ReActRun, ReActStep, summarize_text
 from deep_research.agents.toolset import AgentToolset
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
+from deep_research.observability import Tracker, call_label
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
@@ -3305,20 +3305,23 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         plan_under_repair: Sequence[SubTopic] = (),
     ) -> _PlanAttempt:
         try:
-            draft = await self._complete_plan_request(
-                plan_messages(
-                    task,
-                    run,
-                    contract=contract,
-                    repair=repair,
-                    plan_under_repair=plan_under_repair,
-                    reader_answers=self._reader_answers,
-                    reader_notes=self.reader_notes_block(),
-                ),
-                ResearchPlanDraft,
-                operation="plan_draft",
-                run=run,
-            )
+            # ``plan`` is draft, repair or review_repair: the call record's
+            # name for this request (latency audit O8).
+            with call_label(f"plan_{plan}"):
+                draft = await self._complete_plan_request(
+                    plan_messages(
+                        task,
+                        run,
+                        contract=contract,
+                        repair=repair,
+                        plan_under_repair=plan_under_repair,
+                        reader_answers=self._reader_answers,
+                        reader_notes=self.reader_notes_block(),
+                    ),
+                    ResearchPlanDraft,
+                    operation="plan_draft",
+                    run=run,
+                )
         except StructuredOutputError as error:
             raise planning_provider_error(
                 "plan_draft", problems=structured_output_problems(error)
@@ -3394,18 +3397,25 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             )
         self._review_calls += 1
         try:
-            return await self._complete_plan_request(
-                plan_review_messages(
-                    contract,
-                    sub_topics,
-                    repair=already_requested,
-                    reader_answers=self._reader_answers,
-                    reader_notes=self.reader_notes_block(),
-                ),
-                PlanReviewDraft,
-                operation="plan_review",
-                run=run,
-            )
+            # The call record's name for this request (latency audit O8): the
+            # review a plan gets on every pass, or the one after its repair.
+            with call_label(
+                "plan_review"
+                if already_requested is None
+                else "plan_confirming_review"
+            ):
+                return await self._complete_plan_request(
+                    plan_review_messages(
+                        contract,
+                        sub_topics,
+                        repair=already_requested,
+                        reader_answers=self._reader_answers,
+                        reader_notes=self.reader_notes_block(),
+                    ),
+                    PlanReviewDraft,
+                    operation="plan_review",
+                    run=run,
+                )
         except StructuredOutputError as error:
             raise planning_provider_error(
                 "plan_review", problems=structured_output_problems(error)

@@ -72,7 +72,7 @@ from deep_research.agents.steps import (
 )
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
+from deep_research.observability import Tracker, call_label
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
@@ -3444,23 +3444,26 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         started_at = perf_counter()
         async with gate:
             try:
-                draft = await self.provider.complete_structured(
-                    extraction_messages(
-                        task,
-                        run,
-                        evidence_chars=self._evidence_chars,
-                        acquisition_context=policy.context(
-                            limit=self._evidence_packet_chars,
-                            read_ids=[read_id],
+                with call_label("page_extraction"):
+                    draft = await self.provider.complete_structured(
+                        extraction_messages(
+                            task,
+                            run,
+                            evidence_chars=self._evidence_chars,
+                            acquisition_context=policy.context(
+                                limit=self._evidence_packet_chars,
+                                read_ids=[read_id],
+                            ),
+                            planned_targets=planned_targets,
+                            question=question,
+                            coverage_titles=coverage_titles,
+                            reader_notes=self._reader_notes_block(
+                                EXTRACTION_NOTES
+                            ),
                         ),
-                        planned_targets=planned_targets,
-                        question=question,
-                        coverage_titles=coverage_titles,
-                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
-                    ),
-                    SubTopicFindingsDraft,
-                    agent_name=self.name,
-                )
+                        SubTopicFindingsDraft,
+                        agent_name=self.name,
+                    )
             except ProviderOutputLimitError as error:
                 return _PageExtraction(
                     read_id=read_id,
@@ -3541,6 +3544,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         question: str | None,
         coverage_titles: Mapping[str, str],
         dissent_statements: Sequence[Finding] | None = None,
+        label: str = "owed_extraction",
     ) -> _OwedPageResult:
         """One page's own owed re-ask: up to ``MAX_OWED_BATCHES`` packets of
         its own owed passages alone (S6). ``dissent_statements`` switches
@@ -3557,6 +3561,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         another. Every accumulator is local to this page's own call: the
         caller merges every page's own result back in a fixed page order
         after every owing page's task has returned, never completion order.
+
+        ``label`` names these calls in the run's call records (latency audit
+        O8): ``owed_extraction``, ``cross_topic_extraction`` or
+        ``dissent_extraction``.
         """
         findings: list[Finding] = []
         rejected: list[str] = []
@@ -3603,11 +3611,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 )
 
             try:
-                if gate is not None:
-                    async with gate:
+                with call_label(label):
+                    if gate is not None:
+                        async with gate:
+                            retry_draft = await _call()
+                    else:
                         retry_draft = await _call()
-                else:
-                    retry_draft = await _call()
             except ProviderError as error:
                 errors.append(owed_extraction_provider_error(run, error))
                 continue
@@ -3925,24 +3934,29 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # all and report a spurious no-findings error for a topic whose
             # only page was already read and already mined.
             try:
-                draft = await self.provider.complete_structured(
-                    extraction_messages(
-                        task,
-                        run,
-                        evidence_chars=self._evidence_chars,
-                        acquisition_context=(
-                            policy.context(limit=self._evidence_packet_chars)
-                            if policy is not None
-                            else None
+                with call_label("extraction"):
+                    draft = await self.provider.complete_structured(
+                        extraction_messages(
+                            task,
+                            run,
+                            evidence_chars=self._evidence_chars,
+                            acquisition_context=(
+                                policy.context(
+                                    limit=self._evidence_packet_chars
+                                )
+                                if policy is not None
+                                else None
+                            ),
+                            planned_targets=planned_targets,
+                            question=question,
+                            coverage_titles=coverage_titles,
+                            reader_notes=self._reader_notes_block(
+                                EXTRACTION_NOTES
+                            ),
                         ),
-                        planned_targets=planned_targets,
-                        question=question,
-                        coverage_titles=coverage_titles,
-                        reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
-                    ),
-                    SubTopicFindingsDraft,
-                    agent_name=self.name,
-                )
+                        SubTopicFindingsDraft,
+                        agent_name=self.name,
+                    )
             except ProviderOutputLimitError as error:
                 # The provider answered and the answer was cut off at the
                 # output cap. That is this sub-topic's extraction failing,
@@ -4208,6 +4222,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 (read_id, [batch], (), dissent_statements_by_read[read_id])
                 for read_id, batch in dissent_batches.items()
             ]
+            # Each job's name in the run's call records (latency audit O8),
+            # in the order the three lists above were joined.
+            job_labels = (
+                ["owed_extraction"] * len(batches_by_page)
+                + ["cross_topic_extraction"] * len(cross_topic_batches)
+                + ["dissent_extraction"] * len(dissent_batches)
+            )
             owed_from = perf_counter()
             if combined_jobs:
                 all_results = await asyncio.gather(
@@ -4227,9 +4248,16 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                             question=question,
                             coverage_titles=coverage_titles,
                             dissent_statements=page_dissent_statements,
+                            label=job_label,
                         )
-                        for read_id, page_batches, page_unanswered, page_dissent_statements
-                        in combined_jobs
+                        for (
+                            read_id,
+                            page_batches,
+                            page_unanswered,
+                            page_dissent_statements,
+                        ), job_label in zip(
+                            combined_jobs, job_labels, strict=True
+                        )
                     )
                 )
             else:

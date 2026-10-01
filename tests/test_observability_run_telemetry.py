@@ -6,6 +6,8 @@ import pytest
 
 from deep_research.observability import (
     RunTelemetryCollector,
+    call_label,
+    current_call_label,
     render_telemetry_advice,
     render_telemetry_line,
 )
@@ -557,3 +559,37 @@ def test_the_line_renders_loop_lag_with_no_blocks_and_no_longest() -> None:
 
     assert line.endswith("loop lag max 0.0 s; 0 blocks >= 5 s")
     assert "longest" not in line
+
+
+def test_each_call_keeps_its_own_record_with_its_label() -> None:
+    """Latency audit O8: a stage keeps one record per call, in the order the
+    calls returned -- the operation name its caller bound, or the call's own
+    operation when none was bound -- with its start and its tokens."""
+    collector = RunTelemetryCollector()
+    with call_label("plan_draft"):
+        collector.record_call(
+            agent="planner",
+            operation="structured_output",
+            seconds=0.0,
+            output_tokens=120,
+            configured_cap=393_216,
+            truncated=False,
+            reasoning_tokens=80,
+        )
+    collector.record_call(
+        agent="planner",
+        operation="react_tool_turn",
+        seconds=0.0,
+        output_tokens=10,
+        configured_cap=393_216,
+        truncated=False,
+    )
+
+    [stage] = collector.snapshot().stages
+    assert [
+        (record.label, record.output_tokens, record.reasoning_tokens)
+        for record in stage.call_records
+    ] == [("plan_draft", 120, 80), ("react_tool_turn", 10, 0)]
+    first, second = stage.call_records
+    assert 0.0 <= first.start_offset_s <= second.start_offset_s
+    assert current_call_label() is None
