@@ -16,7 +16,11 @@ import pytest
 
 from deep_research.agents.base import AgentRun
 from deep_research.api.sessions import SessionStore
-from deep_research.graph.orchestrator import ResearchAgents, compile_research_graph, run_research_graph
+from deep_research.graph.orchestrator import (
+    ResearchAgents,
+    compile_research_graph,
+    run_research_graph,
+)
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.runtime.outcome import ResearchOutcome, build_outcome
 from deep_research.tools.web_search import WebSearchTool

@@ -1424,6 +1424,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs > li[data-state="stopped"] .bullet{border-color:var(--muted);color:var(--fg);background:var(--surface)}
 .spine-lg.briefs > li[data-state="stopped"] .stage-name{color:var(--fg)}
 .spine-lg.briefs > li[data-state="off"] .stage-name,.spine-lg.briefs > li[data-state="off"] .stage-meta{color:var(--meta)}
+/* A topic the reader stopped before it started reads "not run" with no ring — it never began; one that was running keeps its ring. */
+.spine-lg.briefs > li[data-state="stopped"] .ps-topics > [data-topic="waiting"] > .mk .ring{opacity:0}
 /* The Stop control (§8.5; D18, D24): a small ghost button after the status chip — a square in the text
    colour, then "Stop", kept at every width — and its one confirmation, hung below it, right-aligned, on
    one surface. "Stop research" is the one red word: --status-danger text on a --border edge, the danger

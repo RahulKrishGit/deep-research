@@ -82,7 +82,7 @@ export function BriefSpine({ marks, run, onToggle, frozen }: Props) {
           <span className="m-live" aria-hidden={finished ? "true" : undefined}>
             {fixed !== null ? fixed : brief.subtitle.kind === "research" ? <ResearchSubtitle subtitle={brief.subtitle} /> : brief.subtitle.text}
           </span>
-          <span className="m-out" aria-hidden={finished ? undefined : "true"}>{brief.outcome}</span>
+          <span className="m-out" aria-hidden={finished ? undefined : "true"}>{fixed !== null ? null : brief.outcome}</span>
         </span>
         <span className="stage-meta loops" hidden={!showLoop}>{showLoop ? "↺" : ""}</span>
         {openable ? <button type="button" className="ps-toggle" aria-expanded={open} aria-controls={`brief-${s.id}`} aria-labelledby={`name-${s.id} meta-${s.id}`} onClick={() => onToggle(s.id)} /> : null}
@@ -109,13 +109,15 @@ export function BriefSpine({ marks, run, onToggle, frozen }: Props) {
       lines.push(
         <div key="topics" className="ps-topics" role="list">
           {brief.topics.map((t) => {
-            // A topic still running when the reader stopped reads "stopped", with the ring (§8.5).
+            // A topic still running when the reader stopped reads "stopped", with the ring; one that had
+            // not started reads "not run", with no ring (§8.5).
             const halted = st === "stopped" && t.state === "running";
+            const unrun = st === "stopped" && t.state === "waiting";
             return (
               <div key={t.key} className="ln" role="listitem" data-topic={halted ? "stopped" : t.state} style={lineStyle(n++)}>
                 <span className="mk" aria-hidden="true"><span className="ring" /><span className="dotc" /><svg viewBox="0 0 14 14"><path d="M3 7.4 L6 10.2 L11.2 4.2" /></svg></span>
                 <span className="tt"><span className="tn">{t.n}</span>{t.title}</span>
-                <span className="tf">{halted ? "stopped" : t.fact}</span>
+                <span className="tf">{halted ? "stopped" : unrun ? "not run" : t.fact}</span>
               </div>
             );
           })}

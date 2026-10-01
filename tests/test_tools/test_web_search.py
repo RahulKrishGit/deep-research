@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import json
 import threading
 import time
@@ -735,6 +736,7 @@ async def test_default_search_client_is_async(tracker) -> None:
     """D25: a tool built with a key and no client holds tavily's async client; nothing is sent."""
     tool = WebSearchTool(tracker, api_key="tvly-test-key")
     assert isinstance(tool._client, AsyncTavilyClient)
+    assert inspect.iscoroutinefunction(tool._client.search)
     await tool._client.close()
 
 

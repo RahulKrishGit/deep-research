@@ -66,18 +66,18 @@ export function StopControl({ target }: { target: StopTarget }) {
         <span className="stop-sq" aria-hidden="true" />{STOP_LABEL}
       </button>
       {open ? (
-        <div className="stop-confirm" id="stopConfirm" role="dialog" aria-labelledby="stopConfirmT">
+        <div className="stop-confirm" id="stopConfirm" role="dialog" aria-labelledby="stopConfirmT" aria-describedby={face === "late" ? "stopTooLate" : "stopConfirmBody"}>
           <p className="confirm-t" id="stopConfirmT">{STOP_TITLE}</p>
           {face === "late" ? (
             <>
-              <p className="b-sub" id="stopTooLate">{STOP_TOO_LATE}</p>
+              <p className="b-sub" id="stopTooLate" role="alert">{STOP_TOO_LATE}</p>
               <div className="confirm-btns">
                 <button className="btn btn-quiet btn-sm" type="button" ref={closeBtn} onClick={close}>{STOP_CLOSE}</button>
               </div>
             </>
           ) : (
             <>
-              <p className="b-sub">{STOP_BODY}</p>
+              <p className="b-sub" id="stopConfirmBody">{STOP_BODY}</p>
               {face === "failed" ? <p className="cap" id="stopFailed" role="alert">{STOP_FAILED}</p> : null}
               <div className="confirm-btns">
                 <button className="btn btn-quiet btn-sm" type="button" ref={keepBtn} disabled={busy} onClick={close}>{STOP_KEEP}</button>

@@ -53,6 +53,19 @@ describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
     expect([stopBtn().getAttribute("aria-expanded"), stopBtn().getAttribute("aria-controls")]).toEqual(["true", "stopConfirm"]);
   });
 
+  it("describes itself to a screen reader: the dialog is described by the question's body, and by the too-late line after a 409 (phase review P3-3)", async () => {
+    mount(() => json(409, REFUSED));
+    fireEvent.click(stopBtn());
+    const box = dialog()!;
+    const body = document.getElementById(box.getAttribute("aria-describedby")!)!;
+    expect(text(body)).toBe("It stops right away and nothing more is spent. What's done so far stays here, but no report is written.");
+    fireEvent.click(button("Stop research"));
+    await waitFor(() => expect(text(document.getElementById("stopTooLate"))).toBe("Too late to stop — the research is finishing."));
+    expect(dialog()!.getAttribute("aria-describedby")).toBe("stopTooLate");
+    // Focus moves to Close, so the line is also announced as it appears.
+    expect(document.getElementById("stopTooLate")!.getAttribute("role")).toBe("alert");
+  });
+
   it("Keep going, Escape and a click outside each close it and give focus back to Stop, sending nothing", () => {
     const { stops } = mount(() => json(202, STOPPED));
     fireEvent.click(stopBtn());

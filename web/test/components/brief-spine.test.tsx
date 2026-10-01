@@ -176,3 +176,33 @@ describe("BriefSpine — the arcs stay attached while rows change height", () =>
     expect(observe).toHaveBeenCalledWith(container.querySelector("#spineWrap"));
   });
 });
+
+describe("BriefSpine — frozen at the stopped row (notes-progress-report spec §8.5)", () => {
+  const frozenAt = (id: NodeId) => {
+    const run = researching();
+    return render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={vi.fn()} frozen={id} />);
+  };
+  it("keeps the outcome out of the frozen and not-run rows, so a row is as tall as its own line (phase review P3-1)", () => {
+    const { container } = frozenAt("researcher");
+    const states = ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]
+      .map((id) => [row(container, id as NodeId).getAttribute("data-state"), row(container, id as NodeId).querySelector(".m-out")!.textContent]);
+    expect(states).toEqual([
+      ["done", "3 sub-topics"], ["stopped", ""],
+      ["off", ""], ["off", ""], ["off", ""], ["off", ""], ["off", ""],
+    ]);
+  });
+  it("reads a topic that never started 'not run', and one that was running 'stopped' (phase review P3-2)", () => {
+    const { container } = frozenAt("researcher");
+    const topics = [...row(container, "researcher").querySelectorAll(".ps-topics > [data-topic]")];
+    expect(topics.map((t) => [t.getAttribute("data-topic"), t.querySelector(".tf")!.textContent])).toEqual([
+      ["stopped", "stopped"], ["done", "2 findings"], ["waiting", "not run"],
+    ]);
+  });
+  it("leaves a waiting topic reading 'not yet' on the running stage", () => {
+    const { container } = show(researching());
+    const topics = [...row(container, "researcher").querySelectorAll(".ps-topics > [data-topic]")];
+    expect(topics.map((t) => [t.getAttribute("data-topic"), t.querySelector(".tf")!.textContent])).toEqual([
+      ["running", "reading"], ["done", "2 findings"], ["waiting", "not yet"],
+    ]);
+  });
+});

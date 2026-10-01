@@ -169,7 +169,8 @@ service-stopped stage a shutdown leaves (`running` with `finished_at`): the eyeb
 surface — `You stopped this research at {HH:MM}, {N} minutes in.` (the reader's own time;
 `less than a minute in`, `1 minute in`), `No report was written. The plan and what research
 found so far are kept below until the service restarts.` and **Ask again**, a ghost button that
-starts a new session with the same question and settings. Below it the brief spine is frozen
+starts a new session with the same question and this tab's recorded settings, else the
+defaults. Below it the brief spine is frozen
 at the row the reader stopped. Finished rows keep their outcomes and still open. The stopped
 row has a quiet node — a `--muted` edge, its digit in `--fg`, the surface fill, no halo — the
 subtitle `Stopped · {its live facts}` (Researching's facts line; `Stopped` for a row with
@@ -1711,7 +1712,7 @@ count is not copied into that card.
 ## 6. What each stage needs that the API does not serve
 
 Full detail, with the request shape each gap implies, is in
-[`api-gaps.md`](./api-gaps.md). Summary, keyed to the five stages of §3:
+[`api-gaps.md`](./api-gaps.md). Summary, keyed to the six stages of §3:
 
 | Stage | Blocked by |
 |---|---|
