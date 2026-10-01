@@ -37,6 +37,11 @@ from deep_research.graph.events import (
     session_started_event,
 )
 from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
+from deep_research.graph.note_outcomes import (
+    NoteOutcome,
+    note_outcome,
+    note_steering_outcome,
+)
 from deep_research.graph.nodes import (
     GraphNode,
     ReportPublisher,
@@ -140,6 +145,7 @@ __all__ = [
     "GraphResumeError",
     "GraphRun",
     "LiveSink",
+    "NoteOutcome",
     "ProgressHandler",
     "ReportPublisher",
     "ReportReviewerLike",
@@ -172,9 +178,11 @@ __all__ = [
     "node_skipped_event",
     "node_started_event",
     "note_dispositions",
+    "note_outcome",
     "note_pass_node",
     "note_pass_started_event",
     "note_redraft_requested_event",
+    "note_steering_outcome",
     "note_sub_topic",
     "notes_due_a_pass",
     "notes_due_a_redraft",
