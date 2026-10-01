@@ -262,6 +262,11 @@ def summarize(out: Path, *, control: str = "control", treatment: str = "treatmen
         control_runs = [_stage(repetition, stage) for repetition in controls]
         treatment_runs = [_stage(repetition, stage) for repetition in treatments]
         if not any(verdicts for verdicts, _, _ in control_runs):
+            if stage == CONTEXT_CHECK:
+                # The Context Check carries the accuracy and the speed rules; a
+                # capture with nothing for it must not pass on the Statement
+                # Check alone.
+                checks[f"{stage}.present"] = False
             summary[stage] = None
             continue
         floor = min(agreement(a[0], b[0]) for a, b in combinations(control_runs, 2))

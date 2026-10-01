@@ -210,6 +210,23 @@ def test_a_treatment_that_drops_more_or_agrees_less_fails(tmp_path: Path) -> Non
     assert summary["passed"] is False
 
 
+def test_a_summary_fails_closed_when_the_context_check_has_no_verdicts(tmp_path: Path) -> None:
+    """A capture with nothing for the Context Check must not pass on the
+    Statement Check alone, however much slower the treatment is."""
+    for repetition in (1, 2, 3):
+        _write(tmp_path, "control", repetition, kept={}, dropped=0, seconds=10.0)
+        _write(tmp_path, "treatment", repetition, kept={}, dropped=0, seconds=50.0)
+
+    summary = summarize(tmp_path)
+
+    assert summary["context_check"] is None
+    assert summary["checks"]["context_check.present"] is False
+    assert summary["checks"]["statement_check.agreement"] is True
+    assert summary["checks"]["statement_check.inconsistent"] is True
+    assert summary["checks"]["statement_check.unjudged"] is True
+    assert summary["passed"] is False
+
+
 def test_a_summary_needs_two_controls_and_a_treatment(tmp_path: Path) -> None:
     _write(tmp_path, "control", 1, kept=_verdicts(), dropped=0, seconds=1.0)
     _write(tmp_path, "treatment", 1, kept=_verdicts(), dropped=0, seconds=1.0)
