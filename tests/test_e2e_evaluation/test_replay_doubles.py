@@ -839,10 +839,11 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
 
     reply = completer._reply_ReportReviewDraft(request)
 
-    # One finding, checked twice (its own section point, and the bottom line
-    # that restates it): the parallel writer statement-checks both, so the
-    # packet manifests both ids rather than the single-call writer's one.
-    assert len(packet.expected_statement_ids) == 2
+    # One finding, checked three times -- its own section point, the bottom
+    # line's answer that restates it, and its topic's line (notes-progress-report
+    # spec §7.7): the parallel writer statement-checks all three, so the packet
+    # manifests all three ids rather than the single-call writer's one.
+    assert len(packet.expected_statement_ids) == 3
     assert set(reply.dimensions.as_dimensions()) == {
         "completeness",
         "prioritization",
@@ -889,3 +890,39 @@ async def test_a_scenario_can_script_a_statement_unsupported_and_a_score() -> No
     }
     assert dispositions["S001"] == "unsupported"
     assert set(dispositions.values()) == {"unsupported", "supported"}
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_bottom_line_keeps_its_answer_and_its_topic_line() -> None:
+    """notes-progress-report spec §7.7, end to end through the real writer: the
+    double's answer and its topic line are both checked and kept, the topic line
+    labelled with the section's short title."""
+    source = page("answered", value="10.4")
+    completer = ReplayCompleter(scenario(source))
+    task = writer_task([("F01", verified(source))])
+
+    composition = await compose_written_report(task, provider=completer, fingerprint=None)
+
+    assert composition.rejected_points == []
+    layout = composition.bottom_line
+    assert layout is not None and not layout.assembled
+    assert layout.answer_ids == ["S001"]
+    assert [(line.coverage_id, line.label, line.statement_id) for line in layout.topic_lines] == [
+        ("topic-01", "Battery storage", "S002"),
+    ]
+    assert [point.statement_id for point in composition.summary] == ["S001", "S002"]
+
+
+def test_the_statement_double_answers_the_topic_line_keys() -> None:
+    """``BT``/``RT`` are the bottom line's topic-line flight keys (spec §7.1)."""
+    source = page("topic", value="10.4")
+    completer = ReplayCompleter(scenario(source))
+    items = [
+        StatementCheckItem(label=label, text="Acme Institute reports 10.4 GW for 2024.",
+                           findings=[verified(source)], labels=["Acme Institute's own figure"])
+        for label in ("B01", "BT01", "R01", "RT01")
+    ]
+
+    reply = completer._reply_StatementCheckDraft(statement_request(items))
+
+    assert [draft.label for draft in reply.statements] == ["B01", "BT01", "R01", "RT01"]

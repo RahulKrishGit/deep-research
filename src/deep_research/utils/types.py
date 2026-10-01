@@ -1264,6 +1264,15 @@ class NoteDisposition(ContractModel):
     status: NoteDispositionStatus
 
 
+NOTE_LABEL_PREFIX = "Your note \u00b7 "
+"""A note's label in the bottom line (notes-progress-report spec §7.2): ``Your note · {short}``."""
+
+
+def note_label(note: ReaderNote) -> str:
+    """``Your note · {short}``: how the bottom line names a note and its topic (spec §7.2)."""
+    return f"{NOTE_LABEL_PREFIX}{note.short}"
+
+
 def active_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
     """The notes the run acts on: every note no later note replaces, in receipt order (D9)."""
     replaced = {note.replaces for note in notes if note.replaces}
@@ -1780,6 +1789,25 @@ class ReportTable(ContractModel):
         return self
 
 
+class BottomLineTopic(ContractModel):
+    """One topic line of the bottom line (notes-progress-report spec §7.2)."""
+
+    coverage_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    """The section's short title, or ``Your note · {short}`` for a note's topic."""
+    statement_id: str = Field(min_length=1)
+
+
+class BottomLineLayout(ContractModel):
+    """Which of a composition's ``summary`` statements are the direct answer and
+    which are topic lines, in the order the report prints them (spec §7.2)."""
+
+    answer_ids: list[str] = Field(default_factory=list)
+    topic_lines: list[BottomLineTopic] = Field(default_factory=list)
+    assembled: bool = False
+    """True when the fallback assembled the lines from the sections (spec §7.3)."""
+
+
 class ReportComposition(ContractModel):
     """Everything one written pass composed, and the evidence it renders.
 
@@ -1886,6 +1914,14 @@ class ReportComposition(ContractModel):
     finalizer published — and a renderer states nothing about checks it was
     not told about.
     """
+    bottom_line: BottomLineLayout | None = None
+    """The bottom line's shape: its answer, then one line per topic
+    (notes-progress-report spec §7.2). ``None`` when the bottom line is empty, and
+    for a composition written before the shape existed: both render ``summary``
+    as one paragraph."""
+    reader_answers: list[str] = Field(default_factory=list)
+    """The values of the reader's answers to the one-time check, in question
+    order, printed on the evidence line (spec §7.5); ``[]`` when it asked nothing."""
 
     @model_validator(mode="after")
     def canonicalize_evidence(self) -> ReportComposition:

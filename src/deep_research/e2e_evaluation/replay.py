@@ -1253,12 +1253,14 @@ class ReplayCompleter(AgentCompleter):
             raise ProviderError("the statement check was not made")
         drafts: list[StatementVerdictDraft] = []
         # The production writer's own flight keys (spec §6.7): ``P{part:02d}.``
-        # for a section's own batch, ``B`` for the bottom line's, both
-        # renumbered to the reader's ``S001…`` only after every check
-        # finishes, so the check itself never sees an ``S`` label from that
-        # path -- but a test that calls this double directly still builds its
-        # own items with plain ``S00n`` labels, which stay accepted too.
-        for label, body in _packet_blocks(text, r"(?:S|P\d+\.|B)"):
+        # for a section's own batch, ``B`` and ``R`` for the bottom line's
+        # answer and its re-ask, ``BT`` and ``RT`` for their topic lines
+        # (notes-progress-report spec §7.1), all renumbered to the reader's
+        # ``S001…`` only after every check finishes, so the check itself never
+        # sees an ``S`` label from that path -- but a test that calls this double
+        # directly still builds its own items with plain ``S00n`` labels, which
+        # stay accepted too.
+        for label, body in _packet_blocks(text, r"(?:S|P\d+\.|BT|RT|B|R)"):
             sentence = _printed_line(body, "sentence")
             self._require_cited_findings(body, label)
             override = self._statement_override(sentence)

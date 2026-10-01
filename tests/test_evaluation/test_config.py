@@ -1386,7 +1386,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
     # then-topics request and reply contract. Moved `a27544eee344` ->
     # `7ed80d440f0a`.
-    "report_writer": "7ed80d440f0a",
+    # notes-progress-report Phase C (spec §7.1-§7.3): one line per topic, the
+    # bottom line's layout and the fallback in the same shape. Moved
+    # `7ed80d440f0a` -> `f11d61b869d9`.
+    "report_writer": "f11d61b869d9",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

@@ -91,6 +91,8 @@ from deep_research.utils.types import (
     AcquisitionState,
     AnswerKind,
     BottomLineDraft,
+    BottomLineLayout,
+    BottomLineTopic,
     ContractModel,
     EvidenceTarget,
     FactRow,
@@ -116,9 +118,11 @@ from deep_research.utils.types import (
     ScoredSource,
     SectionDraft,
     SubTopic,
+    TopicLineDraft,
     UnreachablePage,
     WriterPointDraft,
     active_reader_notes,
+    note_label,
 )
 
 REPORT_WRITER_NAME = "report_writer"
@@ -147,8 +151,8 @@ _SECTION_TITLE_CHARS = 80
 #: most 24 characters, no digit and no verdict word, else the title stands in.
 _SHORT_TITLE_WORDS = 3
 _SHORT_TITLE_CHARS = 24
-#: The §6.8 fallback's point cap, kept apart from the direct answer's own cap.
-_FALLBACK_POINTS = 4
+#: A bottom-line request that lists no topic (spec §7.1): no topic line is kept.
+_NO_TOPICS: Mapping[str, frozenset[str]] = {}
 _MARK_SPAN_CHARS = 80
 CONTEXT_ONLY_RELEVANCE = 0.5
 DEFAULT_WRITER_AUTHORITY_FLOOR = 0.4
@@ -574,6 +578,10 @@ class ReportWriterTask(AgentTask):
     printed as ``# Reader answers`` in the bottom-line request so its direct
     answer takes the form they ask for (notes-progress-report spec §7.1); ``[]``
     when the check asked nothing."""
+    note_labels: dict[str, str] = Field(default_factory=dict)
+    """``note-{note_id}`` -> ``Your note · {short}`` for every active reader note
+    (notes-progress-report spec §7.2): the label of a note's topic line, and what
+    orders note topics after the plan's, by receipt."""
     authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR
     """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
     per-statement floor filter (``_statement_meets_authority_floor``): a
@@ -1980,6 +1988,7 @@ def _consider_bottom_line_point(
     point: WriterPointDraft, where: str, *, cited_by_sections: Mapping[str, Finding],
     disputed_labels: set[str],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
+    split: bool = True,
 ) -> list[_Candidate]:
     drafted = " ".join(point.text.split())
     drafted, had_label_group = _strip_label_groups(drafted)
@@ -2007,7 +2016,10 @@ def _consider_bottom_line_point(
     if _has_unnamed_subject(drafted) and not point.items:
         refuse("a judgement with no named subject")
         return []
-    pieces = [drafted] if len(drafted) <= MAX_POINT_CHARS else _split_oversize_point(drafted)
+    if len(drafted) <= MAX_POINT_CHARS:
+        pieces: list[str] | None = [drafted]
+    else:
+        pieces = _split_oversize_point(drafted) if split else None
     if pieces is None:
         refuse(f"longer than {MAX_POINT_CHARS} characters")
         return []
@@ -2020,6 +2032,74 @@ def _consider_bottom_line_point(
                   outcome=point.outcome)
         for n, piece in enumerate(pieces, start=1)
     ]
+
+
+def _consider_topic_line(
+    line: TopicLineDraft, where: str, *, listed_topics: Mapping[str, frozenset[str]],
+    seen_topics: set[str], cited_by_sections: Mapping[str, Finding], disputed_labels: set[str],
+    numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
+) -> list[_Candidate]:
+    """Notes-progress-report spec §7.1: one topic line. Refused when its topic is
+    not one the request listed, when its topic already has a line, or when it
+    cites a label its own topic's kept statements do not; then every rule a
+    bottom-line sentence follows. A topic line is one line, so it is never split:
+    one over ``MAX_POINT_CHARS`` is refused.
+
+    ``listed_topics`` maps each listed topic's coverage id to the labels its
+    kept statements cite.
+    """
+    topic = line.topic.strip()
+    drafted, _ = _strip_label_groups(" ".join(line.text.split()))
+
+    def refuse(reason: str) -> None:
+        rejected.append(RejectedDraftPoint(
+            where=where, text=drafted, finding_labels=list(line.finding_labels), reason=reason,
+        ))
+
+    if topic not in listed_topics:
+        refuse("a line for a topic the request did not list")
+        return []
+    if topic in seen_topics:
+        refuse("a second line for one topic")
+        return []
+    seen_topics.add(topic)
+    if any(label.strip() not in listed_topics[topic] for label in line.finding_labels):
+        refuse("a topic line cites a finding its topic does not")
+        return []
+    return _consider_bottom_line_point(
+        line, where, cited_by_sections=cited_by_sections, disputed_labels=disputed_labels,
+        numbers=numbers, rejected=rejected, key_prefix=key_prefix, split=False,
+    )
+
+
+@dataclass(frozen=True)
+class _LineLayout:
+    """The kept bottom line's shape by temporary statement key (spec §7.2):
+    the answer's keys, then ``(coverage_id, key)`` for each topic line."""
+
+    answer_keys: tuple[str, ...]
+    topic_keys: tuple[tuple[str, str], ...]
+    assembled: bool
+
+
+def _drafted_layout(points: Sequence[ReportPoint], topic_of: Mapping[str, str]) -> _LineLayout | None:
+    if not points:
+        return None
+    return _LineLayout(
+        answer_keys=tuple(p.statement_id for p in points if p.statement_id not in topic_of),
+        topic_keys=tuple((topic_of[p.statement_id], p.statement_id) for p in points if p.statement_id in topic_of),
+        assembled=False,
+    )
+
+
+def _assembled_layout(points: Sequence[ReportPoint], coverage_ids: Sequence[str]) -> _LineLayout | None:
+    if not points:
+        return None
+    return _LineLayout(
+        answer_keys=(),
+        topic_keys=tuple(zip(coverage_ids, (point.statement_id for point in points))),
+        assembled=True,
+    )
 
 
 def _apply_marks(
@@ -2386,7 +2466,7 @@ async def _run_part(
 
 
 def _bottom_line_fallback(
-    outcomes: Sequence[_PartOutcome], required_coverage_ids: set[str],
+    outcomes: Sequence[_PartOutcome],
     disputed_labels: frozenset[str] = frozenset(),
     label_by_finding_id: Mapping[str, str] = _EMPTY_MAPPING,
     findings_by_id: Mapping[str, Finding] | None = None,
@@ -2394,14 +2474,16 @@ def _bottom_line_fallback(
     authority_floor: float = 0.0,
     self_descriptions: Mapping[str, str] | None = None,
     any_above_floor: bool = False,
-) -> tuple[list[ReportPoint], dict[str, str], set[str]]:
-    """§6.8: up to ``_FALLBACK_POINTS`` kept checked points, the
-    first of each part with a required target then the first of the other
-    parts -- moved into the bottom line as new statements with their own
-    flight keys and the source statement's real verdict, never a section's
-    own id and never a hard-coded "consistent" (P1-a). Returns the fallback
-    points, their verdicts, and the source statement ids to remove from
-    their sections (spec's "move": a sentence is printed once).
+) -> tuple[list[ReportPoint], dict[str, str], set[str], list[str]]:
+    """D14 (notes-progress-report spec §7.3): one kept checked point per topic, in
+    plan order, note topics included -- each part's first ``consistent`` or
+    ``corrected`` point, moved into the bottom line as that topic's line, as a
+    new statement with its own flight key and the source statement's real
+    verdict, never a section's own id and never a hard-coded "consistent"
+    (P1-a). No answer sentence and no cap: a part with no eligible point has no
+    line. Returns the fallback points, their verdicts, the source statement ids
+    to remove from their sections (spec's "move": a sentence is printed once),
+    and each point's coverage id.
 
     RevZ2 P1-c, ReRevZ2 C7: the naive first kept point of a part can
     itself be silent about a dispute one of its own cited findings
@@ -2424,20 +2506,12 @@ def _bottom_line_fallback(
     findings_by_id = findings_by_id or {}
     sources = sources or {}
     self_descriptions = self_descriptions or {}
-    with_required: list[_PartOutcome] = []
-    others: list[_PartOutcome] = []
-    for outcome in outcomes:
-        if outcome.section is None:
-            continue
-        (with_required if outcome.job.coverage_id in required_coverage_ids else others).append(outcome)
-
     points: list[ReportPoint] = []
     verdicts: dict[str, str] = {}
     moved: set[str] = set()
+    coverage_ids: list[str] = []
     numbers = iter(range(1, 100))
-    for outcome in [*with_required, *others]:
-        if len(points) >= _FALLBACK_POINTS:
-            break
+    for outcome in outcomes:  # one outcome per part, in plan order
         section = outcome.section
         if section is None:
             continue
@@ -2472,7 +2546,8 @@ def _bottom_line_fallback(
         points.append(chosen_point.model_copy(update={"statement": new_statement}))
         verdicts[new_id] = chosen_verdict
         moved.add(chosen_id)
-    return points, verdicts, moved
+        coverage_ids.append(outcome.job.coverage_id)
+    return points, verdicts, moved, coverage_ids
 
 
 
@@ -2512,12 +2587,16 @@ async def _check_and_finalize_bottom_line(
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
     batch_size: int, cited_by_sections: Mapping[str, Finding], label_urls: Mapping[str, str],
     label_finding_ids: Mapping[str, str], key_prefix: str, disputed_labels: frozenset[str] = frozenset(),
+    listed_topics: Mapping[str, frozenset[str]] = _NO_TOPICS,
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
-          list[tuple[str, str]], list[tuple[str, str]], bool]:
-    """One bottom-line draft's candidates, checked and finalized (spec §6.6).
+          list[tuple[str, str]], list[tuple[str, str]], bool, dict[str, str]]:
+    """One bottom-line draft's candidates, checked and finalized (spec §6.6):
+    at most ``MAX_ANSWER_SENTENCES`` answer sentences, then one line per listed
+    topic (notes-progress-report spec §7.1).
 
     Returns (points, verdict_map, check_errors, rejected, dropped_marks,
-    statement_check_refusals, fully_checked). ``statement_check_refusals``
+    statement_check_refusals, fully_checked, topic_of), ``topic_of`` mapping a
+    topic line's flight key to its coverage id. ``statement_check_refusals``
     is (drafted text, reason) for every candidate the Statement Check itself
     refused (verdict "inconsistent"), the D1/D2 re-ask's own input.
     ``fully_checked`` is True only when this draft had at least one
@@ -2552,6 +2631,17 @@ async def _check_and_finalize_bottom_line(
             where=extra.where, text=extra.text, finding_labels=list(extra.finding_labels),
             reason="over the direct answer's two sentences",
         ))
+    topic_numbers = iter(range(1, 100))
+    seen_topics: set[str] = set()
+    topic_of: dict[str, str] = {}
+    for n, line in enumerate(draft.topics):
+        for candidate in _consider_topic_line(
+            line, f"bottom_line.topics[{n}]", listed_topics=listed_topics, seen_topics=seen_topics,
+            cited_by_sections=cited_by_sections, disputed_labels=disputed_labels,
+            numbers=topic_numbers, rejected=rejected, key_prefix=f"{key_prefix}T",
+        ):
+            topic_of[candidate.key] = line.topic.strip()
+            candidates.append(candidate)
 
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
@@ -2559,13 +2649,18 @@ async def _check_and_finalize_bottom_line(
         source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
     )
 
-    stated_rows: set[str] = set()
+    # A topic line may restate the answer's fact when its topic has no other
+    # (spec §7.1, example 1), so the answer and the topic lines each keep their
+    # own restatement guard.
+    answer_rows: set[str] = set()
+    topic_rows: set[str] = set()
     verdict_map: dict[str, str] = {}
     points: list[ReportPoint] = []
     refusals: list[tuple[str, str]] = []
     for candidate in candidates:
         point, verdict_string = _finalize_candidate(
-            candidate, verdicts, stated_rows=stated_rows, task_facts=task.facts,
+            candidate, verdicts, stated_rows=topic_rows if candidate.key in topic_of else answer_rows,
+            task_facts=task.facts,
             task_targets=task.targets, label_urls=label_urls, label_finding_ids=label_finding_ids,
             dropped_marks=dropped_marks, rejected=rejected,
         )
@@ -2594,7 +2689,7 @@ async def _check_and_finalize_bottom_line(
             for c in candidates
         )
     )
-    return points, verdict_map, check_errors, rejected, dropped_marks, refusals, fully_checked
+    return points, verdict_map, check_errors, rejected, dropped_marks, refusals, fully_checked, topic_of
 
 
 def _bottom_line_disputed_labels(
@@ -2646,12 +2741,13 @@ async def _run_bottom_line(
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
     batch_size: int, label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
-          list[tuple[str, str]], set[str]]:
+          list[tuple[str, str]], set[str], _LineLayout | None]:
     """The bottom-line call (spec §6.6), started once every part task has
     finished. Returns (points, temp verdicts, errors, rejected, dropped_marks,
-    moved_statement_ids -- source section statement ids a §6.8 fallback moved
-    into the bottom line, so the caller removes them from their sections and
-    a sentence is never printed twice, P1-a)."""
+    moved_statement_ids -- source section statement ids a fallback moved into
+    the bottom line, so the caller removes them from their sections and a
+    sentence is never printed twice, P1-a -- and the kept points' layout,
+    ``None`` when nothing is kept)."""
     findings_by_id = {finding_fingerprint(f): f for f in task.findings}
     src_by_url = sources_by_url(task.sources)
     section_points: list[tuple[ReportSection, list[ReportPoint]]] = []
@@ -2702,7 +2798,16 @@ async def _run_bottom_line(
                 if label:
                     cited_by_sections[label] = dict(task.registry)[label]
 
-    required_coverage = {t.coverage_id for t in task.targets if t.required}
+    # Notes-progress-report spec §7.1: each listed topic and the labels its
+    # kept statements cite -- a topic line may cite only those.
+    listed_topics = {
+        section.coverage_id: frozenset(
+            label_by_finding_id[finding_id]
+            for point in section.points if point.statement is not None
+            for finding_id in point.statement.finding_ids if finding_id in label_by_finding_id
+        )
+        for section in checked_sections if section.coverage_id
+    }
     # RevZ2 P2-c: scoped to the writer's own kept ``disputes: true`` marks
     # only, not every ``Finding.disputes`` -- that field still reaches the
     # writer on the registry line ("disputes: yes"), but folding it into
@@ -2758,7 +2863,7 @@ async def _run_bottom_line(
                     agent_name=REPORT_WRITER_NAME, error_type="report_writer_all_parts_refused",
                     message="Every part's drafted points were refused; the report has no bottom line.",
                 )
-            return [], {}, [error], [], [], set()
+            return [], {}, [error], [], [], set(), None
         if non_empty:
             # P1-b(iii): sections are printed, so the bottom line is left
             # honestly empty rather than claiming "no source could be
@@ -2767,15 +2872,21 @@ async def _run_bottom_line(
                 agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_unchecked",
                 message="No section statement was checked and kept; the bottom line is left empty.",
             )
-            return [], {}, [error], [], [], set()
-        return [], {}, [], [], [], set()
+            return [], {}, [error], [], [], set(), None
+        return [], {}, [], [], [], set(), None
 
     is_redraft = bool(task.defects)
     previous_points = task.previous.summary if (is_redraft and task.previous) else []
+    previous_topics = (
+        {line.statement_id: line.coverage_id for line in task.previous.bottom_line.topic_lines}
+        if is_redraft and task.previous is not None and task.previous.bottom_line is not None
+        else {}
+    )
     bottom_line_defects: list[ReviewDefect] = []
     if is_redraft:
         _, _, bottom_line_defects = _route_defects(task.defects, task.previous, task.targets)
     messages = bottom_line_messages(task, checked_sections, previous=previous_points,
+                                    previous_topics=previous_topics,
                                     defects=bottom_line_defects, disputed_statement_ids=marked_statement_ids,
                                     outcome_statement_ids=outcome_statement_ids)
     draft, draft_errors = await _attempt_bottom_line_draft(
@@ -2783,8 +2894,8 @@ async def _run_bottom_line(
     )
 
     if draft is None:
-        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
-            outcomes, required_coverage, disputed_labels=disputed_labels,
+        fallback_points, fallback_verdicts, moved, fallback_topics = _bottom_line_fallback(
+            outcomes, disputed_labels=disputed_labels,
             label_by_finding_id=label_by_finding_id,
             findings_by_id=findings_by_id, sources=src_by_url,
             authority_floor=task.authority_floor, self_descriptions=task.self_descriptions,
@@ -2792,15 +2903,17 @@ async def _run_bottom_line(
         )
         error = agent_error(
             agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
-            message="The bottom-line draft failed twice; kept section points stand in for it.",
+            message="The bottom-line draft failed twice; one checked section point per topic stands in for it.",
         )
-        return fallback_points, fallback_verdicts, [*draft_errors, error], [], [], moved
+        return (fallback_points, fallback_verdicts, [*draft_errors, error], [], [], moved,
+                _assembled_layout(fallback_points, fallback_topics))
 
-    points, verdict_map, check_errors, rejected, dropped_marks, refusals, _ = (
+    points, verdict_map, check_errors, rejected, dropped_marks, refusals, _, topic_of = (
         await _check_and_finalize_bottom_line(
             task, draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
             batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
             label_finding_ids=label_finding_ids, key_prefix="B", disputed_labels=disputed_labels,
+            listed_topics=listed_topics,
         )
     )
 
@@ -2870,6 +2983,7 @@ async def _run_bottom_line(
                 )
             )
         reask_messages = bottom_line_messages(task, checked_sections, previous=points,
+                                              previous_topics=topic_of,
                                               defects=reask_defects, disputed_statement_ids=marked_statement_ids,
                                               outcome_statement_ids=outcome_statement_ids)
         reask_draft, reask_draft_errors = await _attempt_bottom_line_draft(
@@ -2878,14 +2992,15 @@ async def _run_bottom_line(
         draft_errors = [*draft_errors, *reask_draft_errors]
         if reask_draft is not None:
             (reask_points, reask_verdict_map, reask_check_errors, reask_rejected,
-             reask_dropped_marks, _, reask_fully_checked) = await _check_and_finalize_bottom_line(
+             reask_dropped_marks, _, reask_fully_checked, reask_topic_of) = await _check_and_finalize_bottom_line(
                 task, reask_draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
                 batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
                 label_finding_ids=label_finding_ids, key_prefix="R", disputed_labels=disputed_labels,
+                listed_topics=listed_topics,
             )
             if reask_fully_checked:
-                points, verdict_map, dropped_marks = (
-                    reask_points, reask_verdict_map, reask_dropped_marks,
+                points, verdict_map, dropped_marks, topic_of = (
+                    reask_points, reask_verdict_map, reask_dropped_marks, reask_topic_of,
                 )
                 rejected = [*rejected, *reask_rejected]
                 check_errors = [*check_errors, *reask_check_errors]
@@ -2895,8 +3010,8 @@ async def _run_bottom_line(
         # (every sentence refused by the label-subset rule, the Statement
         # Check, or rule 5) still gets the §6.8 fallback, not a silent
         # empty summary.
-        fallback_points, fallback_verdicts, moved = _bottom_line_fallback(
-            outcomes, required_coverage, disputed_labels=disputed_labels,
+        fallback_points, fallback_verdicts, moved, fallback_topics = _bottom_line_fallback(
+            outcomes, disputed_labels=disputed_labels,
             label_by_finding_id=label_by_finding_id,
             findings_by_id=findings_by_id, sources=src_by_url,
             authority_floor=task.authority_floor, self_descriptions=task.self_descriptions,
@@ -2905,12 +3020,39 @@ async def _run_bottom_line(
         if fallback_points:
             error = agent_error(
                 agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_failed",
-                message="Every drafted bottom-line sentence was refused; kept section points stand in for it.",
+                message=(
+                    "Every drafted bottom-line sentence was refused; one checked section point "
+                    "per topic stands in for it."
+                ),
             )
             return (fallback_points, fallback_verdicts,
-                    [*draft_errors, *check_errors, error], rejected, dropped_marks, moved)
+                    [*draft_errors, *check_errors, error], rejected, dropped_marks, moved,
+                    _assembled_layout(fallback_points, fallback_topics))
 
-    return points, verdict_map, [*draft_errors, *check_errors], rejected, dropped_marks, set()
+    return (points, verdict_map, [*draft_errors, *check_errors], rejected, dropped_marks, set(),
+            _drafted_layout(points, topic_of))
+
+
+def _topic_line_order(coverage_id: str, task: ReportWriterTask) -> tuple[int, int]:
+    """Spec §7.2: the plan's topics in plan order, then the active notes' topics
+    in receipt order (``n1`` first)."""
+    if coverage_id in task.note_labels:
+        return (1, int(coverage_id.removeprefix(f"{NOTE_COVERAGE_PREFIX}n")))
+    plan = [topic.coverage_id for topic in task.sub_topics]
+    return (0, plan.index(coverage_id) if coverage_id in plan else len(plan))
+
+
+def _ordered_bottom_line(
+    points: Sequence[ReportPoint], layout: _LineLayout | None, task: ReportWriterTask,
+) -> tuple[list[ReportPoint], list[tuple[str, str]]]:
+    """The kept bottom line in the order the report prints it (spec §7.2): the
+    answer, then the topic lines; and the topic lines' ``(coverage_id, key)``."""
+    if layout is None:
+        return list(points), []
+    by_key = {point.statement_id: point for point in points}
+    topic_keys = sorted(layout.topic_keys, key=lambda pair: _topic_line_order(pair[0], task))
+    ordered = [by_key[key] for key in layout.answer_keys] + [by_key[key] for _, key in topic_keys]
+    return ordered, topic_keys
 
 
 def _renumber(
@@ -3091,6 +3233,7 @@ async def compose_written_report(
                 message="No verified finding could be cited; the report is the recorded facts alone.",
             )],
             answer_kind=task.answer_kind,
+            reader_answers=[answer.value for answer in task.reader_answers],
         )
         return _assemble_composition(empty, task)
 
@@ -3168,7 +3311,7 @@ async def compose_written_report(
     resolved_outcomes: list[_PartOutcome] = [outcome for outcome in outcomes if outcome is not None]
 
     (bottom_line_points, bottom_line_verdicts, bottom_line_errors, bottom_line_rejected,
-     bottom_line_dropped_marks, bottom_line_moved_ids) = await _run_bottom_line(
+     bottom_line_dropped_marks, bottom_line_moved_ids, line_layout) = await _run_bottom_line(
         task, resolved_outcomes, provider=provider, fingerprint=fingerprint,
         check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
         label_finding_ids=label_finding_ids,
@@ -3188,7 +3331,28 @@ async def compose_written_report(
         ]
         if remaining:
             sections.append(outcome.section.model_copy(update={"points": remaining}))
-    new_summary, new_sections, remap = _renumber(bottom_line_points, sections)
+    ordered_points, topic_keys = _ordered_bottom_line(bottom_line_points, line_layout, task)
+    new_summary, new_sections, remap = _renumber(ordered_points, sections)
+    # A topic line's label is its section's short title -- taken before the
+    # fallback's move, which can empty a section -- or its note's label.
+    short_titles = {
+        outcome.job.coverage_id: outcome.section.short_title or outcome.section.title
+        for outcome in resolved_outcomes if outcome.section is not None
+    }
+    bottom_line = None
+    if line_layout is not None:
+        bottom_line = BottomLineLayout(
+            answer_ids=[remap[key] for key in line_layout.answer_keys],
+            topic_lines=[
+                BottomLineTopic(
+                    coverage_id=coverage_id,
+                    label=task.note_labels.get(coverage_id) or short_titles.get(coverage_id, coverage_id),
+                    statement_id=remap[key],
+                )
+                for coverage_id, key in topic_keys
+            ],
+            assembled=line_layout.assembled,
+        )
 
     temp_verdicts: dict[str, str] = dict(bottom_line_verdicts)
     for outcome in resolved_outcomes:
@@ -3225,7 +3389,8 @@ async def compose_written_report(
         finding_labels={label: finding_fingerprint(f) for label, f in task.registry},
         statement_verdicts=statement_verdicts, statement_passages=task.passages,
         generated_on=task.generated_on, errors=all_errors, answer_kind=task.answer_kind,
-        dropped_marks=dropped_marks,
+        dropped_marks=dropped_marks, bottom_line=bottom_line,
+        reader_answers=[answer.value for answer in task.reader_answers],
     )
     return _assemble_composition(composed, task)
 
@@ -3385,6 +3550,10 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
             reader_answers=list(state.reader_answers),
+            note_labels={
+                f"{NOTE_COVERAGE_PREFIX}{note.note_id}": note_label(note)
+                for note in active_reader_notes(state.reader_notes)
+            },
             # notes-progress-report spec §5.1: the steering views only; a note whose
             # only kind is new_angle is its own part of the report instead.
             reader_notes=render_reader_notes(

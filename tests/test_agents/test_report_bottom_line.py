@@ -36,18 +36,22 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchState,
     SectionDraft,
+    TopicLineDraft,
     WriterPointDraft,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import make_target
+from tests.graph_fakes import fake_reader_note
 from tests.research_fakes import report_writer_tools
 from tests.test_agents.test_report_writer import (
     EIA,
     _checked,
     _FakeChecker,
     _FakeStatementCheckItem,
+    _output_limit_error,
     _statement_finding,
     _topic,
+    _verdict,
     _writer,
 )
 
@@ -276,3 +280,263 @@ async def test_a_written_section_carries_its_short_title(checker, tracker, tmp_p
     composition = await compose_written_report(task, provider=completer, section_concurrency=7)
 
     assert [(s.title, s.short_title) for s in composition.sections] == [("Capacity added", "Capacity")]
+
+
+# --- topic lines and the layout (§7.1, §7.2) -----------------------------------------------
+
+
+def _two_part_state(*, notes=(), note_topic=None):
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True, unit_dimension=None)
+    f1 = _statement_finding("https://one.test/1", "According to the source, part one holds.",
+                            target_ids=["topic-01-target-01"])
+    f2 = _statement_finding("https://two.test/1", "According to the source, part two holds.",
+                            target_ids=["topic-02-target-01"])
+    topics = [_topic("topic-01", "Part one", [t1]), _topic("topic-02", "Part two", [t2])]
+    findings = [f1, f2]
+    if note_topic is not None:
+        topic, finding = note_topic
+        topics.append(topic)
+        findings.append(finding)
+    return ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                         verified_findings=findings, reader_notes=list(notes),
+                         reader_answers=ANSWERS)
+
+
+def _labels(task) -> dict[str, str]:
+    return {finding.source_url: label for label, finding in task.registry}
+
+
+def _sections_route(task, extra=None):
+    labels = _labels(task)
+
+    def route(messages, schema):
+        body = messages[-1].content
+        part = re.search(r"# This part of the question\n(.+)", body).group(1)
+        url = {"Part one": "https://one.test/1", "Part two": "https://two.test/1"}.get(part, "https://note.test/1")
+        text = {"Part one": "According to the source, part one holds.",
+                "Part two": "According to the source, part two holds."}.get(part, "According to the source, pastries are sold.")
+        short = {"Part one": "One", "Part two": "Two"}.get(part, "Pastries")
+        return SectionDraft(title=part, short_title=short,
+                            points=[WriterPointDraft(text=text, finding_labels=[labels[url]])])
+
+    return route
+
+
+@pytest.mark.asyncio
+async def test_bottom_line_topic_line_rules(checker, tracker, tmp_path: Path) -> None:
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    labels = _labels(task)
+    one, two = labels["https://one.test/1"], labels["https://two.test/1"]
+    draft = BottomLineDraft(
+        sentences=[WriterPointDraft(text="According to the source, part one holds.", finding_labels=[one])],
+        topics=[
+            TopicLineDraft(topic="topic-09", text="According to the source, part one holds.", finding_labels=[one]),
+            TopicLineDraft(topic="topic-01", text="According to the source, part one holds.", finding_labels=[one]),
+            TopicLineDraft(topic="topic-01", text="According to the source, part one holds again.", finding_labels=[one]),
+            TopicLineDraft(topic="topic-02", text="According to the source, part one holds here.", finding_labels=[one]),
+        ],
+    )
+    route = _sections_route(task)
+    completer = ScriptedCompleter(outputs=[route, route, draft])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    refused = {r.where: r.reason for r in composition.rejected_points}
+    assert refused == {
+        "bottom_line.topics[0]": "a line for a topic the request did not list",
+        "bottom_line.topics[2]": "a second line for one topic",
+        "bottom_line.topics[3]": "a topic line cites a finding its topic does not",
+    }
+    layout = composition.bottom_line
+    assert layout is not None and layout.answer_ids == ["S001"]
+    assert [(line.coverage_id, line.label) for line in layout.topic_lines] == [("topic-01", "One")]
+    assert two  # the second part's own label exists; its topic simply has no kept line
+
+
+@pytest.mark.asyncio
+async def test_bottom_line_layout_and_order(checker, tracker, tmp_path: Path) -> None:
+    """Spec §7.2: summary holds the answer, the plan's topic lines in plan order,
+    then the notes' topic lines in receipt order -- whatever order the reply
+    gave them -- and the layout labels a note's topic ``Your note · {short}``."""
+
+    note = fake_reader_note("n2", kinds=["new_angle"], restatement="pastries at the cafés",
+                            short="pastries")
+    note_target = make_target("note-n2-target-01", coverage_id="note-n2", required=True, unit_dimension=None)
+    note_finding = _statement_finding("https://note.test/1", "According to the source, pastries are sold.",
+                                      target_ids=["note-n2-target-01"])
+    note_topic = _topic("note-n2", "Your note: pastries at the cafés", [note_target], priority=3)
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state(notes=[note], note_topic=(note_topic, note_finding)))
+    assert task.note_labels == {"note-n2": "Your note \u00b7 pastries"}
+    labels = _labels(task)
+    one, two, three = (labels[u] for u in ("https://one.test/1", "https://two.test/1", "https://note.test/1"))
+    draft = BottomLineDraft(
+        sentences=[WriterPointDraft(text="According to the source, part one holds.", finding_labels=[one])],
+        topics=[
+            TopicLineDraft(topic="note-n2", text="According to the source, pastries are sold.", finding_labels=[three]),
+            TopicLineDraft(topic="topic-02", text="According to the source, part two holds.", finding_labels=[two]),
+            TopicLineDraft(topic="topic-01", text="According to the source, part one holds.", finding_labels=[one]),
+        ],
+    )
+    route = _sections_route(task)
+    completer = ScriptedCompleter(outputs=[route, route, route, draft])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    assert [p.text for p in composition.summary] == [
+        "According to the source, part one holds.",
+        "According to the source, part one holds.",
+        "According to the source, part two holds.",
+        "According to the source, pastries are sold.",
+    ]
+    layout = composition.bottom_line
+    assert layout.answer_ids == ["S001"]
+    assert [(t.coverage_id, t.label, t.statement_id) for t in layout.topic_lines] == [
+        ("topic-01", "One", "S002"), ("topic-02", "Two", "S003"),
+        ("note-n2", "Your note \u00b7 pastries", "S004"),
+    ]
+    assert composition.reader_answers == ["Just one", "San Jose"]
+
+
+@pytest.mark.asyncio
+async def test_a_topic_line_may_restate_the_answer_fact(checker, tracker, tmp_path: Path) -> None:
+    writer = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = writer.build_task(_state())
+    sentence = "The EIA reported 10.4 GW in 2024."
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added", points=[WriterPointDraft(text=sentence, finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text=sentence, finding_labels=["F01"])],
+                        topics=[TopicLineDraft(topic="topic-01", text=sentence, finding_labels=["F01"])]),
+    ])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert [p.text for p in composition.summary] == [sentence, sentence]
+    assert not [r for r in composition.rejected_points if r.reason.startswith("restates")]
+
+
+# --- the fallback (§7.3, AC24) -------------------------------------------------------------
+
+
+def _five_part_state() -> ResearchState:
+    topics, findings = [], []
+    for n in range(1, 6):
+        cid = f"topic-{n:02d}"
+        target = make_target(f"{cid}-target-01", coverage_id=cid, required=(n != 2), unit_dimension=None)
+        topics.append(_topic(cid, f"Part {n}", [target], priority=n))
+        findings.append(_statement_finding(f"https://p{n}.test/1", f"According to the source, part {n} holds.",
+                                           target_ids=[target.target_id]))
+        findings.append(_statement_finding(f"https://p{n}.test/2", f"According to the source, part {n} also holds.",
+                                           target_ids=[target.target_id]))
+    return ResearchState(session_id="s1", original_question="Q?", sub_topics=topics, verified_findings=findings)
+
+
+def _five_part_route(task):
+    labels = _labels(task)
+
+    def route(messages, schema):
+        part = re.search(r"# This part of the question\n(.+)", messages[-1].content).group(1)
+        n = part.split()[-1]
+        points = [WriterPointDraft(text=f"According to the source, part {n} holds.",
+                                   finding_labels=[labels[f"https://p{n}.test/1"]])]
+        if n != "5":  # part 5 keeps one point only, so the fallback's move empties it
+            points.append(WriterPointDraft(text=f"According to the source, part {n} also holds.",
+                                           finding_labels=[labels[f"https://p{n}.test/2"]]))
+        return SectionDraft(title=part, short_title=f"P{'abcde'[int(n) - 1]}", points=points)
+
+    return route
+
+
+@pytest.mark.asyncio
+async def test_fallback_one_line_per_topic(checker, tracker, tmp_path: Path) -> None:
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_five_part_state())
+    route = _five_part_route(task)
+    completer = ScriptedCompleter(outputs=[route] * 5 + [_output_limit_error(), _output_limit_error()])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    # Plan order, the optional part included, and no cap of four.
+    assert [p.text for p in composition.summary] == [
+        f"According to the source, part {n} holds." for n in range(1, 6)
+    ]
+    layout = composition.bottom_line
+    assert layout.assembled and layout.answer_ids == []
+    assert [(t.coverage_id, t.label) for t in layout.topic_lines] == [
+        ("topic-01", "Pa"), ("topic-02", "Pb"), ("topic-03", "Pc"), ("topic-04", "Pd"), ("topic-05", "Pe"),
+    ]
+    assert "The bottom-line draft failed twice; one checked section point per topic stands in for it." in [
+        e.message for e in composition.errors
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fallback_move_drops_emptied_section(checker, tracker, tmp_path: Path) -> None:
+    """Review M9: a picked point leaves its section, so a part whose only kept
+    point is picked loses its section; its line stays in the bottom line."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_five_part_state())
+    route = _five_part_route(task)
+    completer = ScriptedCompleter(outputs=[route] * 5 + [_output_limit_error(), _output_limit_error()])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    assert [s.coverage_id for s in composition.sections] == ["topic-01", "topic-02", "topic-03", "topic-04"]
+    assert [p.text for s in composition.sections for p in s.points] == [
+        f"According to the source, part {n} also holds." for n in range(1, 5)
+    ]
+    assert composition.bottom_line.topic_lines[-1].label == "Pe"
+
+
+@pytest.mark.asyncio
+async def test_every_sentence_refused_falls_back_to_one_line_per_topic(checker, tracker, tmp_path: Path) -> None:
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    route = _sections_route(task)
+    refused = BottomLineDraft(sentences=[WriterPointDraft(text="An unlabelled claim.", finding_labels=["F99"])])
+    completer = ScriptedCompleter(outputs=[route, route, refused])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    assert composition.bottom_line.assembled
+    assert [t.coverage_id for t in composition.bottom_line.topic_lines] == ["topic-01", "topic-02"]
+    assert (
+        "Every drafted bottom-line sentence was refused; one checked section point per topic stands in for it."
+        in [e.message for e in composition.errors]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reask_shows_its_previous_lines_by_topic(checker, tracker, tmp_path: Path) -> None:
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    labels = _labels(task)
+    one = labels["https://one.test/1"]
+    checker.verdicts["BT02"] = _verdict_inconsistent()
+    seen: list[str] = []
+    first = BottomLineDraft(
+        sentences=[WriterPointDraft(text="According to the source, part one holds.", finding_labels=[one])],
+        topics=[TopicLineDraft(topic="topic-01", text="According to the source, part one holds.", finding_labels=[one]),
+                TopicLineDraft(topic="topic-02", text="According to the source, part two is wrong.",
+                               finding_labels=[labels["https://two.test/1"]])],
+    )
+
+    def reask(messages, schema):
+        seen.append(messages[-1].content)
+        return first
+
+    route = _sections_route(task)
+    completer = ScriptedCompleter(outputs=[route, route, first, reask])
+
+    await compose_written_report(task, provider=completer, section_concurrency=1)
+
+    assert (
+        "# Your previous bottom line\n- answer: According to the source, part one holds.\n"
+        "- topic-01: According to the source, part one holds."
+    ) in seen[0]
+
+
+def _verdict_inconsistent():
+    return _verdict("inconsistent", reason="No cited finding supports this claim.")
