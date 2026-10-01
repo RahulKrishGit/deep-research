@@ -20,8 +20,9 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   (three servers: the API on 8010, the app on 3010, an app on 3011 pointed at a closed
   port). Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter
   (`…/deep-research/.venv/Scripts/python.exe`); `npx playwright install chromium` once.
-- `npm run capture:visual` — the twenty-seven full-page captures (13 stages/views × 1252 and
-  390 px, and the report's cards at 1920 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
+- `npm run capture:visual` — the thirty-three full-page captures (13 stages/views × 1252 and
+  390 px, the report's cards at 1920 px, and the five step briefs at 1252 px with Planning's at
+  390 px too) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
 - `npm run capture:events -- <case-id>` — records a replay session's frames into
   `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
   `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`). After a re-capture, rewrite the
