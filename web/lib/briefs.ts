@@ -336,17 +336,17 @@ const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
    unchecked yet); once every one is settled and none was checked, that none could be (E7). A part that
    returned with no sentence drafted is not a sentence to check: while a part is still out the first
    section's line stands, since sentences may still come; once every part is back, that none was drafted
-   (P3-4). Those two lines are about the sections' own phase: in `bottom_line` with no section sentence drafted
-   this pass (no part returned, or every part returned with nothing drafted) the one thing still to come is the
-   bottom line, so the ticker says that (owner decision O2, 2026-10-01). Sentences that were drafted keep their
-   checking words in either phase. */
+   (P3-4). Those two lines are about the sections' own phase: in `bottom_line`, while nothing at all has been
+   drafted (`sentences_drafted` is 0, and it counts the bottom line's own candidates too), the one thing still
+   to come is the bottom line, so the ticker says that (owner decision O2, 2026-10-01). This holds for both
+   edges alike, a pass whose parts all returned with nothing drafted and a pass with no part to draft. Once
+   the bottom line has drafted sentences they are what the ticker waits on: the checking line while any is
+   unsettled, the all-failed line once every one is settled and none was checked, as on the sections' path. */
 function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): string {
   const bottomLine = w.phase === "bottom_line";
-  if (w.partsReturned === 0) return bottomLine ? WRITING_BOTTOM_LINE_PLACEHOLDER : WRITING_PLACEHOLDER;
-  if (w.drafted === 0) {
-    if (bottomLine) return WRITING_BOTTOM_LINE_PLACEHOLDER;
-    return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
-  }
+  if (w.drafted === 0 && bottomLine) return WRITING_BOTTOM_LINE_PLACEHOLDER;
+  if (w.partsReturned === 0 && !bottomLine) return WRITING_PLACEHOLDER;
+  if (w.drafted === 0) return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
   const unsettled = w.checked + w.unchecked < w.drafted;
   const noneChecked = samples.length === 0 && w.checked === 0 && w.unchecked > 0;
   return !unsettled && noneChecked ? WRITING_NONE_CHECKED_PLACEHOLDER : WRITING_CHECKING_PLACEHOLDER;

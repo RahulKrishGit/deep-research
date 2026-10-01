@@ -828,11 +828,13 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
   checked`: while some part is still out it stays on `The first section is being
   drafted…` (sentences may still come), and once every part has returned with none
   drafted it reads `No sentences were drafted to check` (spec §6.6, P3-4). Those two lines
-  belong to the sections' phase: while the bottom line is written, with no sample yet and no
-  section sentence drafted this pass (a note pass whose own part was fully refused, or a pass
-  with no part to draft), it reads `Writing the bottom line…`, as the subtitle does; sentences
-  that were drafted keep their checking words (owner-delegated decision of 2026-10-01, spec
-  §6.6). The tally's `section {k} of {n}` is the settle count, failed sections included; the
+  belong to the sections' phase: while the bottom line is written and nothing at all has been
+  drafted yet (the count includes the bottom line's own candidates), on either edge (a note
+  pass whose own part was fully refused, or a pass with no part to draft), it reads `Writing
+  the bottom line…`, as the subtitle does. Once the bottom line has drafted sentences, both
+  edges read as the sections' path does: `The first sentences are being checked…` while any
+  is unsettled, `None of the drafted sentences could be checked` once every one is settled
+  and none was (owner-delegated decision of 2026-10-01, spec §6.6). The tally's `section {k} of {n}` is the settle count, failed sections included; the
   subtitle is where the sections that could not be written are named.
 - **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,

@@ -229,9 +229,10 @@ describe("Writing report (spec §6.6)", () => {
   });
   // owner decision O2 (2026-10-01): "No sentences were drafted to check" and "The first section is being drafted…"
   // describe the sections' own phase. A note pass whose own part was fully refused still lets the bottom line run
-  // over the carried parts, and a pass with no part to draft runs it too; in `bottom_line` with no sample yet the
-  // ticker says what is being written, consistent with the subtitle's "writing the bottom line".
-  it("says 'Writing the bottom line…' while the bottom line runs and no section drafted a sentence this pass", () => {
+  // over the carried parts, and a pass with no part to draft runs it too; in `bottom_line`, while nothing at all
+  // has been drafted, the ticker says what is being written, consistent with the subtitle's "writing the bottom
+  // line". (Once the bottom line has drafted sentences: the next test.)
+  it("says 'Writing the bottom line…' while the bottom line runs and nothing has been drafted", () => {
     expect(WRITING_BOTTOM_LINE_PLACEHOLDER).toBe("Writing the bottom line…");
     const base = { sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, sample: null };
     const placeholder = (md: Record<string, unknown>) => writingBody(play([ev("report_writer.progress", { ...base, ...md })])).placeholder;
@@ -243,14 +244,37 @@ describe("Writing report (spec §6.6)", () => {
     const empty = { parts_total: 0, parts_returned: 0, fraction: 0 };
     expect(placeholder({ ...empty, phase: "sections" })).toBe("The first section is being drafted…");
     expect(placeholder({ ...empty, phase: "bottom_line" })).toBe("Writing the bottom line…");
-    // The bottom line's own sentences drafted and still being checked, no section sentences this pass: still the bottom line.
-    expect(placeholder({ ...empty, phase: "bottom_line", sentences_drafted: 2 })).toBe("Writing the bottom line…");
     // Sentences the sections drafted keep the checking words they had: the bottom line is not what the ticker waits on.
     expect(placeholder({ parts_total: 2, parts_returned: 2, phase: "bottom_line", sentences_drafted: 4, fraction: 1 })).toBe("The first sentences are being checked…");
     expect(placeholder({ parts_total: 2, parts_returned: 2, phase: "bottom_line", sentences_drafted: 4, unchecked: 4, fraction: 1 })).toBe("None of the drafted sentences could be checked");
     // A sample the ticker has shown replaces every placeholder; the body still carries the sample.
     const sampled = writingBody(play([ev("report_writer.progress", { ...base, ...empty, phase: "bottom_line", sentences_drafted: 1, sentences_checked: 1, backed: 1, sample: { text: "S.", verdict: "backed", findings: 1, section: "Bottom line" } })]));
     expect(sampled.samples).toHaveLength(1);
+  });
+  // O2 fix round 1 (2026-10-01): `sentences_drafted` counts the bottom line's own candidates too. Both edges (no
+  // part returned; every part returned with nothing drafted) read "Writing the bottom line…" only while nothing has
+  // been drafted at all; once the bottom line has drafted sentences they are what the ticker waits on, so both read
+  // the checking line while any is unsettled and the all-failed line once every one is settled with none checked,
+  // exactly as the sections' path does.
+  it("reads the checking words on both edges once the bottom line has drafted sentences, and the bottom line's own line only while nothing is drafted", () => {
+    const base = { phase: "bottom_line", sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 1, sample: null };
+    const placeholder = (md: Record<string, unknown>) => writingBody(play([ev("report_writer.progress", { ...base, ...md })])).placeholder;
+    const edges = { refused: { parts_total: 1, parts_returned: 1 }, noPart: { parts_total: 0, parts_returned: 0 } };
+    for (const [edge, parts] of Object.entries(edges)) {
+      // Nothing drafted yet: the bottom line is what is being written.
+      expect(placeholder({ ...parts, sentences_drafted: 0 }), `${edge}: nothing drafted`).toBe("Writing the bottom line…");
+      // The bottom line drafted two sentences and neither is settled: they are being checked.
+      expect(placeholder({ ...parts, sentences_drafted: 2 }), `${edge}: unsettled`).toBe("The first sentences are being checked…");
+      expect(placeholder({ ...parts, sentences_drafted: 2, unchecked: 1 }), `${edge}: one unchecked, one unsettled`).toBe("The first sentences are being checked…");
+      // Every one settled and none checked: the all-failed line, as the section path reads.
+      expect(placeholder({ ...parts, sentences_drafted: 2, unchecked: 2 }), `${edge}: all unchecked`).toBe("None of the drafted sentences could be checked");
+    }
+    // The sections' phase is unchanged on both edges.
+    const sections = (md: Record<string, unknown>) => placeholder({ phase: "sections", ...md });
+    expect(sections({ ...edges.refused, sentences_drafted: 0 })).toBe("No sentences were drafted to check");
+    expect(sections({ ...edges.noPart, sentences_drafted: 0 })).toBe("The first section is being drafted…");
+    // The same count with a section phase and no part back keeps the first-section line, whatever the counts say.
+    expect(sections({ ...edges.noPart, sentences_drafted: 2 })).toBe("The first section is being drafted…");
   });
   // owner decision O2 (2026-10-01): a part that ended failed counts as returned (it settled, so the bar fills), but
   // nothing of it was written: the subtitle says how many sections were, and how many could not be.
