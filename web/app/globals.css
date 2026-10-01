@@ -1545,6 +1545,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 /* A skeleton the plan's titles leave over fades out, then leaves the layout; a slot that arrives later
    (a fifth topic, a note's slot) rises in at once, as a note's acknowledgement does. */
 .spine-lg.briefs .ps-slots > [data-gone="1"]{opacity:0;display:none;transition-property:opacity,display;transition-duration:var(--motion-base);transition-timing-function:var(--ease-standard);transition-behavior:allow-discrete}
+/* The from-row's lines are opacity-only (above); a skeleton that leaves while Planning holds that role still
+   fades before it leaves the layout. */
+.spine-lg.briefs > li[data-handoff="from"] .ps-slots > [data-gone="1"]{transition-property:opacity,display}
 .spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ps-slots > [data-rise="1"]{--d-c:0ms}
 @starting-style{.spine-lg.briefs > li[data-open="1"] .ps-slots > [data-rise="1"]{opacity:0;transform:translateY(4px)}}
 /* The amber ✗ (progress.css:82-88): a slot still flagged, a check that did not pass, a note not met. */

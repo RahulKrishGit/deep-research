@@ -47,22 +47,24 @@ test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep
   expect(timings(only(to, { part: "line", prop: "opacity" }))).toEqual(["1020/240", "900/240", "960/240"]);
   expect(timings(only(to, { part: "line", prop: "transform" }))).toEqual(["1020/240", "900/240", "960/240"]);
 
-  // Reviewing's first hand-off is the default case's extra pass (decision D39): graph.route.decided holds
-  // Reviewing as it was — active, open, on its checks and its verdict — for HANDOFF_HOLD_MS, then it takes
-  // the from role. So nothing on its row moves between its last to-role transition (as the review lands) and
-  // its first from-role one, 2 s later (it is never painted pending)…
+  // Reviewing's hand-offs. In the default case the first is the extra pass (decision D39): graph.route.decided
+  // starts a 2 s hold on Reviewing's checks and verdict, but at replay pacing the extra pass (0.9 s of paced
+  // events) ends before the hold does, so the run is already past the row it went back to and BriefSpine hands
+  // over without the hold: Reviewing's first fold carries no role. Its only from-role fold is the one before
+  // Publishing, so `firstFrom` is that one and the window below is Reviewing's final run. (The hold itself is
+  // covered by progress.spec.ts's D39 case and brief-spine.test.tsx.) Between the last to-role transition (as
+  // the review lands) and that fold nothing on its row moves (it is never painted pending)…
   const onReviewing = records.filter((r) => r.stage === "report_reviewer");
   const firstFrom = onReviewing.findIndex((r) => r.handoff === "from");
   const lastTo = onReviewing.slice(0, Math.max(firstFrom, 0)).map((r) => r.handoff).lastIndexOf("to");
   expect(firstFrom).toBeGreaterThan(0);
-  // …but the route decision's verdict, which cross-fades into the status line as the hold begins
-  // (notes-progress-report spec §6.7), an opacity change in place.
+  // …but the route decision's verdict, which cross-fades into the status line (notes-progress-report spec
+  // §6.7): its `xf` records are opacity over 200 ms and the `.xf.rise` 5px lift over 420 ms.
   expect(onReviewing.slice(lastTo + 1, firstFrom).filter((r) => r.part !== "xf")).toEqual([]);
-  // Both of its from-role folds keep the from-role timings: after the hold, as a pending row (its lines and
-  // height only), and at its completion before Publishing, when the subtitle cross-fade and the connector
-  // fill run too. Its lines and height fold only as far as they had opened — before Publishing, Reviewing
-  // is active for about four paced events, less than its own 600/900 ms opening delays — so those are
-  // held to their timing, not their presence.
+  // That from-role fold keeps the from-role timings: the subtitle cross-fade and the connector fill run, and
+  // its lines and height fold only as far as they had opened — before Publishing, Reviewing is active for
+  // about four paced events, less than its own 600/900 ms opening delays — so those are held to their
+  // timing, not their presence.
   const reviewing = onReviewing.filter((r) => r.handoff === "from");
   expect(timings(only(reviewing, { part: "m-out", prop: "opacity" }))).toEqual(["260/200"]);
   expect(timings(only(reviewing, { part: "connector", prop: "transform" }))).toEqual(["180/620"]);
