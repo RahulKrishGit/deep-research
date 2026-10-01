@@ -76,10 +76,11 @@ test("Writing: the tally grows as the sections return; the placeholder waits for
   await stop(request, id);
 });
 
-// WCAG 2.2.2 (Pause, Stop, Hide), owner decision O2, 2026-10-01 -- DESIGN.md section 5.6, spec 6.5: a ticker
-// presents the running job's live progress, which 2.2.2 excepts as essential real-time information, so it has no
-// pause control. What keeps it harmless is checked here: it is not a live region, so a screen reader is not
-// interrupted at each sample, and under reduced motion its settle is dropped and its change is a fade.
+// WCAG 2.2.2 (Pause, Stop, Hide), owner decision O2, 2026-10-01 -- DESIGN.md section 5.6, spec 6.5: a ticker has
+// no pause control, which is an accepted, owner-delegated risk, not a conformance claim (it does not meet 2.2.2's
+// "essential" exception on its own). Two of the three things that limit it are checked here: it is not a live
+// region, so a screen reader is not interrupted at each sample, and under reduced motion its settle is dropped and
+// its change is a fade. (The third: every count is also in the subtitle, bar and tally.)
 test("the ticker is not a live region, and under reduced motion its change is a fade with no travel (WCAG 2.2.2 rationale)", async ({ page, context, request }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await holdAt(context, "evidence_verifier.progress#2");

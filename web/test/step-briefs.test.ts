@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   REVIEW_CRITERIA, WRITING_BOTTOM_LINE_PLACEHOLDER, elapsedText, evaluatingBody, issueText, liveSubtitle, notesClause, planningSlots,
-  planningStatus, reviewVerdict, reviewingBody, sourceWords, verifierVerdict, verifyTallyText, verifyingBody, writerVerdict, writingBody,
+  planningStatus, rowBrief, reviewVerdict, reviewingBody, sourceWords, verifierVerdict, verifyTallyText, verifyingBody, writerVerdict, writingBody,
   writingTallyText,
 } from "../lib/briefs";
 import { applyEvent, newRunState, type RunEvent, type RunState, type VerifierSample } from "../lib/run-state";
@@ -275,6 +275,35 @@ describe("Writing report (spec §6.6)", () => {
     expect(sections({ ...edges.noPart, sentences_drafted: 0 })).toBe("The first section is being drafted…");
     // The same count with a section phase and no part back keeps the first-section line, whatever the counts say.
     expect(sections({ ...edges.noPart, sentences_drafted: 2 })).toBe("The first section is being drafted…");
+  });
+  // O2 fix round 2 (2026-10-01): "Writing the bottom line…" is the in-flight line. A Writing row that has finished
+  // (done, or hollow after a loop) and is reopened shows its body as it ended: when nothing was ever drafted that is
+  // "No sentences were drafted to check", never a bottom line that is no longer being written.
+  it("a finished Writing row with nothing drafted reads 'No sentences were drafted to check'; the running row and the stopped row keep the in-flight line", () => {
+    const start = ev("graph.node.started", { node: "report_writer", iteration: 0 }, at(0));
+    const ended = { phase: "bottom_line", sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 1, sample: null };
+    const placeholderOf = (run: RunState, state: "active" | "done" | "loop" | "stopped") => {
+      const brief = rowBrief(run, "report_writer", state, NOW);
+      expect(brief.body.kind).toBe("writing");
+      return (brief.body as Extract<typeof brief.body, { kind: "writing" }>).placeholder;
+    };
+    // The refused-part edge, then the no-part edge: every part came back with nothing drafted, or there was none.
+    for (const parts of [{ parts_total: 1, parts_returned: 1, parts_failed: 1 }, { parts_total: 0, parts_returned: 0, parts_failed: 0 }]) {
+      const run = play([start, ev("report_writer.progress", { ...ended, ...parts })]);
+      expect(placeholderOf(run, "active")).toBe("Writing the bottom line…");
+      expect(placeholderOf(run, "done")).toBe("No sentences were drafted to check");
+      expect(placeholderOf(run, "loop")).toBe("No sentences were drafted to check");
+      // A stop freezes the row where it was: the bottom line was being written.
+      expect(placeholderOf(run, "stopped")).toBe("Writing the bottom line…");
+    }
+    // A finished row whose pass ended in the sections' phase with nothing drafted says the same.
+    const sections = play([start, ev("report_writer.progress", { ...ended, phase: "sections", parts_total: 2, parts_returned: 2, parts_failed: 2 })]);
+    expect(placeholderOf(sections, "done")).toBe("No sentences were drafted to check");
+    // Sentences that were drafted keep their words on a finished row.
+    const drafted = play([start, ev("report_writer.progress", { ...ended, parts_total: 2, parts_returned: 2, sentences_drafted: 4, unchecked: 4 })]);
+    expect(placeholderOf(drafted, "done")).toBe("None of the drafted sentences could be checked");
+    // writingBody on its own is the in-flight reading (the default), as before.
+    expect(writingBody(play([start, ev("report_writer.progress", { ...ended, parts_total: 0, parts_returned: 0 })])).placeholder).toBe("Writing the bottom line…");
   });
   // owner decision O2 (2026-10-01): a part that ended failed counts as returned (it settled, so the bar fills), but
   // nothing of it was written: the subtitle says how many sections were, and how many could not be.

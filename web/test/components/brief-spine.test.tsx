@@ -312,9 +312,9 @@ describe("BriefSpine — a loop route holds Reviewing on its checks and verdict 
   });
 });
 
-// WCAG 2.2.2 rationale (owner decision O2, 2026-10-01; DESIGN.md section 5.6, spec 6.5): a ticker presents the
-// running job's live progress, so it has no pause; it must not be announced at each sample, so it is not a live
-// region. The only live region in the running spine is a note's acknowledgement.
+// WCAG 2.2.2 (owner decision O2, 2026-10-01; DESIGN.md section 5.6, spec 6.5): a ticker has no pause control, an
+// accepted owner-delegated risk; one thing that limits it is that it is not announced at each sample, so it is
+// not a live region. The only live region in the running spine is a note's acknowledgement.
 describe("BriefSpine — what is announced (WCAG 2.2.2 rationale, owner decision O2)", () => {
   const LIVE = "[aria-live], [role='status'], [role='alert'], [role='log']";
   const sample = (verdict: string) => ({ text: "A finding.", verdict, correction: null, drop_reason: null, source: { role: "original_report", host: "eia.gov" } });
@@ -345,5 +345,32 @@ describe("BriefSpine — what is announced (WCAG 2.2.2 rationale, owner decision
     const { container } = show(run);
     expect(row(container, "report_writer").querySelector(".tickbox [data-on='1'] .qt")!.textContent).toBe("S.");
     expect(container.querySelectorAll(LIVE)).toHaveLength(0);
+  });
+});
+
+// O2 fix round 2 (2026-10-01): a Writing row that finished with nothing drafted reopens on what happened, not on
+// the in-flight "Writing the bottom line…".
+describe("BriefSpine — Writing's placeholder on a running and on a finished row (O2 fix round 2)", () => {
+  function writerRun(finished: boolean): RunState {
+    const run = newRunState();
+    for (const e of [
+      ...["planner", "researcher", "source_evaluator", "evidence_verifier"].map((node) => ({ type: "graph.node.completed", metadata: { node } })),
+      { type: "graph.node.started", metadata: { node: "report_writer", iteration: 0 } },
+      { type: "report_writer.progress", metadata: { phase: "bottom_line", parts_total: 1, parts_returned: 1, parts_failed: 1, sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 1, sample: null } },
+    ]) applyEvent(run, e);
+    if (finished) {
+      applyEvent(run, { type: "graph.node.completed", metadata: { node: "report_writer" } });
+      toggleOpen(run, "report_writer"); // the reader reopens the done row
+    }
+    return run;
+  }
+  it("the running row says the bottom line is being written; the reopened done row says nothing was drafted", () => {
+    const running = show(writerRun(false));
+    expect(row(running.container, "report_writer").getAttribute("data-state")).toBe("active");
+    expect(row(running.container, "report_writer").querySelector(".tickbox .b-sub")!.textContent).toBe("Writing the bottom line…");
+    running.unmount();
+    const done = show(writerRun(true));
+    expect([row(done.container, "report_writer").getAttribute("data-state"), row(done.container, "report_writer").getAttribute("data-open")]).toEqual(["done", "1"]);
+    expect(row(done.container, "report_writer").querySelector(".tickbox .b-sub")!.textContent).toBe("No sentences were drafted to check");
   });
 });

@@ -73,14 +73,15 @@ function outcomeFor(run: RunState, id: NodeId): string {
   /* §6.3, §6.7: Planning's and Reviewing's outcomes end with the row's duration. */
   return (id === "planner" || id === "report_reviewer") && typeof seconds === "number" ? outcome + " · " + fmtSeconds(seconds) : outcome;
 }
-function bodyFor(run: RunState, id: NodeId, stopped: boolean): BriefBody {
+function bodyFor(run: RunState, id: NodeId, state: RowState): BriefBody {
+  const stopped = state === "stopped";
   switch (id) {
     case "planner": return { kind: "planning", status: planningStatus(run), slots: planningSlots(run, stopped) };
     case "researcher":
       return { kind: "research", topics: run.topics.map((t, i) => ({ key: t.coverageId, n: i + 1, title: t.title, state: t.state, fact: topicFact(t) })) };
     case "source_evaluator": return evaluatingBody(run);
     case "evidence_verifier": return verifyingBody(run);
-    case "report_writer": return writingBody(run);
+    case "report_writer": return writingBody(run, state === "done" || state === "loop");
     case "report_reviewer": return reviewingBody(run, stopped);
     default: return { kind: "sentence", text: SENTENCES.finalize_report };
   }
@@ -94,7 +95,7 @@ export function rowBrief(run: RunState, id: NodeId, state: RowState, nowMs: numb
     subtitle: subtitleFor(run, id, state, nowMs),
     outcome: outcomeFor(run, id),
     why: run.reopen[id] ?? null,
-    body: bodyFor(run, id, state === "stopped"),
+    body: bodyFor(run, id, state),
     acks: noted.acks,
     earlier: noted.earlier > 0 ? earlierNotesText(noted.earlier) : null,
   };
@@ -341,9 +342,13 @@ const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
    to come is the bottom line, so the ticker says that (owner decision O2, 2026-10-01). This holds for both
    edges alike, a pass whose parts all returned with nothing drafted and a pass with no part to draft. Once
    the bottom line has drafted sentences they are what the ticker waits on: the checking line while any is
-   unsettled, the all-failed line once every one is settled and none was checked, as on the sections' path. */
-function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): string {
+   unsettled, the all-failed line once every one is settled and none was checked, as on the sections' path.
+   "Writing the bottom line…" is the in-flight line: a row that has finished (`settled`: done, or hollow after a
+   loop) and is reopened shows how the step ended, so with nothing drafted it reads "No sentences were drafted to
+   check" in either phase (O2 fix round 2, 2026-10-01). */
+function writingPlaceholder(w: WritingState, samples: readonly TickerLine[], settled: boolean): string {
   const bottomLine = w.phase === "bottom_line";
+  if (w.drafted === 0 && settled) return WRITING_NO_SENTENCES_PLACEHOLDER;
   if (w.drafted === 0 && bottomLine) return WRITING_BOTTOM_LINE_PLACEHOLDER;
   if (w.partsReturned === 0 && !bottomLine) return WRITING_PLACEHOLDER;
   if (w.drafted === 0) return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
@@ -351,12 +356,13 @@ function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): st
   const noneChecked = samples.length === 0 && w.checked === 0 && w.unchecked > 0;
   return !unsettled && noneChecked ? WRITING_NONE_CHECKED_PLACEHOLDER : WRITING_CHECKING_PLACEHOLDER;
 }
-export function writingBody(run: RunState): Extract<BriefBody, { kind: "writing" }> {
+/* `settled` is true for a done or loop row (the step has ended); false, the default, for a running row. */
+export function writingBody(run: RunState, settled: boolean = false): Extract<BriefBody, { kind: "writing" }> {
   const w = run.writing;
   if (w === null) return { kind: "writing", placeholder: WRITING_PLACEHOLDER, samples: [], bar: 0, tally: null };
   const samples = w.samples.map((s) => writerLine(s, run.startedAt.report_writer));
   return {
-    kind: "writing", placeholder: writingPlaceholder(w, samples),
+    kind: "writing", placeholder: writingPlaceholder(w, samples, settled),
     samples, bar: w.fraction,
     tally: w.drafted > 0
       ? { checked: w.checked, drafted: w.drafted, backed: w.backed, removed: w.removed, unchecked: w.unchecked, partsReturned: w.partsReturned, partsTotal: w.partsTotal }

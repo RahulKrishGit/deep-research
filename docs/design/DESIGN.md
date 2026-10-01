@@ -834,8 +834,16 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
   the bottom line…`, as the subtitle does. Once the bottom line has drafted sentences, both
   edges read as the sections' path does: `The first sentences are being checked…` while any
   is unsettled, `None of the drafted sentences could be checked` once every one is settled
-  and none was (owner-delegated decision of 2026-10-01, spec §6.6). The tally's `section {k} of {n}` is the settle count, failed sections included; the
-  subtitle is where the sections that could not be written are named.
+  and none was (owner-delegated decision of 2026-10-01, spec §6.6). `Writing the bottom
+  line…` is the in-flight line: a Writing row that has finished (done, or hollow after a
+  loop) and is reopened shows how the step ended, so with nothing ever drafted it reads `No
+  sentences were drafted to check`; a running row, and one frozen by a stop, keep the
+  in-flight line. The tally's `section {k} of {n}` is the settle count, failed sections
+  included; the subtitle is where the sections that could not be written are named. Its
+  written count can fall by one: a section's draft returns and counts as written, then its
+  Statement Check refuses every point and it becomes `couldn't be written`, so `{written}
+  of {n} sections written` can go down as well as up, while the settle count and the bar
+  never do.
 - **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
   `Easy to read`) and the reader's notes: rings that read `reading` under an
@@ -1605,16 +1613,19 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   only over 160ms with no settle, a skeleton leaves at once, the bars jump, the ✓ and
   ✗ appear without drawing and counts jump.
 - **The tickers and WCAG 2.2.2** (notes-progress-report §6.5, owner-delegated decision of
-  2026-10-01). A ticker changes its sample on its own, at most once every 1,200ms, and has no
-  pause. Success criterion 2.2.2 (Pause, Stop, Hide) asks for one for information that updates
-  automatically, unless the updating is essential. It is: the ticker presents the live progress
-  of the running job — which finding or sentence the run is checking now — so a paused ticker
-  would only show a state the job has left. What keeps it harmless: it is not an `aria-live`
-  region (the only live region in the running spine is a note's acknowledgement), so a screen
-  reader is not interrupted at each sample and reads one only when the reader reaches it; its
-  change is a cross-fade, which under reduced motion is opacity only over 160ms with no 5px
-  settle; and no count lives only in the ticker, because the row's subtitle, bar and tally
-  carry every count and a sample is one example of the work, not its only record. The three
+  2026-10-01, reworded in O2 fix round 2). A ticker changes its sample on its own, at most
+  once every 1,200ms, and has no pause. Success criterion 2.2.2 (Pause, Stop, Hide) asks for
+  a way to pause information that updates automatically, unless the updating is essential.
+  The ticker does not meet that exception on its own: what it shows is also available another
+  way, since the row's subtitle, bar and tally carry every count a sample illustrates. Having
+  no pause control is therefore an accepted risk, recorded as an owner-delegated decision of
+  2026-10-01, and not a claim of conformance. Three things limit it: the ticker is not an
+  `aria-live` region (the only live region in the running spine is a note's acknowledgement),
+  so a screen reader is not interrupted at each sample and reads one only when the reader
+  reaches it; its change is a cross-fade, which under reduced motion is opacity only over
+  160ms with no 5px settle; and every count is also in the static subtitle, bar and tally. If
+  the risk is ever to be closed, the remedy is to hold the samples while the pointer is over
+  the ticker or focus is inside it, with a keyboard "Pause samples" toggle. The three
   decorative loops below are a separate matter: they stop under reduced motion.
 - **A loop route holds the verdict** (D39, 2026-09-30). When the route sends the run
   back, Reviewing stays open on its checks and its verdict for `HANDOFF_HOLD_MS`
