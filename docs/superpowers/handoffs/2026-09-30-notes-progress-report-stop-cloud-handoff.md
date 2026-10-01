@@ -9,6 +9,11 @@ Everything in this document and in `cloud-session/` is for the cloud session onl
 > - **Never trade correctness for speed.** Every review loop runs to clean, every "Expected" output is checked, and every capture is looked at.
 > - **Be honest in reports.** If something fails or was skipped, say so plainly.
 
+> **Keep the remote branch up to date at all times.** The owner follows progress from `origin`, so local-only work counts as not done.
+> - `git push` to `origin feat/notes-progress-report-stop` right after **every** commit: by implementers, by fixes after a review, and by you.
+> - Before starting each task, before each review, at the end of each phase and before reporting back, run `git status -sb`. It must show no `ahead` count and no uncommitted work you mean to keep. If it does, commit (if needed) and push first.
+> - If a push fails, fix the cause and push again. Never force-push, never push to `main`, never skip hooks. If it still fails, stop and report it.
+
 A second cloud session is carrying out the latency plan on the branch `perf/latency` at the same time. **Never touch that branch.** Every plan here was written and reviewed to apply cleanly whichever branch merges first.
 
 ## Step 0: set up the session (do this first)
@@ -109,6 +114,7 @@ The plans' commands were dry-run on Windows. Translate them as follows:
 
 ## Report back with
 
+- the final `git status -sb` line, showing the branch level with `origin/feat/notes-progress-report-stop` (nothing ahead, nothing uncommitted);
 - the commits per phase, with a one-line summary each;
 - the final pytest, Vitest and Playwright counts after each phase;
 - the final capture set, with a one-paragraph verdict per capture;
