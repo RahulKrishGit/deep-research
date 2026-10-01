@@ -218,6 +218,33 @@ def _board_notes_update(state: ResearchState) -> ResearchStateUpdate:
     return {"reader_notes": notes}
 
 
+def _closed_notes_update(state: ResearchState) -> ResearchStateUpdate:
+    """The board's notes the state does not hold yet, taken in as closed, or ``{}``.
+
+    The terminal node's merge (owner decision O1): the run has already decided
+    to publish, so a note read this late is owed neither a targeted pass nor a
+    redraft, and it is marked so. Left unmarked it would read as due to
+    ``graph_route``, and the run's status and quality status -- which the
+    finalizer, the outcome and the quality record all read from that one
+    decision -- would turn ``incomplete`` and ``partial`` on a report the route
+    had just accepted: a note route is never a run's last decision.
+    """
+    update = _board_notes_update(state)
+    if not update:
+        return {}
+    held = {note.note_id for note in state.reader_notes}
+    return {
+        "reader_notes": [
+            note
+            if note.note_id in held
+            else note.model_copy(
+                update={"reviewed": True, "passed": True, "redrafted": True}
+            )
+            for note in update["reader_notes"]
+        ]
+    }
+
+
 def agent_node(
     agent: ResearchAgent,
     *,
@@ -751,6 +778,13 @@ def finalize_report_node(
                         FINALIZE_NODE, iteration=state.iteration
                     )
                 ],
+                # Every note the run read gets its bottom-line line (owner
+                # decision O1): a note read after the review's last board merge
+                # is on the board but not yet in the state, and the lines are
+                # stamped from the state. Notes are closed once the run decides
+                # to publish, so no later note can race this merge; a note not
+                # yet read has no restatement and stays without a line.
+                **_closed_notes_update(state),
             },
         )
         status = graph_quality_status(started)

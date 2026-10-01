@@ -8,13 +8,21 @@ note says how the report treated it; a mixed note shows both halves. Marks are
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import render_written_report
 from deep_research.agents.report_reviewer import composition_semantic_fingerprint
+from deep_research.api.notes import note_records
+from deep_research.graph import orchestrator
 from deep_research.graph.nodes import _terminal_artifacts
 from deep_research.graph.note_outcomes import report_note_lines
+from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
+from deep_research.graph.state import graph_route
+from deep_research.observability import Tracker
+from deep_research.runtime.notes import NoteBoard, bind_note_board
 from deep_research.utils.types import (
     BottomLineLayout,
     BottomLineTopic,
@@ -31,7 +39,13 @@ from deep_research.utils.types import (
     SubTopic,
 )
 from tests.evidence_fakes import make_finding, make_read
-from tests.graph_fakes import fake_reader_note, fake_report_review
+from tests.graph_fakes import (
+    FakePublisher,
+    FakeReviewer,
+    fake_reader_note,
+    fake_report_review,
+    fake_research_agents,
+)
 
 
 def _finding(n: int):
@@ -261,3 +275,134 @@ def test_fingerprint_ignores_note_lines() -> None:
         "reader_answers": ["San Jose"],
     })
     assert composition_semantic_fingerprint(stamped) == composition_semantic_fingerprint(composition)
+
+
+# --- the finalizer reads the board: every note the run read gets its line (owner decision O1) ---
+
+AT = "2026-10-01T10:00:00.000+00:00"
+LATE_STEERING = fake_reader_note("n1", kinds=["emphasis"], restatement="more weight on fire-safety standards",
+                                 short="fire safety")
+LATE_RESEARCH = fake_reader_note("n1", kinds=["new_angle"], restatement="pastries at the cafés",
+                                 short="pastries", new_questions=["Which cafés serve pastries?"])
+
+
+async def _published_run(
+    monkeypatch: pytest.MonkeyPatch, tracker: Tracker, note, *, read_before_publishing: bool, earlier=()
+):
+    """One real graph run whose reader sends ``note`` while the review runs.
+
+    The review's wait for a note still being read runs out (``NOTES_WAIT_S`` is made
+    negligible), so the reviewer's last board merge finds the note unread. Then the
+    route out of the review is read, and with ``read_before_publishing`` the reading
+    ends right there: after that merge, before ``finalize_report`` starts -- the one
+    window in which a note the API accepted can be read and still miss the report.
+    """
+    board = NoteBoard()
+    for first in earlier:  # read before the run starts, so every node holds it
+        board.receive(first.text, received_at=AT, received_during="planner")
+        board.add(first)
+    publisher = FakePublisher()
+
+    class SentDuringReview(FakeReviewer):
+        async def review(self, packet, *, previous=None):
+            if len(board.received()) == len(earlier):
+                board.receive(note.text, received_at=AT, received_during="report_reviewer")
+            return await super().review(packet, previous=previous)
+
+    route_after_review = orchestrator.route_after_review
+
+    def route_then_read(channel):
+        destination = route_after_review(channel)
+        if read_before_publishing and board.pending:
+            board.add(note)
+        return destination
+
+    monkeypatch.setattr("deep_research.graph.nodes.NOTES_WAIT_S", 0.01)
+    monkeypatch.setattr(orchestrator, "route_after_review", route_then_read)
+    agents = fake_research_agents(publisher=publisher, report_reviewer=SentDuringReview())
+    with bind_note_board(board):
+        run = await run_research_graph(
+            graph=compile_research_graph(agents), tracker=tracker, session_id="session-1",
+            question="Where are the best lattes?",
+        )
+    return board, publisher, run
+
+
+@pytest.mark.parametrize(("note", "line"), [
+    (LATE_STEERING, "- **Your note \u00b7 fire safety:** Not checked: more weight on fire-safety standards"),
+    (LATE_RESEARCH, "- **Your note \u00b7 pastries:** Not researched."),
+], ids=["steering", "research"])
+@pytest.mark.asyncio
+async def test_a_note_read_after_the_reviews_last_merge_still_gets_its_line_in_the_report(
+    monkeypatch: pytest.MonkeyPatch, tracker: Tracker, note, line
+) -> None:
+    """O1: the finalizer merges the board's notes before it stamps the note lines, so a note the
+    run read after the review's last merge gets the line spec §7.2 words for a note no pass took
+    up, in the report it published and in the state it kept -- and /status says the same."""
+    board, publisher, run = await _published_run(monkeypatch, tracker, note, read_before_publishing=True)
+
+    assert run.status == "completed"
+    assert board.pending == ()
+    state = run.state
+    # Taken in as closed: the run had decided to publish, so the note is owed no pass and no
+    # redraft, and it cannot turn the accepted report's status into a note route's.
+    assert [(held.note_id, held.reviewed, held.passed, held.redrafted) for held in state.reader_notes] == [
+        ("n1", True, True, True),
+    ]
+    assert (run.status, state.composition.quality_status, graph_route(state)) == (
+        "completed", "accepted", ("finalize", "report_accepted"),
+    )
+    assert json.loads(next(text for name, text, _ in publisher.documents if name.endswith(".json")))[
+        "quality_status"
+    ] == "accepted"
+    [stamped] = state.composition.reader_note_lines
+    assert (stamped.note_id, stamped.outcome, stamped.statement_id) == ("n1", "not_checked", None)
+    assert _bottom_line(state.report).splitlines()[-1] == line
+    [report_text] = [text for name, text, ok in publisher.documents if ok and not name.endswith(("-evidence.md", ".json"))]
+    assert _bottom_line(report_text).splitlines()[-1] == line
+    # /status and the report agree: the run read the note, and it ended not_checked.
+    [record] = note_records(board, state, terminal=True)
+    assert (record.restatement, record.outcome, record.steering_outcome) == (note.restatement, "not_checked", None)
+    assert record.outcome == stamped.outcome
+
+
+@pytest.mark.parametrize("note", [LATE_STEERING, LATE_RESEARCH], ids=["steering", "research"])
+@pytest.mark.asyncio
+async def test_a_note_the_run_never_read_adds_no_line_to_the_report(
+    monkeypatch: pytest.MonkeyPatch, tracker: Tracker, note
+) -> None:
+    """O1's counter-case: a note still being read when the run publishes has no restatement, so it
+    has no line -- as today -- while /status still lists it, not checked, with no restatement."""
+    board, publisher, run = await _published_run(monkeypatch, tracker, note, read_before_publishing=False)
+
+    assert run.status == "completed"
+    assert board.pending == ("n1",)
+    state = run.state
+    assert state.reader_notes == [] and state.composition.reader_note_lines == []
+    [report_text] = [text for name, text, ok in publisher.documents if ok and not name.endswith(("-evidence.md", ".json"))]
+    assert "Your note" not in state.report and "Your note" not in report_text
+    [record] = note_records(board, state, terminal=True)
+    assert (record.restatement, record.outcome, record.steering_outcome) == (None, "not_checked", None)
+
+
+@pytest.mark.asyncio
+async def test_a_late_note_that_replaces_an_earlier_one_leaves_status_and_report_agreeing(
+    monkeypatch: pytest.MonkeyPatch, tracker: Tracker
+) -> None:
+    """O1: the late note is in the state the finalizer kept, so /status and the report read the
+    same notes: the earlier note is replaced in both -- no line in the report, ``replaced`` in
+    /status -- and the late one is not checked in both."""
+    first = fake_reader_note("n1", kinds=["emphasis"], restatement="only downtown", short="downtown")
+    late = fake_reader_note("n2", kinds=["scope"], restatement="only San Jose", short="San Jose", replaces="n1")
+    board, _, run = await _published_run(
+        monkeypatch, tracker, late, read_before_publishing=True, earlier=(first,)
+    )
+
+    state = run.state
+    assert [(note.note_id, note.reviewed) for note in state.reader_notes] == [("n1", True), ("n2", True)]
+    assert [(line.note_id, line.outcome) for line in state.composition.reader_note_lines] == [("n2", "not_checked")]
+    assert _bottom_line(state.report).splitlines()[-1] == "- **Your note \u00b7 San Jose:** Not checked: only San Jose"
+    assert "downtown" not in state.report
+    assert [(record.received.note_id, record.outcome) for record in note_records(board, state, terminal=True)] == [
+        ("n1", "replaced"), ("n2", "not_checked"),
+    ]
