@@ -466,39 +466,115 @@ async def test_a_cancelled_run_still_writes_run_json_and_the_cancellation_propag
     assert load_runs(out) == [cancelled]
 
 
-def test_compare_lists_the_controls_it_used_and_the_treatment_runs_it_could_not_judge() -> None:
-    """Final review: transparency only. A kept non-completed control is used as
-    a control (and widens the margins), and a treatment run on a question with
-    no usable control is not judged; the verdict now says both, and neither
-    field changes ``passed`` or any check."""
+def _with_repetitions(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``_runs`` has no repetition numbers; tamil's second baseline is repetition 2."""
+    for number, run in enumerate(runs):
+        run["repetition"] = 2 if number == 1 else 1
+    return runs
+
+
+def test_compare_lists_every_baseline_it_considered_and_whether_it_was_used() -> None:
+    """Final review, then owner decision H10: the verdict names each baseline it
+    considered per question with its session status and whether it was used,
+    and the treatment runs it could not judge. Listing changes nothing: the
+    verdict equals the one for the same runs without the excluded baseline."""
     faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
+    built = _with_repetitions(_runs({"tamil": faster, "latte": faster, "rome": faster}))
+    built[1]["metrics"]["session_status"] = "incomplete"
+    # Rome's only baseline run crashed: it has no quality record and no duration.
+    built[3]["metrics"] = {"seconds": None, "stage_seconds": {}}
 
-    def runs(tamil_second_control: str) -> list[dict[str, Any]]:
-        built = _runs({"tamil": faster, "latte": faster, "rome": faster})
-        for number, run in enumerate(built):
-            run["repetition"] = 1 if number != 1 else 2
-        built[1]["metrics"]["session_status"] = tamil_second_control
-        # Rome's only baseline run crashed: it has no quality record and no duration.
-        built[3]["metrics"] = {"seconds": None, "stage_seconds": {}}
-        return built
-
-    verdict = compare(runs("incomplete"), treatment="x2", stage="researcher")
+    verdict = compare(built, treatment="x2", stage="researcher")
 
     assert verdict["controls_used"] == {
-        "latte": {"count": 1, "session_status": ["completed"]},
-        "tamil": {"count": 2, "session_status": ["completed", "incomplete"]},
+        "latte": {"count": 1, "baselines": [
+            {"repetition": 1, "session_status": "completed", "used": True},
+        ]},
+        "rome": {"count": 0, "baselines": [
+            {"repetition": 1, "session_status": None, "used": False},
+        ]},
+        "tamil": {"count": 1, "baselines": [
+            {"repetition": 1, "session_status": "completed", "used": True},
+            {"repetition": 2, "session_status": "incomplete", "used": False},
+        ]},
     }
     assert verdict["unpaired"] == [{"question_id": "rome", "arm": "x2", "repetition": 1}]
-    assert sorted(verdict["questions"]) == ["latte-1", "tamil-1"]
+    assert verdict["questions"]["rome-1"] == {"checks": {"has_controls": False}}
+    assert verdict["passed"] is False
 
-    # Nothing else moved: the same runs with a completed second control give
-    # the same verdict apart from the control listing.
-    completed = compare(runs("completed"), treatment="x2", stage="researcher")
-    assert completed["controls_used"]["tamil"] == {
-        "count": 2, "session_status": ["completed", "completed"]
-    }
-    for key in verdict.keys() - {"controls_used", "unpaired"}:
-        assert verdict[key] == completed[key], key
-    assert verdict["accuracy_passed"] is True
+    # The excluded baseline is simply not a control: dropping it changes nothing but its listing.
+    without = compare(
+        [run for number, run in enumerate(built) if number != 1], treatment="x2", stage="researcher"
+    )
+    for key in verdict.keys() - {"controls_used"}:
+        assert verdict[key] == without[key], key
+
+
+def test_a_baseline_that_did_not_complete_is_no_control_and_does_not_widen_the_margins() -> None:
+    """Owner decision H10 (2026-10-01): a control must have completed. An
+    incomplete baseline at review 0.55 used to widen the review margin to its
+    0.25 spread from the completed baseline, which let a weak 0.70 treatment
+    through; now it is no control, the margin stays at the 0.03 floor and the
+    treatment fails."""
+    faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
+    weak = {**faster, "review_mean_score": 0.70}
+
+    def verdict_for(second_baseline_status: str) -> dict[str, Any]:
+        built = _runs({"tamil": weak, "latte": faster, "rome": faster})
+        built[0]["metrics"]["review_mean_score"] = 0.80
+        built[1]["metrics"].update(session_status=second_baseline_status, review_mean_score=0.55)
+        return compare(built, treatment="x2", stage="researcher")
+
+    # Were the 0.55 baseline a completed one, it would be a control and the spread is the pre-registered margin.
+    widened = verdict_for("completed")
+    assert widened["review_margin"] == 0.25
+    assert widened["passed"] is True
+
+    excluded = verdict_for("incomplete")
+    assert excluded["review_margin"] == 0.03
+    assert excluded["questions"]["tamil-1"]["checks"]["review_score"] is False
+    assert excluded["controls_used"]["tamil"]["count"] == 1
+    assert excluded["accuracy_passed"] is False
+    assert excluded["passed"] is False
+
+
+def test_a_question_with_a_treatment_but_no_usable_control_fails_the_verdict() -> None:
+    """Owner decision H10 (2026-10-01): it used to drop out of the verdict and
+    let the other questions pass. A question with neither arm is still absent."""
+    faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
+    runs = _with_repetitions(_runs({"tamil": faster, "latte": faster, "rome": faster}))
+    # Rome's only baseline run did not complete.
+    runs[3]["metrics"]["session_status"] = "max_iterations"
+
+    verdict = compare(runs, treatment="x2", stage="researcher")
+
+    assert verdict["questions"]["rome-1"] == {"checks": {"has_controls": False}}
+    assert verdict["unpaired"] == [{"question_id": "rome", "arm": "x2", "repetition": 1}]
+    assert verdict["accuracy_passed"] is False
     assert verdict["time_passed"] is True
-    assert verdict["passed"] is True
+    assert verdict["passed"] is False
+
+    neither = compare(
+        [run for run in runs if run["question_id"] != "rome"], treatment="x2", stage="researcher"
+    )
+    assert "rome" not in neither["controls_used"]
+    assert neither["unpaired"] == []
+    assert neither["passed"] is True
+
+
+def test_a_treatment_with_no_control_anywhere_fails_instead_of_raising() -> None:
+    treatment_only = [
+        {"question_id": "rome", "arm": "x2", "repetition": 1,
+         "metrics": _metrics(seconds=1300.0, stage_seconds={"researcher": 500.0})},
+    ]
+
+    verdict = compare(treatment_only, treatment="x2", stage="researcher")
+
+    assert verdict["questions"] == {"rome-1": {"checks": {"has_controls": False}}}
+    assert verdict["mean_seconds_ratio"] is None
+    assert verdict["time_passed"] is False
+    assert verdict["passed"] is False
+
+    with pytest.raises(ValueError, match="no question has both"):
+        compare([{"question_id": "rome", "arm": "baseline", "metrics": _metrics()}],
+                treatment="x2", stage="researcher")

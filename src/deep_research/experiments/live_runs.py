@@ -339,6 +339,15 @@ def _usable(metrics: Mapping[str, Any]) -> bool:
     return "quality_status" in metrics and metrics.get("seconds") is not None
 
 
+def _usable_control(metrics: Mapping[str, Any]) -> bool:
+    """A usable run whose session completed (owner decision H10, 2026-10-01).
+
+    A baseline that ended any other way (``incomplete``, ``max_iterations``, ...)
+    is not a control: it feeds neither a question's thresholds nor the margins.
+    """
+    return _usable(metrics) and metrics.get("session_status") == "completed"
+
+
 def compare(
     runs: Sequence[Mapping[str, Any]],
     *,
@@ -351,18 +360,36 @@ def compare(
     Accuracy: every check below on every question that has both arms. Time:
     the targeted stage is faster than the control mean on at least two of the
     questions, and the mean ratio of end-to-end seconds is below 1.
+
+    A control is a run that published a quality record and a duration and whose
+    session completed (owner decision H10, 2026-10-01, before any paid run). A
+    question with a treatment run but no such control fails the verdict
+    (``has_controls`` False, the run listed in ``unpaired``); a question with
+    neither arm is simply absent.
     """
     by_question: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    baselines: dict[str, list[dict[str, Any]]] = {}
     for run in runs:
         metrics = run["metrics"]
-        if run["arm"] == control and not _usable(metrics):
-            continue  # a control that published nothing measures nothing
+        if run["arm"] == control:
+            kept = _usable_control(metrics)
+            baselines.setdefault(run["question_id"], []).append({
+                "repetition": run.get("repetition"),
+                "session_status": metrics.get("session_status"),
+                "used": kept,
+            })
+            if not kept:
+                continue  # a control that published nothing or did not complete measures nothing
         by_question.setdefault(run["question_id"], {}).setdefault(run["arm"], []).append(metrics)
     paired = {
         question: arms for question, arms in by_question.items()
         if arms.get(control) and arms.get(treatment)
     }
-    if not paired:
+    uncontrolled = {
+        question: arms for question, arms in by_question.items()
+        if arms.get(treatment) and not arms.get(control)
+    }
+    if not paired and not uncontrolled:
         raise ValueError(f"no question has both a {control} and a {treatment} run")
     multi = [arms[control] for arms in by_question.values() if len(arms.get(control, ())) > 1]
     review_margin = max([
@@ -385,7 +412,7 @@ def compare(
         "review_margin": round(review_margin, 4), "kept_margin": round(kept_margin, 4),
         "questions": {},
     }
-    accuracy_ok = True
+    accuracy_ok = not uncontrolled
     faster: list[bool] = []
     ratios: list[float] = []
     for question, arms in sorted(paired.items()):
@@ -446,21 +473,25 @@ def compare(
                     round(statistics.mean(control_speeds), 1) if control_speeds else None
                 ),
             }
+    for question, arms in sorted(uncontrolled.items()):
+        for number, _ in enumerate(arms[treatment], 1):
+            verdict["questions"][f"{question}-{number}"] = {"checks": {"has_controls": False}}
     needed = min(2, len(faster))
     verdict["accuracy_passed"] = accuracy_ok
     verdict["stage_faster_on"] = sum(faster)
-    verdict["mean_seconds_ratio"] = round(statistics.mean(ratios), 4)
-    verdict["time_passed"] = sum(faster) >= needed and statistics.mean(ratios) < 1
+    verdict["mean_seconds_ratio"] = round(statistics.mean(ratios), 4) if ratios else None
+    verdict["time_passed"] = bool(ratios) and sum(faster) >= needed and statistics.mean(ratios) < 1
     verdict["passed"] = accuracy_ok and verdict["time_passed"]
-    # Transparency only: nothing above reads these two fields. A kept control
-    # of any session status is used as a control, and a treatment run on a
-    # question with no usable control is not judged; both are listed here.
+    # Reporting only: nothing above reads these two fields. Every baseline that
+    # was considered for a judged question is listed with its session status
+    # and whether it was used as a control, and every treatment run on a
+    # question with no usable control is named.
     verdict["controls_used"] = {
         question: {
-            "count": len(arms[control]),
-            "session_status": [c.get("session_status") for c in arms[control]],
+            "count": sum(1 for baseline in baselines.get(question, ()) if baseline["used"]),
+            "baselines": baselines.get(question, []),
         }
-        for question, arms in sorted(paired.items())
+        for question in sorted({*paired, *uncontrolled})
     }
     verdict["unpaired"] = sorted(
         (
@@ -470,7 +501,7 @@ def compare(
                 "repetition": run.get("repetition"),
             }
             for run in runs
-            if run["arm"] == treatment and run["question_id"] not in paired
+            if run["arm"] == treatment and run["question_id"] in uncontrolled
         ),
         key=lambda item: (item["question_id"], item["repetition"] or 0),
     )
