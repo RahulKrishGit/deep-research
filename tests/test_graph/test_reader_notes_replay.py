@@ -37,8 +37,8 @@ from tests.test_api.replay_support import EXTRA_PASS_CASE, REDRAFT_CASE, guarded
 PINNED_RUN_DIGESTS = {
     # notes-progress-report Phase C re-pinned these values: its writer requests and the report
     # the review reads changed (spec §7.1, §7.4, §7.5).
-    EXTRA_PASS_CASE: ("b642638db6939e43", 46),
-    REDRAFT_CASE: ("21f775d0b1ce5183", 29),
+    EXTRA_PASS_CASE: ("d92891c23a2cfe2e", 46),
+    REDRAFT_CASE: ("9ac8c34e25224206", 29),
 }
 AT = "2026-09-29T10:00:00.000+00:00"
 

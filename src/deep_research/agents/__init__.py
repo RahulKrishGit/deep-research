@@ -340,12 +340,14 @@ from deep_research.agents.report_reviewer import (
     ScopedReportReviewNotesDraft,
 )
 from deep_research.agents.report_table import (
-    MAX_FINDING_ROWS,
     MAX_FULL_PAGES_PER_CELL,
+    MAX_KEY_FIGURE_ROWS,
     MAX_OPTION_PART_COLUMNS,
     MAX_OPTION_ROWS,
+    KeyFigureGroup,
     build_table,
-    findings_table,
+    key_figures_table,
+    merge_key_figures,
     options_table,
 )
 from deep_research.agents.report_writer import (
@@ -846,10 +848,12 @@ __all__ = [
     "MAX_OPTION_ROWS",
     "MAX_OPTION_PART_COLUMNS",
     "MAX_FULL_PAGES_PER_CELL",
-    "MAX_FINDING_ROWS",
+    "MAX_KEY_FIGURE_ROWS",
+    "KeyFigureGroup",
     "build_table",
     "options_table",
-    "findings_table",
+    "key_figures_table",
+    "merge_key_figures",
     "BottomLineDraft",
     "CONTEXT_ONLY_RELEVANCE",
     "DEFAULT_WRITER_AUTHORITY_FLOOR",

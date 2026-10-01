@@ -2866,7 +2866,7 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
 
     markdown = render_written_report(composition)
     evidence = render_finding_log(composition)
-    assert "| What was measured | Result |" in markdown
+    assert "| What | Figure | Source |" in markdown
     assert "(2026-01-05)" in markdown
     assert "(updated 2026-02-10)" in markdown
     assert "A denied page" in markdown

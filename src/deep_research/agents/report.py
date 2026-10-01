@@ -1379,10 +1379,14 @@ def _table_cell_text(
     index: Sequence[Citation],
     by_id: Mapping[str, Finding],
 ) -> str:
-    """One printed cell, by column position and table shape (§4.2, §4.3)."""
+    """One printed cell, by column position and table shape (§4.2, §4.3). A
+    figures table's last column prints its text, then its markers
+    (notes-progress-report spec §7.4 item 5: Key figures' Source)."""
     if shape == "findings":
         if position == last:
-            return _finding_ids_markers(cell.finding_ids, by_id, index) or _CELL_EMPTY
+            text = _table_cell(cell.text) if cell.text else ""
+            markers = _finding_ids_markers(cell.finding_ids, by_id, index)
+            return " ".join(part for part in (text, markers) if part) or _CELL_EMPTY
         return _table_cell(cell.text) if cell.text else _CELL_EMPTY
     # options
     if position == 0:

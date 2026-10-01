@@ -20,7 +20,7 @@ from deep_research.agents.report import (
     render_written_report,
     written_citations,
 )
-from deep_research.agents.report_table import findings_table
+from deep_research.agents.report_table import key_figures_table
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     EarlierEdition,
@@ -1176,7 +1176,7 @@ def test_the_verified_figures_table_includes_a_table_only_figure() -> None:
         "findings": [base.findings[0], steo_finding],
         "sub_topics": [topic_one, topic_two],
     })
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     composition = composition.model_copy(update={"table": table})
 
