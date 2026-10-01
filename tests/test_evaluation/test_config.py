@@ -1416,7 +1416,14 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the recoverable ``report_writer_bottom_line_no_answer``; the citation-order
     # docstring states the order the code uses. No request text changed;
     # agents.prompts was untouched. Moved `ea77570646c9` -> `7764df3e0fcc`.
-    "report_writer": "7764df3e0fcc",
+    # notes-progress-report final review F1 (2026-10-01, P2-1): a later pass
+    # (a note pass or a redraft) puts back the points an assembled (fallback)
+    # bottom line moved out of the previous sections before it carries them
+    # over or routes a defect to them, so the moved points stay in the report.
+    # Only this module's own source moved (a new helper and its call site); no
+    # request text changed and agents.prompts was untouched. Moved
+    # `7764df3e0fcc` -> `7165ec336250`.
+    "report_writer": "7165ec336250",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

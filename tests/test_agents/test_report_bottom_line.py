@@ -37,6 +37,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchEvent,
     ResearchState,
+    ReviewDefect,
     SectionDraft,
     TopicLineDraft,
     WriterPointDraft,
@@ -51,6 +52,7 @@ from tests.test_agents.test_report_writer import (
     _FakeChecker,
     _FakeStatementCheckItem,
     _output_limit_error,
+    _scored_review,
     _statement_finding,
     _topic,
     _verdict,
@@ -507,6 +509,141 @@ async def test_fallback_move_drops_emptied_section(checker, tracker, tmp_path: P
         f"According to the source, part {n} also holds." for n in range(1, 5)
     ]
     assert composition.bottom_line.topic_lines[-1].label == "Pe"
+
+
+def _printed_texts(composition) -> list[str]:
+    return [p.text for p in composition.summary] + [p.text for s in composition.sections for p in s.points]
+
+
+async def _five_part_fallback_pass(tracker, tmp_path: Path):
+    """Pass one: five parts, the bottom line fails twice, so the fallback moves one point of
+    every topic into it -- nine statements printed in all, four of them in sections."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_five_part_state())
+    route = _five_part_route(task)
+    completer = ScriptedCompleter(outputs=[route] * 5 + [_output_limit_error(), _output_limit_error()])
+    first = await compose_written_report(task, provider=completer, section_concurrency=1)
+    assert first.bottom_line is not None and first.bottom_line.assembled
+    assert len(_printed_texts(first)) == 9
+    return first
+
+
+def _later_pass_state(first, **fields) -> ResearchState:
+    return _five_part_state().model_copy(update={"composition": first, **fields})
+
+
+@pytest.mark.asyncio
+async def test_a_note_pass_after_a_fallback_bottom_line_prints_every_statement_of_the_first_pass(
+    checker, tracker, tmp_path: Path,
+) -> None:
+    """Final review P2-1 (Phase A x Phase C): the fallback moved one point of every topic out
+    of its section into the bottom line, and a note pass carries those sections over while it
+    drafts the bottom line afresh -- so each topic's best checked statement vanished from the
+    report. The carried parts get the moved points back (a topic the move emptied gets its
+    section back), with no model call, so every pass-one statement is still printed."""
+    first = await _five_part_fallback_pass(tracker, tmp_path)
+    note = fake_reader_note("n1", kinds=["new_angle"], restatement="pastries at the caf\u00e9s", short="pastries")
+    note_target = make_target("note-n1-target-01", coverage_id="note-n1", required=True, unit_dimension=None)
+    note_finding = _statement_finding("https://note.test/1", "According to the source, pastries are sold.",
+                                      target_ids=["note-n1-target-01"])
+    base = _five_part_state()
+    marker = ResearchEvent(event_type="graph.note_pass.started", source="graph", message="Note pass started.",
+                           metadata={"iteration": 0, "note_passes": 1, "note_ids": ["n1"],
+                                     "targets": ["note-n1-target-01"]})
+    state = _later_pass_state(
+        first, reader_notes=[note], report_review=_scored_review([]), events=[marker],
+        sub_topics=[*base.sub_topics, _topic("note-n1", "Your note: pastries at the caf\u00e9s", [note_target],
+                                             priority=6)],
+        verified_findings=[*base.verified_findings, note_finding],
+    )
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    assert task.note_pass_coverage_ids == ["note-n1"]
+    note_label = _labels(task)["https://note.test/1"]
+    calls: list[str] = []
+
+    def route(messages, schema):
+        point = WriterPointDraft(text="According to the source, pastries are sold.", finding_labels=[note_label])
+        if schema.__name__ == "BottomLineDraft":
+            calls.append("bottom_line")
+            return BottomLineDraft(sentences=[point])
+        part = re.search(r"# This part of the question\n(.+)", messages[-1].content).group(1)
+        calls.append(part)
+        return SectionDraft(title=part, short_title="Pastries", points=[point])
+
+    second = await compose_written_report(
+        task, provider=ScriptedCompleter(outputs=[route] * 4), section_concurrency=1,
+    )
+
+    assert [t for t in _printed_texts(first) if t not in _printed_texts(second)] == []
+    assert calls == ["Your note: pastries at the caf\u00e9s", "bottom_line"]
+    assert {part.coverage_id: part.status for part in second.parts} == {
+        **{f"topic-{n:02d}": "carried_over" for n in range(1, 6)}, "note-n1": "written",
+    }
+    sections = {section.coverage_id: section for section in second.sections}
+    assert [p.text for p in sections["topic-01"].points] == [
+        "According to the source, part 1 holds.", "According to the source, part 1 also holds.",
+    ]
+    # The topic the move emptied is back too, under its own title and short title.
+    assert (sections["topic-05"].title, sections["topic-05"].short_title) == ("Part 5", "Pe")
+    assert [p.text for p in sections["topic-05"].points] == ["According to the source, part 5 holds."]
+    assert not second.bottom_line.assembled
+    printed_ids = {p.statement_id for p in second.summary} | {
+        p.statement_id for section in second.sections for p in section.points
+    }
+    assert {second.statement_verdicts[i] for i in printed_ids} == {"consistent"}
+
+
+@pytest.mark.asyncio
+async def test_a_redraft_after_a_fallback_bottom_line_keeps_the_moved_points_and_routes_to_them(
+    checker, tracker, tmp_path: Path,
+) -> None:
+    """Final review P2-1, the review's own redraft: the same carry-over. A defect naming a point
+    the fallback moved into the bottom line reaches the part that point came from -- so the
+    restored point is rewritten, never republished unchanged -- and the other parts keep
+    theirs."""
+    first = await _five_part_fallback_pass(tracker, tmp_path)
+    moved = next(line.statement_id for line in first.bottom_line.topic_lines if line.coverage_id == "topic-02")
+    defect = ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
+                          statement_ids=[moved], problem="Part two's first point needs its source named.")
+    state = _later_pass_state(first, report_review=_scored_review([defect]))
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    assert task.defects == [defect] and task.previous is first
+    labels = _labels(task)
+    calls: list[str] = []
+    bodies: dict[str, str] = {}
+
+    def route(messages, schema):
+        body = messages[-1].content
+        if schema.__name__ == "BottomLineDraft":
+            calls.append("bottom_line")
+            return BottomLineDraft(sentences=[WriterPointDraft(
+                text="According to the source, part 1 holds.", finding_labels=[labels["https://p1.test/1"]])])
+        part = re.search(r"# This part of the question\n(.+)", body).group(1)
+        calls.append(part)
+        bodies[part] = body
+        return SectionDraft(title=part, short_title="Pb", points=[WriterPointDraft(
+            text="According to the source, part 2 holds, with its source named.",
+            finding_labels=[labels["https://p2.test/1"]])])
+
+    second = await compose_written_report(
+        task, provider=ScriptedCompleter(outputs=[route] * 4), section_concurrency=1,
+    )
+
+    assert calls == ["Part 2", "bottom_line"]
+    # The part's request shows its whole previous section, the moved point included.
+    assert "- According to the source, part 2 holds.\n- According to the source, part 2 also holds." in bodies["Part 2"]
+    assert "Part two's first point needs its source named." in bodies["Part 2"]
+    assert {part.coverage_id: part.status for part in second.parts} == {
+        "topic-01": "carried_over", "topic-02": "written", "topic-03": "carried_over",
+        "topic-04": "carried_over", "topic-05": "carried_over",
+    }
+    missing = [t for t in _printed_texts(first) if t not in _printed_texts(second)]
+    assert missing == ["According to the source, part 2 holds.", "According to the source, part 2 also holds."]
+    assert "According to the source, part 2 holds, with its source named." in _printed_texts(second)
+    for n in (1, 3, 4, 5):
+        assert f"According to the source, part {n} holds." in _printed_texts(second)
 
 
 @pytest.mark.asyncio

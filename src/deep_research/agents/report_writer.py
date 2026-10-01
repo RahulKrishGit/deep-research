@@ -89,6 +89,7 @@ from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     NOTE_COVERAGE_PREFIX,
+    NOTE_LABEL_PREFIX,
     AcquisitionState,
     AnswerKind,
     BottomLineDraft,
@@ -3234,6 +3235,47 @@ async def _run_bottom_line(
     return points, verdict_map, errors, rejected, dropped_marks, set(), layout
 
 
+def _with_moved_points_restored(
+    previous: ReportComposition | None, titles: Mapping[str, str],
+) -> ReportComposition | None:
+    """Final review P2-1: the previous composition as its parts wrote it, when its bottom
+    line was the fallback's.
+
+    The fallback (§7.3) *moves* one point of every topic out of its section into the
+    bottom line, and a later pass (a note pass, a redraft) carries each part's previous
+    section over while it drafts the bottom line afresh -- so every moved point would
+    vanish from the report, its line having gone with the old bottom line. Each topic
+    line of an assembled layout is that moved point (``previous.summary`` holds it,
+    verdict in ``statement_verdicts``): it goes back at the head of its section, where
+    the pick came from, and a section the move emptied is rebuilt from the plan's title
+    for it and the line's own label. A drafted layout moved nothing, so ``previous`` is
+    returned as it is. Routing a defect by statement id reads the restored sections
+    too, so a defect on a moved point reaches the part that wrote it."""
+    layout = previous.bottom_line if previous is not None else None
+    if previous is None or layout is None or not layout.assembled:
+        return previous
+    by_id = {point.statement.statement_id: point for point in previous.summary if point.statement is not None}
+    sections = list(previous.sections)
+    position = {section.coverage_id: n for n, section in enumerate(sections) if section.coverage_id}
+    for line in layout.topic_lines:
+        point = by_id.get(line.statement_id)
+        if point is None:
+            continue
+        held = position.get(line.coverage_id)
+        if held is None:
+            title = titles.get(line.coverage_id)
+            if title is None:
+                continue
+            position[line.coverage_id] = len(sections)
+            sections.append(ReportSection(
+                title=title, short_title=line.label.removeprefix(NOTE_LABEL_PREFIX),
+                points=[point], coverage_id=line.coverage_id,
+            ))
+        elif all(held_point.statement_id != line.statement_id for held_point in sections[held].points):
+            sections[held] = sections[held].model_copy(update={"points": [point, *sections[held].points]})
+    return previous.model_copy(update={"sections": sections})
+
+
 def _topic_line_order(coverage_id: str, task: ReportWriterTask) -> tuple[int, int]:
     """Spec §7.2: the plan's topics in plan order, then the active notes' topics
     in receipt order (``n1`` first)."""
@@ -3442,12 +3484,15 @@ async def compose_written_report(
     citable = citable_findings(task.findings)
     placements, _unplaced = report_parts(citable, task.targets, task.sub_topics)
     src_by_url = sources_by_url(task.sources)
+    previous = _with_moved_points_restored(
+        task.previous, {placement.coverage_id: placement.sub_topic_title for placement in placements},
+    )
     previous_sections_by_coverage = {
-        s.coverage_id: s for s in (task.previous.sections if task.previous else []) if s.coverage_id
+        s.coverage_id: s for s in (previous.sections if previous else []) if s.coverage_id
     }
     is_redraft = bool(task.defects)
     if is_redraft:
-        routed_coverage_ids, defects_by_coverage, _ = _route_defects(task.defects, task.previous, task.targets)
+        routed_coverage_ids, defects_by_coverage, _ = _route_defects(task.defects, previous, task.targets)
     else:
         routed_coverage_ids, defects_by_coverage = set(), {}
 
