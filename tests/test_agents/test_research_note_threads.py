@@ -13,15 +13,32 @@ from deep_research.agents.reader_notes import note_sub_topic
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.graph.live import bind_live_sink
 from deep_research.graph.nodes import agent_node
-from deep_research.graph.state import ROUTE_NOTE_PASS, dump_state, graph_route, load_state, notes_due_a_pass
+from deep_research.graph.state import (
+    ROUTE_NOTE_PASS,
+    dump_state,
+    graph_route,
+    load_state,
+    notes_due_a_pass,
+)
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderTimeoutError
 from deep_research.runtime.notes import NoteBoard, bind_note_board
 from deep_research.utils.config import AgentRuntimeConfig
-from deep_research.utils.types import ResearchEvent, ResearchState, SubTopic, merge_research_state, with_board_notes
+from deep_research.utils.types import (
+    ResearchEvent,
+    ResearchState,
+    SubTopic,
+    merge_research_state,
+    with_board_notes,
+)
 from tests.agent_fakes import TargetKeyedCompleter, finish
-from tests.graph_fakes import fake_reader_note, fake_report_review, fake_sub_topic, fake_target
+from tests.graph_fakes import (
+    fake_reader_note,
+    fake_report_review,
+    fake_sub_topic,
+    fake_target,
+)
 from tests.research_fakes import research_tools
 
 AT = "2026-09-30T10:00:00.000+00:00"
@@ -309,3 +326,39 @@ async def test_note_after_window_owes_pass(tracker: Tracker, monkeypatch: pytest
     assert [topic.coverage_id for topic in researched.sub_topics] == ["topic-01"]
     assert [note.note_id for note in notes_due_a_pass(reviewed)] == ["n1"]
     assert graph_route(reviewed) == (ROUTE_NOTE_PASS, "note_pass_requested")
+
+
+@pytest.mark.asyncio
+async def test_a_note_thread_on_a_confined_pass_researches_its_own_targets(tracker: Tracker) -> None:
+    """§5.3, §5.8: a research note read while a confined pass (an extra pass) runs gets its own
+    thread, and that thread's targets join the extraction list beside the pass's confined target; a
+    thread that finished leaves the note owed nothing."""
+    topic_gate = asyncio.Event()
+    completer = GatedCompleter(
+        gates={"topic-02": topic_gate},
+        decisions={"topic-02": [_done("topic-02")], "note-n1": [_done("note-n1")]},
+    )
+    agent = _researcher(tracker, completer, concurrency=1)
+    state = _state(_topic(1), _topic(2)).model_copy(update={"extra_pass_target_ids": ["topic-02-target-01"]})
+    board = NoteBoard()
+    published: list[ResearchEvent] = []
+
+    with bind_note_board(board), bind_live_sink(published.append):
+        async with tracker.session_span("session-1", "q"):
+            running = asyncio.create_task(agent.run(state))
+            await _until(lambda: bool(_seen(published, "researcher.sub_topic.started", "topic-02")))
+            _read(board, "n1", kinds=["new_angle"])
+            await _until(lambda: bool(_seen(published, "researcher.sub_topic.started", "note-n1")))
+            topic_gate.set()
+            outcome = await asyncio.wait_for(running, timeout=5)
+        merged = merge_research_state(state, {
+            **outcome.state_update,
+            "reader_notes": with_board_notes(state.reader_notes, board.snapshot()),
+            "report_review": fake_report_review(),
+        })
+
+    started = [e.metadata["coverage_id"] for e in outcome.state_update["events"] if e.event_type == "researcher.sub_topic.started"]
+    assert started == ["topic-02", "note-n1"]
+    assert [topic.coverage_id for topic in outcome.state_update["sub_topics"]] == ["note-n1"]
+    assert [target.target_id for target in agent._planned_targets()] == ["topic-02-target-01", "note-n1-target-01"]
+    assert notes_due_a_pass(merged) == []

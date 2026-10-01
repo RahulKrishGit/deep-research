@@ -267,12 +267,16 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
       run.loopPending = true; run.arc = "extra_pass"; run.loop = "flowing";
       /* the pass about to run starts its own checklist; the writer's next draft is not a redraft */
       run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
+      /* spec §5.7: "now" means the note's own thread runs in this researcher run; an earlier run's thread no longer counts */
+      for (const n of run.notes) n.threadStarted = false;
       delete run.reopen.report_writer;
     } else if (md.destination === "note_pass") {
       /* live-briefs spec §4.6: the note pass re-runs Researching onward, as the extra pass does */
       rearm(run, 1); run.active = "researcher";
       run.loopPending = true; run.arc = "note_pass"; run.loop = "flowing";
       run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
+      /* spec §5.7: a note pass's own started event sets it again */
+      for (const n of run.notes) n.threadStarted = false;
       delete run.reopen.report_writer;
     } else if (md.destination === "redraft") {
       rearm(run, 4); run.active = "report_writer";

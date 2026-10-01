@@ -1081,11 +1081,13 @@ async def _review_report(
 def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
     """The review's notes marked reviewed, then any that arrived since, or ``{}``.
 
-    Every active note of ``started`` was in the review input
-    (``build_report_review_input`` reads them), so each is marked
-    ``reviewed``; a note on the board that ``started`` did not hold is added
-    unreviewed (live-briefs spec §4.6). ``{}`` for a run with no notes, so its
-    merge is exactly what it was.
+    Every active note of ``started`` is marked ``reviewed``, a ``new_angle``-only
+    note included although the review packet leaves it out
+    (``build_report_review_input`` lists ``steering_notes``): the flag is read
+    only for a note with a steering kind (``notes_due_a_redraft``), so for a
+    research note it is inert. A note on the board that ``started`` did not hold
+    is added unreviewed (live-briefs spec §4.6). ``{}`` for a run with no notes,
+    so its merge is exactly what it was.
     """
     reviewed = {note.note_id for note in active_reader_notes(started.reader_notes)}
     marked = [

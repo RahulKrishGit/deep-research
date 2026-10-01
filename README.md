@@ -833,15 +833,23 @@ The note (1–500 characters, one line) is accepted at once as `session.note.rec
 reading (`{note_id, restatement, kinds, replaces, fallback}`). A reading that fails or
 times out keeps the note as written, as an emphasis, with `fallback: true`. Every step
 but evidence verification reads the notes (a later note replaces an earlier one it
-contradicts); a note the review finds no evidence for buys one targeted research pass,
-and a note the report ignores buys one redraft, neither spending the extra-pass budget
-or the writer's own re-run. Notes close once `finalize_report` has started: the run's
-published decision to publish (or to end) closes them (live-briefs Phase 3 plan,
-ambiguity 5). The status snapshot carries `notes` (each with its `text`, its
-`restatement` once read, and its `outcome`: `covered`, `not_found`, `not_addressed`
-when the report still does not follow the note after its one redraft, `replaced`,
-`pending` while the session goes on with nothing to judge the note by yet, or
-`not_checked` once it has ended that way — no session that has ended reports `pending`),
+contradicts). A research note (kind `new_angle`) is researched as a topic of its own: it
+joins the plan when it is read before the plan is published, gets its own research
+thread at once when it is read while research runs, and otherwise buys one note pass
+afterwards, in which only its part and the bottom line are redrafted. A steering note
+gets one targeted research pass when the review finds no evidence for it, and one full
+redraft when the report ignores it. A note of both kinds is researched like a research
+note, and its steering half is judged like a steering note's, which can buy that
+redraft. None of these spends the extra-pass budget or the writer's own re-run. Notes
+close once `finalize_report` has started: the run's published decision to publish (or
+to end) closes them (live-briefs Phase 3 plan, ambiguity 5). The status snapshot carries
+`notes` (each with its `text`, its `restatement` once read, and its `outcome`: `covered`,
+`not_found`, `not_addressed` when the report still does not follow the note after its
+one redraft, `replaced`, `pending` while the session goes on with nothing to judge the
+note by yet, or `not_checked` once it has ended that way, where a research note's
+outcome comes from its own topic's targets and a steering note's from the review; and
+its `steering_outcome`, the same words for a mixed note's steering half and `null` for
+every other note; no session that has ended reports `pending` in either field),
 `notes_remaining`, `note_passes`, and `clarification` (the one-time check's questions and
 the answers the run started with, or `null`).
 
