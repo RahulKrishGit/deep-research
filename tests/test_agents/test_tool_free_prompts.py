@@ -60,6 +60,7 @@ from deep_research.agents.report_reviewer import (
     review_messages,
 )
 from deep_research.agents.report_writer import (
+    _BOTTOM_LINE_REPLY_EXAMPLES,
     PartJob,
     ReportWriterTask,
     bottom_line_messages,
@@ -534,6 +535,7 @@ def _example_tables() -> tuple:
         (_FINDING_REPLY_EXAMPLES, SubTopicFindingsDraft),
         (_SOURCE_SCORE_REPLY_EXAMPLES, SourceScoresDraft),
         (_judge_examples(), JudgeVerdict),
+        (_BOTTOM_LINE_REPLY_EXAMPLES, BottomLineDraft),
     )
 
 

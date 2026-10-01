@@ -37,7 +37,12 @@ from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.evidence import cosmetic_text
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.agents.planner import Clock, answer_form_requirement, utc_now
+from deep_research.agents.planner import (
+    Clock,
+    answer_form_requirement,
+    reader_answer_lines,
+    utc_now,
+)
 from deep_research.agents.prompts import (
     AgentTask,
     render_structured_reply_format,
@@ -95,6 +100,7 @@ from deep_research.utils.types import (
     NotFoundTarget,
     PageCredit,
     ReadRecord,
+    ReaderAnswer,
     RejectedDraftPoint,
     ReportComposition,
     ReportPart,
@@ -122,9 +128,10 @@ REPORT_WRITER_NAME = "report_writer"
 # _DEFECT_PROBLEM_CHARS 400 -> 2000, the old DEFAULT_MAX_SECTIONS = 4 cap is
 # deleted outright (every plan part gets its section, one call per part, no
 # part dropped for count), and no new cap is added on points per section or
-# findings per part. MAX_BOTTOM_LINE_SENTENCES (4) stays: it is the top of
-# the bottom line's own 2-4 sentence shape (WRI-4), not a truncation of
-# content.
+# findings per part. MAX_ANSWER_SENTENCES (2) is the top of the bottom
+# line's direct answer, one or two sentences (notes-progress-report spec
+# §7.1), not a truncation of content: the bottom line's topic lines have no
+# count cap.
 # Whole-branch review P2-1: _SECTION_TITLE_CHARS moved to the spec's 80 (a
 # drafted title prints raw and becomes an options-table column header, so
 # the earlier 120 was too wide a backstop) and its cut is now a word
@@ -133,9 +140,15 @@ REPORT_WRITER_NAME = "report_writer"
 # title instead of printing unchecked.
 MAX_POINT_CHARS = 1200
 MAX_POINT_WORDS = 60
-MAX_BOTTOM_LINE_SENTENCES = 4
+MAX_ANSWER_SENTENCES = 2
 MAX_BOTTOM_LINE_SENTENCE_WORDS = 60
 _SECTION_TITLE_CHARS = 80
+#: A section's short title (notes-progress-report spec §7.2): 1-3 words, at
+#: most 24 characters, no digit and no verdict word, else the title stands in.
+_SHORT_TITLE_WORDS = 3
+_SHORT_TITLE_CHARS = 24
+#: The §6.8 fallback's point cap, kept apart from the direct answer's own cap.
+_FALLBACK_POINTS = 4
 _MARK_SPAN_CHARS = 80
 CONTEXT_ONLY_RELEVANCE = 0.5
 DEFAULT_WRITER_AUTHORITY_FLOOR = 0.4
@@ -297,6 +310,9 @@ SECTION_INSTRUCTION = (
     "- A section title names the part of the question this section answers, in the "
     "question's own words where it has them: at most eight words, never a judgement or "
     "a status.\n"
+    "- short_title names the same part in one to three words for a contents list "
+    "(\"Published picks\", \"Opening hours\"): no number, no judgement, at most 24 "
+    "characters.\n"
     "- Never print a page's housekeeping as a point: a copyright, revision or legal "
     "line, or a disclaimer, belongs to the evidence log and answers no question. An "
     "effective date is not housekeeping when the question asks when something "
@@ -341,9 +357,9 @@ _SECTION_REPLY_EXAMPLES = (
         "content: The outreach program closed in 2020 after its funding ended. | "
         "snippet: the outreach program closed in 2020. | F01 | statement | read at "
         "example-register.test | actual",
-        '{"title":"Programme closure","points":[{"text":"Example Register records '
-        'that the outreach program closed in 2020.","finding_labels":["F01"],'
-        '"disputes":false,"outcome":true,"items":[]}]}',
+        '{"title":"Programme closure","short_title":"Closure","points":[{"text":'
+        '"Example Register records that the outreach program closed in 2020.",'
+        '"finding_labels":["F01"],"disputes":false,"outcome":true,"items":[]}]}',
     ),
     (
         "Example input: ## F02: Example Register entry (example-register.test) | "
@@ -360,7 +376,8 @@ _SECTION_REPLY_EXAMPLES = (
         "5. | F04 | figure 1: 4.5 out of 5 | subject Model A | period 2026 | kind "
         "actual | organisation Example Tester | label: Example Tester's own figure; "
         "actual",
-        '{"title":"Value for money","points":[{"text":"example-register.test says '
+        '{"title":"Value for money","short_title":"Value for money","points":'
+        '[{"text":"example-register.test says '
         'Model B is the one to beat for the price, while Example Tester says Model '
         'C is the one to beat for the price; the two differ.","finding_labels":'
         '["F02","F03"],"disputes":true,"outcome":false,"items":[{"name":"Model B",'
@@ -377,17 +394,30 @@ _SECTION_REPLY_EXAMPLES = (
 # --- WRI-4/WRI-5/WRI-6: the bottom-line call's prompt contract --------------
 
 BOTTOM_LINE_SYSTEM_PROMPT = (
-    "Write the bottom line: two to four sentences answering the question directly, "
-    "from the checked statements listed; each was checked against the findings it "
-    "cites; state nothing they do not."
+    "Write the bottom line from the checked statements listed: first a direct answer "
+    "to the question in one or two sentences, then one line for each topic listed, in "
+    "the listed order. Each statement was checked against the findings it cites; "
+    "state nothing they do not."
 )
 
 BOTTOM_LINE_INSTRUCTION = (
     "Rules:\n"
-    "- The most direct answer first, then the question's parts in order.\n"
+    "- sentences: one or two sentences that answer the question directly, the most "
+    "direct answer first. When # Reader answers is listed, give the answer the form "
+    "those answers ask for \u2014 how many options, which area, for what purpose \u2014 "
+    "naming only options, figures and picks the listed statements carry, each credited "
+    "as its statement credits it; the reader's answers narrow what is answered, never "
+    "what a statement says.\n"
+    "- topics: one line per topic listed under # Checked statements, in the listed "
+    "order, with topic set to the id at the start of that topic's heading. The line "
+    "states the fact from that topic's own statements that best answers the question; "
+    "when the answer sentences already state that fact and the topic has another that "
+    "bears on the question, it states that one instead. It cites only labels that "
+    "topic's own statements cite. Leave a topic out only when none of its statements "
+    "bears on the question.\n"
     "- For a question whose answer form is a causal mechanism (one asking why or how "
-    "something happened or works), give the mechanism as ordered steps within the two "
-    "to four sentences: each step states a cause, its effect and the sources that "
+    "something happened or works), give the mechanism as ordered steps within the "
+    "answer's sentences: each step states a cause, its effect and the sources that "
     "state it, in order, and a sentence carries one step or consecutive steps; the "
     "last step states the outcome the question's subject reached, as a listed "
     "statement states it and dated where that statement dates it -- never an "
@@ -441,29 +471,36 @@ BOTTOM_LINE_INSTRUCTION = (
 
 _BOTTOM_LINE_REPLY_EXAMPLES = (
     (
-        "Example input: # Checked statements ## Noise ratings - Example Tester gives "
-        "Model A a noise rating of 4.5 out of 5. (cites F01; options: Model A) - "
-        "Example Register says Model B is the one to beat for the price. (cites F02; "
-        "options: Model B [picked])",
-        '{"sentences":[{"text":"Example Tester rates Model A 4.5 out of 5 for noise, '
-        'while Example Register names Model B the one to beat for the price.",'
-        '"finding_labels":["F01","F02"],"items":[{"name":"Model A","verdict":"4.5 out '
-        'of 5 for noise","picked":false,"by":"F01"},{"name":"Model B","verdict":"the '
-        'one to beat for the price","picked":true,"by":"F02"}]}]}',
+        "Example input: # Reader answers - How many picks do you want? Just one (the "
+        "reader's answer) # Checked statements ## topic-01 \u00b7 Noise ratings - Example "
+        "Tester gives Model A a noise rating of 4.5 out of 5. (cites F01; options: Model "
+        "A) ## topic-02 \u00b7 Value for money - Example Register says Model B is the one "
+        "to beat for the price. (cites F02; options: Model B [picked])",
+        '{"sentences":[{"text":"Example Register picks Model B as the one to beat for '
+        'the price.","finding_labels":["F02"],"items":[{"name":"Model B","verdict":"the '
+        'one to beat for the price","picked":true,"by":"F02"}]}],"topics":[{"topic":'
+        '"topic-01","text":"Example Tester rates Model A 4.5 out of 5 for noise.",'
+        '"finding_labels":["F01"],"items":[{"name":"Model A","verdict":"4.5 out of 5 '
+        'for noise","picked":false,"by":"F01"}]},{"topic":"topic-02","text":"Example '
+        'Register says Model B is the one to beat for the price.","finding_labels":'
+        '["F02"],"items":[{"name":"Model B","verdict":"the one to beat for the price",'
+        '"picked":true,"by":"F02"}]}]}',
     ),
     (
-        "Example input: # Checked statements ## Why the program closed - Example "
-        "Institute reports that a 2018 funding cut reduced the outreach budget. "
+        "Example input: # Checked statements ## topic-01 \u00b7 Why the program closed - "
+        "Example Institute reports that a 2018 funding cut reduced the outreach budget. "
         "(cites F04) - Example Register states that the reduced budget forced staff "
-        "reductions through 2019. (cites F05) - Example Register records that the "
-        "outreach program closed in 2020 after its funding ended. (cites F06) "
-        "# Outcome - Example Register records that the outreach program closed in "
-        "2020 after its funding ended. (cites F06)",
+        "reductions through 2019. (cites F05) ## topic-02 \u00b7 When it closed - Example "
+        "Register records that the outreach program closed in 2020 after its funding "
+        "ended. (cites F06) # Outcome - Example Register records that the outreach "
+        "program closed in 2020 after its funding ended. (cites F06)",
         '{"sentences":[{"text":"According to Example Institute, a 2018 funding cut '
-        'reduced the outreach budget, and Example Register says the reduced budget '
-        'forced staff reductions through 2019.","finding_labels":["F04","F05"],'
-        '"items":[]},{"text":"The outreach program then closed in 2020 after the '
-        'funding ended, Example Register records.","finding_labels":["F06"],'
+        'reduced the outreach budget, and the program closed in 2020 after its funding '
+        'ended, Example Register records.","finding_labels":["F04","F06"],"items":[]}],'
+        '"topics":[{"topic":"topic-01","text":"Example Register states that the reduced '
+        'budget forced staff reductions through 2019.","finding_labels":["F05"],'
+        '"items":[]},{"topic":"topic-02","text":"The outreach program closed in 2020 '
+        'after its funding ended, Example Register records.","finding_labels":["F06"],'
         '"items":[]}]}',
     ),
 )
@@ -532,6 +569,11 @@ class ReportWriterTask(AgentTask):
     """The rendered reader-notes block (live-briefs spec §4.6), printed as
     ``# Reader notes`` in every section and bottom-line request; ``""`` for a
     run without notes, whose requests are then exactly what they were."""
+    reader_answers: list[ReaderAnswer] = Field(default_factory=list)
+    """The reader's answers to the one-time check (``state.reader_answers``),
+    printed as ``# Reader answers`` in the bottom-line request so its direct
+    answer takes the form they ask for (notes-progress-report spec §7.1); ``[]``
+    when the check asked nothing."""
     authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR
     """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
     per-statement floor filter (``_statement_meets_authority_floor``): a
@@ -1004,8 +1046,15 @@ def _rendered_previous_section(section: ReportSection | None) -> str:
     return "\n".join(lines)
 
 
-def _rendered_previous_bottom_line(points: Sequence[ReportPoint]) -> str:
-    return "\n".join(f"- {point.text}" for point in points) or "(none)"
+def _rendered_previous_bottom_line(
+    points: Sequence[ReportPoint], topics: Mapping[str, str] = _EMPTY_MAPPING,
+) -> str:
+    """The previous bottom line, each point prefixed with ``answer:`` or, for a
+    topic line, its own ``{coverage_id}:`` (notes-progress-report spec §7.1).
+    ``topics`` maps a topic line's statement id to its coverage id."""
+    return "\n".join(
+        f"- {topics.get(point.statement_id, 'answer')}: {point.text}" for point in points
+    ) or "(none)"
 
 
 def material_defects(review: ReportReview | None) -> list[ReviewDefect]:
@@ -1203,7 +1252,8 @@ def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
 
 def bottom_line_messages(
     task: ReportWriterTask, sections: Sequence[ReportSection], *,
-    previous: Sequence[ReportPoint] = (), defects: Sequence[ReviewDefect] = (),
+    previous: Sequence[ReportPoint] = (), previous_topics: Mapping[str, str] = _EMPTY_MAPPING,
+    defects: Sequence[ReviewDefect] = (),
     disputed_statement_ids: frozenset[str] = frozenset(),
     outcome_statement_ids: frozenset[str] = frozenset(),
 ) -> list[ChatMessage]:
@@ -1254,7 +1304,7 @@ def bottom_line_messages(
             if point.statement.statement_id in outcome_statement_ids:
                 outcome_lines.append(line)
         if lines:
-            blocks.append(f"## {section.title}\n" + "\n".join(lines))
+            blocks.append(f"## {section.coverage_id} \u00b7 {section.title}\n" + "\n".join(lines))
     sharing_lines = [line for line, labels in other_points if labels & marked_labels]
     statements_block = "\n\n".join(blocks) if blocks else "(none)"
     static = [
@@ -1265,6 +1315,10 @@ def bottom_line_messages(
         f"# Question\n{task.question}",
         f"# Answer form\n{_answer_form_line(task)}",
     ]
+    if task.reader_answers:
+        material.append(
+            "# Reader answers\n" + "\n".join(reader_answer_lines(task.reader_answers))
+        )
     if task.reader_notes:
         material.append(f"# Reader notes\n{task.reader_notes}")
     material.append(f"# Checked statements\n{statements_block}")
@@ -1286,11 +1340,13 @@ def bottom_line_messages(
             "# Outcome\n"
             "The outcome the question's subject reached, as a section point states "
             "it: on a mechanism answer the last step ends on one of these, credited "
-            "and dated as it states it, within the two to four sentences.\n"
+            "and dated as it states it, within the answer's sentences.\n"
             + "\n".join(outcome_lines)
         )
     if previous:
-        material.append(f"# Your previous bottom line\n{_rendered_previous_bottom_line(previous)}")
+        material.append(
+            f"# Your previous bottom line\n{_rendered_previous_bottom_line(previous, previous_topics)}"
+        )
     if defects:
         material.append(f"# Defects to fix\n{_defect_lines(list(defects))}")
     return [ChatMessage(role="developer", content=BOTTOM_LINE_SYSTEM_PROMPT),
@@ -1699,6 +1755,22 @@ _TITLE_VERDICT_WORD = re.compile(
     r"\b(?:best|worst|top\w*|winner\w*|leading|recommend\w*|pick\w*)\b", re.IGNORECASE,
 )
 _TITLE_DIGIT = re.compile(r"\d")
+
+
+def _section_short_title(drafted_short_title: str, title: str) -> str:
+    """Notes-progress-report spec §7.2: the drafted short title when it has one to
+    three words, at most 24 characters, no digit and no verdict word; otherwise
+    the section's own title stands in."""
+    short = " ".join(drafted_short_title.split())
+    if (
+        not short
+        or len(short.split()) > _SHORT_TITLE_WORDS
+        or len(short) > _SHORT_TITLE_CHARS
+        or _TITLE_DIGIT.search(short)
+        or _TITLE_VERDICT_WORD.search(short)
+    ):
+        return title
+    return short
 
 
 def _section_title(drafted_title: str, sub_topic_title: str) -> str:
@@ -2296,7 +2368,10 @@ async def _run_part(
                 outcome_statement_ids.add(point.statement_id)
 
     title = _section_title(draft.title, job.sub_topic_title)
-    section = ReportSection(title=title, points=points, coverage_id=job.coverage_id) if points else None
+    section = ReportSection(
+        title=title, short_title=_section_short_title(draft.short_title, title),
+        points=points, coverage_id=job.coverage_id,
+    ) if points else None
     # P1-3: a draft that kept nothing (every point refused) is undisclosed
     # and unwritten, not "written" -- "written" with no section silently
     # hides a part that had findings, so the every-part-failed wording never
@@ -2320,7 +2395,7 @@ def _bottom_line_fallback(
     self_descriptions: Mapping[str, str] | None = None,
     any_above_floor: bool = False,
 ) -> tuple[list[ReportPoint], dict[str, str], set[str]]:
-    """§6.8: up to ``MAX_BOTTOM_LINE_SENTENCES`` kept checked points, the
+    """§6.8: up to ``_FALLBACK_POINTS`` kept checked points, the
     first of each part with a required target then the first of the other
     parts -- moved into the bottom line as new statements with their own
     flight keys and the source statement's real verdict, never a section's
@@ -2361,7 +2436,7 @@ def _bottom_line_fallback(
     moved: set[str] = set()
     numbers = iter(range(1, 100))
     for outcome in [*with_required, *others]:
-        if len(points) >= MAX_BOTTOM_LINE_SENTENCES:
+        if len(points) >= _FALLBACK_POINTS:
             break
         section = outcome.section
         if section is None:
@@ -2470,12 +2545,12 @@ async def _check_and_finalize_bottom_line(
     # P3-2: cap before the check, so an overflow sentence never spends one,
     # and record its refusal with the real F-labels, not finding fingerprints.
     candidates, overflow_candidates = (
-        candidates[:MAX_BOTTOM_LINE_SENTENCES], candidates[MAX_BOTTOM_LINE_SENTENCES:],
+        candidates[:MAX_ANSWER_SENTENCES], candidates[MAX_ANSWER_SENTENCES:],
     )
     for extra in overflow_candidates:
         rejected.append(RejectedDraftPoint(
             where=extra.where, text=extra.text, finding_labels=list(extra.finding_labels),
-            reason="over the bottom line's four sentences",
+            reason="over the direct answer's two sentences",
         ))
 
     verdicts, check_errors = await _check(
@@ -2787,10 +2862,10 @@ async def _run_bottom_line(
                     defect_id=f"bottom-line-reask-{len(reask_defects) + 1:02d}",
                     kind="missing_support", severity="major",
                     problem=(
-                        'The bottom line names no outcome. End it with the outcome '
-                        'the statements under "Outcome" state, credited and dated as '
-                        'they state it, within four sentences: fold the outcome into '
-                        'the last sentence or replace one, never add a fifth.'
+                        'The bottom line names no outcome. State the outcome the '
+                        'statements under "Outcome" state, credited and dated as they '
+                        "state it, within the answer's two sentences: fold it into the "
+                        'last answer sentence or replace one, never add a third.'
                     ),
                 )
             )
@@ -3309,6 +3384,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             note_pass_coverage_ids=note_pass_coverage_ids,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
+            reader_answers=list(state.reader_answers),
             # notes-progress-report spec §5.1: the steering views only; a note whose
             # only kind is new_angle is its own part of the report instead.
             reader_notes=render_reader_notes(

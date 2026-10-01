@@ -149,10 +149,12 @@ async def test_the_planner_reads_the_answers_from_its_state_into_both_requests_a
 # (8994d5a, a00ef0a) and after it, because the check adds sections only when
 # there are answers (spec §4.4 "Replay").
 PINNED_PACKETS = {
+    # notes-progress-report Phase C re-pinned these values: its writer requests and the report
+    # the review reads changed (spec §7.1, §7.4, §7.5).
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    "report_reviewer:ReportReviewDraft": "824e2b4aa04d2944",
+    "report_reviewer:ReportReviewDraft": "92cb55eb182d36cf",
 }
 
 
@@ -180,7 +182,8 @@ async def test_without_answers_the_replay_packets_are_byte_identical(tmp_path: P
 
     assert status == "completed"
     assert {key: hashlib.sha256(packets[key].encode("utf-8")).hexdigest()[:16] for key in PINNED_PACKETS} == PINNED_PACKETS
-    assert not any("# Reader answers" in text for text in packets.values())
+    # The section, not the bottom line's rule that names it (notes-progress-report spec §7.1).
+    assert not any("\n# Reader answers\n" in text for text in packets.values())
 
 
 @pytest.mark.asyncio

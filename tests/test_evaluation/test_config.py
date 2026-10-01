@@ -1004,7 +1004,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # published, planning.completed lists them, and the planning lead says the
     # run adds them. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `d1ba46ce147f` -> `3934bea57f61`.
-    "planner": "3934bea57f61",
+    # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
+    # then-topics request and reply contract. Moved `3934bea57f61` ->
+    # `55c1f86bac40`.
+    "planner": "55c1f86bac40",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1380,7 +1383,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # and carries every other part over. Without notes every request is
     # byte-identical; agents.prompts was untouched. Moved `cafa5ba3d613` ->
     # `a27544eee344`.
-    "report_writer": "a27544eee344",
+    # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
+    # then-topics request and reply contract. Moved `a27544eee344` ->
+    # `7ed80d440f0a`.
+    "report_writer": "7ed80d440f0a",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

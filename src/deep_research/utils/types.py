@@ -1597,6 +1597,10 @@ class ReportSection(ContractModel):
     points: list[ReportPoint] = Field(default_factory=list)
     coverage_id: str = ""
     """The plan sub-topic this section renders; "" for a legacy composition."""
+    short_title: str = ""
+    """One to three words naming the part for the bottom line's label and the
+    contents list (notes-progress-report spec §7.2); "" for a composition
+    written before it, whose readers then use ``title``."""
 
 
 class ReportTerminalState(ContractModel):
@@ -1956,12 +1960,23 @@ class SectionDraft(ContractModel):
 
     title: str
     points: list[WriterPointDraft] = Field(default_factory=list)
+    short_title: str = ""
+    """The part named in one to three words for a contents list (notes-progress-report
+    spec §7.1); a reply without one keeps the section title in its place."""
+
+
+class TopicLineDraft(WriterPointDraft):
+    """One drafted bottom-line line for one listed topic (notes-progress-report spec §7.1)."""
+
+    topic: str = ""
+    """The coverage id at the start of the topic's ``## {id} · {title}`` heading."""
 
 
 class BottomLineDraft(ContractModel):
-    """The bottom-line call's drafted reply: 2-4 sentences (spec §6.6)."""
+    """The bottom-line call's drafted reply: a direct answer of one or two sentences, then one line per topic (notes-progress-report spec §7.1)."""
 
     sentences: list[WriterPointDraft] = Field(default_factory=list)
+    topics: list[TopicLineDraft] = Field(default_factory=list)
 
 
 # The one-time check (live-briefs spec §4.4): the dimensions a check question may

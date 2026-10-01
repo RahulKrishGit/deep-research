@@ -18,7 +18,7 @@ from deep_research.agents.report_writer import (
     BOTTOM_LINE_INSTRUCTION,
     BOTTOM_LINE_SYSTEM_PROMPT,
     CONTEXT_ONLY_RELEVANCE,
-    MAX_BOTTOM_LINE_SENTENCES,
+    MAX_ANSWER_SENTENCES,
     MAX_POINT_CHARS,
     REPORT_WRITER_NAME,
     SECTION_INSTRUCTION,
@@ -1048,7 +1048,8 @@ def test_section_instruction_describes_the_redraft_rule():
 
 
 def test_bottom_line_system_prompt_states_the_sentence_bound():
-    assert "two to four sentences" in BOTTOM_LINE_SYSTEM_PROMPT
+    assert "one or two sentences" in BOTTOM_LINE_SYSTEM_PROMPT
+    assert MAX_ANSWER_SENTENCES == 2
 
 
 def test_bottom_line_instruction_forbids_a_pick_of_its_own():

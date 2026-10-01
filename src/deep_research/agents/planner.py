@@ -2697,6 +2697,16 @@ def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
         "question leaves open. Plan within these answers: a narrowing the "
         "reader asked for is not a missing part of the question."
     ]
+    lines.extend(reader_answer_lines(reader_answers))
+    return "\n".join(lines)
+
+
+def reader_answer_lines(reader_answers: Sequence[ReaderAnswer]) -> list[str]:
+    """One line per answer to the one-time check: the question, the answer, and
+    whether the reader gave it or the check assumed it -- the lines the planner
+    prints under its lead sentence and the bottom line prints alone
+    (notes-progress-report spec §7.1)."""
+    lines: list[str] = []
     for answer in reader_answers:
         said = (
             "a best guess; the reader did not answer"
@@ -2704,7 +2714,7 @@ def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
             else "the reader's answer"
         )
         lines.append(f"- {answer.text} {answer.value} ({said})")
-    return "\n".join(lines)
+    return lines
 
 
 def plan_messages(
