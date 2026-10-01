@@ -25,6 +25,7 @@ from typing import TypedDict
 
 from pydantic import JsonValue
 
+from deep_research.agents.reader_notes import has_steering_kind, is_research_note
 from deep_research.agents.report_reviewer import semantic_review_passes
 from deep_research.utils.types import (
     MAX_NOTES_PER_RUN,
@@ -124,15 +125,16 @@ GRAPH_ROUTES = {
         "writer drafts again with those defects fed back."
     ),
     "note_pass_requested": (
-        "The review found no evidence for a reader note that has not had its "
-        "one targeted research pass; the researcher runs for the notes that "
-        "owe one, outside the extra-pass budget."
+        "A reader note owes its one targeted research pass: a research note "
+        "with no researched topic of its own, whatever the review said, or a "
+        "steering note the review found no evidence for; the researcher runs "
+        "for the notes that owe one, outside the extra-pass budget."
     ),
     "note_redraft_requested": (
-        "The review found a reader note the report ignores although its "
-        "findings bear on it, or a note arrived after the review input was "
-        "built, and that note has not had its one redraft; the writer drafts "
-        "again with the reader's notes."
+        "The review found a reader note's steering ignored although its "
+        "findings bear on it, or a note with a steering kind arrived after the "
+        "review input was built, and that note has not had its one redraft; "
+        "the writer drafts again with the reader's notes."
     ),
     "halted": "The run stopped on a non-recoverable error.",
 }
@@ -308,27 +310,81 @@ def note_dispositions(state: ResearchState) -> dict[str, str]:
     return {entry.note_id: entry.status for entry in review.note_dispositions}
 
 
+def researched_note_topic_ids(state: ResearchState) -> set[str]:
+    """The reader-note topics (``note-…``) that have done their research (spec §5.1).
+
+    A topic is researched when its latest ``researcher.sub_topic.completed``
+    event ended with any stop reason but ``provider_error``, or when a
+    verified finding answers one of its targets (``state.quality``; no quality
+    snapshot counts as none answered). A topic with no completed event — one
+    ``stop`` left unstarted — is not researched. So a note whose thread failed,
+    or never started, still owes its one note pass, unless a finding already
+    answered it (D31; review I5; review 2, I-1).
+    """
+    latest: dict[str, str] = {}
+    for event in state.events:
+        if event.event_type != "researcher.sub_topic.completed":
+            continue
+        coverage_id = event.metadata.get("coverage_id")
+        stop_reason = event.metadata.get("stop_reason")
+        if isinstance(coverage_id, str) and isinstance(stop_reason, str):
+            latest[coverage_id] = stop_reason
+    answered = (
+        set(state.quality.answered_target_ids) if state.quality is not None else set()
+    )
+    return {
+        topic.coverage_id
+        for topic in state.sub_topics
+        if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX)
+        and (
+            latest.get(topic.coverage_id, "provider_error") != "provider_error"
+            or any(target.target_id in answered for target in topic.evidence_targets)
+        )
+    }
+
+
 def notes_due_a_pass(state: ResearchState) -> list[ReaderNote]:
-    """Active notes the review found no evidence for, not yet passed (D11)."""
+    """Active notes owed their one targeted pass, not yet passed (D11; spec §5.4, D5).
+
+    A research note — its kinds include ``new_angle`` — owes it while it has
+    no researched topic of its own, whatever the review said or whether one
+    was made; a steering note owes it when the review found no evidence for
+    it. A mixed note's steering half judged ``no_evidence`` buys no pass: its
+    topic already researched the note.
+    """
     verdicts = note_dispositions(state)
+    researched = researched_note_topic_ids(state)
     return [
         note
         for note in active_reader_notes(state.reader_notes)
-        if verdicts.get(note.note_id) == "no_evidence" and not note.passed
+        if not note.passed
+        and (
+            (
+                is_research_note(note)
+                and f"{NOTE_COVERAGE_PREFIX}{note.note_id}" not in researched
+            )
+            or (
+                not is_research_note(note)
+                and verdicts.get(note.note_id) == "no_evidence"
+            )
+        )
     ]
 
 
 def notes_due_a_redraft(state: ResearchState) -> list[ReaderNote]:
-    """Active notes owed their one redraft (live-briefs spec §4.6).
+    """Active notes owed their one redraft (live-briefs spec §4.6; spec §5.4, D20).
 
-    A note the report ignores although its findings bear on it, or a note no
-    review input carried because it arrived after the input was built.
+    Only a note with a steering kind buys one — a steering note, or a mixed
+    note's steering half: one the report ignores although its findings bear
+    on it, or one no review input carried because it arrived after the input
+    was built. A note whose only kind is ``new_angle`` never does.
     """
     verdicts = note_dispositions(state)
     return [
         note
         for note in active_reader_notes(state.reader_notes)
-        if not note.redrafted
+        if has_steering_kind(note)
+        and not note.redrafted
         and (
             verdicts.get(note.note_id) == "ignored_with_evidence"
             or not note.reviewed
@@ -370,12 +426,15 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     for ends as ``extra_passes_exhausted`` (status ``max_iterations``).
 
     The reader's notes are read right after a halt (live-briefs spec §4.6,
-    D11): first a note the review found no evidence for buys its one targeted
-    pass (``ROUTE_NOTE_PASS``), then a note the report ignores, or one no
-    review has read yet, buys its one redraft (``ROUTE_REDRAFT`` with the
-    reason ``note_redraft_requested``, which spends no writer re-run of the
-    review's own). Each note is flagged when its route is taken, so neither
-    check can loop; with no note due, every rule below reads as it always did.
+    D11; notes-progress-report spec §5.4): first a note owed its one targeted
+    pass buys it (``ROUTE_NOTE_PASS``) — a research note with no researched
+    topic, whatever the review's status, or a steering note the review found
+    no evidence for — then a note with a steering kind the report ignores, or
+    one no review has read yet, buys its one redraft (``ROUTE_REDRAFT`` with
+    the reason ``note_redraft_requested``, which spends no writer re-run of
+    the review's own). Each note is flagged when its route is taken, so
+    neither check can loop; with no note due, every rule below reads as it
+    always did.
     """
     if is_halted(state):
         return ROUTE_END, "halted"

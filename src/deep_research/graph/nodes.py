@@ -36,6 +36,7 @@ from deep_research.agents.quality import (
 from deep_research.agents.reader_notes import (
     NOTES_WAIT_S,
     board_notes,
+    is_research_note,
     note_sub_topic,
     notes_settled,
 )
@@ -109,6 +110,7 @@ from deep_research.providers import ProviderConfigurationError, ProviderError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
     Finding,
     ReportComposition,
     ReportQualitySnapshot,
@@ -117,6 +119,7 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
+    SubTopic,
     active_reader_notes,
     advance_research_iteration,
     merge_research_state,
@@ -1330,15 +1333,18 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
 
 
 async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
-    """Open the one targeted pass the uncovered reader notes buy (spec §4.6, D11).
+    """Open the one targeted pass the reader notes that owe one buy (spec §4.6, D11).
 
     Its own hop, as ``extra_pass`` is, because the route cannot write: it
-    appends one sub-topic per note the review found no evidence for, confines
-    the researcher to those sub-topics' targets exactly as an extra pass is
-    confined (``extra_pass_target_ids``), flags each note ``passed`` and counts
-    the pass in ``note_passes`` — never in ``iteration``, so the extra-pass
-    budget is untouched. A run that arrives with no note due records
-    ``graph_invalid_route`` rather than researching nothing.
+    confines the researcher to the due notes' topics' targets exactly as an
+    extra pass is confined (``extra_pass_target_ids``), flags each note
+    ``passed`` and counts the pass in ``note_passes`` — never in
+    ``iteration``, so the extra-pass budget is untouched. A note whose
+    ``note-{id}`` topic the run already holds — a research note whose thread
+    failed or never started (notes-progress-report spec §5.3, §5.4) — reuses
+    it; every other due note gets its topic appended. A run that arrives with
+    no note due records ``graph_invalid_route`` rather than researching
+    nothing.
     """
     state = load_state(channel)
     if is_halted(state):
@@ -1358,7 +1364,19 @@ async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
             ),
         )
     priority = max((topic.priority for topic in state.sub_topics), default=0) + 1
-    topics = [note_sub_topic(note, priority=priority, reason="no_evidence") for note in due]
+    held = {topic.coverage_id: topic for topic in state.sub_topics}
+    topics: list[SubTopic] = []
+    added: list[SubTopic] = []
+    for note in due:
+        topic = held.get(f"{NOTE_COVERAGE_PREFIX}{note.note_id}")
+        if topic is None:
+            topic = note_sub_topic(
+                note,
+                priority=priority,
+                reason="reader_note" if is_research_note(note) else "no_evidence",
+            )
+            added.append(topic)
+        topics.append(topic)
     targets = [
         target.target_id for topic in topics for target in topic.evidence_targets
     ]
@@ -1367,7 +1385,7 @@ async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
     return _with(
         started,
         {
-            "sub_topics": topics,
+            "sub_topics": added,
             "extra_pass_target_ids": targets,
             "reader_notes": [
                 note.model_copy(update={"passed": True})

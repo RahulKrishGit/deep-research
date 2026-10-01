@@ -13,15 +13,15 @@ from deep_research.agents.reader_notes import note_sub_topic
 from deep_research.agents.researcher import ResearcherAgent
 from deep_research.graph.live import bind_live_sink
 from deep_research.graph.nodes import agent_node
-from deep_research.graph.state import dump_state, load_state
+from deep_research.graph.state import ROUTE_NOTE_PASS, dump_state, graph_route, load_state, notes_due_a_pass
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ProviderTimeoutError
 from deep_research.runtime.notes import NoteBoard, bind_note_board
 from deep_research.utils.config import AgentRuntimeConfig
-from deep_research.utils.types import ResearchEvent, ResearchState, SubTopic
+from deep_research.utils.types import ResearchEvent, ResearchState, SubTopic, merge_research_state, with_board_notes
 from tests.agent_fakes import TargetKeyedCompleter, finish
-from tests.graph_fakes import fake_reader_note, fake_sub_topic, fake_target
+from tests.graph_fakes import fake_reader_note, fake_report_review, fake_sub_topic, fake_target
 from tests.research_fakes import research_tools
 
 AT = "2026-09-30T10:00:00.000+00:00"
@@ -285,3 +285,27 @@ async def test_dispatcher_cancels_threads_on_cancel(tracker: Tracker) -> None:
                 await running
 
     assert sorted(completer.cancelled) == ["note-n1", "topic-01"]
+
+
+@pytest.mark.asyncio
+async def test_note_after_window_owes_pass(tracker: Tracker, monkeypatch: pytest.MonkeyPatch) -> None:
+    """AC4: a note read only after the research window closed gets no thread in that run; once
+    it is read, the next node takes it in, and after the review notes_due_a_pass returns it."""
+    monkeypatch.setattr("deep_research.agents.researcher.NOTES_WAIT_S", 0.05)
+    completer = TargetKeyedCompleter(decisions={"topic-01": [_done("topic-01")]})
+    node = agent_node(_researcher(tracker, completer))
+    board = NoteBoard()
+    board.receive("Pastries too", received_at=AT, received_during="researcher")
+
+    with bind_note_board(board):
+        async with tracker.session_span("session-1", "q"):
+            researched = load_state(await node(dump_state(_state(_topic(1)))))
+        board.add(fake_reader_note("n1", kinds=["new_angle"]))
+        reviewed = merge_research_state(researched, {
+            "reader_notes": with_board_notes(researched.reader_notes, board.snapshot()),
+            "report_review": fake_report_review(),
+        })
+
+    assert [topic.coverage_id for topic in researched.sub_topics] == ["topic-01"]
+    assert [note.note_id for note in notes_due_a_pass(reviewed)] == ["n1"]
+    assert graph_route(reviewed) == (ROUTE_NOTE_PASS, "note_pass_requested")

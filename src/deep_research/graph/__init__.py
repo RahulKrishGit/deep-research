@@ -102,6 +102,7 @@ from deep_research.graph.state import (
     note_dispositions,
     notes_due_a_pass,
     notes_due_a_redraft,
+    researched_note_topic_ids,
 )
 
 __all__ = [
@@ -177,6 +178,7 @@ __all__ = [
     "note_sub_topic",
     "notes_due_a_pass",
     "notes_due_a_redraft",
+    "researched_note_topic_ids",
     "redraft_limit_error",
     "redraft_requested_event",
     "planning_failed_error",
