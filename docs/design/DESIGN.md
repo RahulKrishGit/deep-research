@@ -255,14 +255,15 @@ started — from the run's decision to publish — a note is refused and one cap
 `Notes are closed — the report is being published`, takes the line's place. Any other
 failed send keeps the text and says `Couldn't send — try again` under the field until the
 next edit. The report then states what became of each note in its bottom line, after the
-topic lines: one line per note, labelled `Your note · {short}` (the note's subject in one to
-three words). A research note's line is its own topic's line, or says `No source we could
-check covers this.` or `Not researched.`; a steering note's line says how the report treated
-it — `Followed:`, `Not followed in this report:`, `No source we could check covers this:` or
+topic lines: one line per note (a replaced note has none), labelled `Your note · {short}` (the
+note's subject in one to three words). A research note's line is its own topic's line or, when
+the bottom line kept none for it, says `See the section below.`, `No source we could check
+covers this.` or `Not researched.`; a steering note's line says how the report treated it —
+`Followed:`, `Not followed in this report:`, `No source we could check covers this:` or
 `Not checked:`, then the run's reading of the note. A mark leads the line: ✓ when the note
 was covered, ✗ when it was not found or not followed, none when nothing in the finished run
-could judge it. A mixed note's line is its topic's, then one sentence for the rest of the
-note, with ✗ when either half missed (notes-progress-report §7.2, D20, D37). There is no
+could judge it. A mixed note's line is its topic's line or text, then one sentence for the rest
+of the note, with ✗ when either half missed (notes-progress-report §7.2, D20, D37). There is no
 separate notes block. Each note's outcome also stays on the session's `/status`: `covered`,
 `not_found`, `not_addressed` (the findings bore on it and the report still does not follow it,
 after its one redraft — never `covered`), `not_checked` (nothing in the finished run could
