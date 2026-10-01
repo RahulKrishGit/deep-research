@@ -1624,7 +1624,7 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   `aria-live` region (the only live region in the running spine is a note's acknowledgement),
   so a screen reader is not interrupted at each sample and reads one only when the reader
   reaches it; its change is a cross-fade, which under reduced motion is opacity only over
-  160ms with no 5px settle; and every count is also in the static subtitle, bar and tally. If
+  160ms with no 5px settle; and every count is also in the row's subtitle, bar and tally. If
   the risk is ever to be closed, the remedy is to hold the samples while the pointer is over
   the ticker or focus is inside it, with a keyboard "Pause samples" toggle. The three
   decorative loops below are a separate matter: they stop under reduced motion.
