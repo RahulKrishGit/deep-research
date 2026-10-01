@@ -56,6 +56,23 @@ describe("the run state holds only what the page reads (Phase 2 final review R6)
   });
 });
 
+describe("a reader note's kinds and its own thread (notes-progress-report spec §5.7)", () => {
+  it("keeps the reading's kinds, strings only, and marks the thread started from its own started event only", () => {
+    const run = newRunState();
+    applyEvent(run, { type: "session.note.received", metadata: { note_id: "n1", text: "Pastries too" } });
+    expect(run.notes[0]).toMatchObject({ kinds: [], threadStarted: false });
+    applyEvent(run, { type: "session.note.interpreted", metadata: { note_id: "n1", restatement: "pastries", kinds: ["new_angle", "exclude", 7], replaces: null, fallback: false } });
+    expect(run.notes[0].kinds).toEqual(["new_angle", "exclude"]);
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "note-n2", note_id: "n2", sub_topic: "Your note: other", index: 3 } });
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "topic-01", sub_topic: "Alpha", index: 1 } });
+    expect(run.notes[0].threadStarted).toBe(false);
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "note-n1", note_id: "n1", sub_topic: "Your note: pastries", index: 2 } });
+    expect(run.notes[0].threadStarted).toBe(true);
+    applyEvent(run, { type: "session.note.interpreted", metadata: { note_id: "n9", restatement: "late", kinds: ["new_angle"], replaces: null, fallback: false } });
+    expect(run.notes[1]).toMatchObject({ id: "n9", kinds: ["new_angle"], threadStarted: false });
+  });
+});
+
 describe("(a) terminal agreement with the server after the last frame", () => {
   for (const capture of [extraPass, redraft]) {
     it(capture.case_id, () => {

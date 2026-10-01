@@ -70,6 +70,14 @@ describe("every other row", () => {
     expect(planning.sentence).toBeNull();
     for (const id of AGENT_ORDER) expect(rowBrief(run, id, "done").outcome).toBe(run.outcomes[id]);
   });
+  it("Planning, once done, lists a research note's own topic with the plan's (notes-progress-report spec §5.7)", () => {
+    const run = newRunState();
+    applyEvent(run, { type: "planner.planning.completed", metadata: { sub_topic_count: 2, note_topic_count: 1, sub_topics: [
+      { coverage_id: "topic-01", title: "Published picks" }, { coverage_id: "note-n1", title: "Your note: pastries in the cafe", note_id: "n1" },
+    ] } });
+    expect(rowBrief(run, "planner", "done").titles).toEqual(["Published picks", "Your note: pastries in the cafe"]);
+    expect(run.topics.map((t) => t.coverageId)).toEqual(["topic-01", "note-n1"]);
+  });
   it("a looped row's first line is why it reopened", () => {
     const run = newRunState();
     applyEvent(run, { type: "graph.extra_pass.started", metadata: { iteration: 1, max_extra_passes: 1, targets: ["topic-01-target-01", "topic-02-target-01"] } });

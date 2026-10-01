@@ -48,6 +48,9 @@ export interface ReopenLine { kind: "extra_pass" | "redraft" | "note_pass" | "no
 export interface NoteState {
   id: string; text: string; interpreted: boolean; restatement: string | null;
   replaces: string | null; fallback: boolean; where: NodeId | null;
+  /* notes-progress-report spec §5.7: the run's reading of the note's kinds ([] until it is read), and
+     whether its own research thread has started — a researcher.sub_topic.started naming it. */
+  kinds: string[]; threadStarted: boolean;
 }
 /* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from
    session.clarification.requested, then the answers the run starts with from .answered. */
@@ -211,6 +214,9 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "researcher.sub_topic.started": (run, md) => {
     topicFor(run, md).state = "running";
+    /* notes-progress-report spec §5.7: a reader note's own thread names its note */
+    const note = isText(md.note_id) ? run.notes.find((n) => n.id === md.note_id) : undefined;
+    if (note) note.threadStarted = true;
   },
   "researcher.sub_topic.completed": (run, md) => {
     run.counters.subTopicsDone = (run.counters.subTopicsDone || 0) + 1;
@@ -346,14 +352,15 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
      it; neither event moves a row. A replayed note is never counted twice. */
   "session.note.received": (run, md) => {
     if (!isText(md.note_id) || run.notes.some((n) => n.id === md.note_id)) return;
-    run.notes.push({ id: md.note_id, text: typeof md.text === "string" ? md.text : "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null });
+    run.notes.push({ id: md.note_id, text: typeof md.text === "string" ? md.text : "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null, kinds: [], threadStarted: false });
   },
   "session.note.interpreted": (run, md) => {
     if (!isText(md.note_id)) return;
     let note = run.notes.find((n) => n.id === md.note_id);
-    if (!note) { note = { id: md.note_id, text: "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null }; run.notes.push(note); }
+    if (!note) { note = { id: md.note_id, text: "", interpreted: false, restatement: null, replaces: null, fallback: false, where: null, kinds: [], threadStarted: false }; run.notes.push(note); }
     note.interpreted = true;
     note.restatement = isText(md.restatement) ? md.restatement : null;
+    note.kinds = Array.isArray(md.kinds) ? md.kinds.filter(isText) : [];
     note.replaces = isText(md.replaces) ? md.replaces : null;
     note.fallback = md.fallback === true;
     note.where = run.active;

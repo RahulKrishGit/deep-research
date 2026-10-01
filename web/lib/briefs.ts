@@ -57,7 +57,7 @@ export function rowBrief(run: RunState, id: NodeId, state: RowState): RowBrief {
   const outcome = run.outcomes[id] ?? STATIC_META[id];
   const text: Subtitle = { kind: "text", text: STATIC_META[id] };
   // live-briefs spec §4.7: the reader's notes are acknowledged in the row that is running now.
-  const noted = id === run.active ? visibleAcks(run.notes) : { acks: [], earlier: 0 };
+  const noted = id === run.active ? visibleAcks(run.notes, run.active) : { acks: [], earlier: 0 };
   const notes = { acks: noted.acks, earlier: noted.earlier > 0 ? earlierNotesText(noted.earlier) : null };
   if (id === "researcher") {
     return {

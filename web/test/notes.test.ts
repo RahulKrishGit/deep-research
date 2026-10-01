@@ -1,7 +1,7 @@
 // @vitest-environment node — a plain data/logic test (see run-state.test.ts).
 import { describe, expect, it } from "vitest";
 import { rowBrief } from "../lib/briefs";
-import { NOTE_LIMIT, OUTCOME_TEXT, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
+import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, noteCaption, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
 import { COUNTER_ROWS, applyEvent, marksFor, newRunState, stepLabel, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
 
 const ev = (type: string, metadata: Record<string, unknown> = {}): RunEvent => ({ type, metadata });
@@ -181,5 +181,79 @@ describe("briefs — the active row acknowledges the notes (live-briefs spec §4
       const other = rowBrief(run, id, id === "planner" ? "done" : "pending");
       expect([other.acks, other.earlier]).toEqual([[], null]);
     }
+  });
+});
+
+describe("a research note's acknowledgement and thread (notes-progress-report spec §5.7, AC12)", () => {
+  const angle = (id: string, restatement: string, kinds: string[] = ["new_angle"]) => interpreted(id, restatement, { kinds });
+  const ownThread = (id: string) => ev("researcher.sub_topic.started", { coverage_id: "note-" + id, note_id: id, sub_topic: "Your note: pastries in the cafe", index: 2 });
+  const restOf = (run: RunState) => ackFor(run.notes[0], run.notes, run.active).rest;
+  const upTo = (node: NodeId): RunEvent[] => {
+    const order: NodeId[] = ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"];
+    return order.slice(0, order.indexOf(node)).flatMap((done) => [started(done), completed(done)]).concat(started(node));
+  };
+
+  it("names the research table for each step the note can be read in", () => {
+    expect(RESEARCH_WHERE).toEqual({
+      planner: ", as its own topic",
+      researcher: ", as its own topic",
+      source_evaluator: ", researched as its own topic after this draft is reviewed",
+      evidence_verifier: ", researched as its own topic after this draft is reviewed",
+      report_writer: ", researched as its own topic after this draft is reviewed",
+      report_reviewer: ", researched as its own topic next",
+    });
+    expect(RESEARCH_NOW).toBe(", researching it as its own topic now");
+    for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as NodeId[]) {
+      expect(restOf(play([...upTo(node), received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]))).toBe(RESEARCH_WHERE[node]);
+    }
+    expect(restOf(play([...toReviewing, received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]))).toBe(", researched as its own topic next");
+  });
+
+  it("says 'now' only once the note's own thread has started, and lists that thread in the checklist", () => {
+    const run = play([started("planner"), ev("planner.planning.completed", { sub_topic_count: 1, sub_topics: [{ coverage_id: "topic-01", title: "Grid storage costs" }] }),
+      completed("planner"), started("researcher"), received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]);
+    expect(run.notes[0]).toMatchObject({ kinds: ["new_angle"], threadStarted: false });
+    expect(restOf(run)).toBe(", as its own topic");
+    applyEvent(run, ev("researcher.sub_topic.started", { coverage_id: "topic-01", sub_topic: "Grid storage costs", index: 1 }));
+    expect(restOf(run)).toBe(", as its own topic");
+    applyEvent(run, ownThread("n1"));
+    expect(run.notes[0].threadStarted).toBe(true);
+    expect(restOf(run)).toBe(", researching it as its own topic now");
+    expect(run.topics.map((t) => [t.coverageId, t.title, t.state])).toEqual([
+      ["topic-01", "Grid storage costs", "running"], ["note-n1", "Your note: pastries in the cafe", "running"],
+    ]);
+  });
+
+  it("says 'now' while Researching runs the note's own topic, whichever step read the note (review P3-5)", () => {
+    const run = play([...upTo("report_writer"), received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]);
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+    for (const e of [completed("report_writer"), started("report_reviewer"),
+      ev("graph.route.decided", { destination: "note_pass", reason: "note_pass_requested", iteration: 0 }), started("note_pass"),
+      ev("graph.note_pass.started", { iteration: 0, note_passes: 1, note_ids: ["n1"], targets: ["note-n1-target-01"] }),
+      completed("note_pass"), started("researcher")]) applyEvent(run, e);
+    expect(run.active).toBe("researcher");
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+    applyEvent(run, ownThread("n1"));
+    expect(restOf(run)).toBe(RESEARCH_NOW);
+    expect(visibleAcks(run.notes, run.active).acks[0].rest).toBe(RESEARCH_NOW);
+    expect(rowBrief(run, "researcher", "active").acks.map((a) => a.rest)).toEqual([RESEARCH_NOW]);
+    applyEvent(run, completed("researcher"));
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+  });
+
+  it("acknowledges a mixed note as a research note, and keeps a steering note's words", () => {
+    const run = play([started("planner"), completed("planner"), started("researcher"),
+      received("n1", "a"), angle("n1", "pastries, nothing closed", ["new_angle", "exclude"]),
+      received("n2", "b"), interpreted("n2", "leave out closed cafes", { kinds: ["exclude"] }), ownThread("n1")]);
+    expect(run.notes.map((n) => [n.kinds, n.threadStarted])).toEqual([[["new_angle", "exclude"], true], [["exclude"], false]]);
+    expect(ackFor(run.notes[0], run.notes, run.active).rest).toBe(", researching it as its own topic now");
+    expect(ackFor(run.notes[1], run.notes, run.active).rest).toBe(", from each topic's next search");
+  });
+
+  it("captions a mixed note with both of its results, and every other note with its one", () => {
+    expect(noteCaption({ outcome: "covered", steering_outcome: "not_addressed" })).toBe("covered; the rest of your note: not addressed in the report");
+    expect(noteCaption({ outcome: "not_checked", steering_outcome: "not_checked" })).toBe("not checked; the rest of your note: not checked");
+    expect(noteCaption({ outcome: "not_checked", steering_outcome: null })).toBe(OUTCOME_TEXT.not_checked);
+    expect(noteCaption({ outcome: "pending" })).toBe("not checked yet");
   });
 });

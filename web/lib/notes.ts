@@ -3,7 +3,7 @@
 // acknowledgement, the first lines of the loops a note buys, and the report's outcome words.
 // Pure — a function of RunState or of the status response only, so a burst and a replay from
 // event 1 paint the same (DESIGN.md §5.7).
-import type { ReaderNoteOutcome } from "./api";
+import type { ReaderNoteOutcome, ReaderNoteRecord } from "./api";
 import type { NodeId, NoteState } from "./run-state";
 
 /* D11a: a run takes at most ten notes. The page never says so: the line only disables. */
@@ -28,23 +28,45 @@ export const WHERE: Readonly<Partial<Record<NodeId, string>>> = {
   report_reviewer: "; the review will check it",
 };
 
-/* One acknowledgement line: `lead`, then the run's reading in `said` (the pick's .said), then `rest`. */
+/* notes-progress-report spec §5.7 (D1-D4): a research note — its kinds include new_angle, a mixed note
+   included — is researched as its own topic, so its acknowledgement says when, by the step that was
+   running when the run read it. "Now" while Researching is the active row and the note's own thread
+   has started — a planning-time topic, a research-time thread or a note pass — and only then: a note
+   read after the researcher's window closed gets no thread in that run. */
+export const RESEARCH_WHERE: Readonly<Partial<Record<NodeId, string>>> = {
+  planner: ", as its own topic",
+  researcher: ", as its own topic",
+  source_evaluator: ", researched as its own topic after this draft is reviewed",
+  evidence_verifier: ", researched as its own topic after this draft is reviewed",
+  report_writer: ", researched as its own topic after this draft is reviewed",
+  report_reviewer: ", researched as its own topic next",
+};
+export const RESEARCH_NOW = ", researching it as its own topic now";
+export const isResearchNote = (note: NoteState): boolean => note.kinds.includes("new_angle");
+function whereFor(note: NoteState, active: NodeId | null): string {
+  if (!note.where) return "";
+  if (!isResearchNote(note)) return WHERE[note.where] ?? "";
+  if (active === "researcher" && note.threadStarted) return RESEARCH_NOW;
+  return RESEARCH_WHERE[note.where] ?? "";
+}
+
+/* One acknowledgement line: `lead`, then the run's reading in `said` (the pick's .said), then `rest`.
+   `active` is the run's active row (RunState.active); a research note's "now" needs it. */
 export interface Ack { key: string; lead: string; said: string | null; rest: string }
 
-export function ackFor(note: NoteState, notes: readonly NoteState[]): Ack {
+export function ackFor(note: NoteState, notes: readonly NoteState[], active: NodeId | null = null): Ack {
   if (!note.interpreted) return { key: note.id, lead: "Reading your note…", said: null, rest: "" };
   if (note.fallback) return { key: note.id, lead: "Got it — passed on as you wrote it", said: null, rest: "" };
   const earlier = note.replaces ? notes.find((n) => n.id === note.replaces) : undefined;
   const replacing = earlier ? ", replacing your earlier note about " + (earlier.restatement ?? earlier.text) : "";
-  const where = note.where ? WHERE[note.where] ?? "" : "";
-  return { key: note.id, lead: "Got it — ", said: note.restatement ?? note.text, rest: where + replacing };
+  return { key: note.id, lead: "Got it — ", said: note.restatement ?? note.text, rest: whereFor(note, active) + replacing };
 }
 
 /* §4.7: with more than two notes, the brief shows the latest two (oldest first) and how many
    earlier notes it leaves out. */
-export function visibleAcks(notes: readonly NoteState[]): { acks: Ack[]; earlier: number } {
+export function visibleAcks(notes: readonly NoteState[], active: NodeId | null = null): { acks: Ack[]; earlier: number } {
   const shown = notes.slice(-2);
-  return { acks: shown.map((note) => ackFor(note, notes)), earlier: notes.length - shown.length };
+  return { acks: shown.map((note) => ackFor(note, notes, active)), earlier: notes.length - shown.length };
 }
 export function earlierNotesText(n: number): string {
   return "and " + n + (n === 1 ? " earlier note" : " earlier notes");
@@ -77,6 +99,13 @@ export const OUTCOME_TEXT: Readonly<Record<ReaderNoteOutcome, string>> = {
   not_checked: "not checked",
   replaced: "replaced by a later note",
 };
+
+/* notes-progress-report spec §5.7 (D20): a mixed note's caption reads both of its results, its own topic's
+   first; every other note's caption is its one outcome. */
+export function noteCaption(note: Pick<ReaderNoteRecord, "outcome" | "steering_outcome">): string {
+  const words = OUTCOME_TEXT[note.outcome];
+  return note.steering_outcome ? words + "; the rest of your note: " + OUTCOME_TEXT[note.steering_outcome] : words;
+}
 
 /* How many more notes the run takes: the last /status's count, lowered by every note the stream has
    seen since (a note is counted once it is received, whether or not it has been read yet). */

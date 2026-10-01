@@ -48,7 +48,9 @@ export interface ResearchSessionResponse {
    nothing to judge it by, "pending" while the session goes on and "not_checked" once it has ended
    (notes-progress-report spec §4 item 2). */
 export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "not_checked" | "replaced";
-export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome }
+/* steering_outcome (notes-progress-report spec §5.6, D20): a mixed note's steering half; null for every other
+   note, and absent from a response recorded before the field existed. */
+export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome; steering_outcome?: ReaderNoteOutcome | null }
 export interface ClarificationRecord {
   questions: { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string }[];
   answers: { question_id: string; value: string; source: "chosen" | "typed" | "best_guess" }[];

@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 // without declaring `@types/mdast` in package.json.
 import type { Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
 import type { ReaderNoteRecord } from "@/lib/api";
-import { OUTCOME_TEXT } from "@/lib/notes";
+import { noteCaption } from "@/lib/notes";
 
 /* remarkCitationAnchors (spec §4.3 Report rendering): marks what the design adapts with
    hProperties the components below read — the evidence line, the caption after a table, the
@@ -124,7 +124,7 @@ export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence, notes = [
           <h2 className="eyebrow" id="readerNotesH">Your notes</h2>
           <ul className="rn-list">
             {notes.map((note) => (
-              <li key={note.note_id} data-outcome={note.outcome}><span className="rn-text">{note.text}</span> <span className="cap">{OUTCOME_TEXT[note.outcome]}</span></li>
+              <li key={note.note_id} data-outcome={note.outcome}><span className="rn-text">{note.text}</span> <span className="cap">{noteCaption(note)}</span></li>
             ))}
           </ul>
         </section>

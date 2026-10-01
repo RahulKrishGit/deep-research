@@ -85,6 +85,17 @@ describe("the report's Your notes (live-briefs spec §4.7, AC19)", () => {
     ]);
   });
 
+  it("captions a mixed note with both of its results (notes-progress-report spec §5.7, AC12)", () => {
+    const notes = [
+      { note_id: "n5", text: "Pastries, nothing closed", restatement: "pastries, nothing closed", outcome: "covered" as const, steering_outcome: "not_addressed" as const },
+      { note_id: "n6", text: "Opening hours", restatement: "opening hours", outcome: "not_checked" as const, steering_outcome: null },
+    ];
+    const { container } = render(<ReportBody markdown={MARKDOWN} evidenceLoaded={false} onOpenEvidence={() => {}} notes={notes} />);
+    expect([...container.querySelectorAll(".reader-notes li .cap")].map((cap) => cap.textContent)).toEqual([
+      "covered; the rest of your note: not addressed in the report", "not checked",
+    ]);
+  });
+
   it("is absent when the reader added no note", () => {
     const { container } = render(<ReportBody markdown={MARKDOWN} evidenceLoaded={false} onOpenEvidence={() => {}} />);
     expect(container.querySelector(".reader-notes")).toBeNull();

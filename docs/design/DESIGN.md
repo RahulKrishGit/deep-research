@@ -256,8 +256,12 @@ next edit. The report then states what became of each note: inside the report ca
 above the prose — not a card of its own, and outside `.prose` — `Your notes` lists each
 note as written with its outcome as a caption: `covered`, `couldn't find evidence`,
 `not addressed in the report` (the findings bore on it and the report still does not
-follow it, after its one redraft — never `covered`), `not checked` (no review judged it)
-or `replaced by a later note`.
+follow it, after its one redraft — never `covered`), `not checked` (nothing in the
+finished run could judge it: no review did, or its own topic never researched it) or
+`replaced by a later note`. A research note's caption comes from its own topic's targets,
+never from the review: `covered` once a verified finding answers one of them. A mixed
+note's caption reads both of its results — `{its topic's result}; the rest of your note:
+{its steering result}` (notes-progress-report §5.6–§5.7, D20, D31).
 
 **The pipeline owns the running stage.** It was a 280px rail in the previous pass
 and is now the centred column at reading width: seven rows, one per graph node,
@@ -911,13 +915,26 @@ checklist lists only the topics that pass re-runs, as they start; on
 review found` (`--muted`). Both pluralise (`1 gap`, `1 issue`). This replaces the
 header's loop tag, which went with the "Now" header.
 
-**A reader's note buys its own reopenings** (live-briefs §4.6–§4.7, D11, 2026-09-29).
-A note the review found no evidence for buys one targeted research pass: on
-`graph.note_pass.started` Researching opens on
+**A research note never waits for a review** (notes-progress-report §5, D1–D5, D20,
+2026-09-30). A note whose reading includes `new_angle` is researched as its own topic,
+`Your note: …`. Read during Planning, it joins the plan when the plan is published, and
+Planning's finished brief lists it with the plan's titles; read during Researching, it
+starts its own topic at once, beside the topics already running, as a row of the
+checklist, and the step does not finish until that topic does. Its acknowledgement says
+which: `, as its own topic`; `, researching it as its own topic now` once its own topic
+has started; `, researched as its own topic after this draft is reviewed` from Evaluating
+to Writing; `, researched as its own topic next` during Reviewing. A note read after
+Researching — or one whose topic failed or never started — buys one note pass, after
+which only that note's part and the bottom line are rewritten. A mixed note does both:
+its topic, and its steering half judged and enforced like a steering note.
+
+**A reader's note buys its own reopenings** (live-briefs §4.6–§4.7, D11, 2026-09-29). A
+research note owed its pass, or a steering note the review found no evidence for, buys
+one targeted research pass: on `graph.note_pass.started` Researching opens on
 `Researching your note: {the run's reading}` (`Researching your notes: {a}; {b}` for
 several; `--muted`), and its checklist lists only the notes' own sub-topics,
-`Your note: …`. A note the report
-ignores, or one that arrived while the review ran, buys one redraft: on
+`Your note: …`. A note with a steering kind the report ignores, or one that arrived while
+the review ran, buys one redraft, which rewrites every part: on
 `graph.note_redraft.requested` Writing opens on `Rewriting for your note: {…}`. Neither
 spends the review's own budget — a note pass is not an extra pass and does not advance
 `iteration`, and a note redraft is not the one writer re-run — and each note buys at most
