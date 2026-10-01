@@ -64,12 +64,13 @@ tokens; they differ in what holds the primary column and where evidence lives.
 ### A. Narrative column with a details rail
 
 The centre column is the report as a document, in the server's own order: the
-bottom line (a direct answer, then one line per topic and per reader note), the
-parts with their cited points, the Key figures or Options compared table, what
-could not be confirmed, the sources — each section its own card, with a contents
-list beside or above them (notes-progress-report §7.5–§7.6). A details rail beside it carries the
-review score, coverage, the evidence counts and the session facts, and can swap
-to source scores and figure checks for the passage currently in view.
+bottom line (a direct answer — or, when none survived the check, one muted line saying
+so — then one line per topic and per reader note), the parts with their cited points,
+the Key figures or Options compared table, what could not be confirmed, the sources —
+each section its own card, with a contents list beside or above them
+(notes-progress-report §7.5–§7.6). A details rail beside it carries the review score,
+coverage, the evidence counts and the session facts, and can swap to source scores and
+figure checks for the passage currently in view.
 
 - **Optimises** for the deliverable. The operator reads top to bottom the way the
   report was composed, citations sit inline as numbered references, and the rail
@@ -175,12 +176,14 @@ starts a new session with the same question and this tab's recorded settings, el
 defaults. Below it the brief spine is frozen at the row the reader stopped. Finished rows keep
 their outcomes and still open. The stopped row has a quiet node — a `--muted` edge, its digit in
 `--fg`, the surface fill, no halo — the subtitle `Stopped · {its live facts}` (Researching's
-facts line; `Stopped` for a row with none), and it opens to its frozen brief, where a topic that
-was running reads `stopped` beside its ring, and one that had not started reads `not run`, with
-no ring. Every later row reads `not run` in `--meta`, or `not run again` for a row the loop had
-re-armed. There is no arc, no hand-off, no note line and no counters block. A stop during the
-one-time check shows no pipeline card (D33), and the note reads `You stopped this research at
-{HH:MM}, before it started.`
+facts line — `none of {n} topics done` or `{k} of {n} topics done`, then the pages read and
+findings the run measured and only those, so `Stopped · none of 3 topics done` before any
+is measured; `Stopped` for a row with none), and it opens to its frozen brief, where a
+topic that was running reads `stopped` beside its ring, and one that had not started reads
+`not run`, with no ring. Every later row reads `not run` in `--meta`, or `not run again`
+for a row the loop had re-armed. There is no arc, no hand-off, no note line and no
+counters block. A stop during the one-time check shows no pipeline card (D33), and the
+note reads `You stopped this research at {HH:MM}, before it started.`
 
 **Stop asks once** (notes-progress-report D17, D18, D24, 2026-09-30). From the one-time check
 through Reviewing, a small ghost **Stop** — an 8px square in the text colour, then the word,
@@ -269,6 +272,17 @@ separate notes block. Each note's outcome also stays on the session's `/status`:
 after its one redraft — never `covered`), `not_checked` (nothing in the finished run could
 judge it: no review did, or its own topic never researched it) or `replaced`; a research
 note's comes from its own topic's targets, never from the review (§5.6, D31).
+
+**A bottom line with no answer.** The bottom line opens with a direct answer of one or two
+sentences, each one checked against the findings. When no answer sentence survives that
+check, the answer is not invented: the card opens on one muted line, `*The direct answer
+could not be checked this time; each topic's checked line follows.*`, and the topic lines
+and note lines follow as usual. The run also records a recoverable
+`report_writer_bottom_line_no_answer` error ("No direct-answer sentence was kept after the
+check; the bottom line holds the topic lines alone."), which, like every recoverable error,
+is not shown while the run is in progress and joins the run's recorded errors. The assembled
+bottom line (the call failed, or every sentence was refused) has its own muted line and
+its own error, `report_writer_bottom_line_failed` (notes-progress-report §7.5, §7.3).
 
 **The pipeline owns the running stage.** It was a 280px rail in the previous pass
 and is now the centred column at reading width: seven rows, one per graph node,
@@ -771,9 +785,10 @@ midpoint rule; stage 6 keeps this spine, frozen at the row the reader stopped.
 **What an open row says** (picks 1A, 2C; notes-progress-report §6, 2026-09-30). The
 active row is always open; a done or loop row is closed on its outcome line and
 reopens from its head (a `button[aria-expanded]` over the head); a pending row never
-opens, save Reviewing's after a loop route (D39, §3.5). While a row runs its subtitle is green and live: Planning's elapsed time
-(`Xm SSs`); Researching's `{done} of {n} topics done · {pages} pages read ·
-{findings} findings` (or `{n} topics · researching` before the first topic is done);
+opens, save Reviewing's after a loop route (D39, §3.5). While a row runs its subtitle
+is green and live: Planning's elapsed time (`Xm SSs`); Researching's `{done} of {n}
+topics done · {pages} pages read · {findings} findings`, each count only when the run
+has measured it (or `{n} topics · researching` before the first topic is done);
 `{rated} of {n} rated`; `{checked} of {n} checked`; `{k} of {n} sections written`,
 then `writing the bottom line`; `reading the draft · {elapsed}`. Each row's body is its
 own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
@@ -793,7 +808,11 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
 - **Verifying evidence** and **Writing report** — a ticker (`Just checked`, `Just
   written`) showing one real finding or drafted sentence at a time with its verdict
   in words — a kept one green, a dropped finding or a removed sentence amber — over a
-  determinate bar and a tally.
+  determinate bar and a tally. Until its first sample Writing's ticker waits on `The
+  first section is being drafted…` (no section has returned), then on `The first
+  sentences are being checked…` for as long as a drafted sentence is still unsettled
+  (neither checked nor failed to check); once every one is settled and none could be
+  checked, it reads `None of the drafted sentences could be checked` (spec E7).
 - **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
   `Easy to read`) and the reader's notes: rings that read `reading` under an
@@ -809,8 +828,11 @@ dropped`; `Report drafted · {s} sentences · {c} citations`; Reviewing's route 
 words with its duration (`Accepted · all 5 met · {duration}`, `{d} things to fix ·
 back to the writer`, `Not accepted · {m} of 5 met`); `Published`. Reviewing's static
 meta is `5 checks`, and `5 checks · your notes` while the run holds a note. A reopened
-row shows its final body. A measured zero reads in words (`no findings`), never a
-bare 0.
+row shows its final body. In Researching's texts a measured zero reads in words (`no
+findings`, `no pages read`), never a bare 0; the other steps' counts are numbers (`0
+dropped`). A count the run has not measured is left out, never printed as 0 (D19):
+Researching's line before a page or a finding is measured holds the topics alone, and
+a redraft route with no defect count reads `Things to fix · …`, not `0 things to fix`.
 
 | Step state | Number node | Connector below | Row surface | Meaning |
 |---|---|---|---|---|
@@ -875,8 +897,9 @@ counted as an extra pass), or `redraft` back to Writing for a report with a
 material defect (`graph/state.py:259-314`). `max_extra_passes` bounds the extra
 passes and `MAX_WRITER_REDRAFTS = 1` bounds the redrafts; each note is given at
 most one pass and one redraft. So a run's real shape is a loop with two places it
-returns to, and the pipeline control is linear. That mismatch is the single most confusing thing about this screen, and
-it needs to be designed for rather than left to emerge.
+returns to, and the pipeline control is linear. That mismatch is the single most
+confusing thing about this screen, and it needs to be designed for rather than left to
+emerge.
 
 **The number of passes varies, and the interface must not imply otherwise.** An
 extra pass is bought before acceptance is even considered, whenever a required
@@ -889,9 +912,10 @@ a budget-exhausted run.
 
 **The active row is derived, and it is derived from completions.** A node's
 `graph.node.started` now arrives live when the node starts (§5.7), but a reconnect
-replays the whole log as one burst (the reviewer's own start is live too, notes-progress-report
-§6.1), so completions stay the rule and read the same either way. The active row is the **successor of the last
-`graph.node.completed`**: Planning until the planner completes, then
+replays the whole log as one burst (the reviewer's own start is live too,
+notes-progress-report §6.1), so completions stay the rule and read the same either way.
+The active row is the **successor of the last `graph.node.completed`**: Planning until
+the planner completes, then
 Researching, and so on. The exceptions are keyed on the reviewer's route
 decision, which it emits before its own completion (`graph/nodes.py:819-841`):
 
@@ -953,11 +977,12 @@ checks, its notes and the verdict line (`1 thing to fix · sending the draft bac
 writer`, `1 gap to fill · going back to research`, a note route's line) — for
 `HANDOFF_HOLD_MS` (2,000ms), while the row the run returns to waits, closed and pending.
 Then the ordinary hand-off runs: Reviewing folds with the from-role timings and that row
-opens with the to-role's (§5.6). The hold paints and never marks: Reviewing stays
-hollow, as item 2's reset left it, and its own completion stays inert. Afterwards the
-hollow Reviewing row keeps a toggle on its head that reopens it on that review — the
-hollow node and `5 checks` stay — until Reviewing runs again. A Stop during the hold
-ends it.
+opens with the to-role's (§5.6). The hold paints and never marks: during it Reviewing
+paints as the running row (`data-state="active"`) while its mark stays `pending`, as item
+2's reset left it; it turns hollow when the hold ends, and its own completion stays inert.
+Afterwards the hollow Reviewing row keeps a toggle on its head that reopens it on that
+review — the hollow node and `5 checks` stay — until Reviewing runs again. A Stop during
+the hold ends it.
 
 **A reopened row says why it reopened** (live-briefs D14, 2026-09-28). On
 `graph.extra_pass.started` Researching's brief opens on `Going back to research {k}
@@ -1205,8 +1230,9 @@ pass from agent events.
   error — a statement-check batch the writer could not judge
   (`report_writer_statement_check_failed`), a context-check batch the verifier
   could not judge (`evidence_verifier_context_check_failed`), a section the
-  writer could not draft — is the normal case: it never stops the run, and the
-  evidence log records what it left unchecked. A live counter was therefore a
+  writer could not draft, a bottom line left with no answer sentence
+  (`report_writer_bottom_line_no_answer`) — is the normal case: it never stops the
+  run, and the evidence log records what it left unchecked. A live counter was therefore a
   number that asked to be read and told the operator nothing actionable, and the
   card that held it was removed before the rail itself was.
 - `recoverable: false` — promoted into the failure panel, with the halting type
