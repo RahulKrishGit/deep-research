@@ -48,6 +48,16 @@ _CONTENT_TYPE_FORMATS = {
     "text/markdown": "markdown",
     "text/plain": "text",
 }
+# Suffixes the acquisition policy sends to this reader (``_required_reader``)
+# that no parser here reads. A remote source whose own path ends in one is
+# refused before any request (latency audit O11), with the error type and
+# message its download would have ended in: the download was the whole cost of
+# learning that. Two things differ: the refusal comes before any transport
+# error the download could have met, and its details name the suffix with an
+# empty content type, since nothing was fetched. Only one case could have read
+# differently: a server that answers such a URL with a readable format, by its
+# content type or a redirect.
+_UNPARSED_SUFFIXES = frozenset({".doc", ".docx", ".xls", ".xlsx"})
 
 
 class DocumentReaderTool(BaseTool):
@@ -129,6 +139,13 @@ class DocumentReaderTool(BaseTool):
                 recoverable=False,
             )
         source = source.strip()
+        if _is_remote(source) and _source_suffix(source) in _UNPARSED_SUFFIXES:
+            raise ToolExecutionError(
+                "unsupported document format",
+                error_type="unsupported_document_format",
+                recoverable=False,
+                details={"suffix": _source_suffix(source), "content_type": ""},
+            )
         content_type = ""
         resolved_source = source
         if _is_remote(source):
