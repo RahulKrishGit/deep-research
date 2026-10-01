@@ -1160,7 +1160,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # (## Reader notes) and into its extraction requests (# Reader notes),
     # only when there are any. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
-    "researcher": "a8c9528f0c20",
+    # notes-progress-report Phase A (spec §5.3, 2026-09-30): a dispatcher
+    # replaces the one gather, so a research note read while the loops run gets
+    # its own ungated thread; note topics are never capped; the turns and the
+    # extraction read the notes' steering views. Without notes every request is
+    # byte-identical; agents.prompts was untouched. Moved `a8c9528f0c20` ->
+    # `b9caf536e3f0`.
+    "researcher": "b9caf536e3f0",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

@@ -13,6 +13,7 @@ still considered high priority.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import re
@@ -56,10 +57,17 @@ from deep_research.agents.prompts import (
 from deep_research.agents.react import run_react_loop
 from deep_research.agents.reader_notes import (
     EXTRACTION_NOTES,
+    NOTES_WAIT_S,
     RESEARCH_NOTES,
+    board_version,
     live_reader_notes,
+    note_sub_topic,
+    notes_being_read,
+    notes_settled,
     render_reader_notes,
+    research_notes_without_a_topic,
     research_reader_notes,
+    wait_for_board_change,
 )
 from deep_research.agents.sources import normalize_source_url, publisher_identity
 from deep_research.agents.steps import (
@@ -86,6 +94,7 @@ from deep_research.utils.types import (
     _ENERGY_UNIT,
     _POWER_UNIT,
     MAX_SNIPPET_CHARS,
+    NOTE_COVERAGE_PREFIX,
     QUALITY_CONTRACT_VERSION,
     AcquisitionState,
     ContractModel,
@@ -338,15 +347,40 @@ def _eligible_sub_topics(state: ResearchState) -> list[SubTopic]:
     ]
 
 
+def _selected_and_capped(
+    state: ResearchState, max_sub_topics: int
+) -> tuple[list[SubTopic], list[SubTopic]]:
+    """This pass's topics, and the planned ones the cap leaves out.
+
+    notes-progress-report spec §5.3: the eligible planned topics, at most
+    ``max_sub_topics`` of them, then every eligible reader-note topic
+    (``note-…``), which the cap never touches: a run holds at most ten notes
+    (LB-D11a).
+    """
+    eligible = _eligible_sub_topics(state)
+    planned = [
+        topic
+        for topic in eligible
+        if not topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX)
+    ]
+    noted = [
+        topic
+        for topic in eligible
+        if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX)
+    ]
+    return [*planned[:max_sub_topics], *noted], planned[max_sub_topics:]
+
+
 def select_sub_topics(
     state: ResearchState,
     max_sub_topics: int = DEFAULT_MAX_SUB_TOPICS,
 ) -> list[SubTopic]:
-    """The first pass researches every planned sub-topic; an extra pass only the
-    sub-topics that own a missing required target (spec §6.5, §7.2)."""
+    """The first pass researches every planned sub-topic, up to ``max_sub_topics``,
+    and every reader-note sub-topic; an extra or note pass only the sub-topics
+    that own one of its targets (spec §6.5, §7.2; notes-progress-report §5.3)."""
     if max_sub_topics < 1:
         raise ValueError("max_sub_topics must be at least 1")
-    return _eligible_sub_topics(state)[:max_sub_topics]
+    return _selected_and_capped(state, max_sub_topics)[0]
 
 
 def is_high_priority(
@@ -2596,19 +2630,24 @@ def sub_topic_started_event(
     """Announce that one sub-topic's loop is about to run.
 
     ``coverage_id`` lets a console match the topic to the plan's own list
-    (live-briefs spec E3).
+    (live-briefs spec E3). A reader note's own topic (``note-{id}``) also names
+    its ``note_id`` (notes-progress-report spec §5.3), so the page can say the
+    note is being researched now; a planned topic carries no such key.
     """
+    metadata: dict[str, JsonValue] = {
+        "sub_topic": summarize_text(sub_topic.title),
+        "coverage_id": sub_topic.coverage_id,
+        "priority": sub_topic.priority,
+        "index": index,
+        "existing_sources": existing_sources,
+    }
+    if sub_topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX):
+        metadata["note_id"] = sub_topic.coverage_id.removeprefix(NOTE_COVERAGE_PREFIX)
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.sub_topic.started",
         message=f"Researching sub-topic {index}.",
-        metadata={
-            "sub_topic": summarize_text(sub_topic.title),
-            "coverage_id": sub_topic.coverage_id,
-            "priority": sub_topic.priority,
-            "index": index,
-            "existing_sources": existing_sources,
-        },
+        metadata=metadata,
     )
 
 
@@ -2728,7 +2767,9 @@ def research_completed_event(
 ) -> ResearchEvent:
     """Report the whole research pass.
 
-    ``sub_topics_planned`` is every sub-topic the Planner produced;
+    ``sub_topics_planned`` is every sub-topic the Planner produced, plus the
+    reader notes' own topics this run started threads for (notes-progress-report
+    spec §5.3);
     ``sub_topics_skipped`` is how many of the pass's own selection were never
     attempted — dropped by the ``max_sub_topics`` cap, or left unstarted when
     a non-recoverable provider failure stopped the pass early. Together with
@@ -3032,6 +3073,41 @@ async def _cancel_and_gather_pages(
         await asyncio.gather(*page_extractions.values(), return_exceptions=True)
 
 
+async def _until_a_thread_ends_or_the_board_changes(
+    threads: Sequence["asyncio.Task[_SubTopicOutcome | None]"],
+    seen: int | None,
+) -> None:
+    """Return once any of ``threads`` ends or, with a board bound, the board changes.
+
+    notes-progress-report spec §5.3: ``seen`` is the board's change count read
+    before the dispatcher's scan, so a note added after that scan wakes this
+    wait at once. With no board bound (``None``: the CLI) only the threads are
+    waited on. The board's waiter never outlives the call.
+    """
+    change = (
+        None if seen is None else asyncio.ensure_future(wait_for_board_change(seen))
+    )
+    try:
+        await asyncio.wait(
+            [*threads, *([] if change is None else [change])],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        if change is not None:
+            change.cancel()
+            await asyncio.gather(change, return_exceptions=True)
+
+
+def _thread_result(
+    thread: "asyncio.Task[_SubTopicOutcome | None]",
+) -> "_SubTopicOutcome | None | BaseException":
+    """One settled thread's outcome, or the exception it ended with."""
+    if thread.cancelled():
+        return asyncio.CancelledError()
+    error = thread.exception()
+    return thread.result() if error is None else error
+
+
 
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
@@ -3164,6 +3240,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # keep here, and a field would only be a race waiting to be written.
         self._sub_topic_concurrency = resolved_concurrency
         self._run_source_state: ResearchState | None = None
+        # The reader notes' own topics this run started threads for, in start
+        # order (notes-progress-report spec §5.3): their targets join the
+        # extraction list, and the run's update appends them to the plan.
+        self._run_note_topics: list[SubTopic] = []
 
     @property
     def output_schema(self) -> type[ResearchFindings]:
@@ -3191,8 +3271,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """The reader's notes a request built now carries, or ``""`` (live-briefs spec §4.6).
 
         The notes this pass was handed plus any that arrived since, from the
-        run's board, less ``new_angle`` notes: those wait for the review's
-        note pass rather than steering a loop already running.
+        run's board, as steering notes (notes-progress-report spec §5.1): a
+        note whose only kind is ``new_angle`` gets a thread of its own instead,
+        and a mixed note steers with ``new_angle`` left out of its kinds.
         """
         state_notes = (
             self._run_source_state.reader_notes
@@ -3223,6 +3304,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         A run with no plan in hand — a direct ``extract_findings`` call, or a
         snapshot predating the target inventory — yields none, and extraction
         then binds nothing, because there is no inventory to bind against.
+
+        A reader note's own thread started in this run (notes-progress-report
+        spec §5.3) adds its topic's targets, on any pass. The list is built
+        again at each call, so a read made after a thread started sees its
+        targets.
         """
         state = self._run_source_state
         if state is None:
@@ -3233,9 +3319,28 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             for target in counted_evidence_targets(sub_topic.evidence_targets)
         ]
         wanted = set(state.extra_pass_target_ids)
-        if not wanted:
-            return planned
-        return [target for target in planned if target.target_id in wanted]
+        if wanted:
+            planned = [target for target in planned if target.target_id in wanted]
+        return [
+            *planned,
+            *(
+                target
+                for topic in self._run_note_topics
+                for target in counted_evidence_targets(topic.evidence_targets)
+            ),
+        ]
+
+    def _coverage_titles(self) -> dict[str, str]:
+        """Each topic's title by coverage id: the plan's, then this run's note threads'."""
+        topics = [
+            *(
+                self._run_source_state.sub_topics
+                if self._run_source_state is not None
+                else ()
+            ),
+            *self._run_note_topics,
+        ]
+        return {topic.coverage_id: topic.title for topic in topics}
 
     def _recorded_findings(self) -> tuple[Finding, ...]:
         """The findings the run already holds, for the packet's own steering.
@@ -3750,14 +3855,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             policy.extract_passage_batch()
 
         planned_targets = self._planned_targets() if policy is not None else []
-        coverage_titles = {
-            sub_topic.coverage_id: sub_topic.title
-            for sub_topic in (
-                self._run_source_state.sub_topics
-                if self._run_source_state is not None
-                else ()
-            )
-        }
+        coverage_titles = self._coverage_titles()
         question = (
             self._run_source_state.original_question
             if self._run_source_state is not None
@@ -4316,10 +4414,17 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         result: ResearchFindings | None,
         run: ReActRun,
     ) -> ResearchStateUpdate:
-        """Findings and errors only. ``run`` adds the progress events."""
+        """Findings, errors and this run's note topics. ``run`` adds the progress events.
+
+        The reader notes' own topics this run started threads for join the
+        plan's (notes-progress-report spec §5.3); the target inventories are
+        left as they are, as a note pass leaves them.
+        """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
         if result is not None:
             update["raw_findings"] = list(result.findings)
+        if self._run_note_topics:
+            update["sub_topics"] = list(self._run_note_topics)
         if (
             self._run_reads
             or self._run_evidence
@@ -4376,14 +4481,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         admitted_read_order: list[str] = []
         placeholder_run = ReActRun(agent_name=self.name, stop_reason="finished")
         planned_targets = self._planned_targets()
-        coverage_titles = {
-            sub_topic.coverage_id: sub_topic.title
-            for sub_topic in (
-                self._run_source_state.sub_topics
-                if self._run_source_state is not None
-                else ()
-            )
-        }
+        coverage_titles = self._coverage_titles()
         question = (
             self._run_source_state.original_question
             if self._run_source_state is not None
@@ -4649,8 +4747,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         ``provider_failure_stopped_processing``) and lets the running ones
         finish; a run-wide attempt ceiling is re-raised after every loop has
         settled, so the node still halts the run.
+
+        A reader's research note read while the loops run gets its own thread
+        at once, outside the ``sub_topic_concurrency`` slots, and the run does
+        not return until every thread has ended (notes-progress-report spec
+        §5.3, D3); a note still being read when they have is waited for, for
+        ``NOTES_WAIT_S`` at most.
         """
         self._run_source_state = state
+        self._run_note_topics = []
         self._run_reads = dict(state.read_records)
         self._run_evidence = dict(state.evidence_units)
         self._run_dispositions = list(state.evidence_dispositions)
@@ -4690,9 +4795,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             }
         )
         base_task = self.build_task(state)
-        eligible = _eligible_sub_topics(state)
-        selected = eligible[: self._max_sub_topics]
-        capped = eligible[self._max_sub_topics :]
+        # notes-progress-report spec §5.3: the cap holds the planned topics only.
+        selected, capped = _selected_and_capped(state, self._max_sub_topics)
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
         findings: list[Finding] = []
@@ -4746,18 +4850,24 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         tool_lock = asyncio.Lock()
         gate = asyncio.Semaphore(self._sub_topic_concurrency)
         # Set by the first loop whose work ends in a non-recoverable provider
-        # failure. A loop that has not started yet checks it as it acquires
-        # the gate and stops there, which is what keeps
-        # ``provider_failure_stopped_processing`` for the topics that never
-        # got a turn, while the loops already running finish. It is set before
-        # the gate is released, so a waiter cannot slip past it.
+        # failure. A loop that has not started yet checks it as it starts and
+        # stops there, which is what keeps ``provider_failure_stopped_processing``
+        # for the topics that never got a turn, while the loops already running
+        # finish; and once it is set no reader note gets a thread of its own
+        # (notes-progress-report spec §5.3). A gated loop sets it before the
+        # gate is released, so a waiter cannot slip past it.
         stop = asyncio.Event()
 
         async def research(
-            index: int, sub_topic: SubTopic
+            index: int, sub_topic: SubTopic, *, gated: bool
         ) -> _SubTopicOutcome | None:
-            """Run one sub-topic, or skip it when the pass has stopped."""
-            async with gate:
+            """Run one sub-topic, or skip it when the pass has stopped.
+
+            A gated topic waits for one of ``sub_topic_concurrency`` slots; a
+            reader note's own thread is not gated (spec §5.3), so it starts at
+            once, beside however many loops are running.
+            """
+            async with (gate if gated else contextlib.nullcontext()):
                 if stop.is_set():
                     return None
                 task = self.sub_topic_task(
@@ -4770,30 +4880,72 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 except BaseException:
                     # A loop that RAISES stops the pass exactly as one that
                     # returns a provider failure does. The error is re-raised
-                    # to the gather below, so every topic still queued behind
-                    # this gate must not start: its model turns would be spent
-                    # on work the re-raise throws away. (The plan's ceiling is
-                    # seven sub-topics and the default cap is five, so queued
-                    # work is the ordinary case, not a corner.) The flag is set
-                    # before the gate is released, so a waiter cannot slip past
-                    # it.
+                    # once every thread has settled, so every topic still
+                    # queued behind this gate, and every note not yet given a
+                    # thread, must not start: its model turns would be spent on
+                    # work the re-raise throws away.
                     stop.set()
                     raise
                 if not outcome.react.succeeded:
                     stop.set()
             return outcome
 
-        settled_results = await asyncio.gather(
-            *(
-                research(index, sub_topic)
-                for index, sub_topic in enumerate(selected, start=1)
-            ),
-            return_exceptions=True,
+        # notes-progress-report spec §5.3 (D3): the dispatcher. Every selected
+        # topic runs as its own task; a research note read while any of them
+        # runs gets its own thread at once. A note still being read when every
+        # thread has ended is waited for, ``NOTES_WAIT_S`` at most, so it still
+        # gets its thread. The window closes on a scan that found no note due,
+        # with no await between that scan and the loop's exit, so a note read
+        # after it owes a note pass instead (§5.4).
+        order: list[SubTopic] = list(selected)
+        threads = [
+            asyncio.create_task(research(index, sub_topic, gated=True))
+            for index, sub_topic in enumerate(selected, start=1)
+        ]
+        note_priority = (
+            max((topic.priority for topic in state.sub_topics), default=0) + 1
         )
-        # Every sibling has settled by now, so a halt cancels no work: a
+        topic_ids = {topic.coverage_id for topic in state.sub_topics}
+        closing = False
+        try:
+            while True:
+                seen = board_version()
+                if not stop.is_set():
+                    for note in research_notes_without_a_topic(
+                        state.reader_notes, topic_ids
+                    ):
+                        topic = note_sub_topic(
+                            note, priority=note_priority, reason="reader_note"
+                        )
+                        topic_ids.add(topic.coverage_id)
+                        self._run_note_topics.append(topic)
+                        order.append(topic)
+                        threads.append(
+                            asyncio.create_task(
+                                research(len(order), topic, gated=False)
+                            )
+                        )
+                unfinished = [thread for thread in threads if not thread.done()]
+                if unfinished:
+                    await _until_a_thread_ends_or_the_board_changes(unfinished, seen)
+                    continue
+                if closing or stop.is_set() or not notes_being_read():
+                    break
+                closing = not await notes_settled(timeout=NOTES_WAIT_S)
+        finally:
+            # Unlike a gather's children, these tasks are not cancelled with the
+            # run: whatever ends it early -- a cancellation (Phase D's stop)
+            # included -- cancels every thread still running and awaits it.
+            running = [thread for thread in threads if not thread.done()]
+            for thread in running:
+                thread.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+        settled_results = [_thread_result(thread) for thread in threads]
+        # Every thread has settled by now, so a halt cancels no work: a
         # run-wide attempt ceiling is re-raised and still stops the run
         # (``graph/nodes.py`` halts on it), and any other unexpected failure is
-        # re-raised rather than swallowed by the gather.
+        # re-raised rather than swallowed, in thread order.
         refusals = [
             item
             for item in settled_results
@@ -4807,11 +4959,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 raise item
             settled.append(item)
 
-        # The folds below iterate the plan-ordered task list, never the order
-        # the loops finished in: findings, runs and events are the plan's, so a
-        # report cannot depend on which loop happened to be scheduled first.
+        # The folds below iterate the run's own task list, never the order the
+        # loops finished in: the plan's topics in plan order, then the note
+        # threads in the order they started, so a report cannot depend on which
+        # loop happened to be scheduled first.
         unstarted: list[SubTopic] = []
-        for sub_topic, outcome in zip(selected, settled, strict=True):
+        for sub_topic, outcome in zip(order, settled, strict=True):
             if outcome is None:
                 unstarted.append(sub_topic)
                 continue
@@ -4858,7 +5011,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
         events.append(
             research_completed_event(
-                sub_topics_planned=len(state.sub_topics),
+                sub_topics_planned=len(state.sub_topics) + len(self._run_note_topics),
                 sub_topics_researched=len(runs),
                 sub_topics_skipped=len(unattempted),
                 findings=len(findings),
