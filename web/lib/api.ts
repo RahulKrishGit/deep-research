@@ -27,7 +27,16 @@ export interface EvidenceCounts {
   verified_findings: number; corrected_findings: number; quoted_findings: number; dropped_findings: number;
   context_unchecked_findings: number; cited_findings: number;
 }
+/* notes-progress-report spec §7.5: one "## " heading of the published report, in order. */
+export type ReportOutlineKind = "bottom_line" | "topic" | "key_figures" | "options" | "not_confirmed" | "sources";
+export interface ReportOutlineEntry {
+  heading: string; kind: ReportOutlineKind; label: string;
+  topic_index: number | null; topic_count: number | null; note_id: string | null;
+}
 export interface ResearchSessionResponse {
+  /* The published report's headings (spec §7.5, §7.6). Optional because a response recorded before
+     the report became cards (the replay captures under test/fixtures) carries none. */
+  report_outline?: ReportOutlineEntry[] | null;
   session_id: string; query: string; status: SessionStatus; current_agent: string | null; iteration: number;
   started_at: string; finished_at: string | null; report_path: string | null; trace_url: string | null;
   errors: ResearchError[];
