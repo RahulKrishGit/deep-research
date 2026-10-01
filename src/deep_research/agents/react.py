@@ -13,6 +13,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import nullcontext
+from time import perf_counter
 from typing import TypeAlias
 
 from pydantic import JsonValue
@@ -43,6 +44,11 @@ SufficiencyCallback: TypeAlias = Callable[[Sequence[ReActStep]], bool]
 ToolPolicyCallback: TypeAlias = Callable[
     [ReActDecision, Mapping[str, JsonValue]], object
 ]
+# ``(proposal_id, lock_wait_s, duration_s)`` for one ``use_tool`` decision
+# (latency audit O8): the seconds it waited for the caller's tool lock, and the
+# seconds its tool ran -- zero for a call the policy refused, answered from the
+# run's cache, or the budget stopped.
+ToolTimingCallback: TypeAlias = Callable[[str, float, float], None]
 
 # The tool name the loop records for the calls a spent budget never reached.
 # It is project-authored on purpose: the count of dropped calls is what the
@@ -349,6 +355,7 @@ async def run_react_loop(
     tool_lock: asyncio.Lock | None = None,
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
     propagate_provider_errors: bool = True,
+    on_tool_timing: ToolTimingCallback | None = None,
 ) -> ReActRun:
     """Run think -> act -> observe until a stop condition fires.
 
@@ -371,6 +378,10 @@ async def run_react_loop(
     execution, and ``after_action``'s reduction of the result into the run's
     cache and ledger — runs under it, so two loops sharing one run can never
     both admit the same page. The model turn is never inside it.
+
+    ``on_tool_timing`` is told, for every ``use_tool`` decision, how long it
+    waited for ``tool_lock`` and how long its tool ran (latency audit O8).
+    It only observes: nothing a model reads, and no step, depends on it.
     """
     if not agent_name.strip():
         raise ValueError("agent_name must not be blank")
@@ -416,12 +427,15 @@ async def run_react_loop(
                     # loop's download and the admission that makes it a
                     # cache hit. The model turn above is deliberately
                     # outside it, so loops still overlap where it matters.
+                    requested_at = perf_counter()
                     async with (
                         tool_lock
                         if tool_lock is not None
                         and decision.action == "use_tool"
                         else nullcontext()
                     ):
+                        lock_wait_s = perf_counter() - requested_at
+                        duration_s = 0.0
                         proposal_id = build_proposal_id(
                             local_job_id, iteration, position
                         )
@@ -602,11 +616,16 @@ async def run_react_loop(
                                         stop_reason = "tool_budget_exhausted"
                                         budget_spent = True
                                     else:
-                                        tool_result = (
-                                            policy_result
-                                            if policy_result is not None
-                                            else await tool.execute(**tool_input)
-                                        )
+                                        if policy_result is not None:
+                                            tool_result = policy_result
+                                        else:
+                                            executed_at = perf_counter()
+                                            tool_result = await tool.execute(
+                                                **tool_input
+                                            )
+                                            duration_s = (
+                                                perf_counter() - executed_at
+                                            )
                                         tool_calls += 1
                                         charged_tool_calls += 1
                                         observation = _tool_observation(
@@ -646,6 +665,15 @@ async def run_react_loop(
                                 final_answer=decision.final_answer or None,
                             )
                         )
+                        if (
+                            on_tool_timing is not None
+                            and decision.action == "use_tool"
+                        ):
+                            on_tool_timing(
+                                proposal_id,
+                                round(lock_wait_s, 3),
+                                round(duration_s, 3),
+                            )
                         if tool_policy is not None:
                             after_action = getattr(tool_policy, "after_action", None)
                             if callable(after_action):

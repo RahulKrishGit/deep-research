@@ -1155,7 +1155,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # (## Reader notes) and into its extraction requests (# Reader notes),
     # only when there are any. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
-    "researcher": "a8c9528f0c20",
+    # Latency plan Task 2 (audit O8, 2026-09-30): each live
+    # researcher.tool_call carries lock_wait_s and duration_s, handed over by
+    # run_react_loop's on_tool_timing. Module code only; no request changed
+    # (the replay digest pins hold) and agents.prompts was untouched. Moved `a8c9528f0c20` -> `dff19f853f51`.
+    "researcher": "dff19f853f51",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

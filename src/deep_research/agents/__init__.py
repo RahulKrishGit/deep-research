@@ -235,6 +235,7 @@ from deep_research.agents.react import (
     StepCallback,
     SufficiencyCallback,
     ToolPolicyCallback,
+    ToolTimingCallback,
     build_proposal_id,
     run_react_loop,
 )
@@ -732,6 +733,7 @@ __all__ = [
     "StepCallback",
     "SufficiencyCallback",
     "ToolPolicyCallback",
+    "ToolTimingCallback",
     "build_proposal_id",
     "run_react_loop",
     "EXTRACTION_NOTES",

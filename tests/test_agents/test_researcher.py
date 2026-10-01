@@ -8611,3 +8611,33 @@ async def test_the_researcher_publishes_topic_and_tool_call_events_live_in_step_
     assert [call(e) for e in returned if e.event_type == "researcher.tool_call"] == [
         call(e) for e in tool_call_events(state.sub_topics[0], outcome.react)
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_live_tool_call_event_carries_its_lock_wait_and_run_time(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: each live ``researcher.tool_call`` carries the seconds
+    the call waited for the run's tool lock and the seconds its tool ran; the
+    post-loop rebuild (``tool_call_events``) keeps its old shape."""
+    completer = ScriptedCompleter(
+        decisions=_search_and_scrape_decisions(), outputs=[_findings_draft()]
+    )
+    agent = _researcher(tracker, completer)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "q"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    live = [event for event in received if event.event_type == "researcher.tool_call"]
+    assert len(live) == 2
+    for event in live:
+        assert isinstance(event.metadata["lock_wait_s"], float)
+        assert isinstance(event.metadata["duration_s"], float)
+        assert event.metadata["lock_wait_s"] >= 0.0
+        assert event.metadata["duration_s"] >= 0.0
+    for event in tool_call_events(state.sub_topics[0], outcome.react):
+        assert "lock_wait_s" not in event.metadata
+        assert "duration_s" not in event.metadata

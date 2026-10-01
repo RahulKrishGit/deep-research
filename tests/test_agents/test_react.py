@@ -1775,3 +1775,66 @@ async def test_the_tool_lock_serialises_only_the_tool_section(
     assert trace.peak["after"] == 1
     assert [run.tool_calls for run in (first, second)] == [1, 1]
     assert [run.stop_reason for run in (first, second)] == ["finished", "finished"]
+
+
+# ---------------------------------------------------------------------------
+# Tool timings (latency audit O8)
+# ---------------------------------------------------------------------------
+
+
+class _SlowEchoTool(EchoTool):
+    """Echo, after a pause long enough to measure."""
+
+    async def _execute(
+        self, context: ToolCallContext, **kwargs: Any
+    ) -> ToolExecution:
+        await asyncio.sleep(0.05)
+        return await super()._execute(context, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_every_use_tool_decision_reports_its_lock_wait_and_run_time(
+    tracker: Tracker,
+) -> None:
+    """O8: ``on_tool_timing`` hears, for each tool call, how long it waited for
+    the tool lock and how long its tool ran. A call no tool ran reports no run
+    time, and a finish is not a tool call. (Thresholds leave room for the
+    Windows event loop, whose timers can fire up to one 15.6 ms tick early.)"""
+    lock = asyncio.Lock()
+    timings: list[tuple[str, float, float]] = []
+
+    async def hold_the_lock() -> None:
+        async with lock:
+            await asyncio.sleep(0.05)
+
+    holder = asyncio.create_task(hold_the_lock())
+    await asyncio.sleep(0)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([_SlowEchoTool(tracker)], allowed=["echo"]),
+            decide=_decider(
+                [
+                    use_tool("Echo once.", "echo", json.dumps({"value": "a"})),
+                    use_tool("Ask for a tool that is not offered.", "missing"),
+                    finish("Done.", "The answer."),
+                ]
+            ),
+            max_iterations=4,
+            tool_budget=4,
+            tool_lock=lock,
+            on_tool_timing=lambda *timing: timings.append(timing),
+        )
+    await holder
+
+    assert run.stop_reason == "finished"
+    assert [proposal for proposal, _, _ in timings] == [
+        step.proposal_id for step in run.steps[:2]
+    ]
+    (_, waited, ran), (_, unknown_waited, unknown_ran) = timings
+    assert waited >= 0.02
+    assert ran >= 0.02
+    assert unknown_ran == 0.0
+    assert unknown_waited < 0.02

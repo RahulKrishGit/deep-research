@@ -2612,27 +2612,40 @@ def sub_topic_started_event(
     )
 
 
-def tool_call_event(sub_topic: SubTopic, step: ReActStep) -> ResearchEvent | None:
+def tool_call_event(
+    sub_topic: SubTopic,
+    step: ReActStep,
+    *,
+    timing: tuple[float, float] | None = None,
+) -> ResearchEvent | None:
     """Report one tool call the sub-topic's loop made, or ``None`` for a step without one.
 
     Built when the step's observation is recorded (live-briefs spec E3), so the
     event is stamped at the call rather than when the sub-topic's loop ends.
+
+    ``timing`` is the call's ``(lock_wait_s, duration_s)`` from the loop
+    (latency audit O8): the seconds it waited for the run's tool lock and the
+    seconds its tool ran. Both keys are added only when it is given, so an
+    event rebuilt after the loop (``tool_call_events``) keeps its old shape.
     """
     observation = step.observation
     if observation is None:
         return None
+    metadata: dict[str, JsonValue] = {
+        "sub_topic": summarize_text(sub_topic.title),
+        "tool": observation.tool_name,
+        "proposal_id": step.proposal_id,
+        "iteration": step.iteration,
+        "success": observation.success,
+        "error_type": observation.error_type,
+    }
+    if timing is not None:
+        metadata["lock_wait_s"], metadata["duration_s"] = timing
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.tool_call",
         message=f"{observation.tool_name} call completed.",
-        metadata={
-            "sub_topic": summarize_text(sub_topic.title),
-            "tool": observation.tool_name,
-            "proposal_id": step.proposal_id,
-            "iteration": step.iteration,
-            "success": observation.success,
-            "error_type": observation.error_type,
-        },
+        metadata=metadata,
     )
 
 
@@ -4437,10 +4450,26 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             )
 
         tool_calls: list[ResearchEvent] = []
+        # Each call's (lock_wait_s, duration_s), keyed by proposal id, from the
+        # loop to the event its step becomes (latency audit O8).
+        timings: dict[str, tuple[float, float]] = {}
+
+        def note_timing(
+            proposal_id: str, lock_wait_s: float, duration_s: float
+        ) -> None:
+            timings[proposal_id] = (lock_wait_s, duration_s)
 
         async def record(step: ReActStep) -> None:
             await self._record_step(step, scratchpad=scratchpad)
-            event = tool_call_event(task.sub_topic, step)
+            event = tool_call_event(
+                task.sub_topic,
+                step,
+                timing=(
+                    timings.pop(step.proposal_id, None)
+                    if step.proposal_id is not None
+                    else None
+                ),
+            )
             if event is not None:
                 publish_live(event)
                 tool_calls.append(event)
@@ -4460,6 +4489,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 job_id=f"{self.name}/{policy.session_id}/{policy.target_id}",
                 tool_lock=tool_lock,
                 propagate_provider_errors=False,
+                on_tool_timing=note_timing,
             )
         except BaseException:
             # ``run_react_loop`` re-raises some failures rather than folding
