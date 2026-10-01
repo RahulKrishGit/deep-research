@@ -1,10 +1,13 @@
+import asyncio
 import json
+import threading
 import time
 from collections.abc import Mapping
 from typing import Any
 
 import httpx
 import pytest
+from tavily import AsyncTavilyClient
 
 from deep_research.observability import ToolMetric
 from deep_research.request_budget import (
@@ -690,3 +693,110 @@ async def test_search_without_a_request_budget_stays_uncounted(tracker) -> None:
         "retry_count": 0,
     }
     assert len(client.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# The async default client (notes-progress-report spec §8.3, D25)
+#
+# A stop cancels the run's task. A search the tool awaits on the run's own loop
+# is cancelled with it; one running in a worker thread cannot be stopped. So the
+# default client is tavily's ``AsyncTavilyClient``, and an injected synchronous
+# client (the replay double, the evaluation harness, the fakes above) keeps the
+# thread path.
+# ---------------------------------------------------------------------------
+
+
+class _AsyncSearchClient:
+    """An async client that answers from a queue, or waits until it is cancelled."""
+
+    def __init__(self, responses: list[Mapping[str, Any] | Exception] | None = None) -> None:
+        self.responses = list(responses or [])
+        self.calls = 0
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def search(self, *, query: str, search_depth: str, max_results: int) -> Mapping[str, Any]:
+        self.calls += 1
+        self.started.set()
+        if not self.responses:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+@pytest.mark.asyncio
+async def test_default_search_client_is_async(tracker) -> None:
+    """D25: a tool built with a key and no client holds tavily's async client; nothing is sent."""
+    tool = WebSearchTool(tracker, api_key="tvly-test-key")
+    assert isinstance(tool._client, AsyncTavilyClient)
+    await tool._client.close()
+
+
+@pytest.mark.asyncio
+async def test_search_cancelled_with_task(tracker) -> None:
+    """§8.3: cancelling the task that awaits a search cancels the request in flight, after
+    exactly one reserved unit."""
+    budget = _tavily_budget()
+    client = _AsyncSearchClient()
+    tool = WebSearchTool(tracker, client=client, request_budget=budget)
+
+    async def search() -> ToolResult:
+        async with tracker.session_span("session-1", "question"):
+            return await tool.execute(query="topic")
+
+    task = asyncio.create_task(search())
+    await asyncio.wait_for(client.started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert client.cancelled is True
+    assert budget.snapshot("tavily").attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_search_client_runs_in_thread(tracker) -> None:
+    """An injected synchronous client still works, off the run's loop, in a worker thread."""
+    loop_thread = threading.get_ident()
+    threads: list[int] = []
+
+    class ThreadRecordingClient(FakeSearchClient):
+        def search(self, *, query: str, search_depth: str, max_results: int) -> Mapping[str, Any]:
+            threads.append(threading.get_ident())
+            return super().search(query=query, search_depth=search_depth, max_results=max_results)
+
+    client = ThreadRecordingClient([_search_response()])
+    tool = WebSearchTool(tracker, client=client)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is True
+    assert len(threads) == 1 and threads[0] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_search_5xx_retried(tracker) -> None:
+    """R9: the async client raises ``httpx.HTTPStatusError`` for a status tavily does not map, so a
+    503 is retried under the tool's own rule, each retry reserving its own unit."""
+    budget = _tavily_budget()
+    client = _AsyncSearchClient([_status_error(503), _status_error(503), _search_response()])
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep, request_budget=budget)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is True
+    assert result.metadata["retry_count"] == 2
+    assert client.calls == 3
+    assert budget.snapshot("tavily").attempts == 3
+    assert delays == [0.5, 1.0]
