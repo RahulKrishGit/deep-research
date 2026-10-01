@@ -1198,7 +1198,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # whose only kind is new_angle is its own topic instead). Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
     # `24809aa975a3` -> `cc5a310b0aa0`.
-    "source_evaluator": "cc5a310b0aa0",
+    # Phase B (notes-progress-report spec §6.2, §6.4, 2026-09-30): live
+    # source_evaluator.progress once the batches are planned and as each
+    # settles, and the strong/fair/weak split on evaluation.completed. No
+    # request text changed. Moved `cc5a310b0aa0` -> `356d1486f0e3`.
+    "source_evaluator": "356d1486f0e3",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
