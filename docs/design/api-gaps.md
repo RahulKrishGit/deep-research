@@ -33,7 +33,7 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | `POST` | `/research/{id}/stop` | `202` `ResearchSessionResponse` with `status: "stopped"`: the run is cancelled where it stands and writes nothing; `404` unknown session; `409` `not_stoppable` with `reason` `finished` (it has ended, a second stop included), `publishing` (from the run's published decision to publish or end) or `closing` (the service shutting down) (`api/app.py` `stop_research`, `api/sessions.py` `stop`; notes-progress-report spec §8) |
 
 `ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 23 fields: `session_id`, `query`, `status`,
+`api/sessions.py:73-128`), 24 fields: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, `errors`, `evidence_path`, `quality_path`,
 `quality_contract_version`, `semantic_review_status`,
@@ -41,7 +41,8 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 (`required_targets`, `answered_targets`, `missing_required_target_ids`,
 `not_found_target_ids`), `evidence_counts` (fifteen counts; `null`
 unless the run left both a composition and a quality snapshot,
-`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3):
+`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3, except `stopped_step` and
+`report_outline`, notes-progress-report's):
 `notes` (each note as written, the run's reading of it and its outcome),
 `notes_remaining`, `note_passes`, `clarification` (the one-time check's
 questions and the answers the run started with, or `null`), `stopped_step` (the step a

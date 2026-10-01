@@ -931,10 +931,12 @@ def _table_cell_text(
 
     An options-table cell's verbatim span lives in ``cell.text`` (the
     "Option" column) or in its ``entries`` (a part cell or Recommended by),
-    never in both; a findings-table cell's text is already ``cell.text``
-    except its own Source column, which names its finding ids instead. Only
-    an entryless, textless, finding-less cell -- an option with nothing
-    marked for that part -- ever reads as an em dash.
+    never in both; a findings-table cell's text is already ``cell.text``,
+    its Source column's too (the source's name -- the finding ids stand in
+    only for a Source cell with no text, and a row's backing fact-row ids
+    follow it on their own line). Only an entryless, textless, finding-less
+    cell -- an option with nothing marked for that part -- ever reads as an
+    em dash.
     """
     if cell.text:
         return cell.text

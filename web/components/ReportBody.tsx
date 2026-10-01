@@ -102,7 +102,8 @@ const span = (className: string, children: PhrasingContent[]): Emphasis =>
 /* remarkBottomLine (notes-progress-report spec §7.5 items 3-4, §7.6 Cards): in the Bottom line
    card the answer paragraph becomes p.lead, an emphasis-only paragraph (the assembled line) a
    muted p.b-sub, and the list ul.bl-list, each "- **{label}:** {✓ |✗ }{line}" item split into
-   span.k — the mark (span.ok ✓ or span.no ✗), then the label without its colon — and span.bl-line. */
+   span.k — the mark (span.ok ✓ or span.no ✗), then the label without its visible colon, then that colon
+   and its space inside span.sr so a screen reader still hears a separator — and span.bl-line. */
 const MARK = /^\s*([✓✗])\s*/;
 function bottomLineItem(paragraph: Paragraph): void {
   const [label, ...rest] = paragraph.children;
@@ -115,6 +116,7 @@ function bottomLineItem(paragraph: Paragraph): void {
     rest[0] = { type: "text", value: first.value.replace(mark ? MARK : /^\s+/, "") };
   }
   key.push({ type: "text", value: textOf(label).replace(/:\s*$/, "") });
+  key.push(span("sr", [{ type: "text", value: ": " }]));
   paragraph.children = [span("k", key), span("bl-line", rest)];
 }
 export function remarkBottomLine() {

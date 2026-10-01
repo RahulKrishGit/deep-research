@@ -25,6 +25,7 @@ from deep_research.utils.types import (
 from tests.evidence_fakes import make_finding, make_read
 
 ASSEMBLED = "*Assembled from the sections below; the summary could not be written this time.*"
+NO_ANSWER = "*The direct answer could not be checked this time; each topic's checked line follows.*"
 
 
 def _finding(n: int):
@@ -144,6 +145,21 @@ def test_an_assembled_bottom_line_says_so_above_its_topic_lines() -> None:
         "- **Part one:** Agency One reports part one [1].",
         "- **Part two:** Agency Two reports part two [2].",
     ]
+
+
+def test_a_layout_with_no_printable_answer_says_so_above_its_topic_lines() -> None:
+    """Review P2-1: no answer line printed (none named, or none found in the summary) and not
+    assembled -- the topic lines follow one italic disclosure line, never a silent gap."""
+    topic_lines = [
+        "- **Part one:** Agency One reports part one [1].",
+        "- **Part two:** Agency Two reports part two [2].",
+    ]
+    for answer_ids in ([], ["S999"]):
+        composition = _composition()
+        layout = composition.bottom_line.model_copy(update={"answer_ids": answer_ids})
+        body = _bottom_line(render_written_report(composition.model_copy(update={"bottom_line": layout})))
+        assert body.splitlines()[0] == NO_ANSWER
+        assert body.splitlines()[2:] == topic_lines
 
 
 def test_a_composition_without_a_layout_renders_its_bottom_line_as_one_paragraph() -> None:

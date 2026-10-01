@@ -1508,3 +1508,4 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .rsec .tbl .kf-source{display:none}
   .rsec .tbl .kf-src{display:block}
 }
+.rsec .tbl .kf-src .cite{font-size:inherit;color:inherit}

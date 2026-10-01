@@ -209,12 +209,13 @@ describe("the bottom line card (spec §7.5 items 3-4, §7.6 Cards)", () => {
       li.querySelector(":scope > .k")!.textContent, li.querySelector(".k > .ok, .k > .no")?.className ?? null,
       li.querySelector(":scope > .bl-line")!.textContent,
     ])).toEqual([
-      ["Ratings and reviews", null, "Tripadvisor ranks Voltaire Coffee House highest [2]."],
-      ["✓Your note · open now", "ok", "Followed: only cafés open now"],
-      ["✗Your note · pastries", "no", "Chromatic sells pastries [3]. The rest of your note was not followed in this report."],
-      ["Your note · fire safety", null, "Not checked: more weight on fire safety"],
+      ["Ratings and reviews: ", null, "Tripadvisor ranks Voltaire Coffee House highest [2]."],
+      ["✓Your note · open now: ", "ok", "Followed: only cafés open now"],
+      ["✗Your note · pastries: ", "no", "Chromatic sells pastries [3]. The rest of your note was not followed in this report."],
+      ["Your note · fire safety: ", null, "Not checked: more weight on fire safety"],
     ]);
     expect(rows[2].querySelector('.bl-line a.cite[href="#src-3"]')).not.toBeNull();
+    expect(rows.map((li) => li.querySelector(":scope > .k > .sr")?.textContent)).toEqual([": ", ": ", ": ", ": "]);
   });
 
   it("prints an assembled bottom line as a muted line above its topic lines, with no lead", () => {
@@ -227,7 +228,7 @@ describe("the bottom line card (spec §7.5 items 3-4, §7.6 Cards)", () => {
     expect(card.querySelector("p.lead")).toBeNull();
     expect(card.querySelector("p.b-sub")!.textContent).toBe("Assembled from the sections below; the summary could not be written this time.");
     expect([...card.querySelectorAll(".bl-list > li")].map((li) => [li.querySelector(".k")!.textContent, li.querySelector(".bl-line")!.textContent])).toEqual([
-      ["Part one", "Agency One reports part one [1]."],
+      ["Part one: ", "Agency One reports part one [1]."],
     ]);
   });
 });

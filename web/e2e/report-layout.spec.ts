@@ -164,7 +164,7 @@ test.describe("the bottom line's note lines", () => {
     await page.goto(`/research/${id}`);
     const rows = page.locator("#rep-bottom-line ul.bl-list > li");
     await expect(rows).toHaveCount(4);
-    await expect(rows.locator(":scope > .k")).toHaveText(["Adoption rate", "✓Your note · recycling", "✗Your note · safety", "Your note · exports"]);
+    await expect(rows.locator(":scope > .k")).toHaveText(["Adoption rate:", "✓Your note · recycling:", "✗Your note · safety:", "Your note · exports:"]);
     await expect(rows.nth(1).locator(".k .ok")).toHaveText("✓");
     await expect(rows.nth(2).locator(".k .no")).toHaveText("✗");
     await expect(rows.nth(3).locator(".k .ok, .k .no")).toHaveCount(0);

@@ -1234,14 +1234,19 @@ _ASSEMBLED_BOTTOM_LINE = (
     "*Assembled from the sections below; the summary could not be written this time.*"
 )
 
+#: Review P2-1 (controller-ruled wording): the italic line a layout prints above its topic
+#: lines when no direct-answer sentence printed (none named, or none found in the summary).
+_NO_ANSWER_LINE = "*The direct answer could not be checked this time; each topic's checked line follows.*"
+
 
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
     """Notes-progress-report spec §7.5 items 3-4: the ``## Bottom line`` body -- the
-    answer paragraph (or, for an assembled bottom line, the line that says so),
-    then one ``- **{label}:** {line}`` per topic line, then one line per reader
-    note once publication has stamped them (spec §7.2); a note's own topic line
-    prints only as its note's line. A composition without a layout prints one
-    paragraph (``_plain_bottom_line``), then the note lines."""
+    answer paragraph (or, for an assembled bottom line, or one whose answer could
+    not be checked, the line that says so), then one ``- **{label}:** {line}`` per
+    topic line, then one line per reader note once publication has stamped them
+    (spec §7.2); a note's own topic line prints only as its note's line. A
+    composition without a layout prints one paragraph (``_plain_bottom_line``),
+    then the note lines."""
     by_id = {point.statement_id: point for point in composition.summary if point.statement is not None}
     layout = composition.bottom_line
     if layout is None:
@@ -1261,6 +1266,8 @@ def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]
             if line.statement_id in by_id and line.statement_id not in printed_by_notes
         ]
     items += [_note_line_item(line, by_id, composition, index) for line in composition.reader_note_lines]
+    if layout is not None and not layout.assembled and not paragraph and items:
+        paragraph = _NO_ANSWER_LINE
     return "\n\n".join(block for block in (paragraph, "\n".join(items)) if block)
 
 

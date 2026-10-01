@@ -20,6 +20,7 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import JsonValue
 
+from deep_research.agents.report import report_outline
 from deep_research.api.clarify import (
     ClarityChecker,
     ClarityQuestion,
@@ -47,7 +48,6 @@ from deep_research.api.notes import (
     reader_note,
 )
 from deep_research.api.stop import CHECK_STEP, active_row, session_stopped_event
-from deep_research.agents.report import report_outline
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.notes import NoteBoard, ReceivedNote, bind_note_board
 from deep_research.runtime.outcome import ResearchOutcome
