@@ -1429,7 +1429,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # arithmetic is unchanged). Only this module's own source moved (one set,
     # one key, one keyword); no request text changed and agents.prompts was
     # untouched. Moved `7165ec336250` -> `87e5ae8e9dc9`.
-    "report_writer": "87e5ae8e9dc9",
+    # O1 fix round 1 (2026-10-01): a part whose draft returned but ended
+    # ``failed`` (the Statement Check refused every point) counts in
+    # ``parts_failed`` too, through ``_WritingProgress.part_failed``. Only this
+    # module's own source moved; no request text changed and agents.prompts was
+    # untouched. Moved `87e5ae8e9dc9` -> `e7e6f11e2c83`.
+    "report_writer": "e7e6f11e2c83",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

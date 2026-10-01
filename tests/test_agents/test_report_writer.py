@@ -3886,6 +3886,51 @@ def _first_part_fails_route(messages, schema):
     return _two_part_route(messages, schema)
 
 
+def _first_part_all_refused_route(messages, schema):
+    """``_two_part_route``, except "First"'s draft returns one sentence the Statement Check refuses."""
+    if schema.__name__ == "SectionDraft" and "First" in messages[-1].content.split("# This part of the question")[1][:40]:
+        return SectionDraft(title="First", points=[
+            WriterPointDraft(text="According to the source, storage grew in 2024.", finding_labels=["F01"]),
+        ])
+    return _two_part_route(messages, schema)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_counts_a_part_whose_every_point_was_refused_as_failed(
+    tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Owner decision O1, the second failure exit: a draft that returned but whose every point
+    the Statement Check refused ends ``failed`` (nothing of it is written), so ``parts_failed``
+    counts it too. It was already in ``parts_returned``, so ``failed <= returned``, the fraction
+    is the one a settled part always had, and the bar still ends full."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_first_part_all_refused_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    assert {part.coverage_id: part.status for part in composition.parts} == {
+        "topic-01": "failed", "topic-02": "written",
+    }
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert all(m["parts_failed"] <= m["parts_returned"] <= m["parts_total"] for m in progress)
+    failed = [m["parts_failed"] for m in progress]
+    assert failed == sorted(failed) and failed[0] == 0
+    last = progress[-1]
+    assert (last["parts_total"], last["parts_returned"], last["parts_failed"]) == (2, 2, 1)
+    # The refused sentence was drafted and checked (removed); the failed part adds no figure of its own.
+    assert (last["removed"], last["unchecked"]) == (1, 0)
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    # Becoming failed moves no fraction: the event that says so carries the fraction of the one before it.
+    first_failed = next(i for i, m in enumerate(progress) if m["parts_failed"] == 1)
+    assert progress[first_failed]["fraction"] == progress[first_failed - 1]["fraction"]
+
+
 @pytest.mark.asyncio
 async def test_writer_progress_names_the_parts_that_failed(tracker: Tracker, tmp_path: Path) -> None:
     """Owner decision O1: ``parts_failed`` counts each part whose draft failed, as it settles.

@@ -1040,8 +1040,11 @@ class _WritingProgress:
     to check contributes in full, and the value never decreases.
 
     ``returned`` holds every part that has settled, written or failed, so the bar's
-    arithmetic does not care how a part ended; ``failed`` is the subset whose draft
-    failed (owner decision O1), so the page can say how many were written.
+    arithmetic does not care how a part ended; ``failed`` is the subset that ended
+    ``failed`` (owner decision O1), so the page can say how many were written. A part
+    fails at one of two exits: its draft failed, or its draft returned and the
+    Statement Check refused every point (or there were none), so nothing of it is
+    written.
     """
 
     def __init__(self, parts_total: int) -> None:
@@ -1081,12 +1084,19 @@ class _WritingProgress:
     def part_returned(
         self, coverage_id: str, keys: Sequence[str], *, failed: bool = False
     ) -> None:
-        """A part settled: its draft returned with these candidate keys, or ``failed``
-        (then it has none, and ``parts_failed`` counts it)."""
+        """A part's draft settled: it returned these candidate keys, or ``failed`` (then
+        it has none, and ``parts_failed`` counts it)."""
         self.returned.add(coverage_id)
         if failed:
             self.failed.add(coverage_id)
         self.drafted[coverage_id] = frozenset(keys)
+        self.publish()
+
+    def part_failed(self, coverage_id: str) -> None:
+        """A part whose draft returned ended ``failed`` anyway: its Statement Check
+        refused every point, or there were none. It already counts in ``returned``
+        (and its keys in ``drafted``), so ``failed <= returned`` and ``fraction`` stand."""
+        self.failed.add(coverage_id)
         self.publish()
 
     def bottom_line_started(self) -> None:
@@ -2658,6 +2668,8 @@ async def _run_part(
     # hides a part that had findings, so the every-part-failed wording never
     # fires and the per-part evidence-log pointer never prints for it.
     status = "written" if points else "failed"
+    if status == "failed" and progress is not None:
+        progress.part_failed(job.coverage_id)
     return _PartOutcome(job=job, section=section, status=status,
                         errors=[*draft_errors, *check_errors], verdicts=verdict_map,
                         rejected=rejected, dropped_marks=dropped_marks,

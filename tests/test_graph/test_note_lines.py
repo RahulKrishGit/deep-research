@@ -355,6 +355,10 @@ async def test_a_note_read_after_the_reviews_last_merge_still_gets_its_line_in_t
     assert json.loads(next(text for name, text, _ in publisher.documents if name.endswith(".json")))[
         "quality_status"
     ] == "accepted"
+    # An accepted report still saves its cited findings to memory: the late note did not demote it.
+    [published] = [event for event in state.events if event.event_type == "graph.report.published"]
+    assert published.metadata["quality_status"] == "accepted"
+    assert published.metadata["memory_writes"] == publisher.memory_writes == len(publisher.saved_findings) == 1
     [stamped] = state.composition.reader_note_lines
     assert (stamped.note_id, stamped.outcome, stamped.statement_id) == ("n1", "not_checked", None)
     assert _bottom_line(state.report).splitlines()[-1] == line

@@ -781,9 +781,10 @@ def finalize_report_node(
                 # Every note the run read gets its bottom-line line (owner
                 # decision O1): a note read after the review's last board merge
                 # is on the board but not yet in the state, and the lines are
-                # stamped from the state. Notes are closed once the run decides
-                # to publish, so no later note can race this merge; a note not
-                # yet read has no restatement and stays without a line.
+                # stamped from the state. Closing stops new notes from being
+                # received once the run decides to publish, but a note received
+                # before that whose reading finishes after this merge still gets
+                # no line; a note not yet read has no restatement either.
                 **_closed_notes_update(state),
             },
         )
