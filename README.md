@@ -1065,8 +1065,8 @@ telemetry names at the peak — `agents.verifier_concurrency` first, then
 the calls themselves are being truncated.
 
 **Progress streams live.** The CLI hands `run_research` a `ProgressStream` as its
-`event_handler`, so each event prints as the graph produces it; the API sends the
-same events over SSE.
+`event_handler`, so the events it streams print as the graph produces them
+(`--verbose` and `--debug-events` widen the set); the API sends every event over SSE.
 
 **`--resume` only works inside one process.** `build_checkpointer` returns
 LangGraph's `InMemorySaver`, which does not survive the process that created
