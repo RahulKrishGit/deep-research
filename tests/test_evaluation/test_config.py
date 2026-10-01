@@ -1174,7 +1174,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # scoring request's # Context slot, for relevance only. Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
     # `fb7f60d73873` -> `24809aa975a3`.
-    "source_evaluator": "24809aa975a3",
+    # notes-progress-report Phase A (spec §5.1, 2026-09-30): the scoring
+    # request's # Context slot carries the notes' steering views only (a note
+    # whose only kind is new_angle is its own topic instead). Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `24809aa975a3` -> `cc5a310b0aa0`.
+    "source_evaluator": "cc5a310b0aa0",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1355,7 +1360,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # of the section and bottom-line requests, and drafts afresh after a note
     # pass or a note redraft. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
-    "report_writer": "6e1aedc2888e",
+    # notes-progress-report Phase A (spec §5.1, 2026-09-30): the section and
+    # bottom-line requests carry the notes' steering views only. Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `6e1aedc2888e` -> `cafa5ba3d613`.
+    "report_writer": "cafa5ba3d613",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

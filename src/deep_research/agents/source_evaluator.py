@@ -55,7 +55,11 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.reader_notes import SOURCE_NOTES, render_reader_notes
+from deep_research.agents.reader_notes import (
+    SOURCE_NOTES,
+    render_reader_notes,
+    steering_notes,
+)
 from deep_research.agents.sources import (
     SourceGroup,
     group_findings_by_url,
@@ -1103,9 +1107,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         return SourceEvaluationTask(
             instruction=state.original_question,
             # live-briefs spec §4.6: the reader's notes fill the request's
-            # ``# Context`` slot, for relevance only; ``""`` without notes.
+            # ``# Context`` slot, for relevance only; ``""`` without notes. Their
+            # steering views only (notes-progress-report spec §5.1): a note whose
+            # only kind is new_angle is its own topic, and that topic is among the
+            # sub-topics a source cited for it is judged with.
             guidance=render_reader_notes(
-                active_reader_notes(state.reader_notes), instruction=SOURCE_NOTES
+                steering_notes(active_reader_notes(state.reader_notes)),
+                instruction=SOURCE_NOTES,
             ),
             groups=groups,
             reputations=reputations,

@@ -100,9 +100,15 @@ ANGLE = fake_reader_note(
     "n2", kinds=["new_angle"], received_during="planner", restatement="how battery cells are recycled",
     new_questions=["How are battery cells recycled at end of life?"],
 )
+MIXED = fake_reader_note(
+    "n3", kinds=["new_angle", "exclude"], received_during="planner", restatement="recycling, leaving out exports",
+    new_questions=["How are battery cells recycled without exporting them?"],
+)
 EMPHASIS_TEXT = "more weight on lithium-ion safety standards (emphasis)"
 EMPHASIS_LINE = f"- {EMPHASIS_TEXT}"
 ANGLE_LINE = "- how battery cells are recycled (new_angle)"
+MIXED_FULL = "- recycling, leaving out exports (new_angle, exclude)"
+MIXED_STEER = "- recycling, leaving out exports (exclude)"
 
 
 def noted_board(*notes: ReaderNote) -> NoteBoard:
@@ -161,7 +167,9 @@ async def test_the_planner_and_every_research_turn_carry_the_notes(tmp_path: Pat
 async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Path) -> None:
     """spec §4.6: the scoring request's ``# Context`` slot carries the notes, for
     relevance only; the writer's section and bottom-line requests carry
-    ``# Reader notes`` right after the answer form."""
+    ``# Reader notes`` right after the answer form. A note whose only kind is
+    new_angle reaches neither: it is researched as its own topic instead
+    (notes-progress-report spec §5.1)."""
     with guarded():
         status, sequence, _ = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE))
 
@@ -169,7 +177,7 @@ async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Pat
     scoring = packets_for(sequence, "source_evaluator:SourceScoresDraft")
     assert scoring and all(
         "# Context\nThe reader added these notes while the run was going. They bear on how relevant"
-        in text and EMPHASIS_LINE in text and ANGLE_LINE in text
+        in text and EMPHASIS_LINE in text and ANGLE_LINE not in text
         for text in scoring
     )
     for key, after in (
@@ -180,7 +188,7 @@ async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Pat
         assert texts, key
         for text in texts:
             assert text.index("# Answer form\n") < text.index("# Reader notes\n") < text.index(after), key
-            assert EMPHASIS_LINE in text and ANGLE_LINE in text, key
+            assert EMPHASIS_LINE in text and ANGLE_LINE not in text, key
 
 
 @pytest.mark.asyncio
@@ -206,13 +214,51 @@ async def test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does(
         assert all(EMPHASIS_TEXT in text for text in packets_for(sequence, key)), key
     review = packets_for(sequence, "report_reviewer:ReportReviewNotesDraft")[0]
     assert "- n1: more weight on lithium-ion safety standards (emphasis)" in review
-    assert "- n2: how battery cells are recycled (new_angle)" in review
+    assert "- n2: how battery cells are recycled (new_angle)" not in review
     checks = [text for key, text in sequence if key.split(":")[1] in {"ContextCheckDraft", "StatementCheckDraft"}]
     assert checks and {key for key, _ in sequence if key.startswith("evidence_verifier:")}
     for text in checks:
         assert "lithium-ion safety standards" not in text and "battery cells are recycled" not in text
         assert "Reader notes" not in text and "reader added these notes" not in text
-    assert [(d.note_id, d.status) for d in state.report_review.note_dispositions] == [
-        ("n1", "honoured"), ("n2", "honoured"),
-    ]
+    assert [(d.note_id, d.status) for d in state.report_review.note_dispositions] == [("n1", "honoured")]
     assert [(note.note_id, note.reviewed) for note in state.reader_notes] == [("n1", True), ("n2", True)]
+
+
+@pytest.mark.asyncio
+async def test_steering_views_per_request(tmp_path: Path) -> None:
+    """notes-progress-report spec §5.1 table (D20): the planner's requests print every note with
+    all its kinds. Every research turn, extraction, scoring, writing and review request prints
+    the steering notes, and each mixed note as a steering note with new_angle left out; a note
+    whose only kind is new_angle reaches none of them, and no verifier request carries a note."""
+    with guarded():
+        status, sequence, state = await replay_packets(
+            tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE, MIXED)
+        )
+
+    assert status == "completed"
+    for key in ("planner:react", "planner:ResearchPlanDraft", "planner:PlanReviewDraft"):
+        texts = packets_for(sequence, key)
+        assert texts and all(
+            EMPHASIS_LINE in text and ANGLE_LINE in text and MIXED_FULL in text for text in texts
+        ), key
+    for key in (
+        "researcher:react", "researcher:SubTopicFindingsDraft", "source_evaluator:SourceScoresDraft",
+        "report_writer:SectionDraft", "report_writer:BottomLineDraft",
+    ):
+        texts = packets_for(sequence, key)
+        assert texts, key
+        for text in texts:
+            assert EMPHASIS_LINE in text and MIXED_STEER in text, key
+            assert ANGLE_LINE not in text and MIXED_FULL not in text, key
+    review = packets_for(sequence, "report_reviewer:ReportReviewNotesDraft")[0]
+    assert "- n1: more weight on lithium-ion safety standards (emphasis)" in review
+    assert "- n3: recycling, leaving out exports (exclude)" in review
+    assert "- n2:" not in review and ANGLE_LINE not in review and MIXED_FULL not in review
+    assert [(d.note_id, d.status) for d in state.report_review.note_dispositions] == [
+        ("n1", "honoured"), ("n3", "honoured"),
+    ]
+    checks = [text for key, text in sequence if key.split(":")[1] in {"ContextCheckDraft", "StatementCheckDraft"}]
+    assert checks
+    for text in checks:
+        assert "leaving out exports" not in text and "battery cells are recycled" not in text
+        assert "Reader notes" not in text and "reader added these notes" not in text

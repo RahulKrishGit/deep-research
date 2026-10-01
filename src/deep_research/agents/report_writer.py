@@ -43,7 +43,11 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.reader_notes import WRITING_NOTES, render_reader_notes
+from deep_research.agents.reader_notes import (
+    WRITING_NOTES,
+    render_reader_notes,
+    steering_notes,
+)
 from deep_research.agents.report import (
     _carried_rows,
     _figure_label_for,
@@ -3243,8 +3247,11 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             previous=state.composition if _is_redraft_hop(state) else None,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
+            # notes-progress-report spec §5.1: the steering views only; a note whose
+            # only kind is new_angle is its own part of the report instead.
             reader_notes=render_reader_notes(
-                active_reader_notes(state.reader_notes), instruction=WRITING_NOTES
+                steering_notes(active_reader_notes(state.reader_notes)),
+                instruction=WRITING_NOTES,
             ),
             authority_floor=authority_floor,
         )
