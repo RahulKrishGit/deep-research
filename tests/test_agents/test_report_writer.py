@@ -3632,3 +3632,74 @@ async def test_the_report_written_event_is_published_live(
     [written] = run.state_update["events"]
     assert written.event_type == "report_writer.report.written"
     assert [event.event_id for event in received] == [written.event_id]
+
+
+@pytest.mark.asyncio
+async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """notes-progress-report spec §5.4, D4, AC6: after a note pass the writer drafts the notes'
+    own parts, any part with no previous section (P2-1) and the bottom line — fresh, with no
+    defect fed back — and carries every other part over unchanged, with its verdicts."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    tn = make_target("note-n1-target-01", coverage_id="note-n1", required=True,
+                     question="How much battery capacity was recycled in 2024?")
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                 target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                 target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    fn = _checked("https://a.test/3", "3 GW were recycled in 2024.", "3", "GW", organisation=EIA,
+                 target_ids=["note-n1-target-01"])
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2]),
+              _topic("note-n1", "Your note: how much was recycled", [tn], priority=2)]
+    previous_statement = ReportStatement(statement_id="S001", text="10.4 GW in 2024.",
+                                         finding_ids=[finding_fingerprint(f1)], target_ids=["topic-01-target-01"])
+    previous_section = ReportSection(title="First", coverage_id="topic-01",
+                                     points=[ReportPointFor("10.4 GW in 2024.", previous_statement)])
+    from deep_research.utils.types import ReportComposition
+    previous = ReportComposition(question="Q?", session_id="s1", sections=[previous_section], summary=[],
+                                 sub_topics=topics[:2], statement_verdicts={"S001": "corrected"})
+    marker = ResearchEvent(event_type="graph.note_pass.started", source="graph", message="Note pass started.",
+                           metadata={"iteration": 0, "note_passes": 1, "note_ids": ["n1"],
+                                     "targets": ["note-n1-target-01"]})
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                          verified_findings=[f1, f2, fn], composition=previous,
+                          report_review=_scored_review([]), events=[marker])
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    label_by_url = {finding.source_url: label for label, finding in task.registry}
+    calls: list[str] = []
+
+    def route(messages, schema):
+        body = messages[-1].content
+        if schema.__name__ == "BottomLineDraft":
+            calls.append("bottom_line")
+            # A kept sentence, so no fallback moves a carried point out of its section.
+            return BottomLineDraft(sentences=[WriterPointDraft(
+                text="According to the source, 3 GW were recycled in 2024.",
+                finding_labels=[label_by_url["https://a.test/3"]])])
+        if "3 GW were recycled in 2024." in body:
+            calls.append("note-n1")
+            return SectionDraft(title="Your note: how much was recycled", points=[WriterPointDraft(
+                text="According to the source, 3 GW were recycled in 2024.",
+                finding_labels=[label_by_url["https://a.test/3"]])])
+        if "5 GW in 2025." in body:
+            calls.append("topic-02")
+            return SectionDraft(title="Second", points=[WriterPointDraft(
+                text="According to the source, 5 GW in 2025.", finding_labels=[label_by_url["https://a.test/2"]])])
+        calls.append("topic-01")
+        return SectionDraft(title="First", points=[])
+
+    completer = ScriptedCompleter(outputs=[route, route, route])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert (task.note_pass_coverage_ids, task.defects, task.previous) == (["note-n1"], [], previous)
+    assert sorted(calls) == ["bottom_line", "note-n1", "topic-02"]
+    statuses = {part.coverage_id: part.status for part in composition.parts}
+    assert statuses == {"topic-01": "carried_over", "topic-02": "written", "note-n1": "written"}
+    [carried] = [section for section in composition.sections if section.coverage_id == "topic-01"]
+    assert (carried.title, [point.text for point in carried.points]) == ("First", ["10.4 GW in 2024."])
+    assert carried.points[0].statement.finding_ids == [finding_fingerprint(f1)]
+    assert composition.statement_verdicts[carried.points[0].statement.statement_id] == "corrected"
+    from deep_research.graph.nodes import _arrived_via_redraft_hop
+    assert _arrived_via_redraft_hop([marker]) is False  # the review after a note pass is a full one

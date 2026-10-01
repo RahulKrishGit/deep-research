@@ -1375,7 +1375,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # bottom-line requests carry the notes' steering views only. Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
     # `6e1aedc2888e` -> `cafa5ba3d613`.
-    "report_writer": "cafa5ba3d613",
+    # notes-progress-report Phase A (spec §5.4, 2026-09-30): after a note
+    # pass the writer drafts only the notes' own parts and the bottom line,
+    # and carries every other part over. Without notes every request is
+    # byte-identical; agents.prompts was untouched. Moved `cafa5ba3d613` ->
+    # `a27544eee344`.
+    "report_writer": "a27544eee344",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

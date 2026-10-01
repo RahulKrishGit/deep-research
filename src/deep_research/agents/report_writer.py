@@ -82,6 +82,7 @@ from deep_research.providers import (
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
     AcquisitionState,
     AnswerKind,
     BottomLineDraft,
@@ -509,8 +510,15 @@ class ReportWriterTask(AgentTask):
     (or the bottom line) its statement or target ids name (spec §6.9).
     """
     previous: ReportComposition | None = None
-    """The prior pass's composition, read only on a redraft: a part with no
-    routed defect is carried over from here unchanged (spec §6.9)."""
+    """The prior pass's composition, read only on a redraft — a part with no
+    routed defect is carried over from here unchanged (spec §6.9) — and after
+    a note pass, when every part but the notes' own is (notes-progress-report
+    spec §5.4)."""
+    note_pass_coverage_ids: list[str] = Field(default_factory=list)
+    """The reader notes' own parts a note pass researched (notes-progress-report
+    spec §5.4, D4): after a note pass only these parts — and a part with no
+    previous section (P2-1) — and the bottom line are drafted, and every other
+    part is carried over from ``previous`` unchanged; ``[]`` otherwise."""
     acquisition_state_by_target: dict[str, AcquisitionState] = Field(default_factory=dict)
     """Keyed by ``coverage_id`` (the field name is the type's own historical
     name; every caller in this codebase keys it by sub-topic). Spec §6.7's
@@ -1037,6 +1045,44 @@ def _is_redraft_hop(state: ResearchState) -> bool:
         if event.event_type in ("graph.note_pass.started", "graph.note_redraft.requested"):
             return False
     return True
+
+
+# The loop markers a writer call can follow: the review's own redraft, an extra
+# pass, and a reader note's two loops (spec §6.9; live-briefs spec §4.6).
+_LOOP_MARKERS = frozenset(
+    {
+        "graph.report.redraft_requested",
+        "graph.extra_pass.started",
+        "graph.note_pass.started",
+        "graph.note_redraft.requested",
+    }
+)
+
+
+def _note_pass_coverage_ids(state: ResearchState) -> list[str]:
+    """The notes' own parts a note pass researched, when one is what this draft follows.
+
+    notes-progress-report spec §5.4 (D4): read from the latest loop marker. Only
+    when it is ``graph.note_pass.started`` and the composition on hand is this
+    iteration's does this draft carry every other part over; after any other
+    loop, or with no composition to carry, ``[]``.
+    """
+    if state.composition is None or state.composition.iteration != state.iteration:
+        return []
+    marker = next(
+        (event for event in reversed(state.events) if event.event_type in _LOOP_MARKERS),
+        None,
+    )
+    if marker is None or marker.event_type != "graph.note_pass.started":
+        return []
+    note_ids = marker.metadata.get("note_ids")
+    if not isinstance(note_ids, list):
+        return []
+    return [
+        f"{NOTE_COVERAGE_PREFIX}{note_id}"
+        for note_id in note_ids
+        if isinstance(note_id, str)
+    ]
 
 
 def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
@@ -2946,8 +2992,9 @@ async def compose_written_report(
     """Partition, draft every part in parallel, pipeline each part's
     Statement Check off its own draft, then write the bottom line last from
     the checked section statements (spec §6). A redraft re-asks only the
-    parts a material defect names (§6.9); every other part is carried over
-    unchanged. ``batch_size``/``concurrency`` are the Statement Check's
+    parts a material defect names (§6.9), and a draft after a note pass only
+    the notes' own parts (notes-progress-report spec §5.4); every other part
+    is carried over unchanged. ``batch_size``/``concurrency`` are the Statement Check's
     bounds (``None`` uses this module's defaults); ``section_concurrency``
     bounds how many section drafts run at once.
     """
@@ -3005,7 +3052,14 @@ async def compose_written_report(
     for order, (placement, regular, context) in enumerate(part_findings):
         targets_here = targets_by_coverage[placement.coverage_id]
         previous_section = previous_sections_by_coverage.get(placement.coverage_id)
-        if not is_redraft:
+        if task.note_pass_coverage_ids:
+            # notes-progress-report spec §5.4 (D4): after a note pass only the
+            # notes' own parts are drafted; every other part is carried over
+            # unchanged, and one with no previous section is still drafted
+            # (P2-1, ``_run_part``).
+            redraft_this = placement.coverage_id in task.note_pass_coverage_ids
+            defects_here = []
+        elif not is_redraft:
             redraft_this, defects_here = True, []
         elif placement.coverage_id in routed_coverage_ids:
             redraft_this, defects_here = True, defects_by_coverage.get(placement.coverage_id, [])
@@ -3222,6 +3276,9 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             if state.answer_contract and state.answer_contract.requested_word_limit is not None
             else self.config.report_target_words
         )
+        # notes-progress-report spec §5.4 (D4): after a note pass only the
+        # notes' own parts and the bottom line are drafted; the rest is carried.
+        note_pass_coverage_ids = _note_pass_coverage_ids(state)
         return ReportWriterTask(
             instruction=state.original_question,
             session_id=state.session_id,
@@ -3244,7 +3301,12 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             passages=statement_passages(findings, state.read_records),
             self_descriptions=_read_self_descriptions(state.read_records),
             defects=material_defects(state.report_review) if _is_redraft_hop(state) else [],
-            previous=state.composition if _is_redraft_hop(state) else None,
+            previous=(
+                state.composition
+                if _is_redraft_hop(state) or note_pass_coverage_ids
+                else None
+            ),
+            note_pass_coverage_ids=note_pass_coverage_ids,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
             # notes-progress-report spec §5.1: the steering views only; a note whose
