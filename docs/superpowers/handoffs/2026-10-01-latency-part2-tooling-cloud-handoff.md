@@ -1,5 +1,16 @@
 # Handoff: carry out the latency plan, Part 2 tooling (Tasks 16–19)
 
+> **Status (2026-10-01): done. Do not run it again.**
+> - **Where it ran.** At the owner's request, Tasks 16–19 ran in the Part 1 cloud session, on `perf/latency-experiments`, up to `f07cba4`, all pushed. Every task review is clean, and so is the whole-branch review with its fixes.
+> - **Verification (Linux):** `9 failed, 5081 passed, 6 skipped, 1 deselected`. The 9 failures and 6 skips are Windows-only tests.
+> - **Pins.** `evidence_verifier` moved `34e275cf57f9 -> 31bcab803a6a` (Task 16, as planned). The replay pins did not move.
+> - **Fixes beyond the plan's text.** Each one only makes a verdict stricter:
+>   - Task 17: a crashed or cancelled paid run leaves a failed `run.json`.
+>   - Task 18: `summarize` fails closed when the Context Check is missing.
+>   - Review: `compare` reports `controls_used` and `unpaired`.
+> - **Owner decision H10.** Controls must have completed, and a treatment with no control fails.
+> - **Next.** The paid Tasks 20–25 follow `docs/superpowers/handoffs/2026-10-01-latency-part2-experiments-local-handoff.md`, on the owner's machine, after the tooling PR merges.
+
 **For:** a Claude Code **cloud** session (Opus 5.5). **From:** the cloud session that carried out Part 1. **Date:** 2026-10-01.
 
 Everything in this document and in `cloud-session/` is for the cloud session only. None of it applies to, or is loaded by, the owner's local sessions.
