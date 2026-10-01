@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status** draft for review, written 2026-09-30 by the spec-plan-author agent from the approved spec at `73b4d7a6`; to be reviewed by `spec-plan-reviewer` (Fable 5.1, max effort) until clean. Nothing in it is open for the human (see "Open issues"). · **Branch** `feat/notes-progress-report-stop`, executed after Phase D is merged into it.
+**Status** revised after Fable review 1 (`.superpowers/reviews/2026-09-30-plan-a-review-1.md`, on `3638ce10`: approved with changes, no Critical); every finding is applied as "Review 1 resolutions" records. Written 2026-09-30 by the spec-plan-author agent from the approved spec at `73b4d7a6`. Nothing in it is open for the human (see "Open issues"). · **Branch** `feat/notes-progress-report-stop`, executed after Phase D is merged into it.
 
 **Goal:** A reader's new_angle note becomes its own required sub-topic built by code — appended to the plan when it arrives during Planning, researched in its own thread at once when it arrives during Researching, and given exactly one note pass (after which only its part and the bottom line are redrafted) when it arrives later — its coverage decided by its own targets, a mixed note's steering half still steering and judged, and no note ever ending `pending` in a finished session.
 
@@ -15,12 +15,17 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` (commit `73b4d7a6`, reviewed clean by Fable in three rounds) — Phase A only: §5 (5.1–5.9), the Phase-A items of §4 (items 2 and 5), AC1–AC12, AC34, AC35, the Phase-A rows of §11.1 and §11.2, and R1–R4, R10, R11. Decisions D1–D5, D20, D22 and D31 (§2) are closed; nothing here reopens them. Where this plan had to choose, the choice is under "Spec ambiguities resolved here".
 
-**Sources of truth.** The spec's §2 decisions, then its §4 cross-phase contracts, then its §5. Phase D is planned in parallel (`docs/superpowers/plans/2026-09-30-phase-d-stop.md`); everything this plan takes from D is what spec §4 item 2 and §8.4 say D delivers, and Task 1 Step 1 checks each piece before anything is edited. Every `path:line` below was read at `73b4d7a6` (whose code is `f4282818`'s); D changes none of `agents/`, `graph/`, `runtime/`, `utils/` (§9: its one engine-side change is `tools/web_search.py`), so those lines hold at the start of Task 2. Lines in `api/` and `web/` files D edits are approximate; their anchors are text: the four spans that cover text D writes are marked "(D-touched)" (Task 1 Step 2 checks what they hold), and the one exact anchor on D's text, in `web/e2e/notes.spec.ts`, says so.
+**Sources of truth.** The spec's §2 decisions, then its §4 cross-phase contracts, then its §5. Phase D is planned in parallel (`docs/superpowers/plans/2026-09-30-phase-d-stop.md`, a draft this revision was checked against; see "Evidence"). Everything this plan takes from D is what spec §4 item 2 and §8.4 say D delivers, and Task 1 Step 1 checks each piece before anything is edited. Every `path:line` below was read at `73b4d7a6` (whose code is `f4282818`'s); D changes none of `agents/`, `graph/`, `runtime/`, `utils/` (§9: its one engine-side change is `tools/web_search.py`), so those lines hold at the start of Task 2. Lines in `api/` and `web/` files D edits are approximate; their anchors are text. The five spans that cover text D writes are marked "(D-touched)": Task 1 Step 2 checks what Task 7's four hold, and Task 10's, in `web/e2e/notes.spec.ts`, holds only the status check it rewrites. No exact anchor rests on text D writes.
 
 **Evidence.** Planning implemented every task, from this document's own blocks, on 2026-09-30:
 - An export of `73b4d7a6` was made in a scratch directory, and a stand-in for Phase D was applied to it: exactly §4 item 2 (`NoteOutcome` and `ReaderNoteResponse.outcome` gain `not_checked`; `note_outcome(..., *, terminal)` with its three `pending` exits reading `"not_checked" if terminal else "pending"`; `note_records(..., *, terminal)`; `session_note_fields` computes `terminal`; `ReaderNoteOutcome` gains `not_checked`; `OUTCOME_TEXT.not_checked = "not checked"`, `OUTCOME_TEXT.pending = "not checked yet"`; the e2e notes status reads `not_checked`), plus §8.4's `stopped` in `SessionStatus`, `TERMINAL_STATUSES` and `STATUS`.
 - A script then applied each step's blocks in order, refusing any anchor that did not occur exactly once, and the step's tests were run. Every `Expected:` line of Tasks 2–10 is what that run printed, with `.venv\Scripts\python.exe` replaced by the same interpreter run from the export. Task 1 Steps 1-3 printed the lines given there on the stand-in export.
-- The full suite on the finished export: `4997 passed` and two failures outside this plan — `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, which needs the `.env` the export does not have (this checkout has one, so it passes here), and `tests/test_agents/test_researcher.py::test_two_reads_extractions_overlap_in_time`, a wall-clock test (`elapsed < 0.2`) that failed once while other suites loaded the machine and then passed five times out of five alone; an earlier full run of the same code passed it (`4998 passed` with the `.env` test deselected). Baseline on the stand-in: `4960 passed` with the `.env` test failing, so this plan adds 38 Python tests. The web unit suite: `28 passed` files, `226 passed` tests (`219` before Task 10); `typecheck` clean; `check:css` `OK`.
+- The full suite on the finished export: `4997 passed` and two failures outside this plan — `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, which needs the `.env` the export does not have (this checkout has one, so it passes here), and `tests/test_agents/test_researcher.py::test_two_reads_extractions_overlap_in_time`, a wall-clock test (`elapsed < 0.2`) that failed once while other suites loaded the machine and then passed five times out of five alone; an earlier full run of the same code passed it (`4998 passed` with the `.env` test deselected). Baseline on the stand-in: `4960 passed` with the `.env` test failing, so this plan adds 38 Python tests. The web unit suite: `28 passed` files, `227 passed` tests (`219` before Task 10); `typecheck` clean; `check:css` `OK`.
+- Revision 1 (Fable review 1) was checked on two fresh exports of `3638ce10`, and nothing else was re-run.
+  - The stand-in export ran Task 1 Steps 1–3, Tasks 2–9's blocks, Task 7 Step 1's script and all of Task 10. The Task 10 counts above are from that run.
+  - The second export had every block of Phase D's draft plan applied (all 141 applied). It ran Task 1 in full and Tasks 2–6 in full: every block applied, B-pins unmoved, `256 passed` with the researcher at `b9caf536e3f0` (the narrowed Task 6 edits give the same file), `368 passed`. It also ran Task 7 Step 1.
+  - The test counts differ only where Phase D's own tests sit in the same files: `625` not `610` (Task 2), `72` not `70` (Task 3), `1 failed, 21 passed` not `19` (Task 7). Its baseline was `1 failed, 4979 passed` and 251 Vitest tests.
+  - The anchor check also passed with a simulated latency-first landing (Task 1 Step 3).
 - Not run by planning, because they start the replay API and the app (the dispatch said no research session): Task 11's Playwright run and visual captures. Their expected outcomes are [INFERENCE]: nothing a replay run shows changes, because replay's interpreter never returns `new_angle` (`api/notes.py:267-275`) and a replay run never applies a note (api-gaps 3.9); the e2e notes test's status check gains `steering_outcome: null` (Task 10 Step 6). Task 11 Steps 4–5 prove or refute it.
 
 ## Global Constraints
@@ -28,7 +33,7 @@
 - **Where.** Branch `feat/notes-progress-report-stop`, the Windows main checkout, after Phase D is merged. Tasks run strictly in order 1 → 11, one at a time. Commit after every task that changes files (Tasks 1 and 11 change none). Phase order is "1. D — Stop … 2. A — Notes … 3. C — Report … 4. B — Progress" (spec §9).
 - **No live model, no secrets.** Never run the live CLI, the API in `--mode live`, or anything that calls a model provider or Tavily. Never read, create, print or commit `.env` or any `.env.*` file. Python runs are pytest; the API runs only in `--mode replay`, and only under Playwright in Task 11. Out of scope: "A live, paid run (governed by the existing spend rules)" (spec §1.3).
 - **Kept (D5), exactly:** "at most 10 notes (LB-D11a), one pass and one redraft per note, verification never sees notes (LB-D10), and the recursion-limit arithmetic stays exact." `graph_recursion_limit` and `NOTE_REDRAFT_STEPS` are not edited; `graph_recursion_limit(1)` stays 160.
-- **Byte-identical without notes.** Every change prints, adds or decides something only when a note exists. `tests/test_graph/test_reader_notes_replay.py::PINNED_RUN_DIGESTS` does not move in Phase A (Phase C re-pins it, spec §11.2); `agents/prompts.py` and `agents/evidence_verifier.py` are not edited, so the `evidence_verifier` fingerprint pin stays `4a3d56fab932`.
+- **Byte-identical without notes.** Every change prints, adds or decides something only when a note exists, with one exception: `planner.planning.completed` always carries `note_topic_count` (`0` in a run without notes), because spec §5.2 step 5 and §6.1 put it in every run's metadata. It is event metadata, never part of a model request, so no request digest moves. `tests/test_graph/test_reader_notes_replay.py::PINNED_RUN_DIGESTS` does not move in Phase A (Phase C re-pins it, spec §11.2); `agents/prompts.py` and `agents/evidence_verifier.py` are not edited, so the `evidence_verifier` fingerprint stays at its B-pin (Task 1 Step 4; `4a3d56fab932` at `f4282818`).
 - **Names shared with Phase C and B (spec §4 item 5), exactly:** `is_research_note`, `has_steering_kind`, `steering_view`, `steering_notes`, `note_sub_topic(note, *, priority, reason)` in `agents/reader_notes.py`; `researched_note_topic_ids` in `graph/state.py`; `note_outcome(note_id, state, *, terminal)` and `note_steering_outcome(note_id, state, *, terminal)` in `api/notes.py`; `ReaderNote.short`; `NoteState.kinds`, `NoteState.threadStarted`.
 - **Theme (D19).** "DESIGN.md theme rules hold: tokens only; colour is status (green active/ok, amber warn, red danger, purple only on the one primary button); one surface per region; motion tokens; reduced motion turns movement into fades; unknown values read "not yet", never 0, —, or null." Phase A adds no CSS: `web/app/globals.css` lines 1–1131 stay the prototype's verbatim and `npm run -s check:css` prints `OK`.
 - **Copy.** Every (I) string of spec §5.7 is used as written: `, as its own topic`; `, researching it as its own topic now`; `, researched as its own topic after this draft is reviewed`; `, researched as its own topic next`; `{outcome words}; the rest of your note: {steering outcome words}`. `—` is U+2014.
@@ -42,7 +47,12 @@
 - **Web.** `Push-Location web; npx vitest run <files>; Pop-Location` for named files, `npm test` for all, `npm run -s typecheck`, `npm run -s check:css`; `npm run test:e2e` builds then runs Playwright's `chromium` project, and `npm run capture:visual` its `visual` project. Playwright starts the replay API on 8010 and the app on 3010 and 3011; nothing may be listening on them first.
 - **Edits.** Every edit is "replace this exact text with that text"; "replace the lines from the one starting X up to, not including, the one starting Y" replaces whole lines between two anchors; "Create" writes a new file; "Append to" adds the block at the end of the file. Task 1 proves that every anchor occurs exactly once when its turn comes. If one is not found, stop and report it; never improvise a nearby match. An anchor marked "(D-touched)" is a span whose two boundary lines Phase D does not write, so it holds whatever D wrote between them.
 - **TDD.** Each task's tests are written first and run failing; Playwright specs are verification only. A test that already passes before its implementation step is named as such in its Expected line.
-- **Fingerprint pins.** `agent_prompt_fingerprint` hashes each agent module's source and `agents/prompts.py` (`evaluation/config.py:280-288`), read with universal newlines, so a CRLF checkout and an LF export give the same value. A task that edits an agent module re-pins it in `tests/test_evaluation/test_config.py`; the new value is printed by the task's own command and must equal the one in its re-pin block.
+- **Fingerprint pins (the B-pin rule).** `agent_prompt_fingerprint` hashes each agent module's whole source and `agents/prompts.py` (`evaluation/config.py:280-288`), read with universal newlines, so a CRLF checkout and an LF export give the same value. Any branch that edits an agent module or `agents/prompts.py` before this plan runs moves the fingerprints this plan starts from. The latency workstream (D38) is one: its draft plan edits `agents/researcher.py`, `agents/planner.py`, `agents/evidence_verifier.py` and `agents/source_evaluator.py`. So:
+  1. Task 1 Step 4 records the five fingerprints it prints as **B-pin(planner)**, **B-pin(researcher)**, **B-pin(source_evaluator)**, **B-pin(evidence_verifier)** and **B-pin(report_writer)**, the same way it records B-py and B-web. At `f4282818` with Phase D merged and nothing else landed, they are `d1ba46ce147f`, `a8c9528f0c20`, `24809aa975a3`, `4a3d56fab932` and `6e1aedc2888e`.
+  2. A task that edits an agent module re-pins it in `tests/test_evaluation/test_config.py`. The re-pin block's old text is that agent's one pin line, holding the value the pin holds when the task starts: the agent's B-pin, or for `report_writer` in Task 9 the value Task 4 wrote. The block shows the unmoved case's value: `f4282818`'s, or for Task 9 the value Task 4 writes in the unmoved case. That value is valid only while nothing else moved the module. When the B-pin differs, the old line holds the B-pin (in Task 9, what Task 4 actually wrote) instead. Task 1 Step 3 checks the anchors that way.
+  3. The new value is whatever the task's own fingerprint command prints, provided every block of the task applied byte-exactly. The new pin line and the comment's "Moved `old` -> `new`" carry that printed value and the old one. Each re-pin block shows the value printed on the planning export (unmoved case). The printed value must equal the block's value whenever the agent's B-pin is the `f4282818` value.
+  4. `evidence_verifier` must print its B-pin at every step, because Phase A never edits it or `agents/prompts.py`.
+  5. In the unmoved case, a printed value that differs from the block's value means a block of the task was not applied byte-exactly. Find it with `git diff` against the task's blocks, apply it again exactly, and print again. Never pin a printed value without finding the cause.
 - **Commits.** `git add <paths>` then `git commit -m "<type>(<scope>): <what>"`, never `git add -A` (this checkout holds untracked work that is not this plan's). End each message with the attribution trailer your session requires, and push if your session's rules say to.
 
 ## Decisions this plan implements (spec §2, verbatim; closed)
@@ -84,13 +94,39 @@
 13. **AC7's writer half** is tested where the decision is made, in `build_task`: after a note redraft no part is carried and no defect is fed back. The full-draft path that follows is today's, pinned by `test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft`.
 14. **api-gaps 3.9** stays "unchanged in substance" (§5.9). If Phase D left its words reading `pending` (`not checked`) for a finished replay note, Task 10 Step 7 changes `pending` to `not_checked` there; otherwise it changes nothing.
 15. **Tests live** in the existing notes test files, plus one new file for the dispatcher, `tests/test_agents/test_research_note_threads.py`; AC6 lives beside the writer's other carry-over tests in `tests/test_agents/test_report_writer.py`.
+16. **§5.7's "When … is active" table** is read as today's `WHERE` is: a research note's `{where}` comes from the step that was active when the run read the note (`NoteState.where`). The one exception is "now". It shows whenever Researching is the active row (`run.active`) and the note's own thread has started, whichever step read the note. So a note read during Writing says "now" while its note pass researches it, and "now" stops once Researching ends (review P3-5: the code fix was chosen over recording the gap).
 
 ## Open issues
 
 Nothing needs a decision. Two coordination notes:
 
-- **O-1 — Phase D's plan is not written yet.** This plan builds on spec §4 item 2 and §8.4 as D's deliverables (the list in "Evidence"). Task 1 Step 1 checks each; if Phase D's plan leaves any of them to Phase A (§4: "Whichever phase lands first implements the item"), Step 1 prints `MISSING` and this plan must gain the piece before Task 2. Its anchors in `api/notes.py`, `api/models.py`, `api/sessions.py`, `tests/test_api/test_notes.py` and `web/e2e/notes.spec.ts` assume D's text as §4 item 2 describes it; Task 1 Steps 2 and 3 catch any drift.
-- **O-2 — Fingerprint pins assume D edits no agent module** (spec §9), and that the latency workstream (D38) has not landed: it changes `agents/researcher.py`'s tool lock, which Task 6's span replaces. If either moves first, Task 1 Step 3 reports the anchors it breaks.
+- **O-1 — Phase D's deliverables.** This plan builds on spec §4 item 2 and §8.4 as D's deliverables (the list in "Evidence"). Task 1 Step 1 checks each; if Phase D leaves any of them to Phase A (§4: "Whichever phase lands first implements the item"), Step 1 prints `MISSING` and this plan must gain the piece before Task 2. Its D-touched anchors in `api/notes.py`, `api/models.py`, `api/sessions.py`, `tests/test_api/test_notes.py` and `web/e2e/notes.spec.ts` are spans whose boundary lines D does not write; Task 1 Steps 2 and 3 check them. Phase D's plan (`docs/superpowers/plans/2026-09-30-phase-d-stop.md`, draft, read for this revision) does three things this plan now accepts:
+  - It renames `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending` to `…_or_waiting`. Task 1 Step 2 accepts either name, and Task 7 removes it under either name.
+  - It keeps the session's flag named `terminal`. Task 1 Steps 1–2 accept any name.
+  - It leaves `web/e2e/notes.spec.ts`'s status check reading `outcome: "pending"`. Task 10 Step 6 is a span that writes the final check whatever D left there. The terminal rule makes that finished replay session answer `not_checked`, so D's own Playwright run must update the check, and that is Phase D's to fix.
+- **O-2 — Order-independent with the latency workstream (D38) under the B-pin rule.** The latency branch edits agent modules (its draft plan: `agents/researcher.py`, `agents/planner.py`, `agents/evidence_verifier.py`, `agents/source_evaluator.py`), which moves fingerprints. Every re-pin anchors on the pin's value when the task starts (the B-pin rule, Conventions). Task 6 never touches the lines latency O4 rewrites: the tool lock's comment and construction (`agents/researcher.py:4741-4747`) and the loop call `self._research_one(index, task, tool_lock)` (`:4769`). It edits only the closure's header and gate line, two comments, and the gather block (review P2-1). The latency plan's own anchor there ends on the stop comment's first line (`# Set by the first loop whose work ends in a non-recoverable provider`), which Task 6 leaves as it is. So the plan applies whichever lands first.
+
+Planning compared every source and test anchor of this plan with the latency workstream's draft plan (as it stood on 2026-09-30). Two of this plan's anchors share lines with latency anchors: import blocks in `agents/researcher.py` (`:57-58`) and `agents/report_writer.py` (`:80`). Neither side changes those shared lines, so both apply in either order. The pin lines in `tests/test_evaluation/test_config.py` also overlap. There the B-pin rule covers this plan, but the latency draft's re-pin anchors hold the old pin values, so if this plan lands first, the latency branch must re-anchor its re-pins. Anything else either branch rewrites first is reported by Task 1 Step 3.
+
+## Review 1 resolutions (Fable, on `3638ce10`)
+
+Review file: `.superpowers/reviews/2026-09-30-plan-a-review-1.md`, which approved the plan with changes and found nothing Critical. Every finding is fixed; none is rejected.
+
+| Finding | Resolution |
+|---|---|
+| P2-1 Task 6 Step 7 rewrote the lines latency O4 rewrites | Step 7's one span is now four edits plus a narrower span. The edits are: the stop comment after its first line (`agents/researcher.py:4749-4753`), the closure's header and gate line (`:4756-4760`), and the closure's comment (`:4771-4779`). The span runs from `settled_results = await asyncio.gather(` up to `# Every sub-topic that was never attempted` (`:4786-4828`, the dispatcher). Nothing touches `:4741-4748` (the tool lock's comment and construction, the gate, and the stop comment's first line, where the latency draft's own anchor ends) or the call `self._research_one(index, task, tool_lock)` (`:4769`). The edited file is byte-identical to the old span's result, so the researcher's new pin is still `b9caf536e3f0` (re-checked, below). |
+| P2-2 literal fingerprints assume no other branch moved a module | The B-pin rule is in Conventions. Task 1 Step 4 records five B-pins. Each re-pin block's old text is the one pin line, which Task 1 Step 3 checks with the B-pin in place. Each re-pin step and Task 11 Step 1 say what is pinned when a B-pin differs, and `evidence_verifier` must equal its B-pin (Global Constraints). O-2 is rewritten: the plan is order-independent under the rule. |
+| P3-1 Task 1 Steps 1–2 stricter than §4 item 2 on D's naming | Step 1 matches `note_records\([^)]*terminal=`. Step 2 prints one verdict per span. An extra module-level name in the `api/notes.py` span stops the run only when `src/` or `tests/` uses it outside the span. The `api/sessions.py` span accepts the flag under any name (the one it passes as `terminal=`). The test span accepts either name of the outcome test. |
+| P3-2 a test removed without saying so | Task 7's Files and Interfaces name the removed test under both of its names, and the test that supersedes it. |
+| P3-3 the "only when a note exists" constraint vs `note_topic_count` | Global Constraints carve out `note_topic_count` (spec §5.2 step 5, §6.1) and say why no request digest moves (`PINNED_RUN_DIGESTS` hashes the request texts). |
+| P3-4 the failure test relied on stop being set in the same scheduler turn | `test_note_thread_provider_failure_sets_stop` now sleeps 0.02 s after note n1's completed event and before n2 is read; a comment says why. |
+| P3-5 a note read during Writing kept "after this draft is reviewed" while its pass ran | The code fix. `whereFor(note, active)` says "now" when `active === "researcher"` and the note's thread has started. `ackFor` and `visibleAcks` take `active` (default `null`), and `rowBrief` passes `run.active` (Task 10 Step 4). A new Vitest test covers it (Step 1), and ambiguity 16 records how the table is read. The web counts go to B-web + 8. |
+| P3-6 re-pins did not say what a mismatch means | Conventions (the B-pin rule, point 5) and each re-pin step (Tasks 4, 5, 6, 9) say it. When the B-pin is the `f4282818` value, another printed value means a block was not applied byte-exactly: find it, apply it again exactly, and print again. Never pin without finding the cause. |
+| P3-7 D may add whole-record note assertions | Task 7 Step 1 runs a script first. It extends every one-line `not_checked` note record in `tests/`, `web/test/` and `web/e2e/` with `steering_outcome` (`None` or `null`), stages the files and prints each record it changed. `web/e2e/notes.spec.ts` is left to Task 10 Step 6. |
+
+Also changed in this revision, from reading Phase D's draft plan (O-1):
+- Phase D renames the outcome test `…_or_waiting`; Task 1 Step 2 and Task 7 accept either name.
+- Phase D leaves `web/e2e/notes.spec.ts`'s status check at `outcome: "pending"`, so Task 10 Step 6 became a D-touched span that writes the final check. This also removes the one expected anchor miss the review's simulation found at that block.
 
 ## File map
 
@@ -142,7 +178,7 @@ checks = [
     ("NoteOutcome has not_checked", "src/deep_research/api/notes.py", r'NoteOutcome: TypeAlias = Literal\[[^\]]*"not_checked"'),
     ("note_outcome takes terminal", "src/deep_research/api/notes.py", r'def note_outcome\([^)]*\*\s*,\s*terminal: bool'),
     ("note_records takes terminal", "src/deep_research/api/notes.py", r'def note_records\([^)]*\*\s*,\s*terminal: bool'),
-    ("session_note_fields passes terminal", "src/deep_research/api/sessions.py", r'note_records\([^)]*terminal=terminal'),
+    ("session_note_fields passes a terminal flag", "src/deep_research/api/sessions.py", r'note_records\([^)]*terminal='),
     ("ReaderNoteResponse.outcome has not_checked", "src/deep_research/api/models.py", r'outcome: Literal\[[^\]]*"not_checked"'),
     ("web ReaderNoteOutcome has not_checked", "web/lib/api.ts", r'export type ReaderNoteOutcome = [^;]*"not_checked"'),
     ("web OUTCOME_TEXT.not_checked", "web/lib/notes.ts", r'not_checked: "not checked"'),
@@ -166,48 +202,87 @@ Expected: `git status` prints nothing, then twelve lines that all start with `OK
 
 - [ ] **Step 2: Confirm the four D-touched spans hold only what this plan replaces**
 
-Task 7 replaces four spans of text Phase D wrote. Each must hold only the code this plan rewrites, so that nothing Phase D added is lost:
+Task 7 replaces four spans of text Phase D wrote. Nothing Phase D added inside a span may be lost when Task 7 rewrites it. The checks below ignore any name Phase D chose that only the span itself uses:
+
+- In `api/notes.py`, a module-level name other than `note_outcome` and `note_records` is fine when nothing outside the span uses it. A private helper of D's goes with the function it served.
+- In `api/sessions.py`, the span assigns `state`, `check` and at most one other name, the flag it passes as `terminal=` (D's name for it does not matter). Its returned dict has only `notes` before `notes_remaining`.
+- `ReaderNoteResponse` has only `outcome` in the span.
+- The test span holds `_finished`, the records test, and the outcome test under either of its names.
 
 ```powershell
 @'
 import re
 from pathlib import Path
+def lines_of(path):
+    return Path(path).read_text(encoding="utf-8").split("\n")
 def span(path, start, end):
-    lines = Path(path).read_text(encoding="utf-8").split("\n")
+    lines = lines_of(path)
     i = next(k for k, line in enumerate(lines) if line.startswith(start))
     j = next(k for k, line in enumerate(lines) if k > i and line.startswith(end))
-    return lines[i:j]
-notes = span("src/deep_research/api/notes.py", "def note_outcome(", "__all__ = [")
-print("api/notes.py defs:", [line.split("(")[0][4:] for line in notes if line.startswith("def ")])
-models = span("src/deep_research/api/models.py", "    outcome: Literal[", "class ClarificationQuestionResponse(ApiModel):")
-print("api/models.py fields:", [line.split(":")[0].strip() for line in models if re.match(r"    [a-z_]+:", line)])
-fields = span("src/deep_research/api/sessions.py", "    state = session.outcome.state if session.outcome is not None else None", '        "notes_remaining": session.note_board.remaining,')
-print("api/sessions.py names:", [line.split("=")[0].strip() for line in fields if re.match(r"    [a-z_]+ = ", line)])
-tests = span("tests/test_api/test_notes.py", "def _finished(", "def test_the_note_shapes_trim_bound_and_default_as_the_spec_says")
-print("test_notes.py defs:", [line.split("(")[0][4:] for line in tests if line.startswith("def ")])
+    return i, j, lines[i:j]
+def used_outside(name, path, i, j):
+    word = re.compile(r"\b" + re.escape(name) + r"\b")
+    for file in sorted([*Path("src").rglob("*.py"), *Path("tests").rglob("*.py")]):
+        for k, line in enumerate(lines_of(file)):
+            if word.search(line) and not (file.as_posix() == path and i <= k < j):
+                return file.as_posix() + ":" + str(k + 1)
+    return None
+def verdict(label, problems):
+    print(label + ": " + ("OK" if not problems else "STOP " + "; ".join(problems)))
+TOP = re.compile(r"(?:async def |def |class )(\w+)|(\w+)\s*(?::[^=]*)?=(?!=)")
+path = "src/deep_research/api/notes.py"
+i, j, body = span(path, "def note_outcome(", "__all__ = [")
+names = [m.group(1) or m.group(2) for m in map(TOP.match, body) if m]
+problems = [n + " missing" for n in ("note_outcome", "note_records") if n not in names]
+for name in names:
+    where = None if name in ("note_outcome", "note_records") else used_outside(name, path, i, j)
+    if where:
+        problems.append(name + " is used at " + where)
+verdict("api/notes.py span", problems)
+_, _, body = span("src/deep_research/api/models.py", "    outcome: Literal[", "class ClarificationQuestionResponse(ApiModel):")
+fields = [line.split(":")[0].strip() for line in body if re.match(r"    [a-z_]+:", line)]
+verdict("api/models.py span", [] if fields == ["outcome"] else ["fields " + repr(fields)])
+_, _, body = span("src/deep_research/api/sessions.py", "    state = session.outcome.state if session.outcome is not None else None", '        "notes_remaining": session.note_board.remaining,')
+flag = re.search(r"note_records\([^)]*terminal=(\w+)", "\n".join(body))
+assigned = [line.split("=")[0].strip() for line in body if re.match(r"    [a-z_]+ = ", line)]
+others = [n for n in assigned if n not in ("state", "check")]
+keys = [m.group(1) for m in (re.match(r'        "(\w+)": ', line) for line in body) if m]
+problems = [] if flag else ["no terminal= flag passed to note_records"]
+problems += [n + " assigned" for n in others if not flag or n != flag.group(1)] + [n + " missing" for n in ("state", "check") if n not in assigned]
+problems += [] if keys == ["notes"] else ["keys " + repr(keys)]
+verdict("api/sessions.py span", problems)
+_, _, body = span("tests/test_api/test_notes.py", "def _finished(", "def test_the_note_shapes_trim_bound_and_default_as_the_spec_says")
+defs = [line.split("(")[0][4:] for line in body if line.startswith("def ")]
+known = {"_finished", "test_the_records_list_every_accepted_note_in_order_read_or_not", "test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending", "test_each_note_ends_covered_not_found_not_addressed_replaced_or_waiting"}
+problems = [d + " would be deleted" for d in defs if d not in known]
+problems += [] if len(defs) == 3 and defs[0] == "_finished" else ["defs " + repr(defs)]
+verdict("test_notes.py span", problems)
 '@ | .venv\Scripts\python.exe -
 ```
 
 Expected, exactly:
 
 ```text
-api/notes.py defs: ['note_outcome', 'note_records']
-api/models.py fields: ['outcome']
-api/sessions.py names: ['state', 'terminal', 'check']
-test_notes.py defs: ['_finished', 'test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending', 'test_the_records_list_every_accepted_note_in_order_read_or_not']
+api/notes.py span: OK
+api/models.py span: OK
+api/sessions.py span: OK
+test_notes.py span: OK
 ```
 
-Anything more in a list is code Phase D added inside a span: stop and report it, because Task 7 would delete it.
+A `STOP` line names something Phase D added inside a span that Task 7 would delete while something else needs it: stop and report it.
 
 - [ ] **Step 3: Check every block of this plan against the tree, in order**
 
-The check simulates the whole plan in memory — each block is applied to the text the earlier blocks left — and changes nothing on disk.
+The check simulates the whole plan in memory — each block is applied to the text the earlier blocks left — and changes nothing on disk. A re-pin block's old pin line is checked with the agent's B-pin in place of the `f4282818` value it shows (the B-pin rule, Conventions).
 
 ```powershell
 @'
 import re
 from pathlib import Path
+from deep_research.evaluation.config import agent_prompt_fingerprint
 PLAN = Path("docs/superpowers/plans/2026-09-30-phase-a-notes.md").read_text(encoding="utf-8")
+AT_F4282818 = {"planner": "d1ba46ce147f", "researcher": "a8c9528f0c20", "source_evaluator": "24809aa975a3", "report_writer": "6e1aedc2888e"}
+B_PIN_LINES = {'    "%s": "%s",' % (agent, value): '    "%s": "%s",' % (agent, agent_prompt_fingerprint(agent)) for agent, value in AT_F4282818.items()}
 DASH = chr(0x2014)
 EDIT = re.compile(r"^`(?P<path>[^`\n]+)`(?: \([^\n]*\))? " + DASH + r" replace\n\n(?P<f1>`{3,4})[a-z]*\n(?P<old>.*?)\n(?P=f1)\n\nwith\n\n(?P<f2>`{3,4})[a-z]*\n(?P<new>.*?)\n(?P=f2)\n", re.S | re.M)
 SPAN = re.compile(r"^`(?P<path>[^`\n]+)`(?: \([^\n]*\))? " + DASH + r" replace the lines from the one starting `(?P<start>[^`\n]+)` up to, not including, the one starting `(?P<end>[^`\n]+)`, with\n\n(?P<f>`{3,4})[a-z]*\n(?P<new>.*?)\n(?P=f)\n", re.S | re.M)
@@ -225,11 +300,12 @@ for _, kind, m in blocks:
     path, current = m["path"], text(m["path"])
     counts[kind] += 1
     if kind == "edit":
-        found = -1 if current is None else current.count(m["old"])
+        old = B_PIN_LINES.get(m["old"], m["old"]) if path == "tests/test_evaluation/test_config.py" else m["old"]
+        found = -1 if current is None else current.count(old)
         if found != 1:
-            problems.append(path + ": anchor found " + str(found) + " times: " + repr(m["old"][:70]))
+            problems.append(path + ": anchor found " + str(found) + " times: " + repr(old[:70]))
             continue
-        files[path] = current.replace(m["old"], m["new"])
+        files[path] = current.replace(old, m["new"])
     elif kind == "span":
         lines = [] if current is None else current.split("\n")
         starts = [i for i, line in enumerate(lines) if line.startswith(m["start"])]
@@ -254,7 +330,7 @@ print("anchors: %d exactly once; spans: %d found; creates: %d absent; appends: %
 '@ | .venv\Scripts\python.exe -
 ```
 
-Expected: `anchors: 140 exactly once; spans: 5 found; creates: 1 absent; appends: 10 onto files present; problems: 0`, and no `PROBLEM` line.
+Expected: `anchors: 144 exactly once; spans: 6 found; creates: 1 absent; appends: 10 onto files present; problems: 0`, and no `PROBLEM` line. Planning ran this on an export with every block of Phase D's draft plan applied, and printed that line. It printed the same line again after a simulated latency-first landing, in which `agents/researcher.py:4741-4746` was rewritten as the latency draft's Task 12 rewrites it and the researcher's pin moved to match.
 
 - [ ] **Step 4: Record the baselines**
 
@@ -266,7 +342,7 @@ Run:
 Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; Pop-Location
 ```
 
-Expected: the pytest line ends `passed` with no `failed` or `error` (record its count as **B-py**; the planning export, which has no `.env`, printed `1 failed, 4960 passed` — the one failure is `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, which reads this checkout's `.env` and passes here); then `['d1ba46ce147f', 'a8c9528f0c20', '24809aa975a3', '4a3d56fab932', '6e1aedc2888e']` — the five pins the re-pin blocks of Tasks 4, 5, 6 and 9 anchor on; then Vitest ends `Tests  N passed (N)` with no failure (record N as **B-web**; `219` on the planning export), `typecheck` prints nothing, and `check:css` prints `OK`.
+Expected: the pytest line ends `passed` with no `failed` or `error` (record its count as **B-py**; the planning export, which has no `.env`, printed `1 failed, 4960 passed` — the one failure is `tests/test_config.py::test_the_evidence_verifier_pipeline_config`, which reads this checkout's `.env` and passes here); then five fingerprints: record them, in order, as **B-pin(planner)**, **B-pin(researcher)**, **B-pin(source_evaluator)**, **B-pin(evidence_verifier)** and **B-pin(report_writer)** (the B-pin rule, Conventions). With Phase D merged and nothing else landed since `f4282818` they print `['d1ba46ce147f', 'a8c9528f0c20', '24809aa975a3', '4a3d56fab932', '6e1aedc2888e']`, the values the re-pin blocks of Tasks 4, 5, 6 and 9 show. A different value is not a stop: it means another branch moved that module first, and the B-pin rule says what each re-pin then anchors on and writes. Then Vitest ends `Tests  N passed (N)` with no failure (record N as **B-web**; `219` on the planning export), `typecheck` prints nothing, and `check:css` prints `OK`.
 
 
 ### Task 2: The note helpers, the moved `note_sub_topic`, and the board's change count
@@ -601,7 +677,7 @@ Run:
 .venv\Scripts\python.exe -m pytest tests/test_runtime/test_note_board.py tests/test_graph/test_reader_notes_state.py tests/test_graph/test_note_routing.py tests/test_agents/test_reader_notes_writing.py -q
 ```
 
-Expected: collection stops with `4 errors`: three `ImportError: cannot import name 'board_version' from 'deep_research.agents.reader_notes'` / `cannot import name 'NOTES_WAIT_S'` / `cannot import name 'note_sub_topic'`, and `test_note_board.py` collects but its new test fails with `AttributeError: 'NoteBoard' object has no attribute 'version'`. (The exact first line pytest prints is `ERROR tests/test_graph/test_reader_notes_state.py`.)
+Expected: `Interrupted: 3 errors during collection`, then `3 errors`. The three are `ImportError`s in `test_reader_notes_state.py`, `test_note_routing.py` and `test_reader_notes_writing.py`: `cannot import name 'board_version' from 'deep_research.agents.reader_notes'`, `cannot import name 'NOTES_WAIT_S'` and `cannot import name 'note_sub_topic'`, respectively. The first `ERROR` line names `tests/test_graph/test_reader_notes_state.py`. `test_note_board.py` collects, but the interrupted session runs no test, so its new test (which fails with `AttributeError: 'NoteBoard' object has no attribute 'version'` until Step 3) does not run here.
 
 - [ ] **Step 3: Give the board its change count**
 
@@ -2047,23 +2123,21 @@ Run:
 .venv\Scripts\python.exe -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; print(f('source_evaluator'), f('report_writer'))"
 ```
 
-Expected: `208 passed`, then `cc5a310b0aa0 cafa5ba3d613`.
+Expected: `208 passed`, then `cc5a310b0aa0 cafa5ba3d613` when B-pin(source_evaluator) and B-pin(report_writer) are the `f4282818` values (`24809aa975a3`, `6e1aedc2888e`); with another B-pin, that agent prints another value, which Step 5 pins under the B-pin rule.
 
 - [ ] **Step 5: Re-pin the two fingerprints**
 
-`agent_prompt_fingerprint` hashes each agent module's source (`evaluation/config.py:280-288`), so the source evaluator's and the writer's pins move; no prompt string changed and `agents.prompts` was untouched.
+`agent_prompt_fingerprint` hashes each agent module's source (`evaluation/config.py:280-288`), so the source evaluator's and the writer's pins move; no prompt string changed and `agents.prompts` was untouched. The blocks show the unmoved case (the B-pin rule, Conventions). When Task 1 Step 4 recorded another B-pin for an agent, that block's old line holds the B-pin, and the new pin line and the comment's "Moved `…` -> `…`" carry the B-pin and the value Step 4 printed. When the B-pin is the `f4282818` value and Step 4 printed anything other than the block's value, a block of this task was not applied byte-exactly. Find it, apply it again exactly, and run Step 4 again; never pin a printed value without finding the cause.
 
 `tests/test_evaluation/test_config.py` — replace
 
 ```python
-    # `fb7f60d73873` -> `24809aa975a3`.
     "source_evaluator": "24809aa975a3",
 ```
 
 with
 
 ```python
-    # `fb7f60d73873` -> `24809aa975a3`.
     # notes-progress-report Phase A (spec §5.1, 2026-09-30): the scoring
     # request's # Context slot carries the notes' steering views only (a note
     # whose only kind is new_angle is its own topic instead). Without notes
@@ -2075,14 +2149,12 @@ with
 `tests/test_evaluation/test_config.py` — replace
 
 ```python
-    # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
     "report_writer": "6e1aedc2888e",
 ```
 
 with
 
 ```python
-    # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
     # notes-progress-report Phase A (spec §5.1, 2026-09-30): the section and
     # bottom-line requests carry the notes' steering views only. Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
@@ -2578,21 +2650,21 @@ Run:
 .venv\Scripts\python.exe -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; print(f('planner'))"
 ```
 
-Expected: `303 passed`, then `3934bea57f61`.
+Expected: `303 passed`, then `3934bea57f61` when B-pin(planner) is `d1ba46ce147f`; with another B-pin, another value, which Step 6 pins under the B-pin rule.
 
 - [ ] **Step 6: Re-pin the planner**
+
+The block shows the unmoved case (the B-pin rule, Conventions). When Task 1 Step 4 recorded another B-pin(planner), the old line holds it, and the new pin line and the comment's "Moved `…` -> `…`" carry the B-pin and the value Step 5 printed. When B-pin(planner) is `d1ba46ce147f` and Step 5 printed anything but `3934bea57f61`, a block of this task was not applied byte-exactly. Find it, apply it again exactly, and run Step 5 again; never pin a printed value without finding the cause.
 
 `tests/test_evaluation/test_config.py` — replace
 
 ```python
-    # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
     "planner": "d1ba46ce147f",
 ```
 
 with
 
 ```python
-    # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
     # notes-progress-report Phase A (spec §5.2, 2026-09-30): the reader's
     # research notes join the plan as their own sub-topics when it is
     # published, planning.completed lists them, and the planning lead says the
@@ -2621,7 +2693,7 @@ git commit -m "feat(planner): research notes read before the plan is published j
 ### Task 6: Research-time research notes get their own thread — the researcher's dispatcher
 
 **Files:**
-- Modify: `src/deep_research/agents/researcher.py` — imports (`:15-19`, `:57-63`, `:85-104`), `select_sub_topics` (`:341-349`), `sub_topic_started_event` (`:2590-2612`), `research_completed_event`'s docstring (`:2731-2739`), two module helpers after `_cancel_and_gather_pages` (`:3011-3032`), `__init__` (`:3165-3166`), `_reader_notes_block` (`:3190-3205`), `_planned_targets` (`:3207-3238`), `extract_findings` (`:3752-3760`), `state_update` (`:4314-4322`), `_research_sub_topic` (`:4378-4386`), `run` (`:4639-4652`, `:4653`, `:4692-4695`, `:4741-4827`, `:4859-4866`)
+- Modify: `src/deep_research/agents/researcher.py` — imports (`:15-19`, `:57-63`, `:85-104`), `select_sub_topics` (`:341-349`), `sub_topic_started_event` (`:2590-2612`), `research_completed_event`'s docstring (`:2731-2739`), two module helpers after `_cancel_and_gather_pages` (`:3011-3032`), `__init__` (`:3165-3166`), `_reader_notes_block` (`:3190-3205`), `_planned_targets` (`:3207-3238`), `extract_findings` (`:3752-3760`), `state_update` (`:4314-4322`), `_research_sub_topic` (`:4378-4386`), `run` (`:4639-4652`, `:4653`, `:4692-4695`, the stop comment `:4749-4753`, the closure's header and gate line `:4756-4760`, its comment `:4771-4779`, the gather and the fold `:4786-4828`, `:4859-4866`; never the tool lock `:4741-4747` or the loop call `:4769`, review P2-1)
 - Modify: `tests/test_evaluation/test_config.py` (the `researcher` pin)
 - Create: `tests/test_agents/test_research_note_threads.py`
 
@@ -2863,8 +2935,11 @@ async def test_note_thread_provider_failure_sets_stop(tracker: Tracker) -> None:
             await _until(lambda: bool(_seen(published, "researcher.sub_topic.started", "topic-01")))
             _read(board, "n1", kinds=["new_angle"])
             await _until(lambda: bool(_seen(published, "researcher.sub_topic.completed", "note-n1")))
-            _read(board, "n2", kinds=["new_angle"])
+            # The failed thread sets stop only after its completed event is published; give it
+            # the turns it needs first, so the next note is read once stop is set however many
+            # awaits lie between that event and the thread's return.
             await asyncio.sleep(0.02)
+            _read(board, "n2", kinds=["new_angle"])
             planned_gate.set()
             outcome = await asyncio.wait_for(running, timeout=5)
 
@@ -3393,25 +3468,42 @@ with
         selected, capped = _selected_and_capped(state, self._max_sub_topics)
 ```
 
-`src/deep_research/agents/researcher.py` — replace the lines from the one starting `        # One tool lock for the whole run, never a module global (D9): every` up to, not including, the one starting `        # Every sub-topic that was never attempted -- either truncated by the`, with
+The next four edits leave alone what the latency workstream rewrites (review P2-1): the tool lock's comment and construction (`researcher.py:4741-4747`, including the gate's line), the stop comment's first line (`:4748`), and the loop's call `self._research_one(index, task, tool_lock)` (`:4769`). Whatever those lines hold when this task runs, they stay.
+
+`src/deep_research/agents/researcher.py` — replace
 
 ```python
-        # One tool lock for the whole run, never a module global (D9): every
-        # sub-topic loop of this run shares it, so two loops can never be
-        # inside a research tool's section -- and its admission to the run's
-        # cache and ledger -- at the same time. It is made per run and dies
-        # with it.
-        tool_lock = asyncio.Lock()
-        gate = asyncio.Semaphore(self._sub_topic_concurrency)
-        # Set by the first loop whose work ends in a non-recoverable provider
+        # failure. A loop that has not started yet checks it as it acquires
+        # the gate and stops there, which is what keeps
+        # ``provider_failure_stopped_processing`` for the topics that never
+        # got a turn, while the loops already running finish. It is set before
+        # the gate is released, so a waiter cannot slip past it.
+```
+
+with
+
+```python
         # failure. A loop that has not started yet checks it as it starts and
         # stops there, which is what keeps ``provider_failure_stopped_processing``
         # for the topics that never got a turn, while the loops already running
         # finish; and once it is set no reader note gets a thread of its own
         # (notes-progress-report spec §5.3). A gated loop sets it before the
         # gate is released, so a waiter cannot slip past it.
-        stop = asyncio.Event()
+```
 
+`src/deep_research/agents/researcher.py` — replace
+
+```python
+        async def research(
+            index: int, sub_topic: SubTopic
+        ) -> _SubTopicOutcome | None:
+            """Run one sub-topic, or skip it when the pass has stopped."""
+            async with gate:
+```
+
+with
+
+```python
         async def research(
             index: int, sub_topic: SubTopic, *, gated: bool
         ) -> _SubTopicOutcome | None:
@@ -3422,28 +3514,36 @@ with
             once, beside however many loops are running.
             """
             async with (gate if gated else contextlib.nullcontext()):
-                if stop.is_set():
-                    return None
-                task = self.sub_topic_task(
-                    base_task,
-                    sub_topic,
-                    existing_sources_for(state, sub_topic),
-                )
-                try:
-                    outcome = await self._research_one(index, task, tool_lock)
-                except BaseException:
+```
+
+`src/deep_research/agents/researcher.py` — replace
+
+```python
+                    # A loop that RAISES stops the pass exactly as one that
+                    # returns a provider failure does. The error is re-raised
+                    # to the gather below, so every topic still queued behind
+                    # this gate must not start: its model turns would be spent
+                    # on work the re-raise throws away. (The plan's ceiling is
+                    # seven sub-topics and the default cap is five, so queued
+                    # work is the ordinary case, not a corner.) The flag is set
+                    # before the gate is released, so a waiter cannot slip past
+                    # it.
+```
+
+with
+
+```python
                     # A loop that RAISES stops the pass exactly as one that
                     # returns a provider failure does. The error is re-raised
                     # once every thread has settled, so every topic still
                     # queued behind this gate, and every note not yet given a
                     # thread, must not start: its model turns would be spent on
                     # work the re-raise throws away.
-                    stop.set()
-                    raise
-                if not outcome.react.succeeded:
-                    stop.set()
-            return outcome
+```
 
+`src/deep_research/agents/researcher.py` — replace the lines from the one starting `        settled_results = await asyncio.gather(` up to, not including, the one starting `        # Every sub-topic that was never attempted -- either truncated by the`, with
+
+```python
         # notes-progress-report spec §5.3 (D3): the dispatcher. Every selected
         # topic runs as its own task; a research note read while any of them
         # runs gets its own thread at once. A note still being read when every
@@ -3560,21 +3660,21 @@ Run:
 .venv\Scripts\python.exe -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; print(f('researcher'))"
 ```
 
-Expected: `256 passed`, then `b9caf536e3f0`.
+Expected: `256 passed`, then `b9caf536e3f0` when B-pin(researcher) is `a8c9528f0c20`; with another B-pin, another value, which Step 9 pins under the B-pin rule.
 
 - [ ] **Step 9: Re-pin the researcher**
+
+The block shows the unmoved case (the B-pin rule, Conventions). When Task 1 Step 4 recorded another B-pin(researcher) — for instance after the latency workstream landed — the old line holds it, and the new pin line and the comment's "Moved `…` -> `…`" carry the B-pin and the value Step 8 printed. When B-pin(researcher) is `a8c9528f0c20` and Step 8 printed anything but `b9caf536e3f0`, a block of this task was not applied byte-exactly. Find it, apply it again exactly, and run Step 8 again; never pin a printed value without finding the cause.
 
 `tests/test_evaluation/test_config.py` — replace
 
 ```python
-    # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
     "researcher": "a8c9528f0c20",
 ```
 
 with
 
 ```python
-    # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
     # notes-progress-report Phase A (spec §5.3, 2026-09-30): a dispatcher
     # replaces the one gather, so a research note read while the loops run gets
     # its own ungated thread; note topics are never capped; the turns and the
@@ -3610,7 +3710,8 @@ Phase D left `note_outcome` with a `terminal` keyword and its three `return "pen
 - Modify: `src/deep_research/api/notes.py` (imports `:19-45`; the span from `def note_outcome(` to `__all__ = [`; `__all__`)
 - Modify: `src/deep_research/api/models.py` (`ReaderNoteResponse`, the span from its `outcome:` line to `class ClarificationQuestionResponse(ApiModel):`)
 - Modify: `src/deep_research/api/sessions.py` (`session_note_fields`, the span from `state = session.outcome.state …` to `"notes_remaining": …`)
-- Test: `tests/test_api/test_notes.py`, `tests/test_api/test_note_route.py`
+- Test: `tests/test_api/test_notes.py`, `tests/test_api/test_note_route.py`, and any other test file whose note record Step 1's script extends (P3-7)
+- Removes one test (review P3-2): the span from `def _finished(` replaces `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending` (`tests/test_api/test_notes.py:189-201` at `f4282818`; Phase D's plan renames it `…_or_waiting`). `test_note_outcome_table` supersedes it, row by row against §5.6. The span keeps `_finished` and rewrites `test_the_records_list_every_accepted_note_in_order_read_or_not` for `NoteRecord`. The plan's `+38` Python tests is net of this removal.
 
 **Interfaces:**
 - Consumes: `is_research_note`, `has_steering_kind`, `note_sub_topic` (Task 2); Phase D's `NoteOutcome` (with `not_checked`), `TERMINAL_STATUSES` (with `stopped`).
@@ -3619,8 +3720,46 @@ Phase D left `note_outcome` with a `terminal` keyword and its three `return "pen
   - `note_steering_outcome(note_id: str, state: ResearchState | None, *, terminal: bool, note: ReaderNote | None = None) -> NoteOutcome | None` — `None` unless the note is mixed; `note` is the board's reading, used only when no state holds the note (spec ambiguity A-4 below).
   - `class NoteRecord(NamedTuple)`: `received: ReceivedNote`, `restatement: str | None`, `outcome: NoteOutcome`, `steering_outcome: NoteOutcome | None`; `note_records(board, state, *, terminal) -> list[NoteRecord]`.
   - `ReaderNoteResponse.steering_outcome: Literal[covered, not_found, not_addressed, pending, replaced, not_checked] | None = None`.
+  - Removed: `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending` (Phase D: `…_or_waiting`), superseded by `test_note_outcome_table`.
 
 - [ ] **Step 1: Write the failing tests**
+
+Every note in a session response gains `steering_outcome` (`None` unless the note is mixed), so a test that compares a whole note record to the response must carry it. Today such records are `tests/test_api/test_note_route.py:429-431` and `web/e2e/notes.spec.ts:108-111`, which this step and Task 10 Step 6 edit. Phase D may add more, for example for a stopped session's `not_checked` notes (review P3-7). This script extends every one-line note record that holds `"note_id"` and `"outcome": "not_checked"` in `tests/` (Python), or `note_id:` and `outcome: "not_checked"` in `web/test/` and `web/e2e/` (TypeScript), and does not yet carry the field. It adds `"steering_outcome": None` or `steering_outcome: null` right after the outcome. It skips `web/e2e/notes.spec.ts`, which Task 10 Step 6 rewrites, and stages each file it changes, so Step 6's commit takes it:
+
+```powershell
+@'
+import re
+import subprocess
+from pathlib import Path
+RULES = [
+    ("tests", "*.py", re.compile(r'("outcome": "not_checked")(?=[,}])'), ', "steering_outcome": None', '"note_id"'),
+    ("web/test", "*.ts*", re.compile(r'(outcome: "not_checked"(?: as const)?)(?=[,} ])'), ", steering_outcome: null", "note_id:"),
+    ("web/e2e", "*.ts", re.compile(r'(outcome: "not_checked"(?: as const)?)(?=[,} ])'), ", steering_outcome: null", "note_id:"),
+]
+changed = []
+for root, pattern, rx, extra, key in RULES:
+    for path in sorted(Path(root).rglob(pattern)):
+        if path.as_posix() == "web/e2e/notes.spec.ts" or "node_modules" in path.parts:
+            continue
+        lines = path.read_text(encoding="utf-8").split("\n")
+        hits = 0
+        for k, line in enumerate(lines):
+            if key in line and "steering_outcome" not in line and rx.search(line):
+                lines[k] = rx.sub(lambda m: m.group(1) + extra, line, count=1)
+                hits += 1
+                print("extended " + path.as_posix() + ":" + str(k + 1))
+        if hits:
+            path.write_text("\n".join(lines), encoding="utf-8")
+            changed.append(path.as_posix())
+print("records extended in " + str(len(changed)) + " files")
+if changed:
+    subprocess.run(["git", "add", "--", *changed], check=True)
+'@ | .venv\Scripts\python.exe -
+```
+
+Expected: the last line reads `records extended in N files`, each `extended` line above it naming one record it changed. On the export with Phase D's draft plan applied it extended one record and printed `extended web/test/components/reader-notes.test.tsx:68`: Phase D turns that fixture's note `n3` into a `not_checked` one. On the stand-in export it printed `records extended in 0 files`. Extending an input fixture changes nothing it renders, because a note whose `steering_outcome` is `null` keeps its one caption.
+
+Then the tests of this task:
 
 `tests/test_api/test_notes.py` — replace
 
@@ -4168,6 +4307,8 @@ Run:
 Expected: `235 passed` on the stand-in export (more with Phase D's own API tests) and no failure, then `All checks passed!`.
 
 - [ ] **Step 6: Commit**
+
+The files Step 1's script extended are already staged, so this commit takes them too.
 
 ```powershell
 git add src/deep_research/api/notes.py src/deep_research/api/models.py src/deep_research/api/sessions.py tests/test_api/test_notes.py tests/test_api/test_note_route.py
@@ -5352,23 +5493,21 @@ Run:
 .venv\Scripts\python.exe -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; print(f('report_writer'))"
 ```
 
-Expected: `158 passed`, then `a27544eee344`.
+Expected: `158 passed`, then `a27544eee344` when B-pin(report_writer) is `6e1aedc2888e` (so Task 4 wrote `cafa5ba3d613`); with another B-pin, another value, which Step 5 pins under the B-pin rule.
 
 - [ ] **Step 5: Re-pin the writer**
+
+The block shows the unmoved case (the B-pin rule, Conventions). Its old line holds the value Task 4 wrote, `cafa5ba3d613` in the unmoved case. The new pin line and the comment's "Moved `…` -> `…`" carry that value and the value Step 4 printed. When B-pin(report_writer) is `6e1aedc2888e` and Step 4 printed anything but `a27544eee344`, a block of this task was not applied byte-exactly. Find it, apply it again exactly, and run Step 4 again; never pin a printed value without finding the cause.
 
 `tests/test_evaluation/test_config.py` — replace
 
 ```python
-    # every request is byte-identical; agents.prompts was untouched. Moved
-    # `6e1aedc2888e` -> `cafa5ba3d613`.
     "report_writer": "cafa5ba3d613",
 ```
 
 with
 
 ```python
-    # every request is byte-identical; agents.prompts was untouched. Moved
-    # `6e1aedc2888e` -> `cafa5ba3d613`.
     # notes-progress-report Phase A (spec §5.4, 2026-09-30): after a note
     # pass the writer drafts only the notes' own parts and the bottom line,
     # and carries every other part over. Without notes every request is
@@ -5398,7 +5537,8 @@ git commit -m "feat(writer): after a note pass only the notes' parts and the bot
 
 **Files:**
 - Modify: `web/lib/run-state.ts:48-51` (`NoteState`), `:207-209` (`researcher.sub_topic.started`), `:342-355` (the two note handlers)
-- Modify: `web/lib/notes.ts:20-41` (`RESEARCH_WHERE`, `RESEARCH_NOW`, `isResearchNote`, `whereFor`, `ackFor`), before `notesLeft` (`noteCaption`)
+- Modify: `web/lib/notes.ts:20-48` (`RESEARCH_WHERE`, `RESEARCH_NOW`, `isResearchNote`, `whereFor`, `ackFor`, `visibleAcks`), before `notesLeft` (`noteCaption`)
+- Modify: `web/lib/briefs.ts:59` (the active row's acknowledgements are worded for the active row, review P3-5)
 - Modify: `web/lib/api.ts:45` (`ReaderNoteRecord`)
 - Modify: `web/components/ReportBody.tsx:8-9`, `:127`
 - Modify: `web/e2e/notes.spec.ts:108-111` (the status the API now answers)
@@ -5409,7 +5549,7 @@ git commit -m "feat(writer): after a note pass only the notes' parts and the bot
 - Consumes: `researcher.sub_topic.started.metadata.note_id` (Task 6); `planner.planning.completed`'s note entries (Task 5); `session.note.interpreted.metadata.kinds` (unchanged since live-briefs Phase 3); `ReaderNoteResponse.steering_outcome` (Task 7); Phase D's `OUTCOME_TEXT.not_checked = "not checked"` and `OUTCOME_TEXT.pending = "not checked yet"`.
 - Produces (Phase B's Planning note slots and Reviewing note rows read these, §4 item 5):
   - `NoteState.kinds: string[]` (from `session.note.interpreted.metadata.kinds`, strings only; `[]` until read) and `NoteState.threadStarted: boolean` (set by a `researcher.sub_topic.started` whose `note_id` names the note).
-  - `notes.ts`: `RESEARCH_WHERE: Partial<Record<NodeId, string>>`, `RESEARCH_NOW`, `isResearchNote(note: NoteState): boolean`, `noteCaption(note: Pick<ReaderNoteRecord, "outcome" | "steering_outcome">): string`; `ackFor` picks the research table for any note whose kinds include `new_angle`.
+  - `notes.ts`: `RESEARCH_WHERE: Partial<Record<NodeId, string>>`, `RESEARCH_NOW`, `isResearchNote(note: NoteState): boolean`, `noteCaption(note: Pick<ReaderNoteRecord, "outcome" | "steering_outcome">): string`. `ackFor(note, notes, active: NodeId | null = null)` picks the research table for any note whose kinds include `new_angle`, keyed like `WHERE` on the step that read the note. It says `RESEARCH_NOW` whenever `active` is `"researcher"` and the note's own thread has started, which includes a note pass researching a note read after Researching (review P3-5). `visibleAcks(notes, active: NodeId | null = null)` passes `active` on, and `rowBrief` passes `run.active`.
   - `ReaderNoteRecord.steering_outcome?: ReaderNoteOutcome | null`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -5433,7 +5573,7 @@ Append to `web/test/notes.test.ts`:
 describe("a research note's acknowledgement and thread (notes-progress-report spec §5.7, AC12)", () => {
   const angle = (id: string, restatement: string, kinds: string[] = ["new_angle"]) => interpreted(id, restatement, { kinds });
   const ownThread = (id: string) => ev("researcher.sub_topic.started", { coverage_id: "note-" + id, note_id: id, sub_topic: "Your note: pastries in the cafe", index: 2 });
-  const restOf = (run: RunState) => ackFor(run.notes[0], run.notes).rest;
+  const restOf = (run: RunState) => ackFor(run.notes[0], run.notes, run.active).rest;
   const upTo = (node: NodeId): RunEvent[] => {
     const order: NodeId[] = ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"];
     return order.slice(0, order.indexOf(node)).flatMap((done) => [started(done), completed(done)]).concat(started(node));
@@ -5470,13 +5610,30 @@ describe("a research note's acknowledgement and thread (notes-progress-report sp
     ]);
   });
 
+  it("says 'now' while Researching runs the note's own topic, whichever step read the note (review P3-5)", () => {
+    const run = play([...upTo("report_writer"), received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]);
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+    for (const e of [completed("report_writer"), started("report_reviewer"),
+      ev("graph.route.decided", { destination: "note_pass", reason: "note_pass_requested", iteration: 0 }), started("note_pass"),
+      ev("graph.note_pass.started", { iteration: 0, note_passes: 1, note_ids: ["n1"], targets: ["note-n1-target-01"] }),
+      completed("note_pass"), started("researcher")]) applyEvent(run, e);
+    expect(run.active).toBe("researcher");
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+    applyEvent(run, ownThread("n1"));
+    expect(restOf(run)).toBe(RESEARCH_NOW);
+    expect(visibleAcks(run.notes, run.active).acks[0].rest).toBe(RESEARCH_NOW);
+    expect(rowBrief(run, "researcher", "active").acks.map((a) => a.rest)).toEqual([RESEARCH_NOW]);
+    applyEvent(run, completed("researcher"));
+    expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
+  });
+
   it("acknowledges a mixed note as a research note, and keeps a steering note's words", () => {
     const run = play([started("planner"), completed("planner"), started("researcher"),
       received("n1", "a"), angle("n1", "pastries, nothing closed", ["new_angle", "exclude"]),
       received("n2", "b"), interpreted("n2", "leave out closed cafes", { kinds: ["exclude"] }), ownThread("n1")]);
     expect(run.notes.map((n) => [n.kinds, n.threadStarted])).toEqual([[["new_angle", "exclude"], true], [["exclude"], false]]);
-    expect(ackFor(run.notes[0], run.notes).rest).toBe(", researching it as its own topic now");
-    expect(ackFor(run.notes[1], run.notes).rest).toBe(", from each topic's next search");
+    expect(ackFor(run.notes[0], run.notes, run.active).rest).toBe(", researching it as its own topic now");
+    expect(ackFor(run.notes[1], run.notes, run.active).rest).toBe(", from each topic's next search");
   });
 
   it("captions a mixed note with both of its results, and every other note with its one", () => {
@@ -5568,7 +5725,7 @@ Run:
 Push-Location web; npx vitest run test/notes.test.ts test/run-state.test.ts test/briefs.test.ts test/components/reader-notes.test.tsx; Pop-Location
 ```
 
-Expected: `6 failed` with the rest passed (`Test Files  3 failed | 1 passed (4)`, `Tests  6 failed | 55 passed (61)` on the stand-in export): the four new tests of `notes.test.ts` (no `RESEARCH_WHERE`, `RESEARCH_NOW` or `noteCaption` yet), the new `run-state.test.ts` test and the new `reader-notes.test.tsx` test. The new `briefs.test.ts` test passes already: Planning's finished brief lists every entry `planning.completed` lists (`web/lib/briefs.ts:69-71`), which is §5.7's "until B lands" behaviour, now pinned.
+Expected: `7 failed` with the rest passed (`Test Files  3 failed | 1 passed (4)`, `Tests  7 failed | 55 passed (62)` on the stand-in export): the five new tests of `notes.test.ts` (no `RESEARCH_WHERE`, `RESEARCH_NOW` or `noteCaption` yet), the new `run-state.test.ts` test and the new `reader-notes.test.tsx` test. The new `briefs.test.ts` test passes already: Planning's finished brief lists every entry `planning.completed` lists (`web/lib/briefs.ts:69-71`), which is §5.7's "until B lands" behaviour, now pinned.
 
 - [ ] **Step 3: Keep each note's kinds and its thread in the run state**
 
@@ -5664,8 +5821,9 @@ with
 ```ts
 /* notes-progress-report spec §5.7 (D1-D4): a research note — its kinds include new_angle, a mixed note
    included — is researched as its own topic, so its acknowledgement says when, by the step that was
-   running when the run read it. "Now" only once its own thread has started: a note read after the
-   researcher's window closed gets no thread in that run. */
+   running when the run read it. "Now" while Researching is the active row and the note's own thread
+   has started — a planning-time topic, a research-time thread or a note pass — and only then: a note
+   read after the researcher's window closed gets no thread in that run. */
 export const RESEARCH_WHERE: Readonly<Partial<Record<NodeId, string>>> = {
   planner: ", as its own topic",
   researcher: ", as its own topic",
@@ -5676,23 +5834,54 @@ export const RESEARCH_WHERE: Readonly<Partial<Record<NodeId, string>>> = {
 };
 export const RESEARCH_NOW = ", researching it as its own topic now";
 export const isResearchNote = (note: NoteState): boolean => note.kinds.includes("new_angle");
-function whereFor(note: NoteState): string {
+function whereFor(note: NoteState, active: NodeId | null): string {
   if (!note.where) return "";
   if (!isResearchNote(note)) return WHERE[note.where] ?? "";
-  if (note.where === "researcher" && note.threadStarted) return RESEARCH_NOW;
+  if (active === "researcher" && note.threadStarted) return RESEARCH_NOW;
   return RESEARCH_WHERE[note.where] ?? "";
 }
 
-/* One acknowledgement line: `lead`, then the run's reading in `said` (the pick's .said), then `rest`. */
+/* One acknowledgement line: `lead`, then the run's reading in `said` (the pick's .said), then `rest`.
+   `active` is the run's active row (RunState.active); a research note's "now" needs it. */
 export interface Ack { key: string; lead: string; said: string | null; rest: string }
 
-export function ackFor(note: NoteState, notes: readonly NoteState[]): Ack {
+export function ackFor(note: NoteState, notes: readonly NoteState[], active: NodeId | null = null): Ack {
   if (!note.interpreted) return { key: note.id, lead: "Reading your note…", said: null, rest: "" };
   if (note.fallback) return { key: note.id, lead: "Got it — passed on as you wrote it", said: null, rest: "" };
   const earlier = note.replaces ? notes.find((n) => n.id === note.replaces) : undefined;
   const replacing = earlier ? ", replacing your earlier note about " + (earlier.restatement ?? earlier.text) : "";
-  return { key: note.id, lead: "Got it — ", said: note.restatement ?? note.text, rest: whereFor(note) + replacing };
+  return { key: note.id, lead: "Got it — ", said: note.restatement ?? note.text, rest: whereFor(note, active) + replacing };
 }
+```
+
+`web/lib/notes.ts` — replace
+
+```ts
+export function visibleAcks(notes: readonly NoteState[]): { acks: Ack[]; earlier: number } {
+  const shown = notes.slice(-2);
+  return { acks: shown.map((note) => ackFor(note, notes)), earlier: notes.length - shown.length };
+}
+```
+
+with
+
+```ts
+export function visibleAcks(notes: readonly NoteState[], active: NodeId | null = null): { acks: Ack[]; earlier: number } {
+  const shown = notes.slice(-2);
+  return { acks: shown.map((note) => ackFor(note, notes, active)), earlier: notes.length - shown.length };
+}
+```
+
+`web/lib/briefs.ts` — replace
+
+```ts
+  const noted = id === run.active ? visibleAcks(run.notes) : { acks: [], earlier: 0 };
+```
+
+with
+
+```ts
+  const noted = id === run.active ? visibleAcks(run.notes, run.active) : { acks: [], earlier: 0 };
 ```
 
 `web/lib/notes.ts` — replace
@@ -5774,22 +5963,19 @@ Run:
 Push-Location web; npx vitest run test/notes.test.ts test/run-state.test.ts test/briefs.test.ts test/components/reader-notes.test.tsx; npm run -s typecheck; Pop-Location
 ```
 
-Expected: no failure (`Tests  61 passed (61)` on the stand-in export; more with Phase D's own tests in these files), then `typecheck` prints nothing.
+Expected: no failure (`Tests  62 passed (62)` on the stand-in export; more with Phase D's own tests in these files), then `typecheck` prints nothing.
 
 - [ ] **Step 6: The status the e2e notes test reads gains the new field**
 
-`web/e2e/notes.spec.ts` (anchor as Phase D leaves it: the outcome reads `not_checked`) — replace
+The replay session these notes reach has finished, so after Phase D's terminal rule they read `not_checked`, and after Task 7 each carries `steering_outcome: null` (a steering note). Phase D's plan leaves the lines reading `outcome: "pending"` (Open issue O-1), so this edit is a span that writes the final check whatever D left between its two boundary lines:
+
+`web/e2e/notes.spec.ts` (D-touched) — replace the lines from the one starting `  expect(status.notes).toEqual([` up to, not including, the one starting `  expect([status.notes_remaining, status.note_passes]).toEqual([8, 0]);`, with
 
 ```ts
-    { note_id: "n1", text: "More on fire-safety standards", restatement: "More on fire-safety standards", outcome: "not_checked" },
-    { note_id: "n2", text: "Only the United States", restatement: "Only the United States", outcome: "not_checked" },
-```
-
-with
-
-```ts
+  expect(status.notes).toEqual([
     { note_id: "n1", text: "More on fire-safety standards", restatement: "More on fire-safety standards", outcome: "not_checked", steering_outcome: null },
     { note_id: "n2", text: "Only the United States", restatement: "Only the United States", outcome: "not_checked", steering_outcome: null },
+  ]);
 ```
 
 - [ ] **Step 7: Bring the design record up to Phase A**
@@ -5882,12 +6068,12 @@ Run:
 Push-Location web; npm test; npm run -s check:css; Pop-Location
 ```
 
-Expected: Vitest ends `Tests  B-web + 7 passed` with no failure (`226 passed` on the stand-in export), then `OK`.
+Expected: Vitest ends `Tests  B-web + 8 passed` with no failure (`227 passed` on the stand-in export), then `OK`.
 
 - [ ] **Step 9: Commit**
 
 ```powershell
-git add web/lib/run-state.ts web/lib/notes.ts web/lib/api.ts web/components/ReportBody.tsx web/e2e/notes.spec.ts web/test/notes.test.ts web/test/run-state.test.ts web/test/briefs.test.ts web/test/components/reader-notes.test.tsx docs/design/DESIGN.md docs/design/api-gaps.md
+git add web/lib/run-state.ts web/lib/notes.ts web/lib/briefs.ts web/lib/api.ts web/components/ReportBody.tsx web/e2e/notes.spec.ts web/test/notes.test.ts web/test/run-state.test.ts web/test/briefs.test.ts web/test/components/reader-notes.test.tsx docs/design/DESIGN.md docs/design/api-gaps.md
 git commit -m "feat(web): a research note's acknowledgement and thread, a mixed note's two-part caption; DESIGN.md for Phase A"
 ```
 
@@ -5896,7 +6082,7 @@ git commit -m "feat(web): a research note's acknowledgement and thread, a mixed 
 **Files:** none changed (a capture writes images under `web/visual/A-final/`, which git ignores).
 
 **Interfaces:**
-- Consumes: Tasks 1–10 committed; Task 1's baselines **B-py** and **B-web**.
+- Consumes: Tasks 1–10 committed; Task 1's baselines **B-py**, **B-web** and the five B-pins.
 - Produces: the evidence that Phase A is complete — every suite green, the four moved pins and the one unmoved, the shared names in place, the e2e run and the captures.
 
 - [ ] **Step 1: The whole Python suite, the pins, and the lint guard**
@@ -5909,7 +6095,7 @@ Run:
 .venv\Scripts\python.exe -m ruff check --select F src/deep_research/agents/reader_notes.py src/deep_research/agents/planner.py src/deep_research/agents/researcher.py src/deep_research/agents/source_evaluator.py src/deep_research/agents/report_writer.py src/deep_research/agents/report_reviewer.py src/deep_research/agents/__init__.py src/deep_research/graph src/deep_research/runtime/notes.py src/deep_research/utils/types.py src/deep_research/api/notes.py src/deep_research/api/models.py src/deep_research/api/sessions.py tests/test_agents/test_research_note_threads.py tests/test_graph/test_note_routing.py tests/test_api/test_notes.py
 ```
 
-Expected: pytest ends `B-py + 38 passed` with no `failed` or `error` (the planning export printed `4997 passed` with the `.env` test and one timing failure, below); then `['3934bea57f61', 'b9caf536e3f0', 'cc5a310b0aa0', '4a3d56fab932', 'a27544eee344']` (`evidence_verifier` unmoved); then `All checks passed!`.
+Expected: pytest ends `B-py + 38 passed` with no `failed` or `error` (the planning export printed `4997 passed` with the `.env` test and one timing failure, below). Then the five fingerprints: planner, researcher, source_evaluator and report_writer equal the values their last re-pins wrote (Task 5, Task 6, Task 4, Task 9), and evidence_verifier equals B-pin(evidence_verifier); `tests/test_evaluation/test_config.py` in the pytest run above checks the same. When the five B-pins were the `f4282818` values, they print `['3934bea57f61', 'b9caf536e3f0', 'cc5a310b0aa0', '4a3d56fab932', 'a27544eee344']`. Then `All checks passed!`.
 
 `tests/test_agents/test_researcher.py::test_two_reads_extractions_overlap_in_time` asserts a wall time under 0.2 s for two overlapping 0.1 s calls, and it predates this plan. On the planning export it failed once in a full run while other test suites loaded the machine, and passed five times out of five alone, as it did in an earlier full run of the same code. If it fails here, run it alone — `.venv\Scripts\python.exe -m pytest tests/test_agents/test_researcher.py::test_two_reads_extractions_overlap_in_time -q` — and it must print `1 passed`; any other failure is a defect: stop and report it.
 
@@ -5960,7 +6146,7 @@ Run:
 Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; Pop-Location
 ```
 
-Expected: Vitest ends `Tests  B-web + 7 passed` (on the planning export with Phase D's stand-in: `28 passed` files, `226 passed` tests); `typecheck` prints nothing; `check:css` prints `OK`.
+Expected: Vitest ends `Tests  B-web + 8 passed` (on the planning export with Phase D's stand-in: `28 passed` files, `227 passed` tests); `typecheck` prints nothing; `check:css` prints `OK`.
 
 - [ ] **Step 4: Playwright against the replay API**
 
@@ -5991,7 +6177,7 @@ Expected [INFERENCE, not run by planning]: every capture test passes (each also 
 
 - [ ] **Step 6: Record the result**
 
-Nothing to commit. Report: B-py and the Step 1 count; B-web and the Step 3 count; the Step 1 fingerprints; the Step 4 and Step 5 summaries; and the capture folder `web/visual/A-final/`.
+Nothing to commit. Report: B-py and the Step 1 count; B-web and the Step 3 count; the five B-pins and the Step 1 fingerprints; the Step 4 and Step 5 summaries; and the capture folder `web/visual/A-final/`.
 
 ---
 
@@ -6012,7 +6198,7 @@ Nothing to commit. Report: B-py and the Step 1 count; B-web and the Step 3 count
 | AC9 | `note_outcome` and `note_steering_outcome` follow §5.6 row by row; no terminal session (incl. `stopped`) reports `pending` in either field | 7 | `test_note_outcome_table`, `test_note_steering_outcome_table`, `test_terminal_sessions_never_pending` (5 statuses) |
 | AC10 | Both worst cases (ten steering notes: pass then redraft; ten mixed notes: pass then redraft), each note arriving in a different Writing step, complete under the unchanged recursion limit with `max_extra_passes` at its configured value | 8 | `test_recursion_limit_steering_notes_pass_then_redraft`, `test_recursion_limit_mixed_notes_during_writing` |
 | AC11 | No evidence-verifier request contains a note | 4 | `test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does` (existing), `test_steering_views_per_request` |
-| AC12 | Web: the research-note ack per §5.7, "now" only after the thread's started event; the thread in the Researching checklist; "not checked" for `not_checked`; a mixed note's caption shows both outcomes | 10 | `notes.test.ts` "a research note's acknowledgement and thread" (4 tests); `run-state.test.ts` "a reader note's kinds and its own thread"; `reader-notes.test.tsx` "captions a mixed note with both of its results"; `briefs.test.ts` (Planning's finished brief) |
+| AC12 | Web: the research-note ack per §5.7, "now" only after the thread's started event; the thread in the Researching checklist; "not checked" for `not_checked`; a mixed note's caption shows both outcomes | 10 | `notes.test.ts` "a research note's acknowledgement and thread" (5 tests, one of them "says 'now' while Researching runs the note's own topic, whichever step read the note", review P3-5); `run-state.test.ts` "a reader note's kinds and its own thread"; `reader-notes.test.tsx` "captions a mixed note with both of its results"; `briefs.test.ts` (Planning's finished brief) |
 | AC34 | A mixed note (new_angle + exclude): own topic (at planning or during research); every loop, extraction, evaluator, writer and review request prints it with `(exclude)`, the planner's with both kinds; its disposition kept, `ignored_with_evidence` buys its redraft after its pass when it arrived late; `note_outcome` follows its targets and `note_steering_outcome` its disposition; Reviewing's row and the bottom-line note line show both results | 4, 5, 6, 7, 8, 10 | `test_mixed_kind_note_steers_and_researches` (planning-time topic, requests, disposition), `test_steering_views_per_request`, `test_planner_appends_research_notes` (a mixed note read mid-plan), `test_research_notes_never_redraft` and `test_recursion_limit_mixed_notes_during_writing` (pass, then redraft), `test_note_steering_outcome_table` (both halves apart), the web caption tests. Reviewing's row is Phase B's (§6.7) and the bottom-line note line Phase C's (§7.2); both read `note_steering_outcome` and `NoteState.kinds`, which this plan supplies. |
 | AC35 | A failed note thread sets `stop` and no later note thread starts; unanswered, it owes one pass that reuses its topic, confines the researcher and marks it `passed`; answered, it reads `covered`; an unstarted planning-time topic is owed its pass the same way; an unfunded reused pass records `researcher_extra_pass_unfunded`, opens no loop, and the note stays `passed` and reads `not_found` | 6, 8 | `test_note_thread_provider_failure_sets_stop`, `test_a_planning_time_note_topic_waits_its_turn_and_stop_leaves_it_unstarted`, `test_failed_note_thread_owes_one_pass` |
 
@@ -6050,8 +6236,8 @@ Searched this document for "TBD", "TODO", "implement later", "fill in", "similar
 - `note_outcome(note_id, state, *, terminal) -> NoteOutcome`, `note_steering_outcome(note_id, state, *, terminal, note=None) -> NoteOutcome | None`, `NoteRecord`, `note_records(board, state, *, terminal) -> list[NoteRecord]` — Task 7; `test_failed_note_thread_owes_one_pass` (Task 8) calls `note_outcome(..., terminal=True)`.
 - `ReportWriterTask.note_pass_coverage_ids: list[str]`, `_note_pass_coverage_ids(state) -> list[str]` — Task 9.
 - `planning_completed_event(outcome, *, note_topics=())`, `PlannerAgent._note_topics_for(state, plan)` — Task 5; Task 8's §5.8 test calls `_note_topics_for`.
-- `NoteState.kinds: string[]`, `NoteState.threadStarted: boolean`, `RESEARCH_WHERE`, `RESEARCH_NOW`, `isResearchNote`, `noteCaption`, `ReaderNoteRecord.steering_outcome?` — Task 10.
-- The fingerprints each re-pin writes are the values the next re-pin of the same agent anchors on: `report_writer` `6e1aedc2888e` → `cafa5ba3d613` (Task 4) → `a27544eee344` (Task 9); `source_evaluator` → `cc5a310b0aa0` (4); `planner` → `3934bea57f61` (5); `researcher` → `b9caf536e3f0` (6); `evidence_verifier` stays `4a3d56fab932`.
+- `NoteState.kinds: string[]`, `NoteState.threadStarted: boolean`, `RESEARCH_WHERE`, `RESEARCH_NOW`, `isResearchNote`, `noteCaption`, `ackFor(note, notes, active = null)`, `visibleAcks(notes, active = null)`, `ReaderNoteRecord.steering_outcome?` — Task 10; `rowBrief` passes `run.active`.
+- The fingerprints, under the B-pin rule (Conventions): each re-pin anchors on the value its agent's pin holds when the task starts, and the next re-pin of the same agent anchors on what it wrote. In the unmoved case: `report_writer` `6e1aedc2888e` → `cafa5ba3d613` (Task 4) → `a27544eee344` (Task 9); `source_evaluator` `24809aa975a3` → `cc5a310b0aa0` (4); `planner` `d1ba46ce147f` → `3934bea57f61` (5); `researcher` `a8c9528f0c20` → `b9caf536e3f0` (6); `evidence_verifier` stays at its B-pin, `4a3d56fab932`.
 
 ## Execution handoff
 
