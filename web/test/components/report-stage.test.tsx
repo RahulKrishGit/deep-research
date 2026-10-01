@@ -38,7 +38,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       if (url.includes("/report")) {
         reportCalls++;
         if (reportCalls === 1) return json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
-        return md("# Q\n\nBody text.\n");
+        return md("# Q\n\n## Bottom line\n\nBody text.\n");
       }
       return json(409, { error: { code: "evidence_unavailable", message: "no evidence", reason: null, issues: [] } });
     });
@@ -61,7 +61,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
       const unreachable = json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
       if (url.includes("/report")) {
         reportCalls++;
-        return reportCalls === 1 ? unreachable : md("# Q\n\nBody text.\n");
+        return reportCalls === 1 ? unreachable : md("# Q\n\n## Bottom line\n\nBody text.\n");
       }
       evidenceCalls++;
       return evidenceCalls === 1 ? unreachable : json(200, { session_id: "s1", iteration: 0, findings: [], not_found: [], refused: [] });

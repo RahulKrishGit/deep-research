@@ -3,7 +3,7 @@
 // acknowledgement, the first lines of the loops a note buys, and the report's outcome words.
 // Pure — a function of RunState or of the status response only, so a burst and a replay from
 // event 1 paint the same (DESIGN.md §5.7).
-import type { ReaderNoteOutcome, ReaderNoteRecord } from "./api";
+import type { ReaderNoteOutcome } from "./api";
 import type { NodeId, NoteState } from "./run-state";
 
 /* D11a: a run takes at most ten notes. The page never says so: the line only disables. */
@@ -99,13 +99,6 @@ export const OUTCOME_TEXT: Readonly<Record<ReaderNoteOutcome, string>> = {
   not_checked: "not checked",
   replaced: "replaced by a later note",
 };
-
-/* notes-progress-report spec §5.7 (D20): a mixed note's caption reads both of its results, its own topic's
-   first; every other note's caption is its one outcome. */
-export function noteCaption(note: Pick<ReaderNoteRecord, "outcome" | "steering_outcome">): string {
-  const words = OUTCOME_TEXT[note.outcome];
-  return note.steering_outcome ? words + "; the rest of your note: " + OUTCOME_TEXT[note.steering_outcome] : words;
-}
 
 /* How many more notes the run takes: the last /status's count, lowered by every note the stream has
    seen since (a note is counted once it is received, whether or not it has been read yet). */

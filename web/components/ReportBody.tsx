@@ -1,21 +1,28 @@
 "use client";
-import Markdown, { type Components } from "react-markdown";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 // M9: `mdast` types only, never a runtime import — they arrive transitively through
 // react-markdown/remark-gfm's own `@types/mdast` dependency, so AC19's "no new dependency" holds
 // without declaring `@types/mdast` in package.json.
-import type { Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
-import type { ReaderNoteRecord } from "@/lib/api";
-import { noteCaption } from "@/lib/notes";
+import type { Emphasis, Paragraph, Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
+import type { ReportOutlineEntry } from "@/lib/api";
+import { reducedMotion } from "@/lib/handoff";
+import {
+  CURRENT_LINE_PX, contentsModeFor, currentCard, parseEvidenceLine, reportCards, revealChip, sourceIdsOf, splitReport,
+  type CardKind, type ContentsMode, type ReportCard,
+} from "@/lib/report";
 
 /* remarkCitationAnchors (spec §4.3 Report rendering): marks what the design adapts with
-   hProperties the components below read — the evidence line, the caption after a table, the
-   Sources list ids, the evidence-log link line — and turns every "[n]" whose source n exists into
-   a link to #src-n (prototype index.html:1378, :1398-1415: class "cite"). A bracketed number with
-   no matching source (minor 3, fix round 1) stays plain text. Hand-written recursion over
-   node.children: unist-util-visit is not a dependency.
-   sourceIds is the set of "src-n" ids the Sources list actually assigned, gathered before any
-   citation is linked (the Sources list is walked in the same pass, ahead of this recursion). */
+   hProperties the components below read — the caption after a table, the Sources list ids, the
+   evidence-log link line — and turns every "[n]" whose source n exists into a link to #src-n
+   (prototype index.html:1378, :1398-1415: class "cite"). A bracketed number with no matching
+   source (minor 3, fix round 1) stays plain text. Hand-written recursion over node.children:
+   unist-util-visit is not a dependency.
+   The report renders one card per "## " section (notes-progress-report spec §7.6), so
+   `sourceIds` — the "src-n" ids the Sources card's list will carry, read from the whole report
+   before any card renders (lib/report.ts sourceIdsOf) — lets a citation in any card link to its
+   source; a Sources list in this tree adds its own ids too. */
 const textOf = (node: RootContent | PhrasingContent): string =>
   node.type === "text" ? node.value : "children" in node ? (node.children as PhrasingContent[]).map(textOf).join("") : "";
 const setProps = (node: { data?: { hProperties?: Record<string, unknown> } }, props: Record<string, unknown>) => {
@@ -60,10 +67,11 @@ function markCitationOnlyCells(table: Parent): void {
     }
   }
 }
-export function remarkCitationAnchors() {
+export interface CitationOptions { sourceIds?: ReadonlySet<string> }
+export function remarkCitationAnchors(options: CitationOptions = {}) {
   return (tree: Root) => {
     let inSources = false;
-    const sourceIds = new Set<string>();
+    const sourceIds = new Set<string>(options.sourceIds ?? []);
     tree.children.forEach((node, i) => {
       if (node.type === "heading" && node.depth === 2) { inSources = textOf(node) === "Sources"; return; }
       if (node.type === "list" && inSources) {
@@ -75,8 +83,7 @@ export function remarkCitationAnchors() {
       }
       if (node.type === "paragraph") {
         const t = textOf(node);
-        if (/^Evidence as of |^No source could be checked\.$/.test(t)) setProps(node, { className: "avail", "data-role": "evidence-line" });
-        else if (t.startsWith("How this was researched:")) setProps(node, { className: "avail", "data-role": "evidence-log-link" });
+        if (t.startsWith("How this was researched:")) setProps(node, { className: "avail", "data-role": "evidence-log-link" });
         else if (node.children.length === 1 && node.children[0].type === "emphasis" && tree.children[i - 1]?.type === "table") setProps(node, { className: "tbl-foot" });
       }
     });
@@ -87,11 +94,96 @@ export function remarkCitationAnchors() {
   };
 }
 
-interface Props { markdown: string; evidenceLoaded: boolean; onOpenEvidence(): void; notes?: readonly ReaderNoteRecord[] }
+/* An inline wrapper that renders as <span class=…>: an mdast emphasis node renamed through
+   data.hName, so its children still pass through every later plugin (the citation anchors). */
+const span = (className: string, children: PhrasingContent[]): Emphasis =>
+  ({ type: "emphasis", data: { hName: "span", hProperties: { className: [className] } }, children });
 
-export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence, notes = [] }: Props) {
-  const components: Components = {
+/* remarkBottomLine (notes-progress-report spec §7.5 items 3-4, §7.6 Cards): in the Bottom line
+   card the answer paragraph becomes p.lead, an emphasis-only paragraph (the assembled line) a
+   muted p.b-sub, and the list ul.bl-list, each "- **{label}:** {✓ |✗ }{line}" item split into
+   span.k — the mark (span.ok ✓ or span.no ✗), then the label without its colon — and span.bl-line. */
+const MARK = /^\s*([✓✗])\s*/;
+function bottomLineItem(paragraph: Paragraph): void {
+  const [label, ...rest] = paragraph.children;
+  if (label?.type !== "strong") return;
+  const key: PhrasingContent[] = [];
+  const first = rest[0];
+  if (first?.type === "text") {
+    const mark = MARK.exec(first.value);
+    if (mark) key.push(span(mark[1] === "✓" ? "ok" : "no", [{ type: "text", value: mark[1] }]));
+    rest[0] = { type: "text", value: first.value.replace(mark ? MARK : /^\s+/, "") };
+  }
+  key.push({ type: "text", value: textOf(label).replace(/:\s*$/, "") });
+  paragraph.children = [span("k", key), span("bl-line", rest)];
+}
+export function remarkBottomLine() {
+  return (tree: Root) => {
+    let lead = false;
+    for (const node of tree.children) {
+      if (node.type === "paragraph") {
+        if (node.children.length === 1 && node.children[0].type === "emphasis") setProps(node, { className: "b-sub" });
+        else if (!lead) { setProps(node, { className: "lead" }); lead = true; }
+      } else if (node.type === "list" && !node.ordered) {
+        setProps(node, { className: "bl-list" });
+        for (const item of node.children) if (item.children[0]?.type === "paragraph") bottomLineItem(item.children[0]);
+      }
+    }
+  };
+}
+
+/* remarkKeyFigures (spec §7.4, §7.6 "Key figures on a phone", D32): in the What / Figure / Source
+   table every third cell gets class kf-source, and each What cell also carries a copy of its row's
+   Source cell as span.kf-src. At ≤ 480 px the CSS hides the column and shows the copy, so the
+   forecast issuer and release stay visible; above that the copy is hidden. Runs before the
+   citation anchors, so the copy's "[n]" links like the original's. */
+export function remarkKeyFigures() {
+  return (tree: Root) => {
+    for (const node of tree.children) {
+      if (node.type !== "table") continue;
+      const [head] = node.children;
+      if (!head || head.children.map((cell) => textOf(cell).trim()).join("|") !== "What|Figure|Source") continue;
+      for (const row of node.children) {
+        const [what, , source] = row.children;
+        if (!what || !source) continue;
+        setProps(source, { className: "kf-source" });
+        if (row !== head) what.children.push(span("kf-src", structuredClone(source.children)));
+      }
+    }
+  };
+}
+
+type Plugins = NonNullable<Options["remarkPlugins"]>;
+function pluginsFor(kind: CardKind, sourceIds: ReadonlySet<string>): Plugins {
+  const citations: Plugins[number] = [remarkCitationAnchors, { sourceIds }];
+  return kind === "bottom_line" ? [remarkGfm, remarkBottomLine, citations] : [remarkGfm, remarkKeyFigures, citations];
+}
+
+/* "Evidence as of {date} · {n} sources" (+ " · {answer}" per reader answer) as spans: at ≤ 480 px
+   .ev-pre and .ev-ans are hidden, leaving "{date} · {n} sources" (spec §7.6). Any other line
+   ("No source could be checked.") renders whole. */
+function EvidenceLine({ line }: { line: string }) {
+  const parts = parseEvidenceLine(line);
+  if (!parts) return <p className="cap" id="reportEvidence">{line}</p>;
+  return (
+    <p className="cap" id="reportEvidence">
+      <span className="ev-pre">Evidence as of </span>{parts.date}<span className="ev-count"> · {parts.count}</span>
+      {parts.answers.map((answer, i) => <span className="ev-ans" key={i}> · {answer}</span>)}
+    </p>
+  );
+}
+
+interface CardProps { card: ReportCard; sourceIds: ReadonlySet<string>; evidenceLoaded: boolean; onOpenEvidence(): void }
+/* One section card (spec §7.6 Cards): a topic card opens with its "Topic i of N" eyebrow above
+   its own h2; every other card prints its heading as h2.eyebrow. Each heading is the focus target
+   of a contents jump (tabIndex -1). Memoised, with stable Markdown components: a new component
+   function would remount the heading a jump has just focused whenever the current entry changes. */
+const SectionCard = memo(function SectionCard({ card, sourceIds, evidenceLoaded, onOpenEvidence }: CardProps) {
+  const headingId = `${card.id}-h`;
+  const plugins = useMemo(() => pluginsFor(card.kind, sourceIds), [card.kind, sourceIds]);
+  const components = useMemo((): Components => ({
     h1: () => null, // the question is the stage's own <h1>
+    h2: ({ children }) => <h2 id={headingId} tabIndex={-1} className={card.kind === "topic" ? undefined : "eyebrow"}>{children}</h2>,
     p: ({ node, children, ...rest }) => {
       const role = (node?.properties as Record<string, unknown> | undefined)?.["dataRole"] ?? (node?.properties as Record<string, unknown> | undefined)?.["data-role"];
       if (role === "evidence-log-link") {
@@ -114,24 +206,112 @@ export function ReportBody({ markdown, evidenceLoaded, onOpenEvidence, notes = [
       return <div className="tbl-frame" {...(firstHeader === "Option" ? { "data-pinned": "" } : {})}><table className="tbl">{children}</table></div>;
     },
     a: ({ href, className, children }) => (href?.startsWith("#src-") ? <a href={href} className={className}>{children}</a> : <a href={href} className="tlink" target="_blank" rel="noopener">{children}</a>),
-  };
+  }), [card.kind, headingId, evidenceLoaded, onOpenEvidence]);
   return (
-    <article className="card stack" style={{ gap: "var(--space-5)" }}>
-      {/* live-briefs spec §4.7: "Your notes", inside the report card and above the prose — not a card
-          of its own, and outside .prose — with each note's outcome as a caption. */}
-      {notes.length > 0 ? (
-        <section className="reader-notes" id="readerNotes" aria-labelledby="readerNotesH">
-          <h2 className="eyebrow" id="readerNotesH">Your notes</h2>
-          <ul className="rn-list">
-            {notes.map((note) => (
-              <li key={note.note_id} data-outcome={note.outcome}><span className="rn-text">{note.text}</span> <span className="cap">{noteCaption(note)}</span></li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+    <section className="card rsec" data-kind={card.kind} id={card.id} aria-labelledby={headingId}>
+      {card.kind === "topic" ? <p className="eyebrow rsec-eb">{card.eyebrow}</p> : null}
       <div className="prose">
-        <Markdown remarkPlugins={[remarkGfm, remarkCitationAnchors]} components={components}>{markdown}</Markdown>
+        <Markdown remarkPlugins={plugins} components={components}>{card.markdown}</Markdown>
       </div>
-    </article>
+    </section>
+  );
+});
+
+/* What releases a contents click's hold on the current entry: the jump's scroll ending, or the
+   reader scrolling on their own; PIN_MS covers a jump that never scrolls (already in place). */
+const USER_SCROLL = ["wheel", "touchstart", "keydown"] as const;
+const PIN_MS = 1500;
+
+interface Props { markdown: string; outline: readonly ReportOutlineEntry[] | null; evidenceLoaded: boolean; onOpenEvidence(): void }
+
+/* The report as section cards with a contents list (notes-progress-report spec §7.6, D16, D28):
+   the server's Markdown split at its "## " headings, paired with /status's report_outline. The
+   contents list is a sticky rail left of the cards when the report stage is at least
+   CONTENTS_RAIL_MIN wide, otherwise a sticky row of chips above them. */
+export function ReportBody({ markdown, outline, evidenceLoaded, onOpenEvidence }: Props) {
+  const { evidenceLine, chunks } = useMemo(() => splitReport(markdown), [markdown]);
+  const cards = useMemo(() => reportCards(chunks, outline), [chunks, outline]);
+  const sourceIds = useMemo(() => sourceIdsOf(chunks), [chunks]);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
+  const [contents, setContents] = useState<ContentsMode>("chips");
+  const [current, setCurrent] = useState<string | null>(cards[0]?.id ?? null);
+  const pinned = useRef(false);
+  const unpin = useRef<(() => void) | null>(null);
+
+  // D28: measured on the report stage (the viewport less the sidebar and gutters); the CSS rail
+  // rules sit under the matching @container query, so both read the same width.
+  useLayoutEffect(() => {
+    const stage = rootRef.current?.closest<HTMLElement>("#stage-report");
+    if (!stage) return;
+    const measure = () => setContents(contentsModeFor(stage.clientWidth));
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, []);
+
+  // The current entry follows the scroll, at most once a frame, unless a click has just chosen it.
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      if (pinned.current) return;
+      const tops = cards.map((card) => ({ id: card.id, top: document.getElementById(card.id)?.getBoundingClientRect().top ?? Number.POSITIVE_INFINITY }));
+      setCurrent(currentCard(tops, CURRENT_LINE_PX));
+    };
+    const onScroll = () => { if (frame === 0) frame = requestAnimationFrame(update); };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => { window.removeEventListener("scroll", onScroll); if (frame !== 0) cancelAnimationFrame(frame); };
+  }, [cards]);
+  useEffect(() => () => unpin.current?.(), []);
+
+  // In the chip row the current chip is scrolled into view.
+  useEffect(() => {
+    const nav = navRef.current;
+    const chip = current && nav ? nav.querySelector<HTMLElement>(`a[href="#${current}"]`) : null;
+    if (contents === "chips" && nav && chip) revealChip(nav, chip);
+  }, [contents, current]);
+
+  const jump = (event: MouseEvent<HTMLAnchorElement>, id: string) => {
+    event.preventDefault();
+    const card = document.getElementById(id);
+    if (!card) return;
+    unpin.current?.();
+    pinned.current = true;
+    const release = () => {
+      pinned.current = false;
+      clearTimeout(timer);
+      window.removeEventListener("scrollend", release);
+      for (const type of USER_SCROLL) window.removeEventListener(type, release);
+      unpin.current = null;
+    };
+    const timer = setTimeout(release, PIN_MS);
+    window.addEventListener("scrollend", release);
+    for (const type of USER_SCROLL) window.addEventListener(type, release, { passive: true });
+    unpin.current = release;
+    setCurrent(id);
+    card.scrollIntoView({ behavior: reducedMotion() ? "auto" : "smooth", block: "start" });
+    document.getElementById(`${id}-h`)?.focus({ preventScroll: true });
+  };
+
+  return (
+    <div className="report-col" ref={rootRef}>
+      {evidenceLine !== null ? <EvidenceLine line={evidenceLine} /> : null}
+      <div className="rep-layout" data-contents={contents}>
+        <nav className="rep-contents" aria-label="Report contents" ref={navRef}>
+          {contents === "rail" ? <span className="eyebrow rc-h">Contents</span> : null}
+          {cards.map((card) => (
+            <a key={card.id} href={`#${card.id}`} aria-current={current === card.id ? "true" : undefined} onClick={(event) => jump(event, card.id)}>
+              <span className="tn">{card.number ?? ""}</span><span className="rc-l">{card.label}</span>
+            </a>
+          ))}
+        </nav>
+        <div className="rep-cards">
+          {cards.map((card) => <SectionCard key={card.id} card={card} sourceIds={sourceIds} evidenceLoaded={evidenceLoaded} onOpenEvidence={onOpenEvidence} />)}
+        </div>
+      </div>
+    </div>
   );
 }

@@ -1204,7 +1204,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    viewport width (.report-head carries no max-width of its own) while #report-h stayed centred
    at 720px (:891-893) — three rows at three different widths.
    Human decision, "card hugs the text": the card is exactly the prose width plus the card's own
-   padding (--space-5 each side) and border (1px each side); the card and the 300px rail are
+   padding (--space-6 each side, notes-progress-report spec §7.6) and border (1px each side); the card and the 300px rail are
    centred together as one group; the head row, the question frame and the settings row all align
    to that group's left edge, right edge and axis.
    --report-card-w is scoped on #stage-report so .report-main and .report-head read the same one
@@ -1214,7 +1214,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    turns the leftover space above that width into centred margins instead of a dead strip on the
    right. Guarded to the existing rail breakpoint (1120px, verbatim :332-337) so the single-column
    phone layout is unchanged. */
-#stage-report{--report-card-w:calc(var(--reading-max) + 2 * var(--space-5) + 2px)}
+#stage-report{--report-card-w:calc(var(--reading-max) + 2 * var(--space-6) + 2px)}
 @media (min-width:1121px){
   .report-main{grid-template-columns:minmax(0,var(--report-card-w)) var(--rail);max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
   #stage-report .report-head{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
@@ -1401,13 +1401,6 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-wrap[data-arc="note_pass"] .loop-layer .loop-base,
 .spine-wrap[data-arc="note_pass"] .loop-layer .loop-flow{stroke:var(--meta)}
 .spine-wrap[data-arc="note_pass"] .loop-layer .loop-head{fill:var(--meta)}
-/* The report's "Your notes": inside the report card and above the prose, no box of its own — an
-   eyebrow, one line per note with its outcome as a caption, and a hairline below. */
-.reader-notes{display:flex;flex-direction:column;gap:var(--space-2);padding-bottom:var(--space-4);border-bottom:1px solid var(--border-soft);max-width:var(--reading-max)}
-.reader-notes h2{margin:0;font-weight:400}
-.reader-notes .rn-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1)}
-.reader-notes li{font-size:var(--text-sm);line-height:1.5;color:var(--fg);overflow-wrap:anywhere}
-.reader-notes li .cap{white-space:nowrap}
 
 /* ═══ 2026-09-30: Stop (notes-progress-report spec §8.4-§8.5; D18, D19, D29, D33; Stop.dc.html, progress.css:159-171) ═══ */
 /* The stopped stage (#stage-user-stopped): one short note on the card surface, then the pipeline frozen
@@ -1449,4 +1442,65 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   /* The popover fades in without rising: the reduced-motion block above redefines `enter` as a fade
      and zeroes every duration; this gives the popover its fade back, as the stages get theirs. */
   .stop-confirm{animation-duration:var(--motion-base) !important}
+}
+
+/* ═══ 2026-09-30: the report as section cards with a contents list (notes-progress-report spec §7.6;
+   docs/design canvas Report.dc.html B + C, progress.css:118-155) ═══
+   ReportBody splits the report at its "## " headings into one card per section. The contents list is
+   a sticky 176px rail left of the cards when the report stage is at least 1310px wide (176 + 32 + 770
+   + 32 + 300: the rail, a gap, a card, a gap, the Review rail), and a sticky row of chips above them
+   otherwise (D28). ReportBody sets data-contents from the same stage width the @container query below
+   reads. Never the class `.rail`: that is the Review rail's (layout.spec.ts measures it at 300px). */
+#stage-report{container:report / inline-size}
+.report-col,.rep-layout,.rep-cards{display:flex;flex-direction:column;gap:var(--space-4);min-width:0}
+.rep-cards > .rsec.card{display:flex;flex-direction:column;gap:var(--space-4);padding:var(--space-6);scroll-margin-top:calc(var(--topbar) + 56px + var(--space-4))}
+.rsec .prose > :first-child{margin-top:0}
+.rsec .prose > :last-child{margin-bottom:0}
+.rsec .rsec-eb{margin:0}
+/* Every card keeps an h2; a fixed section's is its eyebrow. The heading a contents jump focuses
+   (tabindex -1) shows no ring. */
+.rsec .prose h2.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);font-weight:400;line-height:1.5;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--space-4)}
+.rsec h2[tabindex="-1"]:focus{outline:none}
+/* The bottom line: the answer as a lead (the prototype's own .lead, :637, is muted and 62ch wide),
+   then one row per topic line and note line, the key column 132px, a note's mark ✓ ok or ✗ warn. */
+.rsec[data-kind="bottom_line"] .prose p.lead{font-size:var(--text-lg);line-height:1.6;color:var(--fg);max-width:none}
+.rsec[data-kind="bottom_line"] .prose p.b-sub{font-size:var(--text-sm);line-height:1.5;color:var(--muted)}
+.rsec[data-kind="bottom_line"] .prose ul.bl-list{list-style:none;margin:0;padding:0}
+.rsec[data-kind="bottom_line"] .bl-list li{display:grid;grid-template-columns:132px minmax(0,1fr);gap:var(--space-4);margin:0;padding:10px 0;border-top:1px solid var(--border-soft)}
+.rsec[data-kind="bottom_line"] .bl-list .k{font-size:var(--text-sm);line-height:1.6;color:var(--muted)}
+.rsec[data-kind="bottom_line"] .bl-list .k .ok{margin-right:4px;color:var(--status-ok)}
+.rsec[data-kind="bottom_line"] .bl-list .k .no{margin-right:4px;color:var(--status-warn)}
+/* Key figures: the copy of a row's Source under its What cell shows only on a phone (D32). */
+.rsec .tbl .kf-src{display:none;margin-top:2px;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
+/* The contents list as chips: one horizontally scrolling row, sticky under the topbar. */
+.rep-contents{display:flex;gap:6px;min-width:0}
+.rep-contents a{display:inline-flex;align-items:center;font-size:var(--text-sm);color:var(--muted);text-decoration:none}
+.rep-layout[data-contents="chips"] .rep-contents{position:sticky;top:var(--topbar);z-index:2;overflow-x:auto;scrollbar-width:none;padding:var(--space-3) 0;background:var(--bg);border-bottom:1px solid var(--border)}
+.rep-layout[data-contents="chips"] .rep-contents::-webkit-scrollbar{display:none}
+.rep-layout[data-contents="chips"] .rep-contents a{flex:none;min-height:32px;padding:0 var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);white-space:nowrap}
+.rep-layout[data-contents="chips"] .rep-contents a[aria-current="true"]{color:var(--fg);border-color:var(--muted);background:var(--border-soft)}
+.rep-layout[data-contents="chips"] .rep-contents .tn:empty{display:none}
+.rep-layout[data-contents="chips"] .rep-contents .tn::after{content:" · ";white-space:pre}
+/* The contents list as a rail, once the report stage holds the rail, a card and the Review rail side by
+   side. The report group, its head and the Evidence view widen together, so they stay aligned. */
+@container report (min-width:1310px){
+  .rep-layout[data-contents="rail"]{display:grid;grid-template-columns:176px minmax(0,1fr);gap:var(--space-8);align-items:start}
+  .rep-layout[data-contents="rail"] .rep-contents{position:sticky;top:calc(var(--topbar) + var(--space-4));flex-direction:column;gap:2px;padding-top:var(--space-1)}
+  .rep-layout[data-contents="rail"] .rep-contents .rc-h{padding:0 8px 6px}
+  .rep-layout[data-contents="rail"] .rep-contents a{gap:6px;padding:5px 8px;border-radius:var(--radius-sm);line-height:1.35}
+  .rep-layout[data-contents="rail"] .rep-contents a:hover,
+  .rep-layout[data-contents="rail"] .rep-contents a[aria-current="true"]{color:var(--fg);background:var(--border-soft)}
+  .rep-layout[data-contents="rail"] .rep-contents .tn{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--meta);min-width:14px}
+  .report-main{grid-template-columns:minmax(0,calc(176px + var(--space-8) + var(--report-card-w))) var(--rail);max-width:calc(176px + 2 * var(--space-8) + var(--report-card-w) + var(--rail))}
+  #stage-report .report-head,.evidence-view{max-width:calc(176px + 2 * var(--space-8) + var(--report-card-w) + var(--rail))}
+  #reportEvidence{padding-left:calc(176px + var(--space-8))}
+}
+/* A phone: tighter cards, the bottom line's rows stacked, the evidence line as "{date} · {n} sources"
+   (Report.dc.html:93), and the Key figures' Source shown under each What cell. */
+@media (max-width:480px){
+  .rep-cards > .rsec.card{padding:var(--space-4)}
+  .rsec[data-kind="bottom_line"] .bl-list li{grid-template-columns:minmax(0,1fr);gap:2px}
+  #reportEvidence .ev-pre,#reportEvidence .ev-ans{display:none}
+  .rsec .tbl .kf-source{display:none}
+  .rsec .tbl .kf-src{display:block}
 }

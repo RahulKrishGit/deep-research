@@ -1,7 +1,7 @@
 // @vitest-environment node — a plain data/logic test (see run-state.test.ts).
 import { describe, expect, it } from "vitest";
 import { rowBrief } from "../lib/briefs";
-import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, noteCaption, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
+import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
 import { COUNTER_ROWS, applyEvent, marksFor, newRunState, stepLabel, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
 
 const ev = (type: string, metadata: Record<string, unknown> = {}): RunEvent => ({ type, metadata });
@@ -248,12 +248,5 @@ describe("a research note's acknowledgement and thread (notes-progress-report sp
     expect(run.notes.map((n) => [n.kinds, n.threadStarted])).toEqual([[["new_angle", "exclude"], true], [["exclude"], false]]);
     expect(ackFor(run.notes[0], run.notes, run.active).rest).toBe(", researching it as its own topic now");
     expect(ackFor(run.notes[1], run.notes, run.active).rest).toBe(", from each topic's next search");
-  });
-
-  it("captions a mixed note with both of its results, and every other note with its one", () => {
-    expect(noteCaption({ outcome: "covered", steering_outcome: "not_addressed" })).toBe("covered; the rest of your note: not addressed in the report");
-    expect(noteCaption({ outcome: "not_checked", steering_outcome: "not_checked" })).toBe("not checked; the rest of your note: not checked");
-    expect(noteCaption({ outcome: "not_checked", steering_outcome: null })).toBe(OUTCOME_TEXT.not_checked);
-    expect(noteCaption({ outcome: "pending" })).toBe("not checked yet");
   });
 });
