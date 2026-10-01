@@ -20,6 +20,14 @@ from tests.test_api.replay_support import EXTRA_PASS_CASE, REVIEW_UNAVAILABLE_CA
 from tests.test_api.test_app import valid_preflight, wait_until_terminal
 
 
+PROGRESS_TYPES = frozenset({
+    "planner.progress",
+    "source_evaluator.progress",
+    "evidence_verifier.progress",
+    "report_writer.progress",
+})
+
+
 def replay_app(root: Path, *, delay: float = 0.0):
     runner = ReplayRunner(default_case=EXTRA_PASS_CASE, delay=delay, root=root)
     app = create_app(runner=runner, config_path=str(production_config_path()), mode="replay")
@@ -150,7 +158,10 @@ async def test_the_replay_runner_delivers_every_event_once_inside_its_own_node(t
 
     ids = [event.event_id for event in received]
     assert len(ids) == len(set(ids))
-    assert set(ids) == {event.event_id for event in outcome.state.events}
+    # notes-progress-report spec §4 item 1: the four progress types are live-only, so
+    # they are exactly the received events the state does not hold.
+    progress = {event.event_id for event in received if event.event_type in PROGRESS_TYPES}
+    assert set(ids) - progress == {event.event_id for event in outcome.state.events}
     open_node: str | None = None
     for event in received:
         if event.event_type == "graph.node.started":
