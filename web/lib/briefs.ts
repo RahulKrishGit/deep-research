@@ -10,7 +10,7 @@ import { earlierNotesText, visibleAcks, type Ack } from "./notes";
 import {
   STAGES, countPhrase, notAcceptedLine, plural, thingsToFix,
   type NodeId, type NoteState, type PaintedMark, type ReopenLine, type ReviewHalf, type ReviewNoteResult,
-  type RunState, type SlotState, type Topic, type TopicState, type VerifierSample, type WriterSample,
+  type RunState, type SlotState, type Topic, type TopicState, type VerifierSample, type WriterSample, type WritingState,
 } from "./run-state";
 
 /* "stopped" and "off" occur only on the stopped stage's frozen spine (notes-progress-report spec §8.5). */
@@ -151,6 +151,8 @@ export const VERIFY_PLACEHOLDER = "The first findings are being checked…";
 export const WRITING_PLACEHOLDER = "The first section is being drafted…";
 /* §6.6: once a section has returned, until the first sentence comes back checked. */
 export const WRITING_CHECKING_PLACEHOLDER = "The first sentences are being checked…";
+/* §6.6, E7: every drafted sentence is settled and none could be checked (each Statement Check failed). */
+export const WRITING_NONE_CHECKED_PLACEHOLDER = "None of the drafted sentences could be checked";
 /* §6.3: four skeleton slots before the plan's titles; the count is a placeholder, not a claim. */
 export const SKELETON_WIDTHS: readonly string[] = ["78%", "64%", "72%", "52%"];
 /* §6.7, D23, D35: the five criteria a review can mark not met, in DIMENSION_GUIDANCE order. */
@@ -323,12 +325,22 @@ export function writerVerdict(sample: WriterSample): string {
 const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
   key: (pass ?? "") + "w" + s.seq, text: s.text, quoted: false, verdict: writerVerdict(s), kept: s.verdict === "backed", where: s.section,
 });
+/* What the ticker waits on while it has no sample: the first section's draft until a part has returned;
+   then the first checked sentences, for as long as a drafted sentence is unsettled (neither checked nor
+   unchecked yet); once every one is settled and none was checked, that none could be (E7). */
+function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): string {
+  if (w.partsReturned === 0) return WRITING_PLACEHOLDER;
+  const unsettled = w.checked + w.unchecked < w.drafted;
+  const noneChecked = samples.length === 0 && w.checked === 0 && w.unchecked > 0;
+  return !unsettled && noneChecked ? WRITING_NONE_CHECKED_PLACEHOLDER : WRITING_CHECKING_PLACEHOLDER;
+}
 export function writingBody(run: RunState): Extract<BriefBody, { kind: "writing" }> {
   const w = run.writing;
   if (w === null) return { kind: "writing", placeholder: WRITING_PLACEHOLDER, samples: [], bar: 0, tally: null };
+  const samples = w.samples.map((s) => writerLine(s, run.startedAt.report_writer));
   return {
-    kind: "writing", placeholder: w.partsReturned > 0 ? WRITING_CHECKING_PLACEHOLDER : WRITING_PLACEHOLDER,
-    samples: w.samples.map((s) => writerLine(s, run.startedAt.report_writer)), bar: w.fraction,
+    kind: "writing", placeholder: writingPlaceholder(w, samples),
+    samples, bar: w.fraction,
     tally: w.drafted > 0
       ? { checked: w.checked, drafted: w.drafted, backed: w.backed, removed: w.removed, unchecked: w.unchecked, partsReturned: w.partsReturned, partsTotal: w.partsTotal }
       : null,

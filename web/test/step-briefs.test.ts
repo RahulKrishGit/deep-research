@@ -186,6 +186,35 @@ describe("Writing report (spec §6.6)", () => {
     const returned = play([ev("report_writer.progress", { phase: "sections", parts_returned: 2, sentences_drafted: 4, ...counts })]);
     expect(writingBody(returned).placeholder).toBe("The first sentences are being checked…");
   });
+  it("says 'None of the drafted sentences could be checked' once every check has failed, not 'being checked' (E7)", () => {
+    const failed = { phase: "sections", parts_total: 2, parts_returned: 2, sentences_drafted: 4, sentences_checked: 0, backed: 0, removed: 0, unchecked: 4, fraction: 1, sample: null };
+    const run = play([ev("report_writer.progress", failed)]);
+    expect(writingBody(run).placeholder).toBe("None of the drafted sentences could be checked");
+    expect(writingBody(run).samples).toEqual([]);
+    expect(writingTallyText(writingBody(run).tally!)).toBe("0 of 4 sentences checked · ✓ 0 backed · ✗ 0 removed · section 2 of 2 · 4 not checked");
+    // The bottom line's own checks failing too leaves it the same.
+    expect(writingBody(play([ev("report_writer.progress", { ...failed, phase: "bottom_line", sentences_drafted: 6, unchecked: 6 })])).placeholder)
+      .toBe("None of the drafted sentences could be checked");
+  });
+  it("keeps 'The first sentences are being checked…' while a drafted sentence is still unsettled, and 'being drafted' before a section returns", () => {
+    const counts = { phase: "sections", parts_total: 2, backed: 0, removed: 0, fraction: 0.2, sample: null };
+    // Four drafted, none settled; then some failed checks among them, but a sentence is still waiting.
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 1, sentences_drafted: 4, sentences_checked: 0, unchecked: 0 })])).placeholder)
+      .toBe("The first sentences are being checked…");
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 1, sentences_drafted: 4, sentences_checked: 0, unchecked: 3 })])).placeholder)
+      .toBe("The first sentences are being checked…");
+    // No part has returned yet: its drafting is the wait, whatever the counts say.
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 0, sentences_drafted: 0, sentences_checked: 0, unchecked: 0 })])).placeholder)
+      .toBe("The first section is being drafted…");
+  });
+  it("never says none could be checked once a sentence has been checked and shown", () => {
+    const run = play([ev("report_writer.progress", {
+      phase: "sections", parts_total: 2, parts_returned: 2, sentences_drafted: 4, sentences_checked: 3, backed: 3, removed: 0, unchecked: 1, fraction: 1,
+      sample: { text: "S.", verdict: "backed", findings: 1, section: "Where" },
+    })]);
+    expect(writingBody(run).samples).toHaveLength(1);
+    expect(writingBody(run).placeholder).not.toBe("None of the drafted sentences could be checked");
+  });
   it("shows no tally before a sentence is drafted, and no section clause with no section to rewrite", () => {
     const run = play([ev("report_writer.progress", { phase: "sections", parts_total: 0, parts_returned: 0, sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 0, sample: null })]);
     expect(writingBody(run).tally).toBeNull();
