@@ -170,12 +170,12 @@ surface — `You stopped this research at {HH:MM}, {N} minutes in.` (the reader'
 `less than a minute in`, `1 minute in`), `No report was written. The plan and what research
 found so far are kept below until the service restarts.` and **Ask again**, a ghost button that
 starts a new session with the same question and this tab's recorded settings, else the
-defaults. Below it the brief spine is frozen
-at the row the reader stopped. Finished rows keep their outcomes and still open. The stopped
-row has a quiet node — a `--muted` edge, its digit in `--fg`, the surface fill, no halo — the
-subtitle `Stopped · {its live facts}` (Researching's facts line; `Stopped` for a row with
-none), and it opens to its frozen brief, where a topic that was running reads `stopped` beside
-its ring. Every later row reads `not run` in `--meta`, or `not run again` for a row the loop had
+defaults. Below it the brief spine is frozen at the row the reader stopped. Finished rows keep
+their outcomes and still open. The stopped row has a quiet node — a `--muted` edge, its digit in
+`--fg`, the surface fill, no halo — the subtitle `Stopped · {its live facts}` (Researching's
+facts line; `Stopped` for a row with none), and it opens to its frozen brief, where a topic that
+was running reads `stopped` beside its ring, and one that had not started reads `not run`, with
+no ring. Every later row reads `not run` in `--meta`, or `not run again` for a row the loop had
 re-armed. There is no arc, no hand-off, no note line and no counters block. A stop during the
 one-time check shows no pipeline card (D33), and the note reads `You stopped this research at
 {HH:MM}, before it started.`
