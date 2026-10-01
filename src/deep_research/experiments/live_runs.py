@@ -8,13 +8,20 @@ metrics below) and a copy of the run's quality record into
 ``<out>/<question>-<arm>-<repetition>/``. A run that raises, cancellation
 included, leaves a timing-only ``run.json`` with status ``"failed"`` and the
 error instead. ``--capture`` also binds a stage capture there, for the X1
-stage replay.
+stage replay. The quality record is published under the configured
+``output.directory``, so ``run`` reads it there.
+
+``requality`` repairs a finished run whose quality record could not be read:
+it reads the record again and rewrites ``run.json`` and ``quality.json`` as
+``run`` would have. It makes no provider call.
 
 ``compare`` applies the latency plan's pre-registered criteria (Task 17) to a
 treatment arm against the baseline arm: accuracy first, then time.
 
     python -m deep_research.experiments.live_runs run --question tamil \\
         --arm baseline --repetition 1 --out output/latency-experiments/live --capture
+    python -m deep_research.experiments.live_runs requality \\
+        --run-dir output/latency-experiments/live/tamil-baseline-1
     python -m deep_research.experiments.live_runs compare \\
         --out output/latency-experiments/live --treatment x2 --stage researcher
     python -m deep_research.experiments.live_runs compare-suite \\
@@ -176,6 +183,7 @@ def _merged(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]
 
 
 Research = Callable[..., Awaitable[Any]]
+SettingsLoader = Callable[..., Any]
 
 
 def _write_crashed_run(
@@ -220,6 +228,44 @@ def _write_crashed_run(
         print(f"could not record the crashed run: {write_error}", file=sys.stderr)
 
 
+def _write_run(directory: Path, record: Mapping[str, Any]) -> None:
+    (directory / "run.json").write_text(
+        json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+
+
+def _quality_file(output_root: Path, quality_path: str) -> Path:
+    """Where a run's published ``quality_path`` is on disk.
+
+    The ``write_document`` tool reports the path relative to its root, the
+    configured ``output.directory``, so that is what a relative one resolves
+    against; an absolute one is used as is.
+    """
+    published = Path(quality_path)
+    return published if published.is_absolute() else output_root / published
+
+
+def _merge_quality(directory: Path, record: dict[str, Any], quality_file: Path) -> None:
+    """Merge a run's accuracy metrics into its record and rewrite ``run.json``.
+
+    The one place a run's quality record is read, so a run repaired by
+    ``requality`` is what a run that read it first time would have written. A
+    record that cannot be read leaves the reason in ``metrics["quality_error"]``
+    and the rest of the metrics as they were.
+    """
+    metrics = record["metrics"]
+    try:
+        quality = json.loads(quality_file.read_text(encoding="utf-8"))
+        (directory / "quality.json").write_text(
+            json.dumps(quality, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        metrics["output_tokens_per_s"] = output_speeds(quality)
+        metrics.update(quality_metrics(quality))
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        metrics["quality_error"] = f"{type(error).__name__}: {error}"
+    _write_run(directory, record)
+
+
 async def run_one(
     *,
     question_id: str,
@@ -229,6 +275,7 @@ async def run_one(
     out: Path,
     capture: bool,
     research: Research,
+    output_root: Path,
     config_path: str = "config.yaml",
 ) -> Path:
     """One paid run; returns its ``run.json``. Never reuses a run's directory."""
@@ -300,26 +347,15 @@ async def run_one(
         "metrics": metrics,
     }
 
-    def write() -> None:
-        result.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
-
     # The timing is written first: a quality record that cannot be read (a run
     # that took no quality snapshot publishes ``"quality": {}``) must not lose
     # what a paid run measured. Its accuracy metrics are then merged in, or the
     # reason they could not be is recorded, and ``compare`` treats a run
     # without them as no control and a failed treatment.
-    write()
+    _write_run(directory, record)
     if outcome.quality_path is not None:
-        try:
-            quality = json.loads(Path(outcome.quality_path).read_text(encoding="utf-8"))
-            (directory / "quality.json").write_text(
-                json.dumps(quality, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
-            metrics["output_tokens_per_s"] = output_speeds(quality)
-            metrics.update(quality_metrics(quality))
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            metrics["quality_error"] = f"{type(error).__name__}: {error}"
-        write()
+        quality_file = _quality_file(output_root, outcome.quality_path)
+        _merge_quality(directory, record, quality_file)
     return result
 
 
@@ -555,11 +591,49 @@ def suite_verdict(control: Mapping[str, Any], treatment: Mapping[str, Any]) -> d
     }
 
 
+def _output_root(
+    config_path: str,
+    overrides: Mapping[str, Any],
+    settings_loader: SettingsLoader | None,
+) -> Path:
+    """The ``output.directory`` a run's ``write_document`` tool is rooted at."""
+    if settings_loader is None:
+        from deep_research.main import load_settings
+
+        settings_loader = load_settings
+    settings = settings_loader(config_path, config_overrides=overrides)
+    return Path(settings.output.directory)
+
+
+def _requality(
+    run_dir: Path, *, config_path: str, settings_loader: SettingsLoader | None
+) -> int:
+    """Re-read the quality record of a finished run that lost its metrics.
+
+    ``run.json`` is re-read, its relative ``quality_path`` is resolved against
+    the configured output directory as ``run`` resolves it, and any stale
+    ``quality_error`` is dropped before the merge. No provider is called.
+    """
+    record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    if record["status"] != "completed":
+        print(f"REFUSE: {run_dir} has status {record['status']!r}, not 'completed'.")
+        return 1
+    if record["quality_path"] is None:
+        print(f"REFUSE: {run_dir} published no quality record.")
+        return 1
+    output_root = _output_root(config_path, record["overrides"], settings_loader)
+    record["metrics"].pop("quality_error", None)
+    _merge_quality(run_dir, record, _quality_file(output_root, record["quality_path"]))
+    print(run_dir / "run.json")
+    return 1 if "quality_error" in record["metrics"] else 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
     research: Research | None = None,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    settings_loader: SettingsLoader | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(prog="python -m deep_research.experiments.live_runs")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -579,6 +653,11 @@ def main(
     suite = commands.add_parser("compare-suite", help="the tier-3 gate on two results.json")
     suite.add_argument("--control", required=True)
     suite.add_argument("--treatment", required=True)
+    repair = commands.add_parser(
+        "requality", help="re-read the quality record of a finished run"
+    )
+    repair.add_argument("--run-dir", required=True)
+    repair.add_argument("--config", default="config.yaml")
     arguments = parser.parse_args(argv)
     if arguments.command == "compare-suite":
         verdict = suite_verdict(
@@ -596,9 +675,19 @@ def main(
         )
         print(json.dumps(result, indent=1))
         return 0 if result["passed"] else 1
+    if arguments.command == "requality":
+        return _requality(
+            Path(arguments.run_dir),
+            config_path=arguments.config,
+            settings_loader=settings_loader,
+        )
     if peak_ahead(now()):
         print("REFUSE: DeepSeek peak hours start within 50 minutes; nothing was run.")
         return 2
+    # Before the run's directory exists: a configuration that does not load
+    # must spend nothing and leave nothing behind.
+    overrides = json.loads(arguments.override)
+    output_root = _output_root(arguments.config, overrides, settings_loader)
     if research is None:
         from deep_research.main import run_research
 
@@ -608,10 +697,11 @@ def main(
             question_id=arguments.question,
             arm=arguments.arm,
             repetition=arguments.repetition,
-            overrides=json.loads(arguments.override),
+            overrides=overrides,
             out=Path(arguments.out),
             capture=arguments.capture,
             research=research,
+            output_root=output_root,
             config_path=arguments.config,
         )
     )

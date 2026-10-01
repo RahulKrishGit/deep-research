@@ -179,6 +179,7 @@ async def test_a_run_has_its_own_memory_its_overrides_and_its_records(tmp_path: 
         question_id="rome", arm="x3", repetition=1,
         overrides={"llm": {"model_overrides": {"planner": {"reasoning_effort": "high"}}}},
         out=tmp_path / "live", capture=True, research=research,
+        output_root=tmp_path / "output",
     )
 
     run_dir = tmp_path / "live" / "rome-x3-1"
@@ -201,7 +202,8 @@ async def test_a_run_has_its_own_memory_its_overrides_and_its_records(tmp_path: 
 
     with pytest.raises(FileExistsError):
         await run_one(question_id="rome", arm="x3", repetition=1, overrides={},
-                      out=tmp_path / "live", capture=False, research=research)
+                      out=tmp_path / "live", capture=False, research=research,
+                      output_root=tmp_path / "output")
 
 
 @pytest.mark.asyncio
@@ -225,7 +227,8 @@ async def test_a_quality_record_that_cannot_be_read_keeps_the_runs_timing(tmp_pa
         )
 
     path = await run_one(question_id="tamil", arm="x2", repetition=1, overrides={},
-                         out=tmp_path / "live", capture=False, research=research)
+                         out=tmp_path / "live", capture=False, research=research,
+                         output_root=tmp_path / "output")
 
     metrics = json.loads(path.read_text(encoding="utf-8"))["metrics"]
     assert metrics["seconds"] == 30.0
@@ -402,7 +405,8 @@ async def test_a_crashed_run_still_writes_run_json_so_compare_fails_closed(tmp_p
 
     with pytest.raises(RuntimeError, match="provider went away"):
         await run_one(question_id="latte", arm="x2", repetition=1, overrides={"a": 1},
-                      out=out, capture=False, research=research)
+                      out=out, capture=False, research=research,
+                      output_root=tmp_path / "output")
 
     crashed = json.loads((out / "latte-x2-1" / "run.json").read_text(encoding="utf-8"))
     assert crashed["status"] == "failed"
@@ -457,7 +461,8 @@ async def test_a_cancelled_run_still_writes_run_json_and_the_cancellation_propag
 
     with pytest.raises(asyncio.CancelledError):
         await run_one(question_id="rome", arm="x2", repetition=2, overrides={},
-                      out=out, capture=False, research=research)
+                      out=out, capture=False, research=research,
+                      output_root=tmp_path / "output")
 
     cancelled = json.loads((out / "rome-x2-2" / "run.json").read_text(encoding="utf-8"))
     assert cancelled["status"] == "failed"
@@ -578,3 +583,216 @@ def test_a_treatment_with_no_control_anywhere_fails_instead_of_raising() -> None
     with pytest.raises(ValueError, match="no question has both"):
         compare([{"question_id": "rome", "arm": "baseline", "metrics": _metrics()}],
                 treatment="x2", stage="researcher")
+
+
+QUALITY_FILE = "report-0-quality.json"
+PLANNER_OVERRIDES = {
+    "llm": {"model_overrides": {"planner": {"reasoning_effort": "high"}}}
+}
+
+
+def _published(quality_path: str | None) -> Any:
+    """A fake ``research`` whose session publishes ``quality_path`` as given."""
+    events = [
+        ResearchEvent(event_type="graph.node.started", source="graph.planner",
+                      message="m", timestamp="2026-10-01T12:00:00+00:00",
+                      metadata={"node": "planner"}),
+        ResearchEvent(event_type="graph.node.completed", source="graph.planner",
+                      message="m", timestamp="2026-10-01T12:01:00+00:00",
+                      metadata={"node": "planner"}),
+    ]
+
+    async def research(question: str, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            session_id="s-9", status="completed", report_path="report-0.md",
+            quality_path=quality_path, duration_seconds=60.0,
+            state=SimpleNamespace(events=events),
+        )
+
+    return research
+
+
+def _settings_loader(output_root: Path, calls: list[tuple[str, Any]]) -> Any:
+    """A ``load_settings`` stand-in: records its arguments, answers ``output_root``."""
+
+    def load(config_path: str, *, config_overrides: Any = None) -> Any:
+        calls.append((config_path, config_overrides))
+        return SimpleNamespace(output=SimpleNamespace(directory=str(output_root)))
+
+    return load
+
+
+def _publish_quality(output_root: Path) -> None:
+    """The quality record, where the ``write_document`` tool puts it."""
+    output_root.mkdir(exist_ok=True)
+    (output_root / QUALITY_FILE).write_text(json.dumps(_quality()), encoding="utf-8")
+
+
+def _recorded(run_json: Path) -> dict[str, Any]:
+    return json.loads(run_json.read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_a_quality_path_relative_to_the_output_directory_is_merged(
+    tmp_path: Path,
+) -> None:
+    """The ``write_document`` tool publishes ``quality_path`` relative to its root,
+    ``settings.output.directory``. Every real run lost its accuracy metrics to a
+    ``FileNotFoundError`` because the runner read it from the working directory."""
+    _publish_quality(tmp_path / "output")
+
+    path = await run_one(
+        question_id="rome", arm="baseline", repetition=1, overrides={},
+        out=tmp_path / "live", capture=False, research=_published(QUALITY_FILE),
+        output_root=tmp_path / "output",
+    )
+
+    recorded = _recorded(path)
+    assert recorded["quality_path"] == QUALITY_FILE
+    assert "quality_error" not in recorded["metrics"]
+    assert recorded["metrics"]["required_coverage"] == 0.75
+    assert recorded["metrics"]["output_tokens_per_s"] == {"researcher": 175.0}
+    assert _recorded(path.parent / "quality.json") == _quality()
+
+
+@pytest.mark.asyncio
+async def test_requality_repairs_a_finished_run_whose_quality_record_was_not_found(
+    tmp_path: Path,
+) -> None:
+    """A run that lost its metrics to the relative-path defect is repaired in place,
+    to exactly the ``run.json`` and ``quality.json`` a fixed run writes."""
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    research = _published(QUALITY_FILE)
+    # The run as the defect left it: its timing, and why it has no accuracy metrics.
+    broken = await run_one(
+        question_id="rome", arm="x3", repetition=1, overrides=PLANNER_OVERRIDES,
+        out=tmp_path / "broken", capture=False, research=research,
+        output_root=output_root,
+    )
+    assert _recorded(broken)["metrics"]["quality_error"].startswith("FileNotFoundError")
+    _publish_quality(output_root)
+    fixed = await run_one(
+        question_id="rome", arm="x3", repetition=1, overrides=PLANNER_OVERRIDES,
+        out=tmp_path / "fixed", capture=False, research=research,
+        output_root=output_root,
+    )
+    calls: list[tuple[str, Any]] = []
+
+    code = main(
+        ["requality", "--run-dir", str(broken.parent), "--config", "other.yaml"],
+        settings_loader=_settings_loader(output_root, calls),
+    )
+
+    assert code == 0
+    assert calls == [("other.yaml", PLANNER_OVERRIDES)]
+    repaired = _recorded(broken)
+    assert "quality_error" not in repaired["metrics"]
+    assert repaired["metrics"]["required_coverage"] == 0.75
+    assert broken.read_bytes() == fixed.read_bytes()
+    repaired_quality = (broken.parent / "quality.json").read_bytes()
+    assert repaired_quality == (fixed.parent / "quality.json").read_bytes()
+
+
+@pytest.mark.asyncio
+async def test_requality_fails_and_says_why_when_the_quality_record_is_still_missing(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    broken = await run_one(
+        question_id="rome", arm="x3", repetition=1, overrides={},
+        out=tmp_path / "live", capture=False, research=_published(QUALITY_FILE),
+        output_root=output_root,
+    )
+
+    code = main(
+        ["requality", "--run-dir", str(broken.parent)],
+        settings_loader=_settings_loader(output_root, []),
+    )
+
+    assert code == 1
+    metrics = _recorded(broken)["metrics"]
+    assert metrics["quality_error"].startswith("FileNotFoundError")
+    assert metrics["seconds"] == 60.0
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        ({"status": "failed"}, "failed"),
+        ({"quality_path": None}, "published no quality record"),
+    ],
+)
+def test_requality_refuses_a_run_that_did_not_complete_or_has_no_quality_record(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    changes: dict[str, Any],
+    reason: str,
+) -> None:
+    run_dir = tmp_path / "rome-baseline-1"
+    run_dir.mkdir()
+    record = {
+        "question_id": "rome", "arm": "baseline", "repetition": 1, "overrides": {},
+        "status": "completed", "quality_path": QUALITY_FILE,
+        "metrics": {"seconds": 60.0, "stage_seconds": {}},
+        **changes,
+    }
+    (run_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    before = (run_dir / "run.json").read_bytes()
+
+    def settings_loader(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a refused run must not load the configuration")
+
+    code = main(["requality", "--run-dir", str(run_dir)],
+                settings_loader=settings_loader)
+
+    assert code == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert reason in lines[0]
+    assert (run_dir / "run.json").read_bytes() == before
+    assert not (run_dir / "quality.json").exists()
+
+
+def test_the_run_command_reads_the_quality_record_from_the_configured_output_dir(
+    tmp_path: Path,
+) -> None:
+    _publish_quality(tmp_path / "output")
+    calls: list[tuple[str, Any]] = []
+
+    code = main(
+        ["run", "--question", "rome", "--arm", "x3", "--repetition", "1",
+         "--out", str(tmp_path / "live"), "--config", "other.yaml",
+         "--override", json.dumps(PLANNER_OVERRIDES)],
+        research=_published(QUALITY_FILE),
+        settings_loader=_settings_loader(tmp_path / "output", calls),
+        now=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert code == 0
+    assert calls == [("other.yaml", PLANNER_OVERRIDES)]
+    metrics = _recorded(tmp_path / "live" / "rome-x3-1" / "run.json")["metrics"]
+    assert "quality_error" not in metrics
+    assert metrics["required_coverage"] == 0.75
+
+
+def test_a_configuration_error_spends_nothing_and_leaves_no_run_directory(
+    tmp_path: Path,
+) -> None:
+    async def research(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no run may start when the configuration does not load")
+
+    def settings_loader(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("config_invalid")
+
+    with pytest.raises(RuntimeError, match="config_invalid"):
+        main(
+            ["run", "--question", "rome", "--arm", "baseline", "--repetition", "1",
+             "--out", str(tmp_path / "live")],
+            research=research,
+            settings_loader=settings_loader,
+            now=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert not (tmp_path / "live").exists()
