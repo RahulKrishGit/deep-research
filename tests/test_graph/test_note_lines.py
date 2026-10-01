@@ -8,6 +8,8 @@ note says how the report treated it; a mixed note shows both halves. Marks are
 
 from __future__ import annotations
 
+import pytest
+
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import render_written_report
 from deep_research.agents.report_reviewer import composition_semantic_fingerprint
@@ -64,12 +66,16 @@ MIXED = fake_reader_note("n6", kinds=["new_angle", "exclude"],
 
 
 def _state(*notes, answered=("note-n1-target-01",), verdicts=None, note_line=True,
-           not_found=()) -> ResearchState:
+           not_found=(), topic_notes=None) -> ResearchState:
+    """``topic_notes``: the notes that own a ``note-{id}`` topic (default: the research
+    notes). A steering note owns one when the run bought it a note pass (a ``no_evidence``
+    verdict), so its topic can keep a bottom-line line too."""
     f = [_finding(n) for n in range(1, 4)]
     answer = _point("S001", "Agency One reports the answer.", f[0])
     line_one = _point("S002", "Agency One reports part one.", f[0])
     note_one = _point("S003", "Agency Three reports pastries.", f[2])
-    note_topic = next((n for n in notes if "new_angle" in n.kinds), None)
+    owners = {n.note_id for n in notes if "new_angle" in n.kinds} if topic_notes is None else set(topic_notes)
+    note_topic = next((n for n in notes if n.note_id in owners), None)
     sub_topics = [_topic("topic-01", "Part one")]
     if note_topic is not None:
         sub_topics.append(_topic(f"note-{note_topic.note_id}", f"Your note: {note_topic.restatement}"))
@@ -117,6 +123,57 @@ def test_note_lines_stamped_at_publication() -> None:
         "- **Your note · open now:** ✓ Followed: leave out cafés that might be closed\n"
         "- **Your note · fire safety:** Not checked: more weight on fire-safety standards\n"
         "- **Your note · San Jose:** Not checked: only San Jose"
+    )
+
+
+_ROW_CASES = [
+    # (id, note, state fields, whether the note's `note-{id}` topic kept a bottom-line line)
+    ("research-with-line", PASTRIES, {}, True),
+    ("research-without-line", PASTRIES,
+     {"answered": (), "note_line": False, "not_found": ("note-n1-target-01",)}, False),
+    ("steering-with-line", CLOSED, {"verdicts": {"n2": "no_evidence"}, "topic_notes": ("n2",)}, True),
+    ("steering-honoured-with-line", CLOSED, {"verdicts": {"n2": "honoured"}, "topic_notes": ("n2",)}, True),
+    ("steering-without-line", CLOSED, {"verdicts": {"n2": "no_evidence"}}, False),
+    ("mixed-with-line", MIXED,
+     {"verdicts": {"n6": "ignored_with_evidence"}, "answered": ("note-n6-target-01",)}, True),
+    ("mixed-without-line", MIXED, {"verdicts": {"n6": "honoured"}, "answered": (), "note_line": False}, False),
+]
+
+
+@pytest.mark.parametrize(("note", "fields", "kept"), [case[1:] for case in _ROW_CASES],
+                         ids=[case[0] for case in _ROW_CASES])
+def test_every_active_note_prints_exactly_one_bottom_line_row(note, fields, kept) -> None:
+    """Final review P2-2 (spec §7.2 "one line per note"): whatever the note's kind, and whether
+    or not its `note-{id}` topic kept a line, the published bottom line holds one row under
+    the note's label, and the topic line's sentence is printed once, inside that row."""
+    state = _state(note, **fields)
+
+    reader, _, _, finalized = _terminal_artifacts(state, "accepted")
+
+    rows = [row for row in _bottom_line(reader).splitlines() if row.startswith("- **")]
+    label = f"- **Your note \u00b7 {note.short}:**"
+    assert len([row for row in rows if row.startswith(label)]) == 1, rows
+    assert len(rows) == 2, rows  # "Part one", and the note
+    assert _bottom_line(reader).count("Agency Three reports pastries") == (1 if kept else 0)
+    [stamped] = finalized.reader_note_lines
+    assert (stamped.statement_id is not None) is kept
+
+
+def test_a_steering_note_that_bought_a_note_pass_prints_its_topic_line_in_its_own_row() -> None:
+    """Final review P2-2: the steering note's row is its kept topic line, then its code text,
+    under one label -- not a topic row and a second row with the same label."""
+    state = _state(CLOSED, verdicts={"n2": "no_evidence"}, topic_notes=("n2",))
+
+    [line] = report_note_lines(state, state.composition)
+
+    assert (line.outcome, line.statement_id) == ("not_found", "S003")
+    assert line.text == "No source we could check covers this: leave out cafés that might be closed"
+    reader, _, _, _ = _terminal_artifacts(state, "accepted")
+    assert _bottom_line(reader) == (
+        "Agency One reports the answer [1].\n\n"
+        "- **Part one:** Agency One reports part one [1].\n"
+        "- **Your note \u00b7 open now:** \u2717 Agency Three reports pastries [2]. "
+        "No source we could check covers this: leave out cafés that might be closed"
     )
 
 

@@ -155,10 +155,13 @@ STEERING_HALF_TEXT: dict[str, str] = {
 def report_note_lines(state: ResearchState, composition: ReportComposition) -> list[ReportNoteLine]:
     """Notes-progress-report spec §7.2: one line per active reader note, in
     receipt order, with its terminal outcome (and a mixed note's steering
-    half's). A research note whose topic kept a bottom-line line points at it;
-    one without names its outcome in words; a steering note's line is its
-    outcome and its restatement; a mixed note adds one sentence for its
-    steering half. A replaced note has no line."""
+    half's). Whatever the note's kind, a note whose ``note-{id}`` topic kept a
+    bottom-line line points at it, so that line prints once, inside the note's
+    row, and the note has one row. A research note without a kept line names
+    its outcome in words; a steering note's line is its outcome and its
+    restatement, after its kept topic line when it has one (a steering note the
+    run bought a note pass for owns a topic); a mixed note adds one sentence
+    for its steering half. A replaced note has no line."""
     kept = (
         {line.coverage_id: line.statement_id for line in composition.bottom_line.topic_lines}
         if composition.bottom_line is not None else {}
@@ -167,14 +170,13 @@ def report_note_lines(state: ResearchState, composition: ReportComposition) -> l
     for note in active_reader_notes(state.reader_notes):
         outcome = note_outcome(note.note_id, state, terminal=True)
         steering = note_steering_outcome(note.note_id, state, terminal=True)
+        statement_id = kept.get(f"{NOTE_COVERAGE_PREFIX}{note.note_id}")
         if is_research_note(note):
-            statement_id = kept.get(f"{NOTE_COVERAGE_PREFIX}{note.note_id}")
             parts = [] if statement_id else [RESEARCH_NOTE_TEXT.get(outcome, RESEARCH_NOTE_TEXT["not_checked"])]
             if steering is not None:
                 parts.append(STEERING_HALF_TEXT[steering])
             text = " ".join(parts)
         else:
-            statement_id = None
             text = STEERING_NOTE_TEXT[outcome].format(restatement=note.restatement)
         lines.append(ReportNoteLine(
             note_id=note.note_id, label=note_label(note), outcome=outcome,
