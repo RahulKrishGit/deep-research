@@ -272,15 +272,17 @@ export function verifierVerdict(sample: VerifierSample): string {
 export function sourceWords(sample: VerifierSample): string | null {
   return (sample.role ? SOURCE_WORDS[sample.role] : undefined) ?? sample.host;
 }
-const verifierLine = (s: VerifierSample): TickerLine => ({
-  key: "v" + s.seq, text: s.text, quoted: s.verdict === "quoted", verdict: verifierVerdict(s), kept: s.verdict !== "dropped", where: sourceWords(s),
+/* A sample's key carries the start of the pass that made it: a step that starts again counts its samples
+   from 1 again, and the ticker must tell the new pass's first sample from the last one's. */
+const verifierLine = (s: VerifierSample, pass: string | undefined): TickerLine => ({
+  key: (pass ?? "") + "v" + s.seq, text: s.text, quoted: s.verdict === "quoted", verdict: verifierVerdict(s), kept: s.verdict !== "dropped", where: sourceWords(s),
 });
 export function verifyingBody(run: RunState): Extract<BriefBody, { kind: "verifying" }> {
   const v = run.verifying;
   if (v === null) return { kind: "verifying", empty: null, samples: [], bar: 0, tally: null };
   if (v.total === 0) return { kind: "verifying", empty: "No findings to check", samples: [], bar: 0, tally: null };
   return {
-    kind: "verifying", empty: null, samples: v.samples.map(verifierLine), bar: Math.min(1, v.checked / v.total),
+    kind: "verifying", empty: null, samples: v.samples.map((s) => verifierLine(s, run.startedAt.evidence_verifier)), bar: Math.min(1, v.checked / v.total),
     tally: { checked: v.checked, total: v.total, verified: v.verified, corrected: v.corrected, dropped: v.dropped },
   };
 }
@@ -292,15 +294,15 @@ export function verifyTallyText(t: VerifyTally): string {
 export function writerVerdict(sample: WriterSample): string {
   return sample.verdict === "backed" ? "✓ backed by " + plural(sample.findings, "finding", "findings") : "✗ removed — no verified finding says this";
 }
-const writerLine = (s: WriterSample): TickerLine => ({
-  key: "w" + s.seq, text: s.text, quoted: false, verdict: writerVerdict(s), kept: s.verdict === "backed", where: s.section,
+const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
+  key: (pass ?? "") + "w" + s.seq, text: s.text, quoted: false, verdict: writerVerdict(s), kept: s.verdict === "backed", where: s.section,
 });
 export function writingBody(run: RunState): Extract<BriefBody, { kind: "writing" }> {
   const w = run.writing;
   if (w === null) return { kind: "writing", placeholder: WRITING_PLACEHOLDER, samples: [], bar: 0, tally: null };
   return {
     kind: "writing", placeholder: w.partsReturned > 0 ? WRITING_CHECKING_PLACEHOLDER : WRITING_PLACEHOLDER,
-    samples: w.samples.map(writerLine), bar: w.fraction,
+    samples: w.samples.map((s) => writerLine(s, run.startedAt.report_writer)), bar: w.fraction,
     tally: w.drafted > 0
       ? { checked: w.checked, drafted: w.drafted, backed: w.backed, removed: w.removed, unchecked: w.unchecked, partsReturned: w.partsReturned, partsTotal: w.partsTotal }
       : null,

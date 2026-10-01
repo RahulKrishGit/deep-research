@@ -10,12 +10,20 @@ export interface Ticked<T> { current: T | null; previous: T | null }
 
 /* The sample to show now and the one it replaced (which fades out under it). The first sample
    shows at once; each later one shows TICKER_HOLD_MS after the one before it, or at once when that
-   long has already passed. */
+   long has already passed. When `latest` goes back to null (the step started again, so its samples
+   did), the ticker clears too, and the next sample is a first one again. */
 export function useTicker<T extends { key: string }>(latest: T | null): Ticked<T> {
   const [shown, setShown] = useState<Ticked<T>>({ current: latest, previous: null });
   const since = useRef<number>(Date.now());
   useEffect(() => {
-    if (latest === null || latest.key === shown.current?.key) return;
+    if (latest === null) {
+      if (shown.current !== null || shown.previous !== null) {
+        since.current = Date.now();
+        setShown({ current: null, previous: null });
+      }
+      return;
+    }
+    if (latest.key === shown.current?.key) return;
     const show = () => {
       since.current = Date.now();
       setShown((s) => ({ current: latest, previous: s.current }));

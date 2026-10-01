@@ -89,4 +89,42 @@ describe("StepBodies (notes-progress-report spec §6.3-§6.7)", () => {
     expect(container.querySelector(".rv-notes-h")!.textContent).toBe("Your notes");
     expect(container.querySelector("[aria-label='Your notes'] > .ln")!.getAttribute("style")).toBe("--i: 8; --r: 5;");
   });
+  it("Verifying and Writing tickers go back to their placeholder when a re-armed step starts again, and show the new pass's first sample at once", () => {
+    const tally = { checked: 4, total: 10, verified: 4, corrected: 0, dropped: 0 };
+    const verifying = (samples: TickerLine[]) => <VerifyingLines first={0} body={{ kind: "verifying", empty: null, samples, bar: 0.4, tally }} />;
+    const { container, rerender } = render(verifying([tick({ key: "T1v1", text: "First pass" })]));
+    expect(container.querySelector(".tickbox [data-on='1'] .qt")!.textContent).toBe("First pass");
+    rerender(verifying([]));
+    expect(container.querySelector(".tickbox .b-sub")!.getAttribute("data-on")).toBe("1");
+    expect(container.querySelector(".tickbox .qt")).toBeNull();
+    rerender(verifying([tick({ key: "T2v1", text: "Second pass" })]));
+    expect(container.querySelector(".tickbox .b-sub")!.getAttribute("data-on")).toBe("0");
+    expect(container.querySelector(".tickbox [data-on='1'] .qt")!.textContent).toBe("Second pass");
+    const wtally = { checked: 1, drafted: 2, backed: 1, removed: 0, unchecked: 0, partsReturned: 1, partsTotal: 2 };
+    const placeholder = "The first section is being drafted…";
+    const writing = (samples: TickerLine[]) => <WritingLines first={0} body={{ kind: "writing", placeholder, samples, bar: 0.2, tally: wtally }} />;
+    const w = render(writing([tick({ key: "T1w1", text: "Drafted once", verdict: "✓ backed by 1 finding" })]));
+    w.rerender(writing([]));
+    expect(w.container.querySelector(".tickbox .b-sub")!.getAttribute("data-on")).toBe("1");
+    w.rerender(writing([tick({ key: "T2w1", text: "Drafted again", verdict: "✓ backed by 1 finding" })]));
+    expect(w.container.querySelector(".tickbox [data-on='1'] .qt")!.textContent).toBe("Drafted again");
+  });
+  it("a met criterion and a passed slot say so to a screen reader, without changing the row's visible text", () => {
+    const slots = render(<PlanningSlots first={0} slots={[
+      slot({ key: "slot-1", n: 1, title: "Alpha", mark: "done" }),
+      slot({ key: "slot-2", n: 2, title: "Beta", mark: "done", fact: "fixed" }),
+      slot({ key: "slot-3", n: 3, title: "Gamma", mark: "fail", fact: "still flagged" }),
+    ]} />);
+    const rows = [...slots.container.querySelectorAll(".ps-slots > .ln")];
+    expect(rows.map((r) => r.querySelector(".sr")?.textContent ?? null)).toEqual([" passed", null, null]);
+    expect(rows.map((r) => r.querySelector(".tt")!.textContent)).toEqual(["1Alpha", "2Beta", "3Gamma"]);
+    const criteria = [check({ key: "a", mark: "done", landed: true }), check({ key: "b", mark: "fail", fact: "a claim rests on a weak source", landed: true }), check({ key: "c", mark: "waiting", fact: "not checked", landed: true })];
+    const review = render(<ReviewingLines first={0} body={{
+      kind: "reviewing", status: { texts: ["Reading", "Done", ""], on: 1 }, waiting: false, criteria,
+      notes: [check({ key: "n1", text: "More on safety", mark: "done", fact: "honoured", landed: true })],
+    }} />);
+    const checks = [...review.container.querySelectorAll(".rv-list .ln")];
+    expect(checks.map((r) => r.querySelector(".sr")?.textContent ?? null)).toEqual([" met", null, null, null]);
+    expect(checks.map((r) => r.querySelector(".tt")!.textContent)).toEqual(["Covers your whole question", "Covers your whole question", "Covers your whole question", "More on safety"]);
+  });
 });

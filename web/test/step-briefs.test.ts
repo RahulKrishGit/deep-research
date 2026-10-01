@@ -137,6 +137,22 @@ describe("Verifying evidence (spec §6.5)", () => {
     expect(verifyTallyText(v.tally!)).toBe("4 of 10 checked · 2 verified · 1 corrected · 1 dropped");
     expect(liveSubtitle(run, "evidence_verifier", NOW)).toBe("4 of 10 checked");
   });
+  it("keys a sample by the pass that made it: sequence numbers restart when the step starts again", () => {
+    const sample = { text: "A", verdict: "verified", correction: null, drop_reason: null, source: { role: null, host: "x.org" } };
+    const tally = { total: 4, checked: 1, verified: 1, corrected: 0, quoted: 0, dropped: 0, batches: 1, batches_done: 1, sample };
+    const run = play([ev("graph.node.started", { node: "evidence_verifier", iteration: 0 }, at(0)), ev("evidence_verifier.progress", tally)]);
+    const first = verifyingBody(run).samples[0].key;
+    applyEvent(run, ev("graph.node.started", { node: "evidence_verifier", iteration: 1 }, at(300)));
+    expect(verifyingBody(run).samples).toEqual([]);
+    applyEvent(run, ev("evidence_verifier.progress", tally));
+    expect(verifyingBody(run).samples[0].key).not.toBe(first);
+    const written = { phase: "sections", parts_total: 1, parts_returned: 1, sentences_drafted: 1, sentences_checked: 1, backed: 1, removed: 0, unchecked: 0, fraction: 0.5, sample: { text: "S.", verdict: "backed", findings: 1, section: "Where" } };
+    const writer = play([ev("graph.node.started", { node: "report_writer", iteration: 0 }, at(0)), ev("report_writer.progress", written)]);
+    const wfirst = writingBody(writer).samples[0].key;
+    applyEvent(writer, ev("graph.node.started", { node: "report_writer", iteration: 1 }, at(300)));
+    applyEvent(writer, ev("report_writer.progress", written));
+    expect(writingBody(writer).samples[0].key).not.toBe(wfirst);
+  });
   it("waits on its placeholder before the first event, and says 'No findings to check' with none", () => {
     expect(verifyingBody(newRunState())).toEqual({ kind: "verifying", empty: null, samples: [], bar: 0, tally: null });
     expect(liveSubtitle(newRunState(), "evidence_verifier", NOW)).toBe("starting · not yet checked");

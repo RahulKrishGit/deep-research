@@ -42,4 +42,22 @@ describe("useTicker (notes-progress-report spec §6.5: at most one sample per 1,
     rerender({ latest: s("b") });
     expect(result.current).toEqual({ current: s("b"), previous: s("a") });
   });
+  it("clears when the latest sample goes away (a re-armed step), and shows the next one at once", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = mount(s("a"));
+    rerender({ latest: null });
+    expect(result.current).toEqual({ current: null, previous: null });
+    rerender({ latest: s("b") });
+    expect(result.current).toEqual({ current: s("b"), previous: null });
+  });
+  it("shows a key it showed before the clear again: the new pass restarts its numbering", () => {
+    vi.useFakeTimers();
+    const { result, rerender } = mount(s("v1"));
+    act(() => { vi.advanceTimersByTime(TICKER_HOLD_MS); });
+    rerender({ latest: s("v2") });
+    expect(result.current).toEqual({ current: s("v2"), previous: s("v1") });
+    rerender({ latest: null });
+    rerender({ latest: s("v1") });
+    expect(result.current).toEqual({ current: s("v1"), previous: null });
+  });
 });

@@ -47,6 +47,7 @@ export function PlanningSlots({ slots, first }: { slots: SlotLine[]; first: numb
             <span data-on={slot.title === null ? "0" : "1"}>{slot.title === null ? null : <><span className="tn">{slot.n}</span>{slot.title}</>}</span>
           </span>
           <span className="tf">{slot.fact}</span>
+          {slot.mark === "done" && slot.fact === "" ? <span className="sr"> passed</span> : null}
         </div>
       ))}
     </div>
@@ -127,7 +128,8 @@ export function WritingLines({ body, first }: { body: Extract<BriefBody, { kind:
 }
 
 /* §6.7: one criterion or note — its mark, its text, and its fact cross-fading from "reading". `r` is
-   its place in the reveal, 60 ms apart once the review lands. */
+   its place in the reveal, 60 ms apart once the review lands. A met criterion has no fact and its ✓ is
+   aria-hidden, so it says "met" to a screen reader (a note always has a fact). */
 function CheckRow({ line, i, r }: { line: CheckLine; i: number; r: number }) {
   return (
     <div className="ln" role="listitem" data-topic={line.mark} style={lineStyle(i, r)}>
@@ -137,6 +139,7 @@ function CheckRow({ line, i, r }: { line: CheckLine; i: number; r: number }) {
         <span data-on={line.landed ? "0" : "1"} aria-hidden={line.landed ? "true" : undefined}>{line.before}</span>
         <span data-on={line.landed ? "1" : "0"} aria-hidden={line.landed ? undefined : "true"}>{line.fact}</span>
       </span>
+      {line.mark === "done" && line.fact === "" ? <span className="sr"> met</span> : null}
     </div>
   );
 }
