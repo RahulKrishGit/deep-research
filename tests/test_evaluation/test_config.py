@@ -1290,7 +1290,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Check batch asks its two halves together, joining their error records in
     # half order. Module code only; every request is the one the
     # one-after-another re-ask sent. Moved `5c0f7e93e925` -> `34e275cf57f9`.
-    "evidence_verifier": "34e275cf57f9",
+    # Latency plan Task 16 (stage replay, X1): check_statements hands its
+    # question and items to capture_statement_check, which writes nothing
+    # unless an experiment bound a capture. Module code only; no request
+    # changed and agents.prompts was untouched. Moved `34e275cf57f9` -> `31bcab803a6a`.
+    "evidence_verifier": "31bcab803a6a",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;

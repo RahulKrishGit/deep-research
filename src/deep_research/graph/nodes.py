@@ -99,7 +99,7 @@ from deep_research.graph.state import (
     notes_due_a_pass,
     notes_due_a_redraft,
 )
-from deep_research.observability import RunTelemetryCollector
+from deep_research.observability import RunTelemetryCollector, capture_node_input
 from deep_research.providers import ProviderConfigurationError, ProviderError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
@@ -241,6 +241,9 @@ def agent_node(
         # Published live (live-briefs spec E3): the object merged here is the one
         # this node's snapshot carries, so the orchestrator delivers it once.
         publish_live(started_event)
+        # Latency plan Task 16: an experiment's stage replay reads the state this
+        # agent starts from; nothing is written unless one bound a capture.
+        capture_node_input(name, started)
         try:
             outcome = await agent.run(started)
         except RequestAttemptLimitError as error:

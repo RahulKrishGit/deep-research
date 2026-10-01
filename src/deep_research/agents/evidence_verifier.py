@@ -77,7 +77,7 @@ from deep_research.agents.verified_facts import (
     same_subject,
 )
 from deep_research.agents.wording import stated_role, title_segments
-from deep_research.observability import call_label
+from deep_research.observability import call_label, capture_statement_check
 from deep_research.providers import (
     ChatMessage,
     ProviderConfigurationError,
@@ -1542,6 +1542,10 @@ async def check_statements(
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    # Latency plan Task 16: the stage replay re-asks exactly these items at
+    # another batch size; nothing is written unless an experiment bound a
+    # capture.
+    capture_statement_check(question, items)
     errors: list[ResearchError] = []
     batches = [
         items[i : i + batch_size]
