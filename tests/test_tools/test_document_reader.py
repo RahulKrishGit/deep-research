@@ -863,3 +863,23 @@ def test_every_document_suffix_the_policy_routes_here_is_parsed_or_refused_unrea
     ]
     for suffix in routed:
         assert (f".{suffix}" in _SUFFIX_FORMATS) != (f".{suffix}" in _UNPARSED_SUFFIXES)
+
+
+
+@pytest.mark.asyncio
+async def test_a_remote_read_goes_through_the_runs_pool(tracker) -> None:
+    """Latency audit O4: the reader builds its own client over the pool it was
+    given, and its request is the one it always sent."""
+    seen: list[str | None] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("user-agent"))
+        return httpx.Response(200, content=b"remote document", request=request)
+
+    async with tracker.session_span("session-1", "question"):
+        result = await DocumentReaderTool(
+            tracker, transport=httpx.MockTransport(handler)
+        ).execute(source="https://example.test/report.txt")
+
+    assert result.success is True
+    assert seen == [f"python-httpx/{httpx.__version__}"]

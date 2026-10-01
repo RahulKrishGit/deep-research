@@ -94,7 +94,12 @@ class DocumentReaderTool(BaseTool):
         chunk_chars: int = 8000,
         csv_rows_per_chunk: int = 100,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """``transport`` is the run's shared connection pool (latency audit O4):
+        each remote read still builds its own client, over it. ``None`` lets
+        each read's client build its own, as before; an injected ``client``
+        wins."""
         super().__init__(tracker)
         if (
             isinstance(timeout_s, bool)
@@ -129,6 +134,7 @@ class DocumentReaderTool(BaseTool):
         self._chunk_chars = chunk_chars
         self._csv_rows_per_chunk = csv_rows_per_chunk
         self._sleep = sleep
+        self._transport = transport
 
     async def _execute(self, context: ToolCallContext, **kwargs: Any) -> ToolExecution:
         source = kwargs.get("source")
@@ -248,7 +254,9 @@ class DocumentReaderTool(BaseTool):
         if self._client is not None:
             return await self._get_remote(context, self._client, source)
         async with httpx.AsyncClient(
-            timeout=self._timeout_s, follow_redirects=True
+            timeout=self._timeout_s,
+            follow_redirects=True,
+            transport=self._transport,
         ) as client:
             return await self._get_remote(context, client, source)
 

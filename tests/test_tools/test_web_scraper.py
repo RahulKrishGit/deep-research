@@ -1979,3 +1979,46 @@ async def test_scraper_keeps_an_abbreviation_in_the_description_leading_clause(t
     result = await _read_served_page(tracker, page)
 
     assert result.data["title"] == "Dr. Example Author, Collected Works."
+
+
+
+@pytest.mark.asyncio
+async def test_each_call_keeps_its_own_client_and_cookies_over_the_runs_pool(
+    tracker,
+) -> None:
+    """Latency audit O4: the scraper sends every call through the pool it was
+    given, and each call is still its own client -- the user agent it always
+    sent, and no cookie another call was given."""
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.url.path, request.headers.get("user-agent"), request.headers.get("cookie"))
+        )
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                text="User-agent: *\nAllow: /",
+                headers={"set-cookie": "visit=1; Path=/"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>The page text.</p></body></html>",
+            request=request,
+        )
+
+    tool = WebScraperTool(tracker, transport=httpx.MockTransport(handler))
+    async with tracker.session_span("session-1", "question"):
+        first = await tool.execute(url="https://example.test/one")
+        second = await tool.execute(url="https://example.test/two")
+
+    assert first.success and second.success
+    assert [path for path, _, _ in seen] == [
+        "/robots.txt", "/one", "/robots.txt", "/two",
+    ]
+    assert {agent for _, agent, _ in seen} == {"deep-research/0.1"}
+    # Within one call its own cookie travels on, as before; a later call starts
+    # with none.
+    assert [cookie for _, _, cookie in seen] == [None, "visit=1", None, "visit=1"]

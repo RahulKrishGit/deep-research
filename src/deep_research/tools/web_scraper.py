@@ -129,7 +129,11 @@ class WebScraperTool(BaseTool):
         max_retries: int = 2,
         user_agent: str = "deep-research/0.1",
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """``transport`` is the run's shared connection pool (latency audit O4):
+        each call still builds its own client, over it. ``None`` lets each
+        call's client build its own, as before; an injected ``client`` wins."""
         super().__init__(tracker)
         if (
             isinstance(timeout_s, bool)
@@ -153,6 +157,7 @@ class WebScraperTool(BaseTool):
         self._max_retries = max_retries
         self._user_agent = user_agent.strip()
         self._sleep = sleep
+        self._transport = transport
 
     def _observability_inputs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         return {"url": kwargs.get("url")}
@@ -177,6 +182,7 @@ class WebScraperTool(BaseTool):
             headers={"User-Agent": self._user_agent},
             follow_redirects=True,
             timeout=self._timeout_s,
+            transport=self._transport,
         ) as client:
             return await self._execute_with_client(context, url, client)
 

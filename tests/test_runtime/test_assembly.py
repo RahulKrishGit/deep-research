@@ -1526,3 +1526,44 @@ async def test_only_the_search_tool_receives_the_run_request_budget(
     assert len(seams.search) == 1
     assert seams.search[0].get("request_budget") is not None
     assert seams.search[0].get("request_budget") is seams.provider[0]
+
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_lends_one_connection_pool_to_both_readers(
+    tracker, tmp_path, monkeypatch
+) -> None:
+    """Latency audit O4: without an injected client, the run owns one pool and
+    both readers build their clients over it; an injected client gets none."""
+    monkeypatch.setattr("deep_research.tools.http_pool.getproxies", lambda: {})
+    settings = ConfigSettings.model_validate({"output": {"directory": str(tmp_path)}})
+
+    async def built(**kwargs) -> ResearchRuntime:
+        return await build_runtime(
+            settings,
+            session_id="session-1",
+            tracker=tracker,
+            chat_provider=RecordingProvider(),
+            long_term=LongTermMemory(collection=FakeCollection(), embeddings=FakeEmbeddings()),
+            procedural=ProceduralMemory(tmp_path / "strategies.json"),
+            search_client=FakeSearchClient(),
+            **kwargs,
+        )
+
+    seen: list[object] = []
+    real_build_tools = assembly.build_tools
+
+    def recording_build_tools(*args, **kwargs):
+        tools = real_build_tools(*args, **kwargs)
+        seen.append({tool.name: getattr(tool, "_transport", None) for tool in tools})
+        return tools
+
+    monkeypatch.setattr(assembly, "build_tools", recording_build_tools)
+    pooled = await built()
+    injected = await built(http_client=object())
+
+    assert pooled.connection_pool is not None
+    assert seen[0]["web_scraper"] is pooled.connection_pool
+    assert seen[0]["document_reader"] is pooled.connection_pool
+    assert injected.connection_pool is None
+    assert seen[1]["web_scraper"] is None
