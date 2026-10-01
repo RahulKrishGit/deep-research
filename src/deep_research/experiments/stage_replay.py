@@ -141,9 +141,9 @@ async def replay_capture(
     """Ask every captured stage once under ``settings``.
 
     The verifier's captured inputs run one after another, as a run's passes
-    do; a pass's Statement Check calls run together under one shared gate of
-    ``agents.verifier_concurrency``, as the writer's parts do, and their result
-    carries the time the whole set took.
+    do; every captured Statement Check call, from every pass, then runs
+    together under one shared gate of ``agents.verifier_concurrency``, as the
+    writer's parts do, and their result carries the time the whole set took.
     """
     results: list[StageResult] = []
     for path in sorted(capture.glob("evidence_verifier-*.json")):

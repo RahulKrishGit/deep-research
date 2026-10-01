@@ -3,10 +3,12 @@
 ``run`` makes one research session for one question and arm, through
 ``run_research`` with the arm's request-scoped config overrides and a fresh,
 empty memory of its own, so no run reads what an earlier run stored. It writes
-``events.jsonl`` as the run goes and, at the end, ``run.json`` (the metrics
-below) and a copy of the run's quality record into
-``<out>/<question>-<arm>-<repetition>/``. ``--capture`` also binds a stage
-capture there, for the X1 stage replay.
+``events.jsonl`` as the run goes and, at the end of the run, ``run.json`` (the
+metrics below) and a copy of the run's quality record into
+``<out>/<question>-<arm>-<repetition>/``. A run that raises, cancellation
+included, leaves a timing-only ``run.json`` with status ``"failed"`` and the
+error instead. ``--capture`` also binds a stage capture there, for the X1
+stage replay.
 
 ``compare`` applies the latency plan's pre-registered criteria (Task 17) to a
 treatment arm against the baseline arm: accuracy first, then time.
@@ -183,7 +185,7 @@ def _write_crashed_run(
     arm: str,
     repetition: int,
     overrides: Mapping[str, Any],
-    error: Exception,
+    error: BaseException,
 ) -> None:
     """Timing-only ``run.json`` for a run whose research raised (Task 17 review).
 
@@ -264,9 +266,10 @@ async def run_one(
                 outcome = await go()
         else:
             outcome = await go()
-    except Exception as error:
-        # A crashed paid run must stay visible: without a run.json it would
-        # silently drop out of ``compare``. The original error is re-raised.
+    except BaseException as error:
+        # A crashed or cancelled paid run must stay visible: without a run.json
+        # it would silently drop out of ``compare``. The original error (a
+        # ``CancelledError`` included) is re-raised.
         _write_crashed_run(
             directory,
             question_id=question_id,
@@ -449,6 +452,28 @@ def compare(
     verdict["mean_seconds_ratio"] = round(statistics.mean(ratios), 4)
     verdict["time_passed"] = sum(faster) >= needed and statistics.mean(ratios) < 1
     verdict["passed"] = accuracy_ok and verdict["time_passed"]
+    # Transparency only: nothing above reads these two fields. A kept control
+    # of any session status is used as a control, and a treatment run on a
+    # question with no usable control is not judged; both are listed here.
+    verdict["controls_used"] = {
+        question: {
+            "count": len(arms[control]),
+            "session_status": [c.get("session_status") for c in arms[control]],
+        }
+        for question, arms in sorted(paired.items())
+    }
+    verdict["unpaired"] = sorted(
+        (
+            {
+                "question_id": run["question_id"],
+                "arm": run["arm"],
+                "repetition": run.get("repetition"),
+            }
+            for run in runs
+            if run["arm"] == treatment and run["question_id"] not in paired
+        ),
+        key=lambda item: (item["question_id"], item["repetition"] or 0),
+    )
     return verdict
 
 

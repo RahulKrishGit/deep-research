@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -432,3 +433,72 @@ async def test_a_crashed_run_still_writes_run_json_so_compare_fails_closed(tmp_p
     )
     assert alone["stage_faster_on"] == 0
     assert alone["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_run_still_writes_run_json_and_the_cancellation_propagates(
+    tmp_path: Path,
+) -> None:
+    """Final review: ``CancelledError`` is a ``BaseException``, so a cancelled
+    paid run (a Ctrl-C, a timeout) used to leave no ``run.json``. It now leaves
+    the timing-only record and the cancellation still propagates."""
+    out = tmp_path / "live"
+    events = [
+        ResearchEvent(event_type="graph.node.started", source="graph.planner", message="m",
+                      timestamp="2026-10-01T12:00:00+00:00", metadata={"node": "planner"}),
+        ResearchEvent(event_type="graph.node.completed", source="graph.planner", message="m",
+                      timestamp="2026-10-01T12:00:45+00:00", metadata={"node": "planner"}),
+    ]
+
+    async def research(question: str, **kwargs: Any) -> Any:
+        for event in events:
+            kwargs["event_handler"](event)
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_one(question_id="rome", arm="x2", repetition=2, overrides={},
+                      out=out, capture=False, research=research)
+
+    cancelled = json.loads((out / "rome-x2-2" / "run.json").read_text(encoding="utf-8"))
+    assert cancelled["status"] == "failed"
+    assert cancelled["error"].startswith("CancelledError")
+    assert cancelled["metrics"] == {"seconds": None, "stage_seconds": {"planner": 45.0}}
+    assert load_runs(out) == [cancelled]
+
+
+def test_compare_lists_the_controls_it_used_and_the_treatment_runs_it_could_not_judge() -> None:
+    """Final review: transparency only. A kept non-completed control is used as
+    a control (and widens the margins), and a treatment run on a question with
+    no usable control is not judged; the verdict now says both, and neither
+    field changes ``passed`` or any check."""
+    faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
+
+    def runs(tamil_second_control: str) -> list[dict[str, Any]]:
+        built = _runs({"tamil": faster, "latte": faster, "rome": faster})
+        for number, run in enumerate(built):
+            run["repetition"] = 1 if number != 1 else 2
+        built[1]["metrics"]["session_status"] = tamil_second_control
+        # Rome's only baseline run crashed: it has no quality record and no duration.
+        built[3]["metrics"] = {"seconds": None, "stage_seconds": {}}
+        return built
+
+    verdict = compare(runs("incomplete"), treatment="x2", stage="researcher")
+
+    assert verdict["controls_used"] == {
+        "latte": {"count": 1, "session_status": ["completed"]},
+        "tamil": {"count": 2, "session_status": ["completed", "incomplete"]},
+    }
+    assert verdict["unpaired"] == [{"question_id": "rome", "arm": "x2", "repetition": 1}]
+    assert sorted(verdict["questions"]) == ["latte-1", "tamil-1"]
+
+    # Nothing else moved: the same runs with a completed second control give
+    # the same verdict apart from the control listing.
+    completed = compare(runs("completed"), treatment="x2", stage="researcher")
+    assert completed["controls_used"]["tamil"] == {
+        "count": 2, "session_status": ["completed", "completed"]
+    }
+    for key in verdict.keys() - {"controls_used", "unpaired"}:
+        assert verdict[key] == completed[key], key
+    assert verdict["accuracy_passed"] is True
+    assert verdict["time_passed"] is True
+    assert verdict["passed"] is True

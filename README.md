@@ -1150,6 +1150,10 @@ python -m deep_research.evaluation agent researcher --tier live
 # Compare one agent at a different effort without editing the baseline config.
 python -m deep_research.evaluation agent researcher --reasoning-effort medium
 
+# Compare one agent with its thinking disabled (the judge still thinks).
+# Experiment-only: such a run is never release evidence.
+python -m deep_research.evaluation agent researcher --target-thinking-mode disabled
+
 # Run controlled experiments for all five agents.
 python -m deep_research.evaluation suite
 ```
