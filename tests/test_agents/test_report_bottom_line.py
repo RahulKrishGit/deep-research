@@ -26,6 +26,7 @@ from deep_research.agents.report_writer import (
     bottom_line_messages,
     compose_written_report,
 )
+from deep_research.graph.live import bind_live_sink
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.utils.types import (
     AnswerContract,
@@ -34,6 +35,7 @@ from deep_research.utils.types import (
     ReportPoint,
     ReportSection,
     ReportStatement,
+    ResearchEvent,
     ResearchState,
     SectionDraft,
     TopicLineDraft,
@@ -506,6 +508,50 @@ async def test_every_sentence_refused_falls_back_to_one_line_per_topic(checker, 
         "Every drafted bottom-line sentence was refused; one checked section point per topic stands in for it."
         in [e.message for e in composition.errors]
     )
+
+
+async def _fraction_events(compose) -> list[float]:
+    """Every ``report_writer.progress`` ``fraction`` a composition publishes live."""
+    received: list[ResearchEvent] = []
+    with bind_live_sink(received.append):
+        await compose()
+    return [e.metadata["fraction"] for e in received if e.event_type == "report_writer.progress"]
+
+
+@pytest.mark.asyncio
+async def test_writing_progress_ends_full_when_the_bottom_line_falls_back(checker, tracker, tmp_path: Path) -> None:
+    """Review I1: a bottom line that failed twice never reaches the Statement Check, so
+    its scope enters the counts only when the composition settles it; the bar ends
+    at 1.0, never below, and never goes down."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_five_part_state())
+    route = _five_part_route(task)
+    completer = ScriptedCompleter(outputs=[route] * 5 + [_output_limit_error(), _output_limit_error()])
+
+    fractions = await _fraction_events(
+        lambda: compose_written_report(task, provider=completer, section_concurrency=1)
+    )
+
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_writing_progress_ends_full_when_every_bottom_line_sentence_is_refused(
+    checker, tracker, tmp_path: Path,
+) -> None:
+    """Review I1: every drafted bottom-line sentence refused before the check leaves
+    the bottom line nothing to count; the bar still ends full."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    route = _sections_route(task)
+    refused = BottomLineDraft(sentences=[WriterPointDraft(text="An unlabelled claim.", finding_labels=["F99"])])
+    completer = ScriptedCompleter(outputs=[route, route, refused])
+
+    fractions = await _fraction_events(
+        lambda: compose_written_report(task, provider=completer, section_concurrency=1)
+    )
+
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
 
 
 @pytest.mark.asyncio

@@ -1406,7 +1406,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # report_writer.progress as the parts and the bottom line are drafted and
     # checked, through a per-composition ContextVar. No request text changed.
     # Moved `f11d61b869d9` -> `c4082e94159e`.
-    "report_writer": "c4082e94159e",
+    # Phase B Task 5 review fix I1 (notes-progress-report spec §6.2):
+    # Writing's bar ends full when the bottom line falls back or never reaches
+    # the Statement Check. No request text changed. Moved `c4082e94159e` ->
+    # `ea77570646c9`.
+    "report_writer": "ea77570646c9",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

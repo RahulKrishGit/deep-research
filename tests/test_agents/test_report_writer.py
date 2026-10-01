@@ -3635,7 +3635,11 @@ async def test_the_report_written_event_is_published_live(
     # notes-progress-report spec §4 item 1: the progress events are live-only.
     progress = [event.metadata for event in received if event.event_type == "report_writer.progress"]
     assert [event.event_id for event in received if event.event_type != "report_writer.progress"] == [written.event_id]
-    assert [(m["parts_total"], m["parts_returned"], m["fraction"]) for m in progress] == [(1, 0, 0.0), (1, 1, 0.5)]
+    # The bottom line never reaches the check here (no section was checked), so the
+    # bar fills when it settles with nothing to count: its share is the whole 1/(P+1).
+    assert [(m["parts_total"], m["parts_returned"], m["fraction"]) for m in progress] == [
+        (1, 0, 0.0), (1, 1, 0.5), (1, 1, 1.0),
+    ]
 
 
 @pytest.mark.asyncio
@@ -3847,3 +3851,23 @@ def test_writing_progress_counts_a_sentence_once() -> None:
     assert second == {"text": "B.", "verdict": "removed", "findings": 2, "section": "First"}
     assert again is None
     assert (len(progress.backed), len(progress.removed), len(progress.unchecked)) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_fills_when_a_part_draft_fails(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """A part whose draft fails twice counts as returned with nothing to check (its
+    share is whole), and with no checked section the bottom line settles empty: the
+    bar still ends full."""
+    completer = ScriptedCompleter(outputs=[_output_limit_error(), _output_limit_error()])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_one_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(task, provider=completer)
+
+    assert composition.parts[0].status == "failed"
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert [(m["parts_returned"], m["sentences_drafted"], m["fraction"]) for m in progress] == [
+        (0, 0, 0.0), (1, 0, 0.5), (1, 0, 1.0),
+    ]

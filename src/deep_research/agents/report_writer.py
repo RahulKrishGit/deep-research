@@ -3508,6 +3508,14 @@ async def compose_written_report(
         label_finding_ids=label_finding_ids,
     )
 
+    # The bottom line is settled: its share of the bar is whole even when no
+    # sentence of it reached the Statement Check (it fell back, every sentence was
+    # refused, or no section was checked), so the bar ends at 1.0. Adding no key
+    # leaves the keys already counted as they are.
+    progress.bottom_line_drafted(())
+    if progress.fraction < 1.0:
+        progress.publish()
+
     # P1-a's "move": a point the §6.8 fallback promoted into the bottom line
     # is removed from its section, so it is never printed twice; a section
     # left with no points is dropped, matching how a fully-refused section
