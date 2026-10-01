@@ -99,6 +99,32 @@ describe("Planning (spec §6.3)", () => {
   });
 });
 
+describe("a note's slot after the plan (Phase B Task 9, spec §6.3)", () => {
+  const planned = [
+    ev("graph.node.started", { node: "planner", iteration: 0 }, at(0)),
+    ev("session.note.interpreted", { note_id: "n1", restatement: "pastries", kinds: ["new_angle"], replaces: null, fallback: false }),
+    ev("planner.planning.completed", {
+      sub_topic_count: 2, note_topic_count: 1,
+      sub_topics: [slot("topic-01", "Alpha", "passed"), { coverage_id: "note-n1", title: "Your note: pastries", note_id: "n1", state: "planned" }],
+    }),
+  ];
+  const replacement = ev("session.note.interpreted", { note_id: "n2", restatement: "only pastries made in-house", kinds: ["new_angle"], replaces: "n1", fallback: false });
+  it("keeps a planned slot when a note replaces its note after planning, with Planning still the running row", () => {
+    const run = play(planned);
+    expect(run.active).toBe("planner");
+    applyEvent(run, replacement);
+    expect(run.planning.noteSlots).toEqual([{ noteId: "n1", title: "Your note: pastries", state: "planned" }]);
+    // The replacing note adds no slot of its own: the plan is done.
+    expect(run.notes.find((n) => n.id === "n2")!.replaces).toBe("n1");
+  });
+  it("keeps a planned slot when a note replaces its note after Planning has finished", () => {
+    const run = play([...planned, ev("graph.node.completed", { node: "planner" }, at(60)), ev("graph.node.started", { node: "researcher", iteration: 0 }, at(61))]);
+    expect(run.active).toBe("researcher");
+    applyEvent(run, replacement);
+    expect(run.planning.noteSlots).toEqual([{ noteId: "n1", title: "Your note: pastries", state: "planned" }]);
+  });
+});
+
 describe("Evaluating, Verifying and Writing (spec §6.4-§6.6)", () => {
   it("keeps the latest evaluator counts and the split outcome", () => {
     const run = play([

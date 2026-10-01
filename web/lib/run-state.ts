@@ -272,11 +272,13 @@ function reviewNotes(listed: unknown): ReviewNoteResult[] {
     .map((n) => ({ noteId: n.note_id, ...reviewHalf(n), steering: n.steering && typeof n.steering === "object" ? reviewHalf(n.steering) : null }));
 }
 /* §6.3: a note read as a research note while Planning is the running row joins the plan as its own
-   slot; a later note that replaces it takes its slot away. */
+   slot; a later note that replaces it takes its slot away, but only while Planning still plans: once
+   the plan is ready its slots are the plan's, and a replacing note leaves the finished brief as it was. */
 function noteSlot(run: RunState, md: Md): void {
+  if (run.active !== "planner" || run.planning.step === "ready") return;
   if (isText(md.replaces)) run.planning.noteSlots = run.planning.noteSlots.filter((s) => s.noteId !== md.replaces);
   const kinds: unknown[] = Array.isArray(md.kinds) ? md.kinds : [];
-  if (run.active !== "planner" || run.planning.step === "ready" || !kinds.includes("new_angle") || !isText(md.restatement)) return;
+  if (!kinds.includes("new_angle") || !isText(md.restatement)) return;
   if (!isText(md.note_id) || run.planning.noteSlots.some((s) => s.noteId === md.note_id)) return;
   run.planning.noteSlots.push({ noteId: md.note_id, title: "Your note: " + md.restatement, state: "pending" });
 }
