@@ -37,6 +37,7 @@ from deep_research.agents.evidence_verifier import (
     resolve_attribution,
     statement_check_messages,
     unchecked_context,
+    verification_sample,
     verify_finding,
 )
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END
@@ -2469,4 +2470,195 @@ async def test_the_verification_completed_event_is_published_live(tracker: Track
 
     [event] = outcome.state_update["events"]
     assert event.event_type == "evidence_verifier.verification.completed"
-    assert [e.event_id for e in received] == [event.event_id]
+    # notes-progress-report spec §4 item 1: the progress events are live-only.
+    assert [e.event_id for e in received if e.event_type != "evidence_verifier.progress"] == [event.event_id]
+    assert [e.event_type for e in received].count("evidence_verifier.progress") == 1
+
+
+# --- notes-progress-report spec §6.1, §6.2, §6.5: Verifying's live progress --------
+
+SECRET_REASON = "SECRET-CONTEXT-REASON"
+
+
+def _secret_confirm_reply(messages: list, schema: type) -> ContextCheckDraft:
+    """``_confirm_reply``, with a reason no progress event may ever carry."""
+    draft = _confirm_reply(messages, schema)
+    return ContextCheckDraft(figures=[
+        figure_reply.model_copy(update={"reason": SECRET_REASON}) for figure_reply in draft.figures
+    ])
+
+
+def _four_findings():
+    """A: figures, on the page (Context Check); B: snippet not on the page; C: no
+    figures, on the page (quoted); D: its read is missing."""
+    read = make_read()
+    a = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")], content="Finding A")
+    b = make_finding(read, "A sentence the page never prints.", figures=[figure("3", "GW")], content="Finding B")
+    c = make_finding(read, "U.S. battery capacity increased 66% in 2024.", content="Finding C")
+    elsewhere = make_read("Another page entirely.", url="https://other.test/x", title="Other")
+    d = make_finding(elsewhere, "Another page entirely.", figures=[figure("1", "GW")], content="Finding D")
+    return read, [a, b, c, d]
+
+
+@pytest.mark.asyncio
+async def test_verifier_first_event_counts_figure_match(tracker: Tracker) -> None:
+    """AC16 (review M6): the first event arrives before any Context Check call, and its
+    ``checked`` already counts every finding Figure Match decided."""
+    read, findings = _four_findings()
+    completer = ScriptedCompleter(outputs=[_secret_confirm_reply])
+    agent = _evidence_verifier(tracker, completer)
+    calls_at_event: list[int] = []
+    seen: list[dict] = []
+
+    def on_progress(metadata: dict) -> None:
+        calls_at_event.append(len(completer.calls))
+        seen.append(metadata)
+
+    await agent.verify(findings, {read.read_id: read}, [], on_progress=on_progress)
+
+    assert calls_at_event == [0, 1]
+    first, last = seen
+    assert {k: v for k, v in first.items() if k != "sample"} == {
+        "total": 4, "checked": 3, "verified": 0, "corrected": 0, "quoted": 1,
+        "dropped": 2, "batches": 1, "batches_done": 0,
+    }
+    assert first["sample"] == {
+        "text": "Finding B", "verdict": "dropped", "correction": None,
+        "drop_reason": "snippet_not_on_page", "source": {"role": None, "host": "eia.gov"},
+    }
+    assert {k: v for k, v in last.items() if k != "sample"} == {
+        "total": 4, "checked": 4, "verified": 1, "corrected": 0, "quoted": 1,
+        "dropped": 2, "batches": 1, "batches_done": 1,
+    }
+    assert last["sample"]["text"] == "Finding A" and last["sample"]["verdict"] == "verified"
+    assert all(SECRET_REASON not in json.dumps(metadata) for metadata in seen)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch_size", [2, 5])
+async def test_verifier_tally_ends_on_the_completed_counts(tracker: Tracker, batch_size: int) -> None:
+    """AC16: whatever the batch size, the last tally equals the completed event's
+    counts, and the sample is never the Context Check's reason text."""
+    read = make_read(_metrics_page(6), url="https://example.test/batch", title="Batch metrics")
+    findings = [_metric_finding(read, i) for i in range(6)]
+    completer = ScriptedCompleter(outputs=[_secret_confirm_reply] * 3)
+    agent = _evidence_verifier(
+        tracker, completer, config=AgentRuntimeConfig(verifier_batch_size=batch_size),
+    )
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "question"):
+        with bind_live_sink(received.append):
+            outcome = await agent.run(state)
+
+    progress = [e.metadata for e in received if e.event_type == "evidence_verifier.progress"]
+    [completed] = outcome.state_update["events"]
+    assert len(progress) == 1 + -(-6 // batch_size)
+    assert progress[-1]["checked"] == progress[-1]["total"] == 6
+    assert (progress[-1]["verified"], progress[-1]["corrected"], progress[-1]["quoted"], progress[-1]["dropped"]) == (
+        completed.metadata["verified"], completed.metadata["verified_corrected"],
+        completed.metadata["quoted"], completed.metadata["dropped"],
+    )
+    assert [m["checked"] for m in progress] == sorted(m["checked"] for m in progress)
+    assert all(SECRET_REASON not in json.dumps(m) for m in progress)
+
+
+def test_progress_counts_idempotent() -> None:
+    """AC16 (review M13): a batch reported as two halves, or twice, counts each finding once."""
+    from deep_research.agents.evidence_verifier import _VerifyProgress
+
+    read, findings = _four_findings()
+    verified = FindingVerification(status="verified", figure_results=[])
+    progress = _VerifyProgress(findings, batches=1, sources=[])
+    progress.record([(findings[0], verified), (findings[2], verified)])
+    progress.record([(findings[0], verified)])
+    progress.record([(findings[2], verified), (findings[0], verified)])
+
+    assert progress.metadata(None)["checked"] == 2
+    assert progress.metadata(None)["verified"] == 2
+
+
+def _figure_result(figure_, *, period=None, scope=None, subject=None, kind="actual", corrected=True, dropped=None):
+    if dropped is not None:
+        return FigureResult(figure=figure_, matched=True, dropped_reason=dropped)
+    return FigureResult(
+        figure=figure_, matched=True, corrected=corrected,
+        context=FigureContext(period=period, scope=scope, subject=subject, attribution="own",
+                              organisation="EIA", kind=kind),
+    )
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (_figure_result(figure("10.4", "GW", "2024", "actual"), period="2025"), {"field": "period", "value": "2025"}),
+        (_figure_result(figure("10.4", "GW", "2024", "actual"), period=None), {"field": "period_cleared", "value": None}),
+        (_figure_result(figure("10.4", "GW", "2024", "actual"), period="2024", scope="all segments"),
+         {"field": "scope", "value": "all segments"}),
+        (_figure_result(figure("10.4", "GW", "2024", "actual"), period="2024", subject="Model A"),
+         {"field": "subject", "value": "Model A"}),
+        (_figure_result(figure("10.4", "GW", "2024", "forecast"), period="2024", kind="actual"),
+         {"field": "kind", "value": "actual"}),
+        (_figure_result(figure("10.4", "GW", "2024", "actual"), dropped="evidence_not_on_page"),
+         {"field": "figure", "value": None}),
+    ],
+)
+def test_verifier_progress_samples(result: FigureResult, expected: dict) -> None:
+    """§6.1: a corrected sample names what the page changed, in the kept context's own
+    words; the host is the page's, without ``www.``; the role is the evaluated one."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[result.figure], content="Finding A")
+    kept = _figure_result(figure("19.6", "GW", "2025", "forecast"), period="2025", kind="forecast", corrected=False)
+    verification = FindingVerification(status="verified_corrected", figure_results=[result, kept])
+    source = ScoredSource(
+        url=finding.source_url, title="EIA", rationale="r", evaluation_status="unscored_missing",
+        source_role="original_report",
+    )
+
+    sample = verification_sample([(finding, verification)], {"https://eia.gov/todayinenergy/detail.php?id=64705": source})
+
+    assert sample == {
+        "text": "Finding A", "verdict": "verified_corrected", "correction": expected,
+        "drop_reason": None, "source": {"role": "original_report", "host": "eia.gov"},
+    }
+
+
+def test_a_sample_prefers_a_correction_then_a_drop_and_names_the_first_figures_reason() -> None:
+    """§6.2: verified_corrected > dropped > verified > quoted, first in report order; a
+    finding whose every figure dropped names its first figure's reason."""
+    read = make_read()
+    quoted = make_finding(read, SNIPPET, content="Quoted")
+    dropped = make_finding(read, SNIPPET, figures=[figure("1", "GW")], content="Dropped")
+    all_dropped = FindingVerification(
+        status="dropped", dropped_reason="all_figures_dropped",
+        figure_results=[_figure_result(figure("1", "GW"), dropped="context_rejected")],
+    )
+    judged = [(quoted, FindingVerification(status="quoted")), (dropped, all_dropped)]
+
+    sample = verification_sample(judged, {})
+
+    assert sample["text"] == "Dropped"
+    assert sample["drop_reason"] == "context_rejected"
+    assert verification_sample([], {}) is None
+
+
+@pytest.mark.asyncio
+async def test_statement_check_reports_each_settled_batch() -> None:
+    """§6.2: ``on_batch`` is called once per settled batch with its items and verdicts."""
+    finding = _statement_finding("18.9", "GW")
+    items = [_statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding) for i in range(12)]
+    completer = ScriptedCompleter(outputs=[_confirm_statement_reply] * 3)
+    reports: list[tuple[list[str], list[str]]] = []
+
+    results, errors = await check_statements(
+        completer, items, question="How much storage?", batch_size=5,
+        on_batch=lambda batch, verdicts: reports.append(
+            ([item.label for item in batch], sorted(verdicts))
+        ),
+    )
+
+    assert errors == []
+    assert sorted(len(labels) for labels, _ in reports) == [2, 5, 5]
+    assert all(labels == keys for labels, keys in ((sorted(batch_labels), keys_) for batch_labels, keys_ in reports))
+    assert sorted(label for labels, _ in reports for label in labels) == sorted(results)

@@ -30,11 +30,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from deep_research.agents.base import (
     AgentRun,
@@ -65,8 +67,8 @@ from deep_research.agents.prompts import (
     render_structured_request,
 )
 from deep_research.agents.report_writer import MAX_POINT_CHARS
-from deep_research.agents.sources import publisher_identity
-from deep_research.agents.steps import ReActRun
+from deep_research.agents.sources import normalize_source_url, publisher_identity
+from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.agents.verified_facts import (
     _period_stated_in,
     claimed_organisation,
@@ -93,6 +95,7 @@ from deep_research.utils.types import (
     FigureResult,
     Finding,
     FindingFigure,
+    FindingStatus,
     FindingVerification,
     ReadRecord,
     ResearchError,
@@ -918,6 +921,144 @@ def verify_finding(
     )
 
 
+# --- notes-progress-report spec §6.1, §6.2, §6.5: Verifying's live progress ----
+
+#: The sample a report shows (spec §6.2): the first finding, in report order, of
+#: the first of these statuses the report holds.
+_SAMPLE_ORDER: tuple[FindingStatus, ...] = ("verified_corrected", "dropped", "verified", "quoted")
+
+
+def _correction(finding: Finding, verification: FindingVerification) -> dict[str, JsonValue] | None:
+    """What the check changed, from the first figure it corrected or dropped (spec §6.1).
+
+    ``field`` is ``period``, ``period_cleared``, ``scope``, ``subject``, ``kind``
+    or ``figure`` (a figure the page did not carry); ``value`` is the kept
+    context's own words, at most 60 characters, or ``None``. A figure that was
+    only filled in (a period the extraction left empty) is not a correction.
+    """
+    for result in verification.figure_results:
+        if not result.kept:
+            return {"field": "figure", "value": None}
+        context = result.context
+        if not result.corrected or context is None:
+            continue
+        recorded_period = result.figure.period or finding.data_period
+        if recorded_period is not None and context.period != recorded_period:
+            if context.period is None:
+                return {"field": "period_cleared", "value": None}
+            return {"field": "period", "value": summarize_text(context.period, limit=60)}
+        if context.scope is not None and context.scope != finding.measure_scope:
+            return {"field": "scope", "value": summarize_text(context.scope, limit=60)}
+        if context.subject is not None and context.subject != result.figure.subject:
+            return {"field": "subject", "value": summarize_text(context.subject, limit=60)}
+        if result.figure.kind is not None and context.kind != result.figure.kind:
+            return {"field": "kind", "value": context.kind}
+    return None
+
+
+def _drop_reason(verification: FindingVerification) -> str | None:
+    """The finding's own drop reason, or its first figure's when all figures dropped."""
+    if verification.dropped_reason not in (None, "all_figures_dropped"):
+        return verification.dropped_reason
+    return next(
+        (result.dropped_reason for result in verification.figure_results if result.dropped_reason),
+        None,
+    )
+
+
+def _sample_host(url: str) -> str | None:
+    """The page's host, without ``www.``; never a path or a query (spec §4 item 1)."""
+    try:
+        return urlsplit(normalize_source_url(url)).hostname or None
+    except ValueError:
+        return None
+
+
+def verification_sample(
+    judged: Sequence[tuple[Finding, FindingVerification]],
+    sources: Mapping[str, ScoredSource],
+) -> dict[str, JsonValue] | None:
+    """Verifying's ticker sample for one report (spec §6.1, §6.2), or ``None``.
+
+    ``sources`` maps a normalized source url to its assessment. The text is the
+    finding's content, at most 160 characters; the verdict is the finding's
+    status; never the Context Check's reason text.
+    """
+    for status in _SAMPLE_ORDER:
+        for finding, verification in judged:
+            if verification.status != status:
+                continue
+            source = sources.get(normalize_source_url(finding.source_url))
+            return {
+                "text": summarize_text(finding.content, limit=160),
+                "verdict": status,
+                "correction": _correction(finding, verification)
+                if status == "verified_corrected" else None,
+                "drop_reason": _drop_reason(verification) if status == "dropped" else None,
+                "source": {
+                    "role": source.source_role if source is not None else None,
+                    "host": _sample_host(finding.source_url),
+                },
+            }
+    return None
+
+
+class _VerifyProgress:
+    """One verification pass's running tally (spec §6.1).
+
+    ``total`` is the findings this pass judges; a finding is counted once, the
+    first time a report names it -- the Figure Match pass or a settled batch --
+    so the tally never depends on how many events arrive or how findings were
+    batched (review M13).
+    """
+
+    def __init__(
+        self, findings: Sequence[Finding], *, batches: int, sources: Sequence[ScoredSource]
+    ) -> None:
+        self.total = len({finding_fingerprint(finding) for finding in findings})
+        self.batches = batches
+        self.batches_done = 0
+        self.sources = {normalize_source_url(source.url): source for source in sources}
+        self.statuses: dict[str, FindingStatus] = {}
+
+    def record(
+        self, judged: Sequence[tuple[Finding, FindingVerification]]
+    ) -> dict[str, JsonValue] | None:
+        """Count the findings this report names for the first time; return its sample."""
+        new: list[tuple[Finding, FindingVerification]] = []
+        for finding, verification in judged:
+            key = finding_fingerprint(finding)
+            if key in self.statuses:
+                continue
+            self.statuses[key] = verification.status
+            new.append((finding, verification))
+        return verification_sample(new, self.sources)
+
+    def metadata(self, sample: dict[str, JsonValue] | None) -> dict[str, JsonValue]:
+        counts = Counter(self.statuses.values())
+        return {
+            "total": self.total,
+            "checked": len(self.statuses),
+            "verified": counts["verified"],
+            "corrected": counts["verified_corrected"],
+            "quoted": counts["quoted"],
+            "dropped": counts["dropped"],
+            "batches": self.batches,
+            "batches_done": self.batches_done,
+            "sample": sample,
+        }
+
+
+def verification_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
+    """One ``evidence_verifier.progress`` event (spec §4 item 1, §6.1): live-only."""
+    return agent_event(
+        agent_name=EVIDENCE_VERIFIER_NAME,
+        event_type="evidence_verifier.progress",
+        message="Verification progress.",
+        metadata=metadata,
+    )
+
+
 def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
     """One batch's request: every finding's snippet, passage, fields and figures."""
     blocks: list[str] = []
@@ -1000,7 +1141,11 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         ]
         errors: list[ResearchError] = []
         async with self.tracker.agent_span(self.name) as span:
-            judged = await self.verify(pending, state.read_records, errors, state.evaluated_sources)
+            judged = await self.verify(
+                pending, state.read_records, errors, state.evaluated_sources,
+                # notes-progress-report spec §6.2: each tally, live-only.
+                on_progress=lambda metadata: publish_live(verification_progress_event(metadata)),
+            )
             span.set_outputs({"agent_name": self.name, "findings": len(judged)})
         snapshot = _merged_snapshot(state.verified_findings, judged)
         react = ReActRun(agent_name=self.name, stop_reason="finished", errors=errors)
@@ -1015,7 +1160,15 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         )
 
     async def verify(self, findings: Sequence[Finding], reads: Mapping[str, ReadRecord],
-                     errors: list[ResearchError], sources: Sequence[ScoredSource] = ()) -> list[Finding]:
+                     errors: list[ResearchError], sources: Sequence[ScoredSource] = (), *,
+                     on_progress: Callable[[dict[str, JsonValue]], None] | None = None) -> list[Finding]:
+        """Figure Match every finding, then Context Check the figure-bearing ones.
+
+        ``on_progress`` (notes-progress-report spec §6.2) is called once after
+        the Figure Match pass, before the first Context Check -- its count
+        already holds the findings Figure Match decided -- then once each batch
+        settles, with the running tally and that report's sample.
+        """
         results: dict[str, FindingVerification] = {}
         items: list[ContextItem] = []
         for finding in findings:
@@ -1041,10 +1194,27 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         batches = [items[i : i + self.config.verifier_batch_size]
                    for i in range(0, len(items), self.config.verifier_batch_size)]
         gate = asyncio.Semaphore(self.config.verifier_concurrency)
+        progress = _VerifyProgress(findings, batches=len(batches), sources=sources)
+        if on_progress is not None:
+            decided = [
+                (finding, results[finding_fingerprint(finding)])
+                for finding in findings
+                if finding_fingerprint(finding) in results
+            ]
+            on_progress(progress.metadata(progress.record(decided)))
 
         async def one(batch: list[ContextItem]) -> dict[str, dict[int, FigureCheckDraft] | None]:
             async with gate:
-                return await self._check(batch, errors, split=True)
+                replies = await self._check(batch, errors, split=True)
+            if on_progress is not None:
+                progress.batches_done += 1
+                judged = [
+                    (item.finding, verify_finding(item, replies[finding_fingerprint(item.finding)]))
+                    for item in batch
+                    if finding_fingerprint(item.finding) in replies
+                ]
+                on_progress(progress.metadata(progress.record(judged)))
+            return replies
 
         for replies in await asyncio.gather(*(one(batch) for batch in batches)):
             for item in items:
@@ -1491,6 +1661,9 @@ async def check_statements(
     batch_size: int = CONTEXT_CHECK_BATCH_SIZE,
     concurrency: int = CONTEXT_CHECK_CONCURRENCY,
     gate: asyncio.Semaphore | None = None,
+    on_batch: Callable[
+        [Sequence[StatementCheckItem], Mapping[str, StatementVerdictDraft | None]], None
+    ] | None = None,
 ) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
     """Spec §6.2's Statement Check (D8): does a drafted sentence state only
     what the verified findings it cites actually carry?
@@ -1513,6 +1686,10 @@ async def check_statements(
     so the whole pass never runs more than ``verifier_concurrency`` checks at
     once. ``None`` (every other caller) keeps today's behaviour: a private
     semaphore scoped to this one call, sized from ``concurrency``.
+
+    ``on_batch`` (notes-progress-report spec §6.2) is called once each batch
+    settles -- its re-asked halves included -- with that batch's items and
+    verdicts, so the Report Writer can count its sentences as they are judged.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
@@ -1528,7 +1705,12 @@ async def check_statements(
 
     async def one(batch: Sequence[StatementCheckItem]) -> dict[str, StatementVerdictDraft | None]:
         async with gate:
-            return await _check_statement_batch(provider, batch, question, errors, fingerprint, split=True)
+            verdicts = await _check_statement_batch(
+                provider, batch, question, errors, fingerprint, split=True
+            )
+        if on_batch is not None:
+            on_batch(batch, verdicts)
+        return verdicts
 
     results: dict[str, StatementVerdictDraft | None] = {}
     for batch_result in await asyncio.gather(*(one(batch) for batch in batches)):

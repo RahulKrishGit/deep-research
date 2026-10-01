@@ -1280,7 +1280,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Live briefs (live-briefs spec E3, 2026-09-28): verification.completed is
     # published live. Module code only; no prompt string changed and
     # agents.prompts was untouched. Moved `0dc169302934` -> `4a3d56fab932`.
-    "evidence_verifier": "4a3d56fab932",
+    # Phase B (notes-progress-report spec §6.2, §6.5, 2026-09-30): live
+    # evidence_verifier.progress after Figure Match and as each Context Check
+    # batch settles, and check_statements' on_batch. No request text changed;
+    # LB-D10 holds. Moved `4a3d56fab932` -> `2c360ecb7315`.
+    "evidence_verifier": "2c360ecb7315",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
