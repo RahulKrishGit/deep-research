@@ -42,6 +42,22 @@ describe("BriefSpine — row anatomy (live-briefs spec §4.3, AC4, AC5)", () => 
       .toEqual([["running", "1", "1Adoption rate", "reading"], ["done", "2", "2Widget funding", "2 findings"], ["waiting", "3", "3Widget exports", "not yet"]]);
     expect(topics.map((t) => t.getAttribute("style"))).toEqual(["--i: 0;", "--i: 1;", "--i: 2;"]);
   });
+  it("leaves an unmeasured count out of the active Researching subtitle and prints the one it measured (D19)", () => {
+    // A topic is done, so the count phrases print; the pages are not measured (null), the findings are.
+    const unmeasuredPages = researching();
+    unmeasuredPages.pagesRead = null;
+    const first = show(unmeasuredPages);
+    const subtitle = row(first.container, "researcher").querySelector(".m-live")!.textContent!;
+    expect(subtitle).toBe("1 of 3 topics done · 2 findings");
+    expect(subtitle).not.toContain("pages read");
+    expect(subtitle).not.toContain("page read");
+    first.unmount();
+    // The other way round: the findings are not measured, the pages are.
+    const unmeasuredFindings = researching();
+    unmeasuredFindings.findingsSoFar = null;
+    const second = show(unmeasuredFindings);
+    expect(row(second.container, "researcher").querySelector(".m-live")!.textContent).toBe("1 of 3 topics done · 2 pages read");
+  });
   it("closes a done row on its outcome line behind a toggle button that reopens it", () => {
     const onToggle = vi.fn();
     const run = researching();
