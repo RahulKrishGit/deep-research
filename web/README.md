@@ -20,7 +20,7 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   (three servers: the API on 8010, the app on 3010, an app on 3011 pointed at a closed
   port). Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter
   (`…/deep-research/.venv/Scripts/python.exe`); `npx playwright install chromium` once.
-- `npm run capture:visual` — the twenty full-page captures (10 stages/views × 1252 and
+- `npm run capture:visual` — the twenty-four full-page captures (12 stages/views × 1252 and
   390 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
 - `npm run capture:events -- <case-id>` — records a replay session's frames into
   `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
@@ -40,6 +40,13 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   ahead of its paced stream, so a note added on the replay server is acknowledged but never
   applied, and the report's "Your notes" reads it `not checked`; `e2e/notes.spec.ts` and the
   `11-note-ack` and `12-report-notes` captures use it.
+- Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
+  posts `POST /research/{id}/stop` (the proxy forwards it); the session ends `stopped` and its page
+  keeps the pipeline frozen where it stopped, with "Ask again". On the replay server the engine runs
+  ahead of its paced stream, so by the time a step can be stopped it has usually finished — its
+  files land in the replay's temporary directory, which the server deletes on exit — but the session
+  itself still ends `stopped`, with no report on the API. `e2e/stop.spec.ts` and the
+  `19-stop-confirm` and `20-stopped` captures use it.
 - Replay mode's `duration_seconds` is the unpaced span (about 0.2 s), so the report head
   bar reads `0m 00s` there; a dropped finding is labelled `X01`; not-found targets read
   `topic-01-target-01`. All three are the engine's own values.

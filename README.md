@@ -943,6 +943,10 @@ read in replay mode by a scripted interpreter that keeps it as written, as an em
 replay runs the graph at full speed and paces only the stream, so a note added while the
 running stage plays arrives after the engine has finished and ends `not_checked`. In replay mode the topbar
 shows a muted `replay mode` chip.
+While a session runs — from the one-time check through Reviewing — the topbar's **Stop**, beside
+the status chip, asks once and then sends `POST /research/{id}/stop`: the run is cancelled where it
+stands, nothing is published, and the page keeps the pipeline frozen where it stopped, with
+**Ask again**. Replay mode stops a session the same way.
 Sessions are held in the API process's memory: the sidebar's list empties when the API
 restarts.
 

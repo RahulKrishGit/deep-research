@@ -86,5 +86,21 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await page.evaluate(() => window.scrollTo(0, 0));
       await shoot(page, `12-report-notes${suffix}`);
     });
+
+    // notes-progress-report spec §11.3: the confirmation over the running stage, then the stopped stage.
+    // The popover opens as Researching starts; the stop is confirmed the moment a topic is done, so the
+    // stopped row carries Researching's facts (about 1.2 s of Researching remain then).
+    test(`19-stop-confirm${suffix}, 20-stopped${suffix}`, async ({ page, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
+      await submit(page, "What is the current state of grid-scale battery storage?");
+      await page.locator('#spine li[data-stage="researcher"][data-state="active"]').waitFor({ timeout: 15_000 });
+      await page.locator("#stopBtn").click();
+      await expect(page.getByRole("dialog", { name: "Stop this research?" })).toBeVisible();
+      await shoot(page, `19-stop-confirm${suffix}`);
+      await page.locator('#spine li[data-stage="researcher"] .ps-topics [data-topic="done"]').first().waitFor({ state: "attached", timeout: 10_000 });
+      await page.getByRole("dialog", { name: "Stop this research?" }).getByRole("button", { name: "Stop research" }).click();
+      await expect(page.locator("#stage-user-stopped")).toBeVisible();
+      await shoot(page, `20-stopped${suffix}`);
+    });
   });
 }

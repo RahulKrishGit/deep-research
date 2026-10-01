@@ -44,9 +44,10 @@ export async function submit(page: Page, question: string): Promise<string> {
   await page.waitForURL(/\/research\/[0-9a-f]+$/);
   return page.url().split("/").pop()!;
 }
-/* Terminal: neither running nor waiting for the reader's answers (needs_input, live-briefs spec §4.4). */
+/* Terminal: neither running nor waiting for the reader's answers (needs_input, live-briefs spec §4.4);
+   a session the reader stopped is terminal too (notes-progress-report spec §8.4). */
 export async function waitTerminal(request: APIRequestContext, sessionId: string): Promise<void> {
-  await expect.poll(async () => (await (await request.get(`${API}/research/${sessionId}/status`)).json()).status, { timeout: 60_000 }).toMatch(/^(completed|max_iterations|incomplete|failed)$/);
+  await expect.poll(async () => (await (await request.get(`${API}/research/${sessionId}/status`)).json()).status, { timeout: 60_000 }).toMatch(/^(completed|max_iterations|incomplete|failed|stopped)$/);
 }
 
 /* live-briefs spec AC6: for each pair of adjacent rows, how far the upper row's connector (its

@@ -8,8 +8,9 @@ const api = process.env.DEEP_RESEARCH_API_URL ?? "http://127.0.0.1:8010";
 const cases = process.argv.slice(2);
 if (!cases.length) { console.error("usage: capture-replay-events.mjs <case-id> ..."); process.exit(2); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-// A session waiting for the reader (needs_input, live-briefs spec §4.4) has not finished either.
-const TERMINAL = /^(completed|max_iterations|incomplete|failed)$/;
+// A session waiting for the reader (needs_input, live-briefs spec §4.4) has not finished either; one the
+// reader stopped has (notes-progress-report spec §8.4).
+const TERMINAL = /^(completed|max_iterations|incomplete|failed|stopped)$/;
 const frames = (text) =>
   text.split(/\r?\n\r?\n/).filter((f) => f.includes("data: ")).map((f) =>
     JSON.parse(f.split(/\r?\n/).filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n")));
