@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
 
 from deep_research.agents.reader_notes import (
     PLANNING_NOTES,
+    board_version,
+    has_steering_kind,
+    is_research_note,
     live_reader_notes,
+    note_sub_topic,
+    notes_being_read,
     render_reader_notes,
+    research_notes_without_a_topic,
     research_reader_notes,
+    steering_notes,
+    steering_view,
+    wait_for_board_change,
 )
 from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
 from deep_research.graph.state import dump_state, initial_graph_state, load_state
@@ -220,3 +231,72 @@ async def test_a_run_without_a_board_or_notes_carries_no_notes(tracker: Tracker)
 
     assert run.state.reader_notes == [] and run.state.note_passes == 0
     assert all(call.reader_notes == [] for call in agents.planner.calls)
+
+
+# --- notes-progress-report spec §5.1, §5.3: research, steering and mixed notes ---------
+
+
+def test_a_note_is_research_steering_or_both() -> None:
+    """§5.1, D20: a research note's kinds include new_angle, a steering note's do not, and a
+    mixed note is both. Its steering view is the note with new_angle left out of its kinds."""
+    angle = fake_reader_note("n1", kinds=["new_angle"])
+    mixed = fake_reader_note("n2", kinds=["new_angle", "exclude"])
+    steer = fake_reader_note("n3", kinds=["scope", "emphasis"])
+
+    assert [is_research_note(note) for note in (angle, mixed, steer)] == [True, True, False]
+    assert [has_steering_kind(note) for note in (angle, mixed, steer)] == [False, True, True]
+    assert steering_view(angle) is None
+    assert steering_view(steer) is steer
+    view = steering_view(mixed)
+    assert view is not None and view.kinds == ["exclude"]
+    assert view.model_dump(exclude={"kinds"}) == mixed.model_dump(exclude={"kinds"})
+    assert mixed.kinds == ["new_angle", "exclude"]
+    assert [(note.note_id, note.kinds) for note in steering_notes([angle, mixed, steer])] == [
+        ("n2", ["exclude"]),
+        ("n3", ["scope", "emphasis"]),
+    ]
+    assert research_reader_notes([angle, mixed, steer]) == steering_notes([angle, mixed, steer])
+
+
+def test_a_notes_sub_topic_says_why_it_exists() -> None:
+    """§5.1: one builder for both reasons; only the rationale differs."""
+    note = fake_reader_note(
+        "n4", kinds=["new_angle"], restatement="how cells are recycled",
+        new_questions=["How are battery cells recycled?"],
+    )
+
+    asked = note_sub_topic(note, priority=3, reason="reader_note")
+    owed = note_sub_topic(note, priority=3, reason="no_evidence")
+
+    assert asked.rationale == "The reader asked for this in a note."
+    assert owed.rationale == (
+        "The reader asked for this in a note, and the review found no evidence for it yet."
+    )
+    assert asked.model_dump(exclude={"rationale"}) == owed.model_dump(exclude={"rationale"})
+    assert (asked.coverage_id, asked.title, asked.priority) == ("note-n4", "Your note: how cells are recycled", 3)
+
+
+@pytest.mark.asyncio
+async def test_the_researcher_reads_the_boards_count_readings_and_untopiced_research_notes() -> None:
+    """§5.3: the dispatcher's reads of the board, reached through ``agents.reader_notes`` at
+    call time; with no board bound (the CLI) there is no count and nothing being read."""
+    assert (board_version(), notes_being_read()) == (None, False)
+    held = [fake_reader_note("n1", kinds=["new_angle"])]
+    assert [note.note_id for note in research_notes_without_a_topic(held, set())] == ["n1"]
+    assert research_notes_without_a_topic(held, {"note-n1"}) == []
+
+    board = NoteBoard()
+    for _ in range(4):
+        board.receive("note", received_at=AT, received_during="researcher")
+    board.add(fake_reader_note("n1", kinds=["new_angle"]))
+    board.add(fake_reader_note("n2", kinds=["new_angle", "exclude"]))
+    board.add(fake_reader_note("n3"))
+
+    with bind_note_board(board):
+        assert (board_version(), notes_being_read()) == (3, True)
+        assert [note.note_id for note in research_notes_without_a_topic([], {"note-n1"})] == ["n2"]
+        waiter = asyncio.create_task(wait_for_board_change(3))
+        board.add(fake_reader_note("n4", kinds=["new_angle"], replaces="n2"))
+        assert await asyncio.wait_for(waiter, timeout=1) == 4
+        assert notes_being_read() is False
+        assert [note.note_id for note in research_notes_without_a_topic([], {"note-n1"})] == ["n4"]

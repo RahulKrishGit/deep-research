@@ -17,14 +17,44 @@ cycle whenever the graph is imported first.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-from typing import Protocol
+from collections.abc import Collection, Sequence
+from typing import Literal, Protocol, TypeAlias
 
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
+    NOTE_TOPIC_TITLE_PREFIX,
+    EvidenceTarget,
     ReaderNote,
+    SubTopic,
     active_reader_notes,
     with_board_notes,
 )
+
+STEERING_KINDS: frozenset[str] = frozenset({"emphasis", "exclude", "scope", "about_reader"})
+"""The kinds that steer the run's own steps (notes-progress-report spec §5.1); ``new_angle``
+asks for research of its own instead."""
+
+NOTES_WAIT_S = 30.0
+"""The longest a step waits for a note still being read before it moves on.
+
+Shared by the review node, before it reads its route (live-briefs spec §4.8), and the
+researcher, before its research window closes (notes-progress-report spec §5.3): twice
+``hitl.note_interpret_timeout_s``'s default of 15 s, so with the default every reading in
+flight when the wait begins has ended first, and a raised timeout (up to ten minutes) holds
+either step for this long at most. A note still being read then is left out, and a later
+step takes it in once it is read.
+"""
+
+NoteTopicReason: TypeAlias = Literal["reader_note", "no_evidence"]
+"""Why a note has a sub-topic: the reader asked for research (a research note), or the
+review found no evidence for a steering note (its one note pass)."""
+
+_NOTE_TOPIC_RATIONALES: dict[str, str] = {
+    "reader_note": "The reader asked for this in a note.",
+    "no_evidence": (
+        "The reader asked for this in a note, and the review found no evidence for it yet."
+    ),
+}
 
 PLANNING_NOTES = (
     "The reader added these notes while the run was going; each line is the "
@@ -77,6 +107,41 @@ class NoteLine(Protocol):
     kinds: Sequence[str]
 
 
+def is_research_note(note: ReaderNote) -> bool:
+    """A research note asks the run to research something: its kinds include ``new_angle``
+    (notes-progress-report spec §5.1)."""
+    return "new_angle" in note.kinds
+
+
+def has_steering_kind(note: ReaderNote) -> bool:
+    """Whether the note steers the run's steps: emphasis, exclude, scope or about_reader.
+
+    Every steering note has one; a research note that has one too is a mixed note (D20).
+    """
+    return any(kind in STEERING_KINDS for kind in note.kinds)
+
+
+def steering_view(note: ReaderNote) -> ReaderNote | None:
+    """The note as every steering request prints it (spec §5.1, D20).
+
+    A note without ``new_angle`` is returned unchanged; a mixed note is a copy with
+    ``new_angle`` left out of its kinds; a note whose only kind is ``new_angle`` has no
+    steering half, so ``None``.
+    """
+    if not is_research_note(note):
+        return note
+    if not has_steering_kind(note):
+        return None
+    return note.model_copy(
+        update={"kinds": [kind for kind in note.kinds if kind != "new_angle"]}
+    )
+
+
+def steering_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
+    """``steering_view`` of each note, the ``None`` ones dropped, in the given order."""
+    return [view for note in notes if (view := steering_view(note)) is not None]
+
+
 def board_notes() -> list[ReaderNote]:
     """The run's interpreted notes from its bound board, or ``[]`` with none bound."""
     from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
@@ -111,8 +176,12 @@ def live_reader_notes(state_notes: Sequence[ReaderNote]) -> list[ReaderNote]:
 
 
 def research_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
-    """The notes a running research loop applies: ``new_angle`` notes wait for the review's note pass."""
-    return [note for note in notes if "new_angle" not in note.kinds]
+    """The notes a research loop's turns and its extraction apply: their steering views.
+
+    notes-progress-report spec §5.1: a note whose only kind is ``new_angle`` is researched
+    as its own topic instead, and a mixed note steers with ``new_angle`` left out.
+    """
+    return steering_notes(notes)
 
 
 def render_reader_notes(
@@ -135,17 +204,110 @@ def render_reader_notes(
     return "\n".join(lines)
 
 
+def note_sub_topic(
+    note: ReaderNote, *, priority: int, reason: NoteTopicReason
+) -> SubTopic:
+    """The sub-topic that researches one reader note (notes-progress-report spec §5.1).
+
+    Titled ``Your note: {restatement}``, with coverage id ``note-{note_id}`` and one
+    required target per question the note raised — or, for a note that raised none, the
+    note's own restatement — each carrying the note's scope. ``reason`` says why the
+    topic exists, in its rationale: the reader asked for research (``reader_note``), or
+    the review found no evidence for a steering note (``no_evidence``).
+    """
+    coverage_id = f"{NOTE_COVERAGE_PREFIX}{note.note_id}"
+    questions = list(note.new_questions) or [note.restatement]
+    geography = note.scope.geography if note.scope else None
+    period = note.scope.period if note.scope else None
+    return SubTopic(
+        coverage_id=coverage_id,
+        title=f"{NOTE_TOPIC_TITLE_PREFIX}{note.restatement}",
+        rationale=_NOTE_TOPIC_RATIONALES[reason],
+        search_queries=questions,
+        success_criteria=[
+            f"A checked source answers: {question}" for question in questions
+        ],
+        priority=priority,
+        evidence_targets=[
+            EvidenceTarget(
+                target_id=f"{coverage_id}-target-{number:02d}",
+                coverage_id=coverage_id,
+                question=question,
+                required=True,
+                measure=question,
+                geography=geography,
+                period=period,
+            )
+            for number, question in enumerate(questions, start=1)
+        ],
+    )
+
+
+def board_version() -> int | None:
+    """The bound board's change count, or ``None`` with no board bound (spec §5.3)."""
+    from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
+
+    board = notes.current_note_board()
+    return None if board is None else board.version
+
+
+async def wait_for_board_change(seen: int) -> int:
+    """Return the bound board's change count once it differs from ``seen`` (spec §5.3).
+
+    Called only while a board is bound: ``board_version`` returned ``seen``.
+    """
+    from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
+
+    board = notes.current_note_board()
+    if board is None:
+        raise RuntimeError("no note board is bound for this run")
+    return await board.wait_for_change(seen)
+
+
+def notes_being_read() -> bool:
+    """Whether the bound board holds a received note whose reading has not ended."""
+    from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
+
+    board = notes.current_note_board()
+    return board is not None and bool(board.pending)
+
+
+def research_notes_without_a_topic(
+    state_notes: Sequence[ReaderNote], known_coverage_ids: Collection[str]
+) -> list[ReaderNote]:
+    """The active research notes, the state's then the board's, whose ``note-{id}`` is
+    not in ``known_coverage_ids``, in receipt order (notes-progress-report spec §5.3)."""
+    return [
+        note
+        for note in live_reader_notes(state_notes)
+        if is_research_note(note)
+        and f"{NOTE_COVERAGE_PREFIX}{note.note_id}" not in known_coverage_ids
+    ]
+
+
 __all__ = [
     "EXTRACTION_NOTES",
+    "NOTES_WAIT_S",
     "NoteLine",
+    "NoteTopicReason",
     "PLANNING_NOTES",
     "RESEARCH_NOTES",
     "REVIEW_NOTES",
     "SOURCE_NOTES",
+    "STEERING_KINDS",
     "WRITING_NOTES",
     "board_notes",
+    "board_version",
+    "has_steering_kind",
+    "is_research_note",
     "live_reader_notes",
+    "note_sub_topic",
+    "notes_being_read",
     "notes_settled",
     "render_reader_notes",
+    "research_notes_without_a_topic",
     "research_reader_notes",
+    "steering_notes",
+    "steering_view",
+    "wait_for_board_change",
 ]

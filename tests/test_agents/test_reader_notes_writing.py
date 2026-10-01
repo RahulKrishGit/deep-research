@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from deep_research.agents.reader_notes import note_sub_topic
 from deep_research.agents.report import answered_not_stated_targets, render_written_report
 from deep_research.agents.report_writer import _is_redraft_hop
-from deep_research.graph.nodes import note_sub_topic
 from deep_research.utils.types import ResearchEvent
 from tests.graph_fakes import (
     fake_reader_note,
@@ -47,7 +47,7 @@ def test_the_report_names_a_note_it_found_no_evidence_for() -> None:
         new_questions=["How are battery cells recycled at end of life?"],
     )
     state = fake_research_state(
-        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2)],
+        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2, reason="reader_note")],
     )
 
     report = render_written_report(fake_writer_composition(state))
@@ -70,7 +70,7 @@ def test_a_note_answered_but_never_stated_is_named_by_the_note_too() -> None:
     )
     one = verified_pass(target_ids=["note-n2-target-01"])
     state = fake_research_state(
-        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2)],
+        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2, reason="reader_note")],
         verified_findings=[one.finding],
     )
     composition = fake_writer_composition(state).model_copy(update={"summary": []})
@@ -96,7 +96,7 @@ def test_a_note_with_two_questions_is_named_once_by_the_first_group_that_holds_i
     )
     one = verified_pass(target_ids=["note-n2-target-02"])
     state = fake_research_state(
-        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2)],
+        sub_topics=[fake_sub_topic(targets=[fake_target()]), note_sub_topic(angled, priority=2, reason="reader_note")],
         verified_findings=[one.finding],
     )
     composition = fake_writer_composition(state).model_copy(update={"summary": []})

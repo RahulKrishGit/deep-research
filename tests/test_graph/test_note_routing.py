@@ -9,13 +9,12 @@ from collections.abc import Sequence
 
 import pytest
 
+from deep_research.agents.reader_notes import NOTES_WAIT_S, note_sub_topic
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.researcher import select_sub_topics
 from deep_research.graph.nodes import (
-    _REVIEW_NOTES_WAIT_S,
     _arrived_via_redraft_hop,
     note_pass_node,
-    note_sub_topic,
     report_reviewer_node,
     writer_redraft_node,
 )
@@ -148,7 +147,7 @@ def test_a_replaced_or_honoured_note_routes_nowhere() -> None:
 
 
 def test_a_notes_own_targets_never_buy_or_exhaust_an_extra_pass() -> None:
-    topic = note_sub_topic(fake_reader_note(), priority=2)
+    topic = note_sub_topic(fake_reader_note(), priority=2, reason="no_evidence")
     state = fake_research_state(
         sub_topics=[fake_sub_topic(targets=[fake_target()]), topic],
         report_review=fake_report_review(missing_required_target_ids=["note-n1-target-01"]),
@@ -168,7 +167,7 @@ def test_a_notes_sub_topic_carries_its_questions_scope_and_required_targets() ->
         scope={"geography": "European Union", "period": "since 2023"},
     )
 
-    topic = note_sub_topic(angled, priority=4)
+    topic = note_sub_topic(angled, priority=4, reason="reader_note")
 
     assert (topic.coverage_id, topic.title, topic.priority) == ("note-n3", "Your note: recycling at end of life", 4)
     assert topic.search_queries == ["How are battery cells recycled?", "What does recycling cost?"]
@@ -178,7 +177,7 @@ def test_a_notes_sub_topic_carries_its_questions_scope_and_required_targets() ->
         ("note-n3-target-01", "note-n3", "How are battery cells recycled?", True, "European Union", "since 2023"),
         ("note-n3-target-02", "note-n3", "What does recycling cost?", True, "European Union", "since 2023"),
     ]
-    plain = note_sub_topic(fake_reader_note("n1"), priority=2)
+    plain = note_sub_topic(fake_reader_note("n1"), priority=2, reason="no_evidence")
     assert [t.question for t in plain.evidence_targets] == ["more weight on grid storage (n1)"]
     assert plain.evidence_targets[0].geography is None
 
@@ -288,12 +287,12 @@ async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_re
 async def test_the_review_waits_for_a_reading_no_longer_than_its_own_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A reading that never ends holds the route for ``_REVIEW_NOTES_WAIT_S`` at most, however
+    """A reading that never ends holds the route for ``NOTES_WAIT_S`` at most, however
     long the interpreter's own timeout is: the note stays on the board, out of this
     decision, and the route is read without it."""
-    assert _REVIEW_NOTES_WAIT_S == 30.0
-    assert HitlConfig().note_interpret_timeout_s < _REVIEW_NOTES_WAIT_S
-    monkeypatch.setattr("deep_research.graph.nodes._REVIEW_NOTES_WAIT_S", 0.05)
+    assert NOTES_WAIT_S == 30.0
+    assert HitlConfig().note_interpret_timeout_s < NOTES_WAIT_S
+    monkeypatch.setattr("deep_research.graph.nodes.NOTES_WAIT_S", 0.05)
     board = NoteBoard()
     board.receive("first", received_at=AT, received_during="report_writer")
     board.add(fake_reader_note("n1"))

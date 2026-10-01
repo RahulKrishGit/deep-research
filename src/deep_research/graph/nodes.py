@@ -33,7 +33,12 @@ from deep_research.agents.quality import (
     compute_report_quality,
     review_status_fields,
 )
-from deep_research.agents.reader_notes import board_notes, notes_settled
+from deep_research.agents.reader_notes import (
+    NOTES_WAIT_S,
+    board_notes,
+    note_sub_topic,
+    notes_settled,
+)
 from deep_research.agents.report import (
     QUALITY_STATUS_ACCEPTED,
     evidence_report_filename,
@@ -104,11 +109,7 @@ from deep_research.providers import ProviderConfigurationError, ProviderError
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import ToolResult
 from deep_research.utils.types import (
-    NOTE_COVERAGE_PREFIX,
-    NOTE_TOPIC_TITLE_PREFIX,
-    EvidenceTarget,
     Finding,
-    ReaderNote,
     ReportComposition,
     ReportQualitySnapshot,
     ReportReview,
@@ -116,7 +117,6 @@ from deep_research.utils.types import (
     ResearchEvent,
     ResearchState,
     ResearchStateUpdate,
-    SubTopic,
     active_reader_notes,
     advance_research_iteration,
     merge_research_state,
@@ -828,7 +828,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
     The reader's notes (live-briefs spec §4.6): the node starts from every note
     received so far, and each active one is in the review input, so each is
     marked ``reviewed``. Before the route is read the node waits for any note
-    still being interpreted — for ``_REVIEW_NOTES_WAIT_S`` at most — and takes
+    still being interpreted — for ``NOTES_WAIT_S`` at most — and takes
     in every note that arrived meanwhile, unreviewed, which is what buys a
     note sent during Reviewing its redraft.
     """
@@ -859,7 +859,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                 else []
             }
         )
-        await notes_settled(timeout=_REVIEW_NOTES_WAIT_S)
+        await notes_settled(timeout=NOTES_WAIT_S)
         merged = merge_research_state(
             started,
             {
@@ -1073,17 +1073,6 @@ async def _review_report(
             )
         )
     return review, errors, False
-
-
-# The longest the review node waits for a note still being read before it reads
-# its route (live-briefs spec §4.8 "A note arrives during Reviewing"): twice
-# ``hitl.note_interpret_timeout_s``'s default of 15 s, so with the default every
-# reading in flight when the wait begins has ended first (a note received
-# mid-wait can still be pending when the wait ends), and a raised timeout (up to
-# ten minutes) can hold the route for this long at most. A note still being read
-# then is left out of this decision, unreviewed; a loop's next node takes it in
-# once it is read.
-_REVIEW_NOTES_WAIT_S = 30.0
 
 
 def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
@@ -1340,44 +1329,6 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
     )
 
 
-def note_sub_topic(note: ReaderNote, *, priority: int) -> SubTopic:
-    """The sub-topic one reader note's targeted pass researches (live-briefs spec §4.6).
-
-    Titled ``Your note: {restatement}``, with coverage id ``note-{note_id}``
-    and one required target per question the note raised — or, for a note that
-    raised none, the note's own restatement — each carrying the note's scope.
-    """
-    coverage_id = f"{NOTE_COVERAGE_PREFIX}{note.note_id}"
-    questions = list(note.new_questions) or [note.restatement]
-    geography = note.scope.geography if note.scope else None
-    period = note.scope.period if note.scope else None
-    return SubTopic(
-        coverage_id=coverage_id,
-        title=f"{NOTE_TOPIC_TITLE_PREFIX}{note.restatement}",
-        rationale=(
-            "The reader asked for this in a note, and the review found no "
-            "evidence for it yet."
-        ),
-        search_queries=questions,
-        success_criteria=[
-            f"A checked source answers: {question}" for question in questions
-        ],
-        priority=priority,
-        evidence_targets=[
-            EvidenceTarget(
-                target_id=f"{coverage_id}-target-{number:02d}",
-                coverage_id=coverage_id,
-                question=question,
-                required=True,
-                measure=question,
-                geography=geography,
-                period=period,
-            )
-            for number, question in enumerate(questions, start=1)
-        ],
-    )
-
-
 async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
     """Open the one targeted pass the uncovered reader notes buy (spec §4.6, D11).
 
@@ -1407,7 +1358,7 @@ async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
             ),
         )
     priority = max((topic.priority for topic in state.sub_topics), default=0) + 1
-    topics = [note_sub_topic(note, priority=priority) for note in due]
+    topics = [note_sub_topic(note, priority=priority, reason="no_evidence") for note in due]
     targets = [
         target.target_id for topic in topics for target in topic.evidence_targets
     ]
