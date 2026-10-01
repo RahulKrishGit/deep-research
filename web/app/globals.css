@@ -1408,3 +1408,19 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .reader-notes .rn-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--space-1)}
 .reader-notes li{font-size:var(--text-sm);line-height:1.5;color:var(--fg);overflow-wrap:anywhere}
 .reader-notes li .cap{white-space:nowrap}
+
+/* ═══ 2026-09-30: Stop (notes-progress-report spec §8.4-§8.5; D18, D19, D29, D33; Stop.dc.html, progress.css:159-171) ═══ */
+/* The stopped stage (#stage-user-stopped): one short note on the card surface, then the pipeline frozen
+   at the row the reader stopped. The stopped row's node is quiet — a --muted edge, its digit in --fg, the
+   surface fill, no halo — and later rows read in --meta. The chip's dot is neutral: stopping is neither a
+   failure nor a warning. */
+.chip .dot-neutral{background:var(--muted)}
+.stopped-note{display:flex;flex-direction:column;gap:var(--space-2);padding:var(--space-4) var(--space-5);border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface)}
+.stopped-note .b-now{font-size:var(--text-base);color:var(--fg);line-height:1.5}
+.stopped-note .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
+.stopped-note .stop-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;padding-top:var(--space-1)}
+/* Focus moves to the first line when this stage replaces the running one; it is not a control (D19). */
+.stopped-note [tabindex="-1"]:focus{outline:none}
+.spine-lg.briefs > li[data-state="stopped"] .bullet{border-color:var(--muted);color:var(--fg);background:var(--surface)}
+.spine-lg.briefs > li[data-state="stopped"] .stage-name{color:var(--fg)}
+.spine-lg.briefs > li[data-state="off"] .stage-name,.spine-lg.briefs > li[data-state="off"] .stage-meta{color:var(--meta)}

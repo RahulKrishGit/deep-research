@@ -4,7 +4,8 @@
 import { earlierNotesText, visibleAcks, type Ack } from "./notes";
 import { STAGES, countPhrase, plural, type NodeId, type PaintedMark, type ReopenLine, type RunState, type Topic, type TopicState } from "./run-state";
 
-export type RowState = PaintedMark | "pending";
+/* "stopped" and "off" occur only on the stopped stage's frozen spine (notes-progress-report spec §8.5). */
+export type RowState = PaintedMark | "pending" | "stopped" | "off";
 /* The subtitle a row shows until it is done: its static meta, or Researching's live facts line. */
 export type Subtitle =
   | { kind: "text"; text: string }
@@ -71,4 +72,22 @@ export function rowBrief(run: RunState, id: NodeId, state: RowState): RowBrief {
   }
   const sentence = id === "evidence_verifier" ? verifyingSentence(run.passFindings) : SENTENCES[id];
   return { subtitle: text, outcome, why, sentence, topics: null, titles: null, ...notes };
+}
+
+/* notes-progress-report spec §8.5: the stopped row's subtitle — "Stopped", then the live facts the row
+   had when the reader stopped it. Before Phase B only Researching has live facts; its stopped line always
+   counts the topics done ("none of 3", rather than its running "3 topics · researching", which would
+   contradict "Stopped", and never a bare 0). A Researching row with no topics yet, and every other row,
+   reads "Stopped"; Phase B gives each step its own facts here (§6.3–§6.7). */
+export function stoppedSubtitle(run: RunState, id: NodeId): string {
+  const topics = run.topics.length;
+  if (id !== "researcher" || topics === 0) return "Stopped";
+  const done = run.topics.filter((t) => t.state === "done").length;
+  return "Stopped · " + (done === 0 ? "none" : String(done)) + " of " + plural(topics, "topic", "topics") + " done · "
+    + countPhrase(run.pagesRead ?? 0, "page read", "pages read") + " · " + countPhrase(run.findingsSoFar ?? 0, "finding", "findings");
+}
+/* A row after the stopped one: "not run", or "not run again" when the loop the run was in had re-armed
+   it — it ran in an earlier pass. */
+export function notRunText(run: RunState, id: NodeId): string {
+  return run.rearmed[id] ? "not run again" : "not run";
 }

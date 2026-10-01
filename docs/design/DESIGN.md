@@ -147,7 +147,7 @@ brief (§3.4).
 
 ## 3. Screen inventory
 
-One page, five stages, and a one-time check (2a) that can come between the second
+One page, six stages, and a one-time check (2a) that can come between the second
 and the third. The session is the page: `/` and `/research/[session_id]`
 are the same UI, and the stage is derived from the session's status rather than
 chosen by the operator.
@@ -160,6 +160,24 @@ chosen by the operator.
 | 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it and the note line at the card's foot | Server status leaves `running` → stage 4 or 5 |
 | 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then — when the reader added notes — **Your notes**, the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
+| 6 | **Stopped by you** | `stopped` | The question, its settings and one short note — when the reader stopped and how far in, that no report was written — with **Ask again**; then the pipeline frozen at the stopped row (no pipeline card after a stop during the check) | Ask again (a new session, the same question), or New research |
+
+**Stage 6 keeps what was done** (notes-progress-report D18, D29, D33, 2026-09-30). A session the
+reader stopped (`stopped`, §4) opens on its own stage, `#stage-user-stopped` — not the
+service-stopped stage a shutdown leaves (`running` with `finished_at`): the eyebrow
+`Stopped by you`, the locked question and its settings strip, then one short note on the card
+surface — `You stopped this research at {HH:MM}, {N} minutes in.` (the reader's own time;
+`less than a minute in`, `1 minute in`), `No report was written. The plan and what research
+found so far are kept below until the service restarts.` and **Ask again**, a ghost button that
+starts a new session with the same question and settings. Below it the brief spine is frozen
+at the row the reader stopped. Finished rows keep their outcomes and still open. The stopped
+row has a quiet node — a `--muted` edge, its digit in `--fg`, the surface fill, no halo — the
+subtitle `Stopped · {its live facts}` (Researching's facts line; `Stopped` for a row with
+none), and it opens to its frozen brief, where a topic that was running reads `stopped` beside
+its ring. Every later row reads `not run` in `--meta`, or `not run again` for a row the loop had
+re-armed. There is no arc, no hand-off, no note line and no counters block. A stop during the
+one-time check shows no pipeline card (D33), and the note reads `You stopped this research at
+{HH:MM}, before it started.`
 
 **Stage 2 carries the question and its settings, and nothing else.** It used to open a card
 underneath them: a "Starting session" chip, the session id, `POST /research → 202`, and two
@@ -237,7 +255,7 @@ count that only arrives with the finished outcome) either duplicated a row or re
 The counters block that later sat below the spine has been removed from the running
 stage too (live-briefs D13, 2026-09-28): each row counts for itself, in its live
 subtitle while it runs and in its outcome line once it is done (§3.4). The block
-remains on the Failed and Stopped stages, as what survived the halt (§5.8).
+remains on the Failed and service-stopped stages, as what survived the halt (§5.8).
 
 Supporting surfaces that are **not** stages:
 
@@ -324,7 +342,9 @@ a status.
 §5.1's rule holds and a status carries its label. Here the running mark is a ring, and the
 cues that carry it are the ring's `--status-ok` hue, its spin, a step from `--muted` to `--fg`
 on the question, and an accessible name ending in `— running` (`— waiting for you` while the
-session waits for the reader's answers). Under
+session waits for the reader's answers). A session the reader stopped carries no ring; its
+accessible name alone says so, ending in `— stopped by you` (notes-progress-report D29), with no
+status word on screen. Under
 `prefers-reduced-motion` the spin is suppressed, which leaves the hue and the text step.
 That is a genuine narrowing of the rule, taken because four status words in a 296px column
 cost more than they returned, and it is recorded rather than glossed.
@@ -718,8 +738,8 @@ by the *upper* row, from its own node centre to the next node's centre
 (`bottom: -(--space-2 + 2px + --space-3 + 16.5px)`: the list gap, the two rows' 1px
 borders and the next node's offset). The fill scales from the top
 (`transform: scaleY(0 → 1)`) once the upper row is `done` or `loop`; `data-fed`
-stays on the lower row. The Failed and Stopped stages keep the compact rows and the
-midpoint rule.
+stays on the lower row. The Failed and service-stopped stages keep the compact rows and the
+midpoint rule; stage 6 keeps this spine, frozen at the row the reader stopped.
 
 **What an open row says** (picks 1A, 2C). The active row is always open; a done or
 loop row is closed on its outcome line and reopens from its head (a
@@ -966,9 +986,10 @@ own threshold, and the status text beside the meter says which outcome the run h
 
 ## 4. Status mapping
 
-The API's `SessionStatus` is a six-value literal (`api/models.py:32-39`;
-`needs_input` joined it with the one-time check, live-briefs 2026-09-29). The
-interface shows six statuses. This table is the contract between them, and it is
+The API's `SessionStatus` is a seven-value literal (`api/models.py:37-45`;
+`needs_input` joined it with the one-time check, live-briefs 2026-09-29, and `stopped`
+with Stop, notes-progress-report 2026-09-30). The interface shows seven statuses. This
+table is the contract between them, and it is
 exhaustive: no status may be invented and none may be dropped.
 
 | Interface status | API `status` | Also read | Token role | Copy shown to the operator |
@@ -980,6 +1001,7 @@ exhaustive: no status may be invented and none may be dropped.
 | **Partially completed** | `incomplete` with `semantic_review_status == "scored"` | `semantic_review_score` | `--fg` label, `--warn` dot | `Partially completed · not accepted · {score}` |
 | **Partially completed** | `incomplete` with any other `semantic_review_status` | — | `--fg` label, `--warn` dot | `Partially completed · review unavailable` |
 | **Failed** | `failed` | `errors` | `--fg` label, `--danger` dot | `Failed · halted`; the failed stage headlines the halting type |
+| **Stopped by you** | `stopped` | `stopped_step` | `--fg` label, neutral `--muted` dot | `Stopped by you · at {step}`, e.g. `Stopped by you · at Researching`; `at the questions` after a stop during the one-time check |
 | **Unavailable** | *not a status* | any `null` field | `--muted` text, no chip, no icon, no control | `not measured`, `not scored`, `Not recorded`, `Not available while running` |
 
 Rules that follow from the table:
@@ -1028,6 +1050,10 @@ Rules that follow from the table:
    changes — while the fixed status label and its dot stay exactly as visible as
    they are at full width. The clause the ellipsis hides is not lost: the report
    stage's rail states it in full.
+8. **`stopped` is the reader's own end, not a failure.** Its dot is neutral (`--muted`),
+   never `--danger`, and a stop adds no error. Like a halt it publishes nothing:
+   `GET /report` answers `409 report_unavailable` and `/evidence`
+   `409 evidence_unavailable`, and every note the run took reads `not checked`.
 
 ### Derived stage display
 
@@ -1634,7 +1660,7 @@ that a future log view could not reintroduce.
 
 The running stage no longer carries the counters block (live-briefs D13,
 2026-09-28): each row counts for itself, in its live subtitle while it runs and its
-outcome line once it is done (§3.4). The Failed and Stopped stages keep the block,
+outcome line once it is done (§3.4). The Failed and service-stopped stages keep the block,
 with the eyebrow `counted from the event stream`, as what survived the halt. Its
 rows, each with its scope:
 
@@ -1679,6 +1705,7 @@ Full detail, with the request shape each gap implies, is in
 | Submitted | nothing beyond Idle |
 | Check | nothing: `needs_input`, the two `session.clarification.*` events and `POST /research/{id}/answers` serve it (live-briefs Phase 2) |
 | Notes | nothing: `POST /research/{id}/notes`, the two `session.note.*` events and the status's `notes`, `notes_remaining` and `note_passes` serve them (live-briefs Phase 3); on the replay server a note is acknowledged but never applied (api-gaps 3.9) |
+| Stopped | nothing: `POST /research/{id}/stop`, the `stopped` status with `stopped_step`, and `session.stopped` serve it (notes-progress-report §8) |
 | Running | no token usage; no terminal frame; no `Last-Event-ID` resume (events carry an `event_id`, but a reconnect replays from event 1); the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |
 | Failed | what survived a halt comes only from the stream; the halted state still needs a seeded session |

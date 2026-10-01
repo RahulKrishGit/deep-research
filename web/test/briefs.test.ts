@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ResearchEvent } from "../lib/api";
-import { SENTENCES, STATIC_META, rowBrief, subtitleText, topicFact, verifyingSentence } from "../lib/briefs";
-import { AGENT_ORDER, applyEvent, newRunState, toRunEvent, type RunState } from "../lib/run-state";
+import { SENTENCES, STATIC_META, notRunText, rowBrief, stoppedSubtitle, subtitleText, topicFact, verifyingSentence } from "../lib/briefs";
+import { AGENT_ORDER, applyEvent, newRunState, toRunEvent, type NodeId, type RunState } from "../lib/run-state";
 
 interface Capture { case_id: string; events: ResearchEvent[] }
 const load = (caseId: string): Capture =>
@@ -82,5 +82,23 @@ describe("every other row", () => {
     expect(topicFact({ coverageId: "a", title: "A", state: "running", findings: null })).toBe("reading");
     expect(topicFact({ coverageId: "a", title: "A", state: "done", findings: 1 })).toBe("1 finding");
     expect(topicFact({ coverageId: "a", title: "A", state: "done", findings: 9 })).toBe("9 findings");
+  });
+});
+
+describe("the stopped row and the rows after it (notes-progress-report spec §8.5)", () => {
+  it("Researching counts its topics after 'Stopped' — 'none of' before one is done, never a bare 0 — and a row with no live facts reads 'Stopped'", () => {
+    const run = newRunState();
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped");
+    applyEvent(run, { type: "planner.planning.completed", metadata: { sub_topic_count: 3, sub_topics: [{ coverage_id: "topic-01", title: "A" }, { coverage_id: "topic-02", title: "B" }, { coverage_id: "topic-03", title: "C" }] } });
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · none of 3 topics done · no pages read · no findings");
+    applyEvent(run, { type: "researcher.sub_topic.completed", metadata: { coverage_id: "topic-02", sub_topic: "B", index: 2, successful_reads: 41, findings_retained: 212 } });
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · 1 of 3 topics done · 41 pages read · 212 findings");
+    expect((["planner", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer"] as NodeId[]).map((id) => stoppedSubtitle(run, id))).toEqual(Array(5).fill("Stopped"));
+  });
+  it("a later row reads 'not run', or 'not run again' once a loop has re-armed it", () => {
+    const run = newRunState();
+    expect(notRunText(run, "source_evaluator")).toBe("not run");
+    applyEvent(run, { type: "graph.route.decided", metadata: { destination: "extra_pass", reason: "extra_pass_requested", iteration: 0 } });
+    expect((["source_evaluator", "report_reviewer", "finalize_report"] as NodeId[]).map((id) => notRunText(run, id))).toEqual(["not run again", "not run again", "not run"]);
   });
 });

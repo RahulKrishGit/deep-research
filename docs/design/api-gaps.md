@@ -8,8 +8,8 @@ The rule this document exists to protect: **where a value is unavailable, the
 interface says so in muted text. It never renders `0`, `—`, `null`, a placeholder,
 or a disabled control.**
 
-The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
-3 Running, 4 Report, 5 Failed), a one-time check that can come between 2 and 3
+The console is one page with six stages (DESIGN.md §3: 1 Idle, 2 Submitted,
+3 Running, 4 Report, 5 Failed, 6 Stopped by you), a one-time check that can come between 2 and 3
 (2a, live-briefs Phase 2) and a collapsible session sidebar, so gaps are
 keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2, 3.1 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the

@@ -7,6 +7,7 @@ import { isLive, qFitClass, toSessionView, type SessionView } from "@/lib/format
 import { cancelDeferredClearIdleToRunningFlight, clearIdleToRunningFlight, clearRunningLayout, deferClearIdleToRunningFlight } from "@/lib/handoff";
 import { applyEvent, chipStep, marksFor, newRunState, stepLabel, toRunEvent, toggleOpen, type NodeId, type RunState } from "@/lib/run-state";
 import { readSubmission, submittedBeatRemaining, type Submission } from "@/lib/session-store";
+import { stoppedStepLabel } from "@/lib/stop";
 import { backoffDelaysMs, readStream } from "@/lib/stream";
 import { ClarifyStage } from "./ClarifyStage";
 import { useConsole } from "./ConsoleProvider";
@@ -18,11 +19,13 @@ import { SessionNotFound } from "./SessionNotFound";
 import { SettingsStrip } from "./SettingsStrip";
 import { Spine } from "./Spine";
 import { SubmittedStage } from "./SubmittedStage";
+import { UserStoppedStage } from "./UserStoppedStage";
 
 /* The stage is derived from /status and the stream (spec §4.3 stage table):
    404 → not in memory · running+finished_at → service stopped · running or needs_input → Submitted (this tab, < 2.2 s),
    then the one-time check while it asks and until the planner starts (live-briefs spec §4.5), then Running ·
-   failed → Failed (Task 18) · other terminal → Report (Task 17). */
+   stopped → the stopped stage (notes-progress-report spec §8.5) · failed → Failed (Task 18) ·
+   other terminal → Report (Task 17). */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const router = useRouter();
   const { noteMode, noteUnreachable, clearUnreachable, refreshSessions, setChip } = useConsole();
@@ -144,7 +147,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, ready]);
 
-  // The topbar chip follows the run while streaming and /status afterwards. K7/M3: a stopped
+  // The topbar chip follows the run while streaming and /status afterwards. K7/M3: a service-stopped
   // session shows no chip at all — the sentence above the frozen pipeline already says what
   // happened, and the green "Running" chip would contradict it. Re-review: a mid-run API restart
   // can leave a stale "running" `status` on screen while the ladder's next /status lands a 404 —
@@ -160,7 +163,9 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
   // open (chipStep), the status snapshot's current_agent otherwise; no pass number anywhere. While
   // the check asks, the chip reads "Waiting for you · a few quick questions": the stream is newer
   // than the last /status, so the phase, not the snapshot, picks the chip's status.
-  const step = live && phase !== "asking" ? stepLabel((streaming ? chipStep(run.current) : null) ?? status.current_agent) : null;
+  // notes-progress-report spec §8.4: a session the reader stopped names the step it was stopped at.
+  const step = live && phase !== "asking" ? stepLabel((streaming ? chipStep(run.current) : null) ?? status.current_agent)
+    : status?.status === "stopped" ? stoppedStepLabel(status.stopped_step) : null;
   const view: SessionView | null = status ? toSessionView(live ? { ...status, status: phase === "asking" ? "needs_input" : "running" } : status, step) : null;
   useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -201,6 +206,7 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     if (phase !== null) return <ClarifyStage sessionId={sessionId} run={run.current} phase={phase} question={status.query} strip={strip} />;
     return <RunningPipeline sessionId={sessionId} run={run.current} question={status.query} strip={strip} startedAt={status.started_at} onToggleRow={toggleRow} notesRemaining={status.notes_remaining} />;
   }
+  if (status.status === "stopped") return <UserStoppedStage status={status} run={run.current} strip={strip} settings={submission?.settings ?? null} onToggleRow={toggleRow} />;
   if (status.status === "failed") return <FailedStage status={status} run={run.current} strip={strip} />;
   return <ReportStage sessionId={sessionId} status={status} strip={<SettingsStrip settings={submission?.settings ?? null} id="reportOpts" />} />;
 }
