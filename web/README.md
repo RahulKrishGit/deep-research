@@ -57,6 +57,9 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   step briefs' captures use it, then `POST /research/{id}/stop`: `npm run capture:visual` adds
   `13-planning-brief` (with its `-phone` twin), `14-evaluating-brief`, `15-verifying-brief`,
   `16-writing-brief` and `17-reviewing-brief`.
+  `03-running` and `11-note-ack` are taken the same way, from a run held after its second topic
+  completes and only once the Researching row has settled (every mark drawn, the subtitle done
+  counting): the replay's own pacing never leaves that row still. `09` and `12` are each a second run.
 - Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
   posts `POST /research/{id}/stop` (the proxy forwards it); the session ends `stopped` and its page
   keeps the pipeline frozen where it stopped, with "Ask again". On the replay server the engine runs

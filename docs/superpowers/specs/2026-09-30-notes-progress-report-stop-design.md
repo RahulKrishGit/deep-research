@@ -1224,6 +1224,8 @@ New captures:
 
 `04-report` and `12-report-notes` are re-taken. Each capture is reviewed at full height against its canvas artboard.
 
+*Implementation ruling (final fix wave, 2026-10-01).* `03-running` and `11-note-ack` are taken from a run held after its second topic completes (`X-Replay-Hold-After: researcher.sub_topic.completed#2`), and only once the Researching row has settled: every topic row and its mark at full opacity with no transition running, each mark at the end state its row names, and the subtitle's text unchanged across two reads 300 ms apart. The replay releases an event every 150 ms and the next topic completes 750 ms after the first, less than a ✓ drawing plus the checks and the shot, so a live row is never still. `09-running-extra-pass` and `12-report-notes` are each a second run in the same test.
+
 ---
 
 ## 12. Risks
