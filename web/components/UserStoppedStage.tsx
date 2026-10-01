@@ -30,8 +30,14 @@ export function UserStoppedStage({ status, run, strip, settings, onToggleRow }: 
   const seconds = run.stopped?.elapsedSeconds ?? secondsBetween(status.started_at, status.finished_at);
   const frozen = STAGES.find((s) => s.id === step)?.id ?? null;
   // The Stop control that had focus went with the running stage: the note's first line takes it, so a
-  // keyboard or screen-reader user keeps their place. It is not a control, so it draws no ring.
-  useEffect(() => { if (document.activeElement === document.body) line.current?.focus(); }, []);
+  // keyboard or screen-reader user keeps their place. It is not a control, so it draws no ring. When the
+  // stream's end and /status show the stop before the POST's 202 lands, this stage mounts while the
+  // control is still up and still holds focus (a disabled "Stop research"), and unmounts a moment
+  // later: focus inside it counts as lost too (spec ambiguity 11).
+  useEffect(() => {
+    const held = document.activeElement;
+    if (held === document.body || held?.closest(".stop-anchor")) line.current?.focus();
+  }, []);
 
   async function askAgain() {
     if (busy) return;

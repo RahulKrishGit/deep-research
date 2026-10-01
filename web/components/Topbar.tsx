@@ -3,8 +3,9 @@
 import { useConsole } from "./ConsoleProvider";
 import { ModeChip } from "./ModeChip";
 import { StatusChip } from "./StatusChip";
+import { StopControl } from "./StopControl";
 export function Topbar() {
-  const { sidebar, setSidebar, chip, mode } = useConsole();
+  const { sidebar, setSidebar, chip, mode, stop } = useConsole();
   const open = sidebar === "expanded";
   return (
     <header className="topbar">
@@ -15,6 +16,8 @@ export function Topbar() {
         </button>
         <div className="topbar-right" id="topbarStatus">
           {chip ? <StatusChip view={chip} /> : null}
+          {/* notes-progress-report spec §8.5: Stop sits after the status chip and before the replay chip. */}
+          {stop ? <StopControl key={stop.sessionId} target={stop} /> : null}
           {mode === "replay" ? <ModeChip /> : null}
         </div>
       </div>

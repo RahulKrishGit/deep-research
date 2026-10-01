@@ -5,6 +5,9 @@ import { isLive, type SessionView } from "@/lib/format";
 
 type SidebarMode = "expanded" | "collapsed";
 interface Unreachable { target: string; retry: () => void }
+/* notes-progress-report spec §8.5: the session the topbar's Stop acts on, and how the screen takes the
+   stopped session the API answers with. */
+export interface StopTarget { sessionId: string; onStopped(response: ResearchSessionResponse): void }
 export interface ConsoleState {
   mode: ApiMode | null; noteMode(mode: ApiMode | null): void;
   chip: SessionView | null; setChip(view: SessionView | null): void;
@@ -15,6 +18,8 @@ export interface ConsoleState {
      banner is up while any key is registered; its target comes from whichever entry exists, and
      its Retry (`unreachable.retry`) re-runs every registered retry, not just the last one noted. */
   unreachable: Unreachable | null; noteUnreachable(key: string, target: string, retry: () => void): void; clearUnreachable(key: string): void;
+  /* Set by SessionScreen while its session can be stopped; null otherwise (spec §8.5). */
+  stop: StopTarget | null; setStop(target: StopTarget | null): void;
 }
 const ConsoleContext = createContext<ConsoleState | null>(null);
 export function useConsole(): ConsoleState {
@@ -25,6 +30,7 @@ export function useConsole(): ConsoleState {
 export function ConsoleProvider({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<ApiMode | null>(null);
   const [chip, setChip] = useState<SessionView | null>(null);
+  const [stop, setStop] = useState<StopTarget | null>(null);
   const [sessions, setSessions] = useState<ResearchSessionResponse[]>([]);
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [sidebar, setSidebarState] = useState<SidebarMode>("expanded");
@@ -93,8 +99,8 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     return keys.length === 0 ? null : { target: registry[keys[0]].target, retry: retryAll };
   }, [registry, retryAll]);
   const value = useMemo<ConsoleState>(
-    () => ({ mode, noteMode, chip, setChip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable }),
-    [mode, noteMode, chip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable],
+    () => ({ mode, noteMode, chip, setChip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable, stop, setStop }),
+    [mode, noteMode, chip, sessions, sessionsLoaded, refreshSessions, sidebar, setSidebar, unreachable, noteUnreachable, clearUnreachable, stop],
   );
   return <ConsoleContext.Provider value={value}>{children}</ConsoleContext.Provider>;
 }

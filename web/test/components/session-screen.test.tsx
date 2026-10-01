@@ -291,3 +291,115 @@ describe("SessionScreen — the one-time check (live-briefs spec §4.5)", () => 
     await waitFor(() => expect(streamCalls).toBeGreaterThanOrEqual(2));
   });
 });
+
+describe("SessionScreen — Stop (notes-progress-report spec §8.5, D17)", () => {
+  const planning = frame(1, "graph.node.started", { node: "planner", iteration: 0 });
+  const publishing = planning + frame(2, "graph.node.completed", { node: "planner" })
+    + frame(3, "graph.route.decided", { destination: "finalize", reason: "report_accepted", iteration: 0 });
+  const serve = (status: () => ResearchSessionResponse, frames: string, onStop?: () => Response) => vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/stop") && onStop) return onStop();
+    if (url.includes("/stream")) return sse(frames);
+    if (url.includes("/status")) return json(200, status());
+    return json(200, { sessions: [] });
+  });
+  const topbar = () => [...document.querySelectorAll("#topbarStatus > *")].map((el) => el.id || el.className);
+
+  it("is offered after the running chip and before the replay chip, and beside the check's waiting chip", async () => {
+    vi.stubGlobal("fetch", serve(() => RUNNING, planning));
+    const first = render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+    await waitFor(() => expect(topbar()).toEqual(["chip", "stop-anchor", "modeChip"]));
+    first.unmount();
+    vi.stubGlobal("fetch", serve(() => ({ ...RUNNING, status: "needs_input" }), ""));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+    expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Waiting for you · a few quick questions");
+  });
+
+  it("is not offered once the stream shows Publishing, once /status does, or for a service-stopped session", async () => {
+    vi.stubGlobal("fetch", serve(() => RUNNING, publishing));
+    const streamed = render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.querySelector('#spine li[data-stage="finalize_report"]')?.getAttribute("data-state")).toBe("active"));
+    // The screen withdraws Stop in an effect, after the render that shows Publishing.
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+    streamed.unmount();
+    for (const status of [{ ...RUNNING, current_agent: "finalize_report" }, STOPPED]) {
+      vi.stubGlobal("fetch", serve(() => status, ""));
+      const view = render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+      await waitFor(() => expect(document.getElementById("stage-loading")).toBeNull());
+      expect(document.getElementById("stopBtn")).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("a stop the API takes moves the page to the stopped stage at once, and Stop is gone", async () => {
+    let stopped = false;
+    const after: ResearchSessionResponse = { ...RUNNING, status: "stopped", stopped_step: "planner", finished_at: "2026-09-27T00:05:00+00:00" };
+    vi.stubGlobal("fetch", serve(() => (stopped ? after : RUNNING), planning, () => { stopped = true; return json(202, after); }));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+    fireEvent.click(document.getElementById("stopBtn")!);
+    fireEvent.click([...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === "Stop research")!);
+    await waitFor(() => expect(document.getElementById("stage-user-stopped")).toBeTruthy());
+    // The screen withdraws the target in an effect, one render after it adopts the stopped status.
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+    await waitFor(() => expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Stopped by you · at Planning"));
+  });
+
+  // Spec ambiguity 11, through the real flow: the reader presses "Stop research" (it holds focus, as a
+  // press or a Tab+Enter leaves it), the 202 unmounts the popover and the running stage, and the stopped
+  // stage's first line must end up focused, not the page. Focus is given explicitly because fireEvent
+  // does not move it as a real press would.
+  it("focus ends on the stopped stage's first line after a stop, not on the page", async () => {
+    let stopped = false;
+    const after: ResearchSessionResponse = { ...RUNNING, status: "stopped", stopped_step: "planner", finished_at: "2026-09-27T00:05:00+00:00" };
+    vi.stubGlobal("fetch", serve(() => (stopped ? after : RUNNING), planning, () => { stopped = true; return json(202, after); }));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+    fireEvent.click(document.getElementById("stopBtn")!);
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === "Stop research")!;
+    confirm.focus();
+    expect(document.activeElement).toBe(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(document.getElementById("stage-user-stopped")).toBeTruthy());
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById("stoppedLine")));
+  });
+
+  // The other order a real stop can arrive in: the stream ends after session.stopped and the screen's
+  // own /status read finds "stopped" before the POST's 202 is handled. The stopped stage then mounts
+  // while the popover is still up and "Stop research" (disabled, waiting) still holds focus; the control
+  // goes with the running stage a moment later. Focus must still land on the first line.
+  it("focus ends on the stopped stage's first line when /status shows the stop before the POST answers", async () => {
+    let stopped = false;
+    let endStream!: () => void;
+    let answer!: (response: Response) => void;
+    const after: ResearchSessionResponse = { ...RUNNING, status: "stopped", stopped_step: "planner", finished_at: "2026-09-27T00:05:00+00:00" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/stop")) return new Promise<Response>((resolve) => { answer = resolve; });
+      if (url.includes("/stream")) {
+        const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(planning)); endStream = () => controller.close(); } });
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream", "x-deep-research-mode": "replay" } });
+      }
+      if (url.includes("/status")) return json(200, stopped ? after : RUNNING);
+      return json(200, { sessions: [] });
+    }));
+    render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+    await waitFor(() => expect(endStream).toBeTypeOf("function"));
+    fireEvent.click(document.getElementById("stopBtn")!);
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === "Stop research")!;
+    confirm.focus();
+    fireEvent.click(confirm);
+    expect(confirm.disabled).toBe(true);
+    stopped = true;
+    await act(async () => { endStream(); });
+    await waitFor(() => expect(document.getElementById("stage-user-stopped")).toBeTruthy());
+    await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(document.getElementById("stoppedLine")));
+    await act(async () => { answer(json(202, after)); });
+    expect(document.activeElement).toBe(document.getElementById("stoppedLine"));
+  });
+});

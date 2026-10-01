@@ -179,6 +179,21 @@ re-armed. There is no arc, no hand-off, no note line and no counters block. A st
 one-time check shows no pipeline card (D33), and the note reads `You stopped this research at
 {HH:MM}, before it started.`
 
+**Stop asks once** (notes-progress-report D17, D18, D24, 2026-09-30). From the one-time check
+through Reviewing, a small ghost **Stop** — an 8px square in the text colour, then the word,
+kept at every width — sits after the status chip in the topbar, before the replay chip. It asks
+once: a popover hung below it, right-aligned, 320px wide on one surface, `Stop this research?`
+and `It stops right away and nothing more is spent. What's done so far stays here, but no report
+is written.`, with `Keep going` (quiet, focused on open) and `Stop research`, the one red word:
+`--status-danger` text on a `--border` edge, never a filled button. Escape, a click outside or
+Keep going closes it and gives focus back to Stop; nothing stops until the reader says so.
+Stopping cancels the run where it stands, with every call it has in flight, writes nothing and
+opens stage 6. Once the run decides to publish the control is gone, because the API refuses a
+stop from that decision (`409 not_stoppable`); a refusal that still reaches an open popover says
+`Too late to stop — the research is finishing.` with a Close button, and any other failure says
+`Couldn't stop — try again` and keeps both buttons. On a phone the popover spans the width
+between the gutters, under the topbar. Under reduced motion it fades in without rising.
+
 **Stage 2 carries the question and its settings, and nothing else.** It used to open a card
 underneath them: a "Starting session" chip, the session id, `POST /research → 202`, and two
 paragraphs explaining that overrides are read once and that the console rejoins a run by its

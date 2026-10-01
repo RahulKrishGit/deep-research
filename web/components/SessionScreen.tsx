@@ -28,7 +28,7 @@ import { UserStoppedStage } from "./UserStoppedStage";
    other terminal → Report (Task 17). */
 export function SessionScreen({ sessionId }: { sessionId: string }) {
   const router = useRouter();
-  const { noteMode, noteUnreachable, clearUnreachable, refreshSessions, setChip } = useConsole();
+  const { noteMode, noteUnreachable, clearUnreachable, refreshSessions, setChip, setStop } = useConsole();
   const [status, setStatus] = useState<ResearchSessionResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [submission, setSubmission] = useState<Submission | null>(null);
@@ -168,6 +168,15 @@ export function SessionScreen({ sessionId }: { sessionId: string }) {
     : status?.status === "stopped" ? stoppedStepLabel(status.stopped_step) : null;
   const view: SessionView | null = status ? toSessionView(live ? { ...status, status: phase === "asking" ? "needs_input" : "running" } : status, step) : null;
   useEffect(() => { setChip(stopped || notFound ? null : view); return () => setChip(null); }, [setChip, status, version, streaming, stopped, notFound]); // eslint-disable-line react-hooks/exhaustive-deps
+  // notes-progress-report spec §8.5 (D17): Stop is offered from the one-time check through Reviewing —
+  // while the session is live and not closed out, and neither the stream nor the last /status shows
+  // Publishing or a finished graph: the API refuses a stop from the run's decision to publish.
+  const stoppable = live && status.finished_at === null && run.current.finalStatus === null
+    && chipStep(run.current) !== "finalize_report" && status.current_agent !== "finalize_report";
+  useEffect(() => {
+    setStop(stoppable ? { sessionId, onStopped: setStatus } : null);
+    return () => setStop(null);
+  }, [setStop, stoppable, sessionId]);
 
   // Review fix round 1 (Important #1): a pending idle→running flight is only ever consumed by
   // SubmittedStage. Every other resolution — not found, a stopped/failed/finished session, or the

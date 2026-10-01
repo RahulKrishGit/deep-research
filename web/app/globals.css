@@ -1424,3 +1424,27 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs > li[data-state="stopped"] .bullet{border-color:var(--muted);color:var(--fg);background:var(--surface)}
 .spine-lg.briefs > li[data-state="stopped"] .stage-name{color:var(--fg)}
 .spine-lg.briefs > li[data-state="off"] .stage-name,.spine-lg.briefs > li[data-state="off"] .stage-meta{color:var(--meta)}
+/* The Stop control (§8.5; D18, D24): a small ghost button after the status chip — a square in the text
+   colour, then "Stop", kept at every width — and its one confirmation, hung below it, right-aligned, on
+   one surface. "Stop research" is the one red word: --status-danger text on a --border edge, the danger
+   edge on hover, never a filled button; nothing here is purple (D19). */
+.stop-anchor{position:relative;display:inline-flex;flex:none}
+.btn-stop{color:var(--fg)}
+.stop-sq{width:8px;height:8px;background:currentColor;border-radius:1px;display:inline-block;flex:none}
+.btn-danger{border-color:var(--border);color:var(--status-danger)}
+.btn-danger:hover{background:var(--border-soft);border-color:var(--status-danger)}
+.stop-confirm{position:absolute;top:calc(100% + var(--space-2));right:0;z-index:40;width:320px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-lg);padding:var(--space-4);display:flex;flex-direction:column;gap:var(--space-3);animation:enter var(--motion-base) var(--ease-standard) 1}
+.stop-confirm .confirm-t{font-size:var(--text-base);font-weight:600;color:var(--fg);line-height:1.4}
+.stop-confirm .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
+.stop-confirm .confirm-btns{display:flex;gap:var(--space-2);justify-content:flex-end}
+/* On a phone the replay chip sits to Stop's right, so a 320px box hung from its right edge would start
+   left of the viewport: there it spans the width between the phone gutters, under the topbar
+   (spec ambiguity 9). */
+@media (max-width:480px){
+  .stop-confirm{position:fixed;top:calc(var(--topbar) + var(--space-2));left:var(--container-gutter-phone);right:var(--container-gutter-phone);width:auto}
+}
+@media (prefers-reduced-motion:reduce){
+  /* The popover fades in without rising: the reduced-motion block above redefines `enter` as a fade
+     and zeroes every duration; this gives the popover its fade back, as the stages get theirs. */
+  .stop-confirm{animation-duration:var(--motion-base) !important}
+}
