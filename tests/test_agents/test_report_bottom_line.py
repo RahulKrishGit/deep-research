@@ -278,8 +278,11 @@ def test_a_short_title_keeps_one_to_three_plain_words(drafted: str, expected: st
 
 
 def test_the_prompts_short_title_examples_are_the_ones_the_check_keeps() -> None:
-    """The parametrized examples above are the prompt's own two (§7.1), so they cannot drift."""
+    """The parametrized examples above are the prompt's own two (§7.1): the prompt contains
+    them, and the check keeps each one against a long section title, so they cannot drift."""
     assert '("Published picks", "Opening hours")' in SECTION_INSTRUCTION
+    for name in ("Published picks", "Opening hours"):
+        assert _section_short_title(name, "Capacity added in 2024 across the state") == name
 
 
 @pytest.mark.asyncio

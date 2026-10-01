@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -26,6 +27,11 @@ PROGRESS_TYPES = frozenset({
     "evidence_verifier.progress",
     "report_writer.progress",
 })
+
+
+def sse_events(text: str) -> list[dict]:
+    """The event payloads (``data:`` lines) of an SSE body, in order: the same frames ``frames`` names."""
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
 
 
 def replay_app(root: Path, *, delay: float = 0.0):
@@ -347,12 +353,20 @@ def test_hold_after_holds_the_stream_until_the_session_is_stopped(tmp_path: Path
         stopped = client.post(f"/research/{session_id}/stop")
         assert stopped.status_code == 202
         assert (stopped.json()["status"], stopped.json()["stopped_step"]) == ("stopped", "report_reviewer")
-        names = frames(client.get(f"/research/{session_id}/stream").text)
+        stream = client.get(f"/research/{session_id}/stream").text
+        names = frames(stream)
 
     assert names.count("graph.report.reviewed") == 1
     assert names[-2:] == ["graph.report.reviewed", "session.stopped"]
     # This ``/stream`` connection is a late one: it replays what the session recorded. The four
     # live-only progress types are in that record (``ResearchSession.publish`` records them,
-    # spec §4 item 1), so a reconnect replays them, each before the review it led up to.
+    # spec §4 item 1), so a reconnect replays them: every one of them is in the replay, and the
+    # last frame of each comes before the ``graph.node.started`` of the report reviewer.
     assert PROGRESS_TYPES <= set(names)
-    assert names.index("graph.report.reviewed") > max(names.index(kind) for kind in PROGRESS_TYPES)
+    reviewer_started = next(
+        index for index, event in enumerate(sse_events(stream))
+        if event["event_type"] == "graph.node.started" and event["metadata"].get("node") == "report_reviewer"
+    )
+    for kind in PROGRESS_TYPES:
+        last = max(index for index, name in enumerate(names) if name == kind)
+        assert last < reviewer_started, kind
