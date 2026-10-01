@@ -25,7 +25,9 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
     });
 
     test(`02-submitted${suffix}, 03-running${suffix}, 09-running-extra-pass${suffix}`, async ({ page, request, context }) => {
-      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
+      // Held after graph.extra_pass.started: at replay pacing the extra pass ends before D39's hold does, so
+      // the run would be past Researching and it would never reopen (as in briefs.spec.ts's arc test).
+      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Hold-After": "graph.extra_pass.started" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
@@ -33,8 +35,12 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"] .ps-topics [data-topic="done"]').first()).toBeVisible({ timeout: 10_000 });
       await shoot(page, `03-running${suffix}`);
       await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
+      // Decision D39: Reviewing holds its verdict for HANDOFF_HOLD_MS first; 09 shows Researching reopened.
+      await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"]')).toBeVisible();
+      // The row is still opening when data-open flips: its lines rise after the height (spec §6.1), so wait for the reason line.
+      await expect(page.locator('#spine li[data-stage="researcher"] .b-why')).toHaveCSS("opacity", "1");
       await shoot(page, `09-running-extra-pass${suffix}`);
-      await waitTerminal(request, id);
+      expect((await request.post(`${API}/research/${id}/stop`)).status()).toBe(202);
     });
 
     test(`04-report${suffix}, 08-evidence${suffix}`, async ({ page, request }) => {
@@ -131,3 +137,30 @@ test.describe("captures at 1920", () => {
     await shoot(page, "18b-report-cards-1920");
   });
 });
+
+// notes-progress-report spec §11.3: each step's brief, held with X-Replay-Hold-After (§6.10) at a moment
+// that shows its body, then stopped (Phase D's POST /stop). Planning also at phone width.
+const BRIEFS = [
+  { name: "13-planning-brief", hold: "planner.progress#2", stage: "planner", ready: ".ps-slots > .ln[data-topic='running']" },
+  { name: "14-evaluating-brief", hold: "source_evaluator.progress#2", stage: "source_evaluator", ready: ".stats .v" },
+  { name: "15-verifying-brief", hold: "evidence_verifier.progress#2", stage: "evidence_verifier", ready: ".tickbox .qt" },
+  { name: "16-writing-brief", hold: "report_writer.progress#4", stage: "report_writer", ready: ".tickbox .qt" },
+  { name: "17-reviewing-brief", hold: "graph.report.reviewed", stage: "report_reviewer", ready: ".rv-list > .ln[data-topic='done']" },
+] as const;
+for (const [suffix, viewport, briefs] of [["", null, BRIEFS], ["-phone", PHONE, BRIEFS.slice(0, 1)]] as const) {
+  test.describe(`step briefs${suffix}`, () => {
+    if (viewport) test.use({ viewport });
+    for (const brief of briefs) {
+      test(`${brief.name}${suffix}`, async ({ page, request, context }) => {
+        await context.setExtraHTTPHeaders({ "X-Replay-Hold-After": brief.hold });
+        const id = await submit(page, "What is the current state of grid-scale battery storage?");
+        const row = page.locator(`#spine li[data-stage="${brief.stage}"]`);
+        await expect(row).toHaveAttribute("data-open", "1", { timeout: 30_000 });
+        await expect(row.locator(brief.ready).first()).toBeVisible();
+        await page.waitForTimeout(1_500); // the opening row's lines have risen and the ticker has settled
+        await shoot(page, `${brief.name}${suffix}`);
+        expect((await request.post(`${API}/research/${id}/stop`)).status()).toBe(202);
+      });
+    }
+  });
+}
