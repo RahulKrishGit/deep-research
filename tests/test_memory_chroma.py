@@ -169,3 +169,32 @@ def test_importing_the_memory_package_does_not_import_chromadb() -> None:
     assert result.returncode == 0, (
         f"stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+
+@pytest.mark.asyncio
+async def test_the_real_store_answers_many_reputation_reads_at_once(
+    tmp_path: Path,
+) -> None:
+    """Latency audit O12: the source evaluator reads every source's reputation
+    at once, so the real backend has to answer concurrent reads correctly."""
+    import asyncio
+
+    memory = LongTermMemory.from_config(_config(tmp_path), embeddings=FakeEmbeddings())
+    urls = [f"https://source{index}.example.test/page" for index in range(40)]
+    for index, url in enumerate(urls):
+        await memory.update_source_reputation(
+            url=url,
+            title=f"Source {index}",
+            reputation_score=(index % 10) / 10,
+            session_id="session-1",
+            agent_id="source_evaluator",
+        )
+
+    records = await asyncio.gather(*(memory.get_source_reputation(url) for url in urls))
+
+    assert [record.url for record in records if record is not None] == urls
+    assert [record.reputation_score for record in records if record is not None] == [
+        (index % 10) / 10 for index in range(40)
+    ]
+    assert memory.errors == ()

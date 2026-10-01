@@ -1197,7 +1197,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # scoring request's # Context slot, for relevance only. Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
     # `fb7f60d73873` -> `24809aa975a3`.
-    "source_evaluator": "24809aa975a3",
+    # Latency plan Task 11 (audit O12): every source's remembered reputation
+    # is looked up at once and applied in source order. Module code only; no
+    # request changed and agents.prompts was untouched. Moved `24809aa975a3` -> `eceba70b743d`.
+    "source_evaluator": "eceba70b743d",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
