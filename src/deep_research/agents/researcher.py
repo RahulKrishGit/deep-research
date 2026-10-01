@@ -2679,6 +2679,7 @@ def sub_topic_completed_event(
     acquired_work_count: int = 0,
     target_obligation_completed: bool = False,
     elapsed_s: float = 0.0,
+    timings: ExtractionTimings | None = None,
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
@@ -2702,33 +2703,47 @@ def sub_topic_completed_event(
     target's obligation advanced: at least one registry-admitted finding was
     extracted for it. Whether the reader's report answers the target is judged
     later, on the report's own statements, and is not claimed here.
+
+    ``timings`` is where the tail after the loop went (latency audit O8):
+    ``extraction_wait_s``, ``owed_round_s``, ``owed_calls`` and
+    ``slowest_page_s``, added only when it is given.
     """
+    metadata: dict[str, JsonValue] = {
+        "sub_topic": summarize_text(sub_topic.title),
+        "coverage_id": sub_topic.coverage_id,
+        "index": index,
+        "stop_reason": run.stop_reason,
+        "iterations": run.iterations,
+        "tool_calls": run.tool_calls,
+        "cache_hits": run.cache_hits,
+        "findings": findings,
+        "findings_dropped_duplicate": dropped_duplicate,
+        "findings_dropped_cap": dropped_cap,
+        "sources_retained": sources_retained,
+        "publishers_retained": publishers_retained,
+        "source_urls_retained": source_urls_retained,
+        "findings_retained": findings_retained,
+        "works_retained": works_retained,
+        "successful_reads": successful_reads,
+        "useful_evidence_yield": useful_evidence_yield,
+        "acquired_work_count": acquired_work_count,
+        "target_obligation_completed": target_obligation_completed,
+        "elapsed_s": elapsed_s,
+    }
+    if timings is not None:
+        metadata.update(
+            {
+                "extraction_wait_s": timings.extraction_wait_s,
+                "owed_round_s": timings.owed_round_s,
+                "owed_calls": timings.owed_calls,
+                "slowest_page_s": timings.slowest_page_s,
+            }
+        )
     return agent_event(
         agent_name=RESEARCHER_NAME,
         event_type="researcher.sub_topic.completed",
         message=f"Sub-topic {index} complete.",
-        metadata={
-            "sub_topic": summarize_text(sub_topic.title),
-            "coverage_id": sub_topic.coverage_id,
-            "index": index,
-            "stop_reason": run.stop_reason,
-            "iterations": run.iterations,
-            "tool_calls": run.tool_calls,
-            "cache_hits": run.cache_hits,
-            "findings": findings,
-            "findings_dropped_duplicate": dropped_duplicate,
-            "findings_dropped_cap": dropped_cap,
-            "sources_retained": sources_retained,
-            "publishers_retained": publishers_retained,
-            "source_urls_retained": source_urls_retained,
-            "findings_retained": findings_retained,
-            "works_retained": works_retained,
-            "successful_reads": successful_reads,
-            "useful_evidence_yield": useful_evidence_yield,
-            "acquired_work_count": acquired_work_count,
-            "target_obligation_completed": target_obligation_completed,
-            "elapsed_s": elapsed_s,
-        },
+        metadata=metadata,
     )
 
 
@@ -2931,6 +2946,24 @@ def owed_extraction_provider_error(
             tool_calls=run.tool_calls,
         ),
     )
+
+
+@dataclass(slots=True)
+class ExtractionTimings:
+    """Where one sub-topic's tail after its loop went (latency audit O8).
+
+    ``extract_findings`` fills it when it is handed one: the seconds spent
+    waiting for the page extractions the loop started (``extraction_wait_s``),
+    the one round of owed, cross-topic and dissent re-asks after them
+    (``owed_round_s``) and how many calls that round asked (``owed_calls``),
+    and the slowest single page extraction (``slowest_page_s``). A field a
+    pass never reached stays at zero.
+    """
+
+    extraction_wait_s: float = 0.0
+    owed_round_s: float = 0.0
+    owed_calls: int = 0
+    slowest_page_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -3673,6 +3706,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         page_extractions: Mapping[str, "asyncio.Task[_PageExtraction]"] | None = None,
         admitted_read_order: Sequence[str] = (),
         gate: asyncio.Semaphore | None = None,
+        timings: ExtractionTimings | None = None,
     ) -> tuple[list[Finding], list[ResearchError], ExtractionFailure, bool]:
         """Turn one finished sub-topic loop into validated findings.
 
@@ -3713,6 +3747,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         still consumed as usual. The fourth is the target-obligation flag
         this extraction completed, which the caller reports in the
         sub-topic's own completed event.
+
+        ``timings``, when given, is filled with where this tail went (latency
+        audit O8); nothing else reads it.
         """
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
@@ -3806,6 +3843,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             page_failures: list[str] = []
             failed_read_ids: set[str] = set()
             pages_run = 0
+            waited_from = perf_counter()
             try:
                 for read_id in admitted_read_order:
                     page_task = page_extractions.get(read_id)
@@ -3813,6 +3851,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         continue
                     pages_run += 1
                     page = await page_task
+                    if timings is not None:
+                        timings.slowest_page_s = max(
+                            timings.slowest_page_s, page.elapsed_s
+                        )
                     if page.error is not None:
                         errors.append(page.error)
                         page_failures.append(
@@ -3841,6 +3883,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # stopped waiting for it (RevSelectionR3 P1).
                 await _cancel_and_gather_pages(page_extractions)
                 raise
+            if timings is not None:
+                timings.extraction_wait_s = round(perf_counter() - waited_from, 1)
             if pages_run and len(page_failures) == pages_run:
                 # Every page's own call failed: nothing was extracted at
                 # all, exactly the legacy single-call early return -- the
@@ -4164,6 +4208,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 (read_id, [batch], (), dissent_statements_by_read[read_id])
                 for read_id, batch in dissent_batches.items()
             ]
+            owed_from = perf_counter()
             if combined_jobs:
                 all_results = await asyncio.gather(
                     *(
@@ -4189,6 +4234,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 )
             else:
                 all_results = []
+            if timings is not None:
+                timings.owed_round_s = round(perf_counter() - owed_from, 1)
+                timings.owed_calls = sum(
+                    len(page_batches) for _, page_batches, _, _ in combined_jobs
+                )
             own_owed_results = all_results[: len(batches_by_page)]
             cross_topic_results = all_results[
                 len(batches_by_page) : len(batches_by_page) + len(cross_topic_batches)
@@ -4539,6 +4589,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             max_entries=self._scratchpad.max_entries,
         )
         policy = self._policy_for_task(task)
+        timings = ExtractionTimings()
         started_at = perf_counter()
         async with self.tracker.agent_span(self.name) as span:
             # Own the tasks here (RevSelectionR3 P1): whatever exception
@@ -4568,6 +4619,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     page_extractions=loop_result.extraction_tasks,
                     admitted_read_order=loop_result.admitted_read_order,
                     gate=loop_result.extraction_gate,
+                    timings=timings,
                 )
             finally:
                 if loop_result is not None:
@@ -4654,6 +4706,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             acquired_work_count=acquired_work_count,
             target_obligation_completed=target_obligation_completed,
             elapsed_s=elapsed_s,
+            timings=timings,
         )
         publish_live(completed)
         events.append(completed)

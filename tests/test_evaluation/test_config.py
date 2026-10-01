@@ -1159,7 +1159,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # researcher.tool_call carries lock_wait_s and duration_s, handed over by
     # run_react_loop's on_tool_timing. Module code only; no request changed
     # (the replay digest pins hold) and agents.prompts was untouched. Moved `a8c9528f0c20` -> `dff19f853f51`.
-    "researcher": "dff19f853f51",
+    # Latency plan Task 3 (audit O8): researcher.sub_topic.completed carries
+    # the tail split (extraction_wait_s, owed_round_s, owed_calls,
+    # slowest_page_s) from ExtractionTimings. Module code only; no request
+    # changed. Moved `dff19f853f51` -> `916dcb5f8a48`.
+    "researcher": "916dcb5f8a48",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

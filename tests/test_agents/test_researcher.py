@@ -8641,3 +8641,40 @@ async def test_a_live_tool_call_event_carries_its_lock_wait_and_run_time(
     for event in tool_call_events(state.sub_topics[0], outcome.react):
         assert "lock_wait_s" not in event.metadata
         assert "duration_s" not in event.metadata
+
+
+@pytest.mark.asyncio
+async def test_the_completed_event_splits_the_tail_after_the_loop(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: ``researcher.sub_topic.completed`` says where the time
+    after the loop went -- the wait for the loop's own page extractions, the
+    one round of owed re-asks and how many calls it asked, and the slowest page
+    -- so the post-loop tail can be sized from a run's own events."""
+    completer = ScriptedCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    outcome = await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+    )
+
+    completed = next(
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+    )
+    metadata = completed.metadata
+    # One page extraction, then one owed round of MAX_OWED_BATCHES packets.
+    assert metadata["owed_calls"] == MAX_OWED_BATCHES
+    for key in ("extraction_wait_s", "owed_round_s", "slowest_page_s"):
+        assert isinstance(metadata[key], float)
+        assert metadata[key] >= 0.0
+        assert metadata[key] == round(metadata[key], 1)

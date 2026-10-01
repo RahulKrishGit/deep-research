@@ -372,6 +372,7 @@ from deep_research.agents.report_writer import (
 from deep_research.agents.researcher import (
     DEFAULT_EVIDENCE_CHARS,
     ExtractionFailure,
+    ExtractionTimings,
     extra_pass_unfunded_error,
     extraction_output_limit_error,
     DEFAULT_MAX_SUB_TOPICS,
@@ -882,6 +883,7 @@ __all__ = [
     "bound_sub_topic_findings",
     "build_findings",
     "ExtractionFailure",
+    "ExtractionTimings",
     "existing_sources_for",
     "extraction_messages",
     "extra_pass_unfunded_error",
