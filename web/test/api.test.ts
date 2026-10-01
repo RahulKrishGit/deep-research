@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getStatus, reportUrl, startResearch, streamUrl, submitAnswers } from "../lib/api";
+import { ApiError, ApiUnreachableError, evidenceMarkdownUrl, getStatus, reportUrl, startResearch, stopResearch, streamUrl, submitAnswers } from "../lib/api";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -71,6 +71,24 @@ describe("the client", () => {
     const error = await submitAnswers("s1", { answers: [], skip: true }).catch((e) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect([error.status, error.body.code]).toEqual([409, "not_waiting_for_input"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+  it("posts a stop once, with no body, to the session's stop route (notes-progress-report spec §8.1)", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(202, { session_id: "s1", status: "stopped", stopped_step: "researcher" }, { "x-deep-research-mode": "replay" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await stopResearch("s1");
+    expect([result.data.status, result.data.stopped_step, result.mode]).toEqual(["stopped", "researcher", "replay"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/research/s1/stop");
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect([init.method, init.body]).toEqual(["POST", undefined]);
+  });
+  it("maps a refused stop's 409 to ApiError with its reason, and never retries it", async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(409, { error: { code: "not_stoppable", message: "Research session can no longer be stopped.", reason: "publishing", issues: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const error = await stopResearch("s1").catch((e) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect([error.status, error.body.code, error.body.reason]).toEqual([409, "not_stoppable", "publishing"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it("builds same-origin URLs", () => {

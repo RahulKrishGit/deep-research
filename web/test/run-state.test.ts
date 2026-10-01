@@ -26,17 +26,17 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 };
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the twenty-two handlers", () => {
+  it("has the seven rows and the twenty-eight handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
-      "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
-      "graph.node.started", "graph.note_pass.started", "graph.note_redraft.requested", "graph.report.redraft_requested",
+      "evidence_verifier.progress", "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
+      "graph.node.started", "graph.note_pass.started", "graph.note_redraft.requested", "graph.quality.assessed", "graph.report.redraft_requested",
       "graph.report.reviewed", "graph.route.decided", "graph.session.completed",
-      "planner.planning.completed", "report_writer.report.written", "researcher.research.completed",
+      "planner.planning.completed", "planner.progress", "report_writer.progress", "report_writer.report.written", "researcher.research.completed",
       "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
       "session.clarification.answered", "session.clarification.requested", "session.note.interpreted", "session.note.received",
-      "source_evaluator.evaluation.completed",
+      "session.stopped", "source_evaluator.evaluation.completed", "source_evaluator.progress",
     ]);
   });
 });
@@ -45,14 +45,32 @@ describe("the run state holds only what the page reads (Phase 2 final review R6)
   it("has no pass cap, loop tag or blurbs, exports no BLURB, and graph.session.started changes nothing", () => {
     const run = newRunState();
     expect(Object.keys(run).sort()).toEqual([
-      "active", "arc", "captions", "clarify", "counters", "countersPass", "finalStatus", "findingsSoFar",
-      "loop", "loopPending", "marks", "notes", "open", "openNode", "outcomes", "pagesRead", "pass",
-      "passFindings", "plan", "rearmed", "rearmedFirst", "reopen", "topics",
+      "active", "arc", "captions", "clarify", "counters", "countersPass", "durations", "evaluating", "finalStatus", "findingsSoFar",
+      "hardFailures", "loop", "loopPending", "marks", "notes", "open", "openNode", "outcomes", "pagesRead", "pass",
+      "passFindings", "plan", "planning", "rearmed", "rearmedFirst", "reopen", "reviewing", "startedAt", "stopped", "topics",
+      "verifying", "writing",
     ]);
     const before = structuredClone(run);
     applyEvent(run, { type: "graph.session.started", metadata: { max_extra_passes: 1 } });
     expect(run).toEqual(before);
     expect(Object.keys(runStateModule)).not.toContain("BLURB");
+  });
+});
+
+describe("a reader note's kinds and its own thread (notes-progress-report spec §5.7)", () => {
+  it("keeps the reading's kinds, strings only, and marks the thread started from its own started event only", () => {
+    const run = newRunState();
+    applyEvent(run, { type: "session.note.received", metadata: { note_id: "n1", text: "Pastries too" } });
+    expect(run.notes[0]).toMatchObject({ kinds: [], threadStarted: false });
+    applyEvent(run, { type: "session.note.interpreted", metadata: { note_id: "n1", restatement: "pastries", kinds: ["new_angle", "exclude", 7], replaces: null, fallback: false } });
+    expect(run.notes[0].kinds).toEqual(["new_angle", "exclude"]);
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "note-n2", note_id: "n2", sub_topic: "Your note: other", index: 3 } });
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "topic-01", sub_topic: "Alpha", index: 1 } });
+    expect(run.notes[0].threadStarted).toBe(false);
+    applyEvent(run, { type: "researcher.sub_topic.started", metadata: { coverage_id: "note-n1", note_id: "n1", sub_topic: "Your note: pastries", index: 2 } });
+    expect(run.notes[0].threadStarted).toBe(true);
+    applyEvent(run, { type: "session.note.interpreted", metadata: { note_id: "n9", restatement: "late", kinds: ["new_angle"], replaces: null, fallback: false } });
+    expect(run.notes[1]).toMatchObject({ id: "n9", kinds: ["new_angle"], threadStarted: false });
   });
 });
 
@@ -277,13 +295,17 @@ describe("(h) every row's outcome line", () => {
       const events = capture.events;
       const run = replayRun(events);
       const last = (type: string) => events.filter((e) => e.event_type === type).at(-1)!;
-      const reviewed = last("graph.report.reviewed");
-      expect(run.outcomes.source_evaluator).toBe(plural(md<number>(last("source_evaluator.evaluation.completed"), "source_count"), "source rated", "sources rated"));
+      const e = last("source_evaluator.evaluation.completed");
+      const unrated = md<number>(e, "unscored_cap_count") + md<number>(e, "unscored_provider_count") + md<number>(e, "unscored_missing_count");
+      // notes-progress-report spec §6.4: the scored sources and their split, never a score.
+      expect(run.outcomes.source_evaluator).toBe(`${plural(md<number>(e, "scored_count"), "source rated", "sources rated")} · ${md<number>(e, "strong_count")} strong · `
+        + `${md<number>(e, "fair_count")} fair · ${md<number>(e, "weak_count")} weak` + (unrated > 0 ? ` · ${unrated} not rated` : ""));
       const v = last("evidence_verifier.verification.completed");
       expect(run.outcomes.evidence_verifier).toBe(`${md<number>(v, "verified")} verified · ${md<number>(v, "verified_corrected")} corrected · ${md<number>(v, "dropped")} dropped`);
       const w = last("report_writer.report.written");
       expect(run.outcomes.report_writer).toBe(`Report drafted · ${md<number>(w, "statements")} sentences · ${md<number>(w, "citations")} citations`);
-      expect(run.outcomes.report_reviewer).toBe(`Accepted · ${md<number>(reviewed, "mean_score").toFixed(2)}`);
+      // §6.7: the accepted review's outcome names its criteria, never its score.
+      expect(run.outcomes.report_reviewer).toBe("Accepted · all 5 met");
       expect(run.outcomes.finalize_report).toBe("Published");
     }
   });
@@ -340,5 +362,21 @@ describe("(j) the one-time check (live-briefs spec §4.4-§4.5)", () => {
       .map((e, i) => ({ event_type: e.type, source: "api", message: "m", timestamp: "2026-09-29T10:00:00+00:00", metadata: e.metadata, event_id: `e${i}` }));
     const snaps = snapshots(events);
     events.forEach((_, k) => expect(replayRun(events.slice(0, k + 1))).toEqual(snaps[k]));
+  });
+});
+
+describe("session.stopped (notes-progress-report spec §8.4)", () => {
+  it("records the step, the time and the seconds; leaves no row active and no loop lit; keeps every mark", () => {
+    const events = extraPass.events;
+    const decided = at(events, (e) => e.event_type === "graph.route.decided" && e.metadata.destination === "extra_pass");
+    const run = replayRun(events.slice(0, decided + 1));
+    const before = structuredClone(run);
+    expect(newRunState().stopped).toBeNull();
+    applyEvent(run, { type: "session.stopped", metadata: { step: "researcher", stopped_at: "2026-09-30T20:41:07+00:00", elapsed_seconds: 391 } });
+    expect(run.stopped).toEqual({ step: "researcher", at: "2026-09-30T20:41:07+00:00", elapsedSeconds: 391 });
+    expect([run.active, run.loop, run.arc]).toEqual([null, "off", null]);
+    expect([run.marks, run.rearmed, run.topics]).toEqual([before.marks, before.rearmed, before.topics]);
+    applyEvent(run, { type: "session.stopped", metadata: {} });
+    expect(run.stopped).toEqual({ step: null, at: null, elapsedSeconds: null });
   });
 });

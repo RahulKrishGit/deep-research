@@ -37,6 +37,15 @@ from deep_research.graph.events import (
     session_started_event,
 )
 from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
+from deep_research.graph.note_outcomes import (
+    RESEARCH_NOTE_TEXT,
+    STEERING_HALF_TEXT,
+    STEERING_NOTE_TEXT,
+    NoteOutcome,
+    note_outcome,
+    note_steering_outcome,
+    report_note_lines,
+)
 from deep_research.graph.nodes import (
     BatchReportPublisher,
     GraphNode,
@@ -65,6 +74,12 @@ from deep_research.graph.orchestrator import (
     run_research_graph,
     session_config,
     terminal_publisher,
+)
+from deep_research.graph.review_brief import (
+    CRITERIA,
+    CRITERION_FOR_KIND,
+    review_criteria,
+    review_note_results,
 )
 from deep_research.graph.state import (
     DEFAULT_MAX_EXTRA_PASSES,
@@ -103,6 +118,7 @@ from deep_research.graph.state import (
     note_dispositions,
     notes_due_a_pass,
     notes_due_a_redraft,
+    researched_note_topic_ids,
 )
 
 __all__ = [
@@ -128,12 +144,15 @@ __all__ = [
     "REPORT_REVIEWER_NODE",
     "REPORT_WRITER_NODE",
     "RESEARCHER_NODE",
+    "RESEARCH_NOTE_TEXT",
     "ROUTE_END",
     "ROUTE_EXTRA_PASS",
     "ROUTE_FINALIZE",
     "ROUTE_NOTE_PASS",
     "ROUTE_REDRAFT",
     "SOURCE_EVALUATOR_NODE",
+    "STEERING_HALF_TEXT",
+    "STEERING_NOTE_TEXT",
     "GraphConfigurationError",
     "GraphError",
     "BatchReportPublisher",
@@ -141,6 +160,7 @@ __all__ = [
     "GraphResumeError",
     "GraphRun",
     "LiveSink",
+    "NoteOutcome",
     "ProgressHandler",
     "ReportPublisher",
     "ReportReviewerLike",
@@ -173,12 +193,15 @@ __all__ = [
     "node_skipped_event",
     "node_started_event",
     "note_dispositions",
+    "note_outcome",
     "note_pass_node",
     "note_pass_started_event",
     "note_redraft_requested_event",
+    "note_steering_outcome",
     "note_sub_topic",
     "notes_due_a_pass",
     "notes_due_a_redraft",
+    "researched_note_topic_ids",
     "redraft_limit_error",
     "redraft_requested_event",
     "planning_failed_error",
@@ -187,8 +210,13 @@ __all__ = [
     "publication_write_error",
     "publish_live",
     "quality_assessed_event",
+    "report_note_lines",
     "report_published_event",
     "report_review_completed_event",
+    "CRITERIA",
+    "CRITERION_FOR_KIND",
+    "review_criteria",
+    "review_note_results",
     "report_review_unavailable_error",
     "report_reviewer_node",
     "report_writer_node",

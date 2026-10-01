@@ -1,6 +1,7 @@
 // Mirrors src/deep_research/api/models.py (+ query, SessionListResponse, the E1 models).
-/* "needs_input": the one-time check is waiting for the reader (live-briefs spec §4.4); not terminal. */
-export type SessionStatus = "running" | "needs_input" | "completed" | "max_iterations" | "incomplete" | "failed";
+/* "needs_input": the one-time check is waiting for the reader (live-briefs spec §4.4); not terminal.
+   "stopped": the reader stopped the run (notes-progress-report spec §8); terminal, nothing published. */
+export type SessionStatus = "running" | "needs_input" | "completed" | "max_iterations" | "incomplete" | "failed" | "stopped";
 export type ApiMode = "live" | "replay";
 
 /* No `max_iterations`: the console never sends one, so the API uses the configured extra-pass
@@ -26,7 +27,16 @@ export interface EvidenceCounts {
   verified_findings: number; corrected_findings: number; quoted_findings: number; dropped_findings: number;
   context_unchecked_findings: number; cited_findings: number;
 }
+/* notes-progress-report spec §7.5: one "## " heading of the published report, in order. */
+export type ReportOutlineKind = "bottom_line" | "topic" | "key_figures" | "options" | "not_confirmed" | "sources";
+export interface ReportOutlineEntry {
+  heading: string; kind: ReportOutlineKind; label: string;
+  topic_index: number | null; topic_count: number | null; note_id: string | null;
+}
 export interface ResearchSessionResponse {
+  /* The published report's headings (spec §7.5, §7.6). Optional because a response recorded before
+     the report became cards (the replay captures under test/fixtures) carries none. */
+  report_outline?: ReportOutlineEntry[] | null;
   session_id: string; query: string; status: SessionStatus; current_agent: string | null; iteration: number;
   started_at: string; finished_at: string | null; report_path: string | null; trace_url: string | null;
   errors: ResearchError[];
@@ -37,12 +47,19 @@ export interface ResearchSessionResponse {
      it bought and the one-time check it asked. Optional because a response recorded before notes
      existed (the replay captures under test/fixtures) carries none of them. */
   notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
+  /* notes-progress-report spec §8.4: the step the reader stopped the run at — "check" or a pipeline
+     row's node id — on a stopped session, null otherwise. Optional because a response recorded before
+     Stop existed carries none. */
+  stopped_step?: string | null;
 }
-/* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the
-   finished run concluded ("pending" while it runs, or when no review judged it; "not_addressed"
-   when the report still does not follow it after its one redraft). */
-export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "replaced";
-export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome }
+/* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the run
+   concluded — "not_addressed" when the report still does not follow it after its one redraft; with
+   nothing to judge it by, "pending" while the session goes on and "not_checked" once it has ended
+   (notes-progress-report spec §4 item 2). */
+export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "not_checked" | "replaced";
+/* steering_outcome (notes-progress-report spec §5.6, D20): a mixed note's steering half; null for every other
+   note, and absent from a response recorded before the field existed. */
+export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome; steering_outcome?: ReaderNoteOutcome | null }
 export interface ClarificationRecord {
   questions: { id: string; dimension: string; text: string; short: string; options: string[]; best_guess: string }[];
   answers: { question_id: string; value: string; source: "chosen" | "typed" | "best_guess" }[];
@@ -144,4 +161,10 @@ export async function submitAnswers(sessionId: string, body: ClarificationAnswer
 export async function addNote(sessionId: string, text: string): Promise<ApiResult<NoteAcceptedResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/notes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
   return { data: (await r.json()) as NoteAcceptedResponse, mode: modeOf(r) };
+}
+/* Stop a session, posted once with no body (notes-progress-report spec §8.1): 202 with the stopped
+   session; 409 not_stoppable once it has ended, is publishing or the service is closing. */
+export async function stopResearch(sessionId: string): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/stop`, { method: "POST" });
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
 }

@@ -47,11 +47,14 @@ export function Sidebar() {
             <li className="sb-group">{group}</li>
             {items.map((s) => {
               const running = isLive(s.status); // live-briefs spec §4.5: a session waiting for the reader counts as running
-              /* A running session is the only one that carries a mark: no chips, counts or durations here (index.html:1871-1876). */
+              /* A running session is the only one that carries a mark: no chips, counts or durations here (index.html:1871-1876).
+                 A session the reader stopped says so in its accessible name only (notes-progress-report D29). */
+              const label = running ? `${s.query} — ${s.status === "needs_input" ? "waiting for you" : "running"}`
+                : s.status === "stopped" ? `${s.query} — stopped by you` : undefined;
               return (
                 <li key={s.session_id}>
                   <button type="button" className="sb-item" data-session={s.session_id} data-run={running ? "1" : "0"} title={s.session_id}
-                    aria-current={active === s.session_id ? "true" : "false"} aria-label={running ? `${s.query} — ${s.status === "needs_input" ? "waiting for you" : "running"}` : undefined}
+                    aria-current={active === s.session_id ? "true" : "false"} aria-label={label}
                     onClick={() => navigate(`/research/${s.session_id}`)}>
                     <span className="q">{s.query}</span><span className="sb-live" aria-hidden="true"></span>
                   </button>

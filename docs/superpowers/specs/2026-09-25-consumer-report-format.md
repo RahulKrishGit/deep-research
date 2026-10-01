@@ -1,5 +1,7 @@
 # Consumer report format: answer-first skeleton, question-shaped table, parallel writer
 
+> **Superseded in part (2026-09-30)** by `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` §7: the bottom line is a direct answer of at most two sentences, then one line per topic and one per reader note; the findings table becomes Key figures (What · Figure · Source, at most 10 rows, one per label) and prints after the topic sections, as `## Key figures` or `## Options compared`; and the console shows the report as one card per section with a contents list. Everything else below stands.
+
 **Date** 2026-09-25 · **Plan tree** `.worktrees/evidence-verifier` (branch `codex/evidence-verifier-pipeline`, head `b7a7f8a`) · **Brief** `.superpowers/sdd/2026-09-24-evidence-verifier-pipeline/report-format-architect-brief.md`, plus four controller amendments: the parallel writer; the structural table choice; Fable's run-3 writer-side defects (D5, D6, D15, D16, D18, D19, D20); the new `quoted` finding status.
 
 **Supersedes** the reader layout of `docs/superpowers/specs/2026-09-24-evidence-verifier-pipeline-design.md` §6.1 and its single-call writer (§6.2). **Unchanged:** the Evidence Verifier, the Statement Check prompt (VER-1..4), and the quality-gate definitions except §11.2.

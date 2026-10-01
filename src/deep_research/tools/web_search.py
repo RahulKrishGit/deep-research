@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
-from tavily import TavilyClient
+from tavily import AsyncTavilyClient
 
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
@@ -35,9 +36,29 @@ _MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|
 
 
 class SearchClient(Protocol):
-    """The synchronous subset of the Tavily client used by this tool."""
+    """The synchronous subset of a Tavily client: the tool runs it in a worker thread.
+
+    Injected clients take this shape — the replay double, the evaluation harness and
+    the test fakes — and return at once.
+    """
 
     def search(
+        self,
+        *,
+        query: str,
+        search_depth: str,
+        max_results: int,
+    ) -> Mapping[str, Any]: ...
+
+
+class AsyncSearchClient(Protocol):
+    """The asynchronous subset of a Tavily client, the default's (``AsyncTavilyClient``).
+
+    The tool awaits it on the run's own loop, so cancelling the run — a stop —
+    cancels a search in flight (notes-progress-report spec §8.3, D25).
+    """
+
+    async def search(
         self,
         *,
         query: str,
@@ -64,7 +85,7 @@ class WebSearchTool(BaseTool):
         tracker: Tracker,
         *,
         api_key: str | None = None,
-        client: SearchClient | None = None,
+        client: SearchClient | AsyncSearchClient | None = None,
         search_depth: str = "basic",
         max_results: int = 5,
         timeout_s: float = 10.0,
@@ -94,7 +115,11 @@ class WebSearchTool(BaseTool):
             or max_retries > 2
         ):
             raise ValueError("max_retries must be a non-negative integer")
-        self._client = client or TavilyClient(api_key=api_key)
+        # The client is never closed at the end of a run, as the provider's
+        # ``AsyncOpenAI`` client is not (notes-progress-report spec §8.3 item 6).
+        self._client: SearchClient | AsyncSearchClient = client or AsyncTavilyClient(
+            api_key=api_key
+        )
         self._search_depth = search_depth.strip()
         self._max_results = max_results
         self._timeout_s = float(timeout_s)
@@ -130,10 +155,15 @@ class WebSearchTool(BaseTool):
         self, context: ToolCallContext, query: str, max_results: int
     ) -> Mapping[str, Any]:
         budget = self._request_budget
+        client = self._client
+        # notes-progress-report spec §8.3 (D25): an async client — the default — is
+        # awaited on the run's own loop, so cancelling the run cancels its request;
+        # an injected synchronous client runs in a worker thread, as before.
+        awaited = inspect.iscoroutinefunction(client.search)
 
         def search_once() -> Mapping[str, Any]:
-            """The one transport attempt the loop already reserved a unit for."""
-            return self._client.search(
+            """One synchronous transport attempt the loop already reserved a unit for."""
+            return client.search(  # type: ignore[return-value]
                 query=query,
                 search_depth=self._search_depth,
                 max_results=max_results,
@@ -141,27 +171,36 @@ class WebSearchTool(BaseTool):
 
         attempts = self._max_retries + 1
         for attempt in range(attempts):
-            # The reservation happens here rather than inside ``search_once``,
-            # so it stays outside the cancellable window below. ``reserve`` is
-            # synchronous and touches no network, but it is not instantaneous,
-            # and a reservation made inside a work item handed to
-            # ``asyncio.to_thread`` is cancelled the moment ``wait_for`` times
+            # The reservation happens here, before the attempt and outside the
+            # cancellable window below, on both paths. ``reserve`` is
+            # synchronous and touches no network, but it is not instantaneous.
+            # On the thread path a reservation made inside the work item handed
+            # to ``asyncio.to_thread`` is cancelled the moment ``wait_for`` times
             # out: the refusal then lands on an already-cancelled future, is
             # dropped, and a spent ceiling is republished as an ordinary
             # timeout — a failed ``ToolResult`` recorded as ``agent_tool_failed``
             # instead of the run-ending refusal this ceiling exists to produce.
-            # Reserving in the loop body keeps the ordering the ceiling relies
-            # on: every real client call, the first and each retry, is preceded
-            # by exactly one reservation, and a refused attempt is neither
-            # charged nor sent. The refusal is not inside the caught tuple, so
-            # it ends the request instead of being retried, and it never counts
-            # as an attempt of its own, because the budget refuses before it
-            # increments.
+            # On the async path the attempt is a coroutine on the run's own
+            # loop, which a timeout or the run's cancellation (a stop) cancels
+            # together with its request; reserving outside it keeps the two
+            # paths alike. Reserving in the loop body keeps the ordering the
+            # ceiling relies on: every real client call, the first and each
+            # retry, is preceded by exactly one reservation, and a refused
+            # attempt is neither charged nor sent. The refusal is not inside the
+            # caught tuple, so it ends the request instead of being retried, and
+            # it never counts as an attempt of its own, because the budget
+            # refuses before it increments.
             if budget is not None:
                 budget.reserve("tavily")
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(search_once),
+                    client.search(  # type: ignore[arg-type]
+                        query=query,
+                        search_depth=self._search_depth,
+                        max_results=max_results,
+                    )
+                    if awaited
+                    else asyncio.to_thread(search_once),
                     timeout=self._timeout_s,
                 )
             except (

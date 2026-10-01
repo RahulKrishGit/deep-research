@@ -41,6 +41,8 @@ NOTES = [
     fake_reader_note("n1", restatement="more weight on fire-safety standards"),
     fake_reader_note("n2", kinds=["scope"], restatement="only the United States", scope={"geography": "United States"}),
 ]
+ANGLE = fake_reader_note("n3", kinds=["new_angle"], restatement="how battery cells are recycled")
+MIXED = fake_reader_note("n4", kinds=["new_angle", "exclude"], restatement="recycling, leaving out exports")
 
 
 # --- reviewing ------------------------------------------------------------------------
@@ -181,3 +183,29 @@ def test_the_notes_review_requests_keep_the_shared_reply_conventions() -> None:
         examples = labelled_examples(noted)
         assert len(examples) == 1
         schema.model_validate(json.loads(examples[0][1]))
+
+
+@pytest.mark.asyncio
+async def test_review_packet_steering_notes_only() -> None:
+    """notes-progress-report spec §5.5, AC8, D20: the packet lists the steering notes and each
+    mixed note without new_angle in its kinds. A note whose only kind is new_angle is not put to
+    the review, so a verdict naming it is dropped; a mixed note's verdict is kept, and judges
+    its steering half."""
+    noted = build_report_review_input(state_with_written_report(reader_notes=[*NOTES, ANGLE, MIXED]))
+    body = review_messages(noted)[1].content
+
+    assert [(view.note_id, view.kinds) for view in noted.reader_notes] == [
+        ("n1", ["emphasis"]), ("n2", ["scope"]), ("n4", ["exclude"]),
+    ]
+    assert "- n4: recycling, leaving out exports (exclude)" in body
+    assert "battery cells are recycled" not in body and "new_angle" not in body
+    completer = ScriptedCompleter(outputs=[_notes_draft(
+        ("n1", "honoured"), ("n3", "no_evidence"), ("n4", "ignored_with_evidence"),
+    )])
+    review = await ReportReviewer(provider=completer).review(noted, previous=None)
+    assert [(d.note_id, d.status) for d in review.note_dispositions] == [
+        ("n1", "honoured"), ("n4", "ignored_with_evidence"),
+    ]
+    only_angle = build_report_review_input(state_with_written_report(reader_notes=[ANGLE]))
+    assert only_angle.reader_notes == []
+    assert only_angle.fingerprint == build_report_review_input(state_with_written_report()).fingerprint

@@ -1,7 +1,6 @@
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { BriefSpine } from "../../components/BriefSpine";
-import { ReportBody } from "../../components/ReportBody";
 import { ReportRail } from "../../components/ReportRail";
 import { RunningPipeline } from "../../components/RunningPipeline";
 import type { ResearchSessionResponse } from "../../lib/api";
@@ -61,36 +60,14 @@ describe("the running stage's notes (live-briefs spec §4.7)", () => {
   });
 });
 
-const MARKDOWN = "# Q\n\nEvidence as of 2026-09-16 · 1 source\n\n## Bottom line\n\nStorage grew [1].\n\n## Sources\n\n1. Source one\n";
 const NOTES = [
   { note_id: "n1", text: "More on fire safety", restatement: "more weight on fire-safety standards", outcome: "covered" as const },
-  { note_id: "n2", text: "Recycling too", restatement: "how cells are recycled", outcome: "not_found" as const },
-  { note_id: "n3", text: "Actually only the US", restatement: "only the United States", outcome: "pending" as const },
-  { note_id: "n4", text: "Leave out pumped hydro", restatement: "leave out pumped hydro", outcome: "not_addressed" as const },
 ];
 
-describe("the report's Your notes (live-briefs spec §4.7, AC19)", () => {
-  it("sits inside the report card above the prose, outside it, with each note and its outcome", () => {
-    const { container } = render(<ReportBody markdown={MARKDOWN} evidenceLoaded={false} onOpenEvidence={() => {}} notes={NOTES} />);
-    const card = container.querySelector("article.card.stack")!;
-    const block = card.querySelector(":scope > section.reader-notes")!;
-    expect(card.firstElementChild).toBe(block);
-    expect(block.nextElementSibling!.className).toBe("prose");
-    expect(block.closest(".prose")).toBeNull();
-    expect(block.querySelector(".card")).toBeNull();
-    expect(block.querySelector("h2.eyebrow")!.textContent).toBe("Your notes");
-    expect([...block.querySelectorAll("li")].map((li) => [li.querySelector(".rn-text")!.textContent, li.querySelector(".cap")!.textContent])).toEqual([
-      ["More on fire safety", "covered"], ["Recycling too", "couldn't find evidence"], ["Actually only the US", "not checked"],
-      ["Leave out pumped hydro", "not addressed in the report"],
-    ]);
-  });
-
-  it("is absent when the reader added no note", () => {
-    const { container } = render(<ReportBody markdown={MARKDOWN} evidenceLoaded={false} onOpenEvidence={() => {}} />);
-    expect(container.querySelector(".reader-notes")).toBeNull();
-    expect(container.querySelector("article.card.stack")!.firstElementChild!.className).toBe("prose");
-  });
-
+/* notes-progress-report spec §7.6: the report no longer lists the reader's notes above its prose; each
+   note's line is in the bottom line (test/components/report-body.test.tsx). The rail still counts the
+   note passes. */
+describe("the report rail's pass fact (live-briefs spec §4.2, D11)", () => {
   it("names the note passes in the pass fact", () => {
     const status: ResearchSessionResponse = {
       session_id: "s", query: "q", status: "completed", current_agent: null, iteration: 1, started_at: "2026-09-16T14:02:11Z",

@@ -47,6 +47,7 @@ from deep_research.api.notes import (
 )
 from deep_research.api.sessions import (
     NotesClosed,
+    NotStoppable,
     NotWaitingForInput,
     ResearchRunner,
     ResearchSession,
@@ -77,6 +78,7 @@ _SAFE_MESSAGES = {
     "not_waiting_for_input": "Research session is not waiting for answers.",
     "notes_closed": "Research session no longer takes notes.",
     "note_limit_reached": "Research session takes no more notes.",
+    "not_stoppable": "Research session can no longer be stopped.",
 }
 _DEFAULT_ERROR_MESSAGE = "API request failed."
 
@@ -150,6 +152,7 @@ def _session_response(session: ResearchSession) -> ResearchSessionResponse:
         report_path=session.report_path,
         trace_url=session.trace_url,
         errors=[error.model_copy(deep=True) for error in session.errors],
+        stopped_step=session.stopped_step,
         **outcome_response_fields(session.outcome),
         **session_note_fields(session),
     )
@@ -345,6 +348,31 @@ def create_app(
             raise ApiProblem(code="note_limit_reached", status_code=409) from None
         return NoteAcceptedResponse(note_id=received.note_id)
 
+    @router.post(
+        "/research/{session_id}/stop",
+        status_code=202,
+        response_model=ResearchSessionResponse,
+    )
+    async def stop_research(request: Request) -> ResearchSessionResponse:
+        """Stop a session at once (notes-progress-report spec §8.1, D17).
+
+        ``202`` with the stopped session: its run is cancelled where it stands — every
+        provider, search and page request in flight with it — nothing is written, and
+        ``session.stopped`` is its stream's last event. ``404`` for an unknown session;
+        ``409 not_stoppable`` once it has ended (``reason: finished``, a second stop
+        included), once the run has decided to publish or end (``publishing``), and
+        while the service shuts down (``closing``).
+        """
+        try:
+            session = store.stop(request.state.session_id)
+        except KeyError:
+            raise ApiProblem(code="session_not_found", status_code=404) from None
+        except NotStoppable as refusal:
+            raise ApiProblem(
+                code="not_stoppable", status_code=409, reason=refusal.reason
+            ) from None
+        return _session_response(session)
+
     @router.get(
         "/research/{session_id}/status",
         response_model=ResearchSessionResponse,
@@ -399,7 +427,8 @@ def create_app(
 
         A running session has no report yet and a finished session may have
         finished without one, so both are explicit 409 conflicts — never a
-        fabricated body and never a fake 404.
+        fabricated body and never a fake 404. A stopped session wrote none and
+        answers as a halted run does (notes-progress-report spec §8.4, D26).
         """
         try:
             session = store.require(request.state.session_id)
@@ -408,6 +437,8 @@ def create_app(
                 code="session_not_found",
                 status_code=404,
             ) from None
+        if session.status == "stopped":
+            raise ApiProblem(code="report_unavailable", status_code=409)
         if session.outcome is None:
             raise ApiProblem(
                 code="session_not_complete",
@@ -437,6 +468,9 @@ def create_app(
             session = store.require(request.state.session_id)
         except KeyError:
             raise ApiProblem(code="session_not_found", status_code=404) from None
+        if session.status == "stopped":
+            # notes-progress-report spec §8.4 (D26): a stopped run composed nothing.
+            raise ApiProblem(code="evidence_unavailable", status_code=409)
         if session.outcome is None:
             raise ApiProblem(code="session_not_complete", status_code=409)
         if format == "markdown":

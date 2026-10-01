@@ -59,7 +59,11 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.reader_notes import REVIEW_NOTES, render_reader_notes
+from deep_research.agents.reader_notes import (
+    REVIEW_NOTES,
+    render_reader_notes,
+    steering_notes,
+)
 from deep_research.agents.report import (
     ReportComposition,
     # The label builders this review must never re-derive (R1): ``_point_labels``
@@ -623,9 +627,13 @@ class ReportReviewInput(ContractModel):
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     reader_notes: list[ReviewNoteView] = Field(default_factory=list)
-    """The reader's active notes (live-briefs spec §4.6), which the review
-    judges one by one into ``note_dispositions``; ``[]`` for a run without
-    notes, whose packet and fingerprint are then exactly what they were."""
+    """The reader's active notes as steering notes (live-briefs spec §4.6;
+    notes-progress-report spec §5.5), which the review judges one by one into
+    ``note_dispositions``: every steering note, and each mixed note with
+    ``new_angle`` left out of its kinds. A note whose only kind is ``new_angle``
+    is never listed — its own topic's targets decide it. ``[]`` for a run
+    without such notes, whose packet and fingerprint are then exactly what
+    they were."""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this packet was built from.
 
@@ -718,7 +726,9 @@ def build_report_review_input(
                 restatement=note.restatement,
                 kinds=list(note.kinds),
             )
-            for note in active_reader_notes(state.reader_notes)
+            # notes-progress-report spec §5.5 (D5, D20): the steering notes, and
+            # each mixed note's steering half.
+            for note in steering_notes(active_reader_notes(state.reader_notes))
         ],
         composition_fingerprint=composition_semantic_fingerprint(composition),
     )
@@ -921,10 +931,12 @@ def _table_cell_text(
 
     An options-table cell's verbatim span lives in ``cell.text`` (the
     "Option" column) or in its ``entries`` (a part cell or Recommended by),
-    never in both; a findings-table cell's text is already ``cell.text``
-    except its own Source column, which names its finding ids instead. Only
-    an entryless, textless, finding-less cell -- an option with nothing
-    marked for that part -- ever reads as an em dash.
+    never in both; a findings-table cell's text is already ``cell.text``,
+    its Source column's too (the source's name -- the finding ids stand in
+    only for a Source cell with no text, and a row's backing fact-row ids
+    follow it on their own line). Only an entryless, textless, finding-less
+    cell -- an option with nothing marked for that part -- ever reads as an
+    em dash.
     """
     if cell.text:
         return cell.text

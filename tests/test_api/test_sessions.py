@@ -324,10 +324,12 @@ def test_research_request_rejects_invalid_payloads(payload) -> None:
 def test_session_response_accepts_every_status() -> None:
     for status in (
         "running",
+        "needs_input",
         "completed",
         "max_iterations",
         "incomplete",
         "failed",
+        "stopped",
     ):
         response = ResearchSessionResponse(
             session_id="session-1",
@@ -827,3 +829,33 @@ def test_session_response_requires_query() -> None:
             iteration=0,
             started_at=datetime.now(timezone.utc),
         )
+
+
+def test_session_response_carries_the_report_outline() -> None:
+    """notes-progress-report spec §7.5: the published report's headings, in order,
+    from the composition the report was rendered from."""
+    from deep_research.agents.report import render_written_report, report_outline
+
+    state = judged_state()
+    state = state.model_copy(update={"report": render_written_report(state.composition)})
+    response = ResearchSessionResponse(
+        session_id="session-1", query="Question", status="completed", iteration=1,
+        started_at=datetime.now(timezone.utc), **outcome_response_fields(outcome_of(state)),
+    )
+
+    assert response.report_outline is not None
+    assert [entry.model_dump() for entry in response.report_outline] == [
+        entry.model_dump() for entry in report_outline(state.composition)
+    ]
+    assert [f"## {entry.heading}" for entry in response.report_outline] == [
+        line for line in state.report.splitlines() if line.startswith("## ")
+    ]
+
+
+def test_a_session_without_a_published_report_has_no_outline() -> None:
+    assert "report_outline" not in outcome_response_fields(outcome_of(judged_state()))
+    running = ResearchSessionResponse(
+        session_id="session-1", query="Question", status="running", iteration=0,
+        started_at=datetime.now(timezone.utc),
+    )
+    assert running.report_outline is None

@@ -6,7 +6,8 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 // x-replay-clarify: replay's scripted one-time check asks only when the POST carried it (live-briefs spec §4.4).
-const REQUEST_HEADERS = ["accept", "content-type", "x-replay-case", "x-replay-clarify"] as const;
+// x-replay-hold-after: replay holds its stream after the named event, for captures (notes-progress-report spec §6.10).
+const REQUEST_HEADERS = ["accept", "content-type", "x-replay-case", "x-replay-clarify", "x-replay-hold-after"] as const;
 const RESPONSE_HEADERS = ["content-type", "cache-control", "x-accel-buffering", "x-deep-research-mode"] as const;
 type Ctx = { params: Promise<{ path: string[] }> };
 

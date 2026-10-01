@@ -12,6 +12,13 @@ also reads ``X-Replay-Clarify`` on the same request: ``on`` makes the scripted
 one-time check ask its fixed questions (``api/clarify.py``), and anything else
 leaves every flow exactly as it was (live-briefs spec §4.4).
 
+Two pacing aids (notes-progress-report spec §6.10): each event is published
+with its release time as its timestamp, so the console's elapsed times read as
+they would live; and ``X-Replay-Hold-After: <event_type>[#<n>]`` on the same
+request makes the stream stop after the n-th event of that type (default the
+first) and hold until the session is stopped or the server shuts down -- what
+the visual captures use to photograph one step's brief.
+
 The two harness guards (``offline_credentials``, ``network_denied``) are not
 entered here: the start command holds them for the whole server process.
 """
@@ -41,11 +48,31 @@ from deep_research.main import ProgressHandler, run_research
 from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.config import ConfigSettings
-from deep_research.utils.types import ReaderAnswer, ResearchEvent
+from deep_research.utils.types import ReaderAnswer, ResearchEvent, _utc_now_iso
 
 REPLAY_CASE_HEADER = "x-replay-case"
 requested_case: ContextVar[str | None] = ContextVar("deep_research_replay_case", default=None)
+REPLAY_HOLD_HEADER = "x-replay-hold-after"
+requested_hold: ContextVar[tuple[str, int] | None] = ContextVar(
+    "deep_research_replay_hold", default=None
+)
 _log = logging.getLogger(__name__)
+
+
+def parse_hold(value: str) -> tuple[str, int] | None:
+    """``<event_type>[#<n>]`` as ``(event_type, n)``; ``None`` for anything else.
+
+    ``n`` defaults to 1 and must be a whole number of at least 1; an event type
+    is one token with no whitespace. A malformed value holds nothing.
+    """
+    event_type, _, count = value.strip().partition("#")
+    if not event_type or any(character.isspace() for character in event_type):
+        return None
+    if not count:
+        return event_type, 1
+    if not count.isdigit() or int(count) < 1:
+        return None
+    return event_type, int(count)
 
 
 def resolve_scenario(case_id: str) -> ReplayScenario:
@@ -85,6 +112,7 @@ class ReplayRunner:
         # The reader's answers are the run's own and go to the graph unchanged.
         del question, max_extra_passes
         scenario = resolve_scenario(requested_case.get() or self.default_case)
+        hold = requested_hold.get()
         session_root = self.root / session_id
         session_root.mkdir(parents=True, exist_ok=True)
 
@@ -103,7 +131,7 @@ class ReplayRunner:
         paced: ProgressHandler | None = None
         if event_handler is not None:
             paced = queue.put_nowait
-            drain_task = asyncio.create_task(self._drain(queue, event_handler))
+            drain_task = asyncio.create_task(self._drain(queue, event_handler, hold))
         try:
             outcome = await run_research(
                 question=scenario.question,
@@ -133,9 +161,26 @@ class ReplayRunner:
                 await drain_task
             raise
 
-    async def _drain(self, queue: asyncio.Queue[ResearchEvent | None], publish: ProgressHandler) -> None:
+    async def _drain(
+        self,
+        queue: asyncio.Queue[ResearchEvent | None],
+        publish: ProgressHandler,
+        hold: tuple[str, int] | None = None,
+    ) -> None:
+        """Release each event ``delay`` seconds apart, stamped with its release time.
+
+        The engine ran unpaced, so the events' own timestamps are a fraction of a
+        second apart; the copy published carries the moment it is released (spec
+        §6.10), while the engine's state keeps its own. With ``hold``, the drain
+        stops after the n-th event of that type and waits until it is cancelled.
+        """
+        seen = 0
         while (event := await queue.get()) is not None:
-            publish(event)
+            publish(event.model_copy(update={"timestamp": _utc_now_iso()}))
+            if hold is not None and event.event_type == hold[0]:
+                seen += 1
+                if seen == hold[1]:
+                    await asyncio.Event().wait()
             if self.delay > 0:
                 await asyncio.sleep(self.delay)
 
@@ -169,6 +214,7 @@ class ReplayCaseMiddleware:
         requested_clarify.set(
             headers.get(REPLAY_CLARIFY_HEADER, "").strip().lower() == "on"
         )
+        requested_hold.set(parse_hold(headers.get(REPLAY_HOLD_HEADER, "")))
         if case_id not in REPLAY_CASE_IDS:
             await self.app(scope, receive, send)
             return

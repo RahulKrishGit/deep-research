@@ -14,8 +14,14 @@ import { NoteLine } from "./NoteLine";
    /status's count, lowered by every note the stream has received since (lib/notes.ts notesLeft). */
 export function RunningPipeline({ sessionId, run, question, strip, startedAt, onToggleRow, notesRemaining }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; onToggleRow(id: NodeId): void; notesRemaining?: number }) {
   const [elapsed, setElapsed] = useState(0);
+  // notes-progress-report spec §6.9: the same one-second clock ticks the steps' elapsed times.
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const tick = () => setElapsed(Math.max(0, Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)));
+    const tick = () => {
+      const at = Date.now();
+      setNow(at);
+      setElapsed(Math.max(0, Math.floor((at - new Date(startedAt).getTime()) / 1000)));
+    };
     tick();
     const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
@@ -41,7 +47,7 @@ export function RunningPipeline({ sessionId, run, question, strip, startedAt, on
           <div className="ask-meta"><span className="avail-mono" id="runElapsed">{fmtElapsed(elapsed)} elapsed</span></div>
         </div>
         <div className="card stack" style={{ gap: "var(--space-5)" }}>
-          <BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggleRow} />
+          <BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggleRow} now={now} />
           <NoteLine sessionId={sessionId} remaining={notesLeft(notesRemaining, run.notes.length)} />
         </div>
       </div>

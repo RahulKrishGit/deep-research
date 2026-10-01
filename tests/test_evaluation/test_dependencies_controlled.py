@@ -474,20 +474,21 @@ def test_controlled_bundles_never_receive_a_tavily_key(
 ) -> None:
     """Even with a key in the environment, controlled mode must not use it.
 
-    ``WebSearchTool`` folds the key into ``TavilyClient(api_key=...)`` at
-    construction rather than storing it, so the proof is constructive: the
-    patched constructor raises, and building a bundle must never call it.
+    ``WebSearchTool`` folds the key into ``AsyncTavilyClient(api_key=...)``
+    at construction rather than storing it (notes-progress-report spec §8.3,
+    D25), so the proof is constructive: the patched constructor raises, and
+    building a bundle must never call it.
     """
     from deep_research.tools import web_search as web_search_module
 
     def explode(api_key=None, **kwargs):
         raise AssertionError(
-            f"TavilyClient must not be constructed in controlled mode "
+            f"AsyncTavilyClient must not be constructed in controlled mode "
             f"(received api_key={api_key!r}, {sorted(kwargs)})"
         )
 
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-should-never-be-used")
-    monkeypatch.setattr(web_search_module, "TavilyClient", explode)
+    monkeypatch.setattr(web_search_module, "AsyncTavilyClient", explode)
 
     bundle = build(
         runtime_config_for, tracker, settings, tmp_path, researcher_case
@@ -507,7 +508,7 @@ def test_controlled_tools_never_hold_a_real_network_client(
     advisory: no code path in controlled mode can reach the network.
     """
     import httpx
-    from tavily import TavilyClient
+    from tavily import AsyncTavilyClient, TavilyClient
 
     bundle = build(
         runtime_config_for, tracker, settings, tmp_path, researcher_case
@@ -517,7 +518,7 @@ def test_controlled_tools_never_hold_a_real_network_client(
     reader = next(tool for tool in bundle.tools if tool.name == "document_reader")
 
     assert search._client is not None
-    assert not isinstance(search._client, TavilyClient)
+    assert not isinstance(search._client, (AsyncTavilyClient, TavilyClient))
     assert scraper._client is not None
     assert not isinstance(scraper._client, httpx.AsyncClient)
     assert reader._client is not None

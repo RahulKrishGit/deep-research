@@ -53,6 +53,17 @@ class NoteBoard:
         self._dropped: set[str] = set()
         self._settled = asyncio.Event()
         self._settled.set()
+        self._version = 0
+        self._changed = asyncio.Event()
+
+    @property
+    def version(self) -> int:
+        """How many times a note was added or dropped (notes-progress-report spec §5.3).
+
+        A reader that reads it before it looks at the board, and then waits with
+        ``wait_for_change``, misses no add or drop in between.
+        """
+        return self._version
 
     @property
     def accepted(self) -> int:
@@ -100,13 +111,21 @@ class NoteBoard:
         if note.note_id in self._notes or note.note_id in self._dropped:
             raise ValueError(f"note {note.note_id!r} was already settled")
         self._notes[note.note_id] = note.model_copy(deep=True)
+        self._bump()
         self._settle()
 
     def drop(self, note_id: str) -> None:
         """Give up on one received note's interpretation (the session is closing)."""
         if note_id not in self._notes:
             self._dropped.add(note_id)
+        self._bump()
         self._settle()
+
+    async def wait_for_change(self, seen: int) -> int:
+        """Return the board's ``version`` once it differs from ``seen``."""
+        while self._version == seen:
+            await self._changed.wait()
+        return self._version
 
     def interpreted(self, note_id: str) -> ReaderNote | None:
         """The interpreted note, or ``None`` while it is pending or when it was dropped."""
@@ -128,6 +147,12 @@ class NoteBoard:
     def _settle(self) -> None:
         if not self.pending:
             self._settled.set()
+
+    def _bump(self) -> None:
+        """Count one add or drop and wake every waiter; later waiters wait on a fresh event."""
+        self._version += 1
+        changed, self._changed = self._changed, asyncio.Event()
+        changed.set()
 
 
 _NOTE_BOARD: ContextVar[NoteBoard | None] = ContextVar(

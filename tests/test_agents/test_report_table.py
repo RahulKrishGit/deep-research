@@ -1,8 +1,8 @@
 """Tests for agents.report_table (spec §4, §14 T2): the question-shaped table.
 
 Pure functions, no provider: ``build_table`` picks the shape (§4.1),
-``options_table`` and ``findings_table`` build it from checked statements and
-verified figures only (§4.2, §4.3). Fixtures follow the §4.2 Fable
+``options_table`` and ``key_figures_table`` build it from checked statements and
+verified figures only (§4.2, §4.3; notes-progress-report spec §7.4). Fixtures follow the §4.2 Fable
 acceptance paragraph and the §13.2/§13.3 examples.
 """
 
@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.agents.report_table import build_table, findings_table, options_table
+from deep_research.agents.report_table import build_table, key_figures_table, options_table
 from deep_research.utils.types import (
     EarlierEdition,
     EvidenceTarget,
@@ -587,7 +587,7 @@ def test_choice_rule_marks_only_in_optional_part_give_no_options_table() -> None
     assert build_table(composition) is None
 
 
-def test_choice_rule_two_eligible_rows_give_findings_table() -> None:
+def test_choice_rule_two_eligible_rows_give_key_figures() -> None:
     row_a, finding_a = _row(
         "K001",
         url="https://a.test/x",
@@ -637,6 +637,7 @@ def test_choice_rule_two_eligible_rows_give_findings_table() -> None:
     table = build_table(composition)
     assert table is not None
     assert table.shape == "findings"
+    assert table.columns == ["What", "Figure", "Source"]
 
 
 def test_choice_rule_one_row_gives_no_table() -> None:
@@ -946,6 +947,9 @@ def _row(
     evidence_words: str | None = None,
     vintage: str | None = None,
 ) -> tuple[FactRow, Finding]:
+    # Key figures label a row by its item (notes-progress-report spec §7.4): each
+    # fixture row is its own item unless a test names one.
+    subject = subject if subject is not None else f"Item {row_id}"
     snippet = evidence_words or f"{organisation} reports {value} {unit} for {row_id}."
     read = make_read(snippet, url=url, title=f"{organisation} page")
     finding = make_finding(
@@ -1015,128 +1019,6 @@ def _cite(*finding_ids: str, statement_id: str) -> ReportPoint:
 # =============================================================================
 # (4) The Example 13.2 rows: rivals, who strings, mixed-kind suffixes.
 # =============================================================================
-
-
-def test_rival_rows_both_get_quoted_form() -> None:
-    row1, finding1 = _row(
-        "K001",
-        url="https://house.gov/a",
-        value="10.4",
-        unit="GW",
-        period="2024",
-        kind="actual",
-        subject="Battery storage capacity",
-        organisation="house.gov",
-        attribution="unattributed",
-        target_ids=["req-01"],
-        finding_target_ids=["req-01"],
-        evidence_words="Generators added 10.4 GW of new battery storage capacity in 2024.",
-    )
-    row2, finding2 = _row(
-        "K002",
-        url="https://house.gov/a",
-        value="26",
-        unit="GW",
-        period="2024",
-        kind="actual",
-        subject="Battery storage capacity",
-        organisation="house.gov",
-        attribution="unattributed",
-        target_ids=["req-01"],
-        finding_target_ids=["req-01"],
-        evidence_words="Cumulative utility-scale battery storage capacity exceeded 26 GW in 2024.",
-    )
-    composition = _composition(
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-01",
-                title="t",
-                rationale="r",
-                search_queries=["q"],
-                success_criteria=["c"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="req-01",
-                        coverage_id="topic-01",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    )
-                ],
-            )
-        ],
-        findings=[finding1, finding2],
-        fact_rows=[row1, row2],
-    )
-    table = findings_table(composition)
-    assert table is not None
-    texts = [row[0].text for row in table.rows]
-    assert all(text.startswith('"') for text in texts)
-
-
-def test_row_with_no_subject_is_quoted_even_without_a_rival() -> None:
-    row, finding = _row(
-        "K006",
-        url="https://eia.gov/a",
-        value="8.3",
-        unit="GW",
-        period="2026",
-        kind="actual",
-        subject=None,
-        organisation="EIA",
-        attribution="own",
-        target_ids=["req-06"],
-        finding_target_ids=["req-06"],
-        evidence_words="Battery storage rose 8.3 GW in the first half of 2026.",
-    )
-    other_row, other_finding = _row(
-        "K099",
-        url="https://eia.gov/b",
-        value="1",
-        unit="GW",
-        period="2019",
-        kind="actual",
-        subject="Unrelated widget output",
-        organisation="EIA",
-        attribution="own",
-        target_ids=["req-99"],
-        finding_target_ids=["req-99"],
-    )
-    composition = _composition(
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-06",
-                title="t",
-                rationale="r",
-                search_queries=["q"],
-                success_criteria=["c"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="req-06",
-                        coverage_id="topic-06",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                    EvidenceTarget(
-                        target_id="req-99",
-                        coverage_id="topic-06",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                ],
-            )
-        ],
-        findings=[finding, other_finding],
-        fact_rows=[row, other_row],
-    )
-    table = findings_table(composition)
-    assert table is not None
-    quoted_texts = [row[0].text for row in table.rows if row[0].text.startswith('"')]
-    assert any("8.3 GW" in text for text in quoted_texts)
 
 
 def test_who_own_relayed_and_unattributed_strings() -> None:
@@ -1214,7 +1096,7 @@ def test_who_own_relayed_and_unattributed_strings() -> None:
             "https://newswire.test/story": PageCredit(publisher="Example Newswire"),
         },
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     who_by_row_id = {row[0].row_ids[0]: row[2].text for row in table.rows}
     assert who_by_row_id["K001"] == "Acme Testing Corp (released 2025-03-12)"
@@ -1273,7 +1155,7 @@ def test_own_organisation_equal_to_host_prints_the_page_publisher() -> None:
             )
         },
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     who_texts = {row[0].row_ids[0]: row[2].text for row in table.rows}
     assert who_texts["K001"].startswith("Example Test Publisher")
@@ -1330,7 +1212,7 @@ def test_relayed_falls_back_to_relay_host_with_no_page_credit() -> None:
         findings=[finding, other_finding],
         fact_rows=[row, other_row],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     who = {r[0].row_ids[0]: r[2].text for r in table.rows}
     assert who["K001"] == "Some Org, reported by relay.test"
@@ -1386,7 +1268,7 @@ def test_mixed_kinds_suffix_each_result() -> None:
         findings=[actual_finding, forecast_finding],
         fact_rows=[actual_row, forecast_row],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     assert table.caption == ""
     results = {r[0].row_ids[0]: r[1].text for r in table.rows}
@@ -1441,7 +1323,7 @@ def test_all_actual_rows_get_the_no_forecast_caption() -> None:
         findings=[finding1, finding2],
         fact_rows=[row1, row2],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     assert table.caption == "No figure in this table is a forecast."
     results = {r[0].row_ids[0]: r[1].text for r in table.rows}
@@ -1511,7 +1393,7 @@ def test_context_unchecked_rows_are_excluded() -> None:
         findings=[finding1, finding2, finding3],
         fact_rows=[row1, row2, row3],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     row_ids = {r[0].row_ids[0] for r in table.rows}
     assert row_ids == {"K001", "K002"}
@@ -1565,14 +1447,14 @@ def test_vintage_never_printed() -> None:
         findings=[finding1, finding2],
         fact_rows=[row1, row2],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     for row in table.rows:
         for cell in row:
             assert "Preliminary Monthly" not in cell.text
 
 
-def test_cap_12_selection_priority() -> None:
+def test_cap_10_selection_priority() -> None:
     required_row, required_finding = _row(
         "K001",
         url="https://req.test/x",
@@ -1631,14 +1513,14 @@ def test_cap_12_selection_priority() -> None:
             bl_statement_id, *[p.statement_id for p in section_points]
         ),
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
-    assert len(table.rows) == 12
+    assert len(table.rows) == 10
     row_ids = {r[0].row_ids[0] for r in table.rows}
     assert "K001" in row_ids  # answers a required target: always kept
     assert "K002" in row_ids  # cited by the bottom line: kept ahead of "the rest"
     assert table.caption == (
-        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "Showing 10 of 13 verified figures; all are in the evidence log. "
         "No figure in this table is a forecast."
     )
 
@@ -1697,10 +1579,10 @@ def test_capped_findings_table_keeps_the_forecast_caption() -> None:
         sections=[_section("topic-x", "Section", section_points)],
         statement_verdicts=_verdicts(*[p.statement_id for p in section_points]),
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     assert table.caption == (
-        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "Showing 10 of 13 verified figures; all are in the evidence log. "
         "Every figure in this table is a forecast."
     )
 
@@ -1754,10 +1636,10 @@ def test_capped_findings_table_keeps_the_actual_caption() -> None:
         sections=[_section("topic-x", "Section", section_points)],
         statement_verdicts=_verdicts(*[p.statement_id for p in section_points]),
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     assert table.caption == (
-        "Showing 12 of 13 verified figures; all are in the evidence log. "
+        "Showing 10 of 13 verified figures; all are in the evidence log. "
         "No figure in this table is a forecast."
     )
 
@@ -1826,7 +1708,7 @@ def test_earlier_edition_date_comes_from_the_earlier_findings_own_dates() -> Non
         findings=[earlier_finding, finding, other_finding],
         fact_rows=[row, other_row],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
     assert result == "10 GW; earlier: 9 GW (2024-01-01)"
@@ -1896,7 +1778,7 @@ def test_earlier_edition_falls_back_to_the_earlier_findings_statement_date() -> 
         findings=[earlier_finding, finding, other_finding],
         fact_rows=[row, other_row],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
     assert result == "10 GW; earlier: 9 GW (2024-02-02)"
@@ -2516,7 +2398,7 @@ def test_earlier_edition_with_no_known_finding_prints_no_date_and_no_vintage() -
         ],  # note: no "F-unknown-earlier" finding in the composition
         fact_rows=[row, other_row],
     )
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     assert table is not None
     result = {r[0].row_ids[0]: r[1].text for r in table.rows}["K001"]
     assert result == "10 GW; earlier: 9 GW"
@@ -2736,177 +2618,6 @@ def test_dropped_marks_are_not_duplicated_across_repeated_calls() -> None:
         and "the statement cites no finding this report carries" in msg
     ]
     assert len(matching) == 1
-
-
-def test_period_resolved_from_names_the_release_date_as_basis() -> None:
-    row, finding = _row(
-        "K001",
-        url="https://a.test/x",
-        value="10",
-        unit="GW",
-        period="2025",
-        period_resolved_from="2025-06-10",
-        subject="Battery storage capacity",
-        target_ids=["req-a"],
-        finding_target_ids=["req-a"],
-        release_date="2025-06-10",
-    )
-    other_row, other_finding = _row(
-        "K002",
-        url="https://b.test/y",
-        value="20",
-        unit="GW",
-        target_ids=["req-b"],
-        finding_target_ids=["req-b"],
-    )
-    composition = _composition(
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-x",
-                title="t",
-                rationale="r",
-                search_queries=["q"],
-                success_criteria=["c"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="req-a",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                    EvidenceTarget(
-                        target_id="req-b",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                ],
-            )
-        ],
-        findings=[finding, other_finding],
-        fact_rows=[row, other_row],
-    )
-    table = findings_table(composition)
-    assert table is not None
-    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
-    assert "counted from the release date, 2025-06-10" in what
-    assert "counted from the page's date" not in what
-
-
-def test_period_resolved_from_names_the_statement_date_as_basis() -> None:
-    row, finding = _row(
-        "K001",
-        url="https://a.test/x",
-        value="10",
-        unit="GW",
-        period="2025",
-        period_resolved_from="2025-03-12",
-        subject="Battery storage capacity",
-        target_ids=["req-a"],
-        finding_target_ids=["req-a"],
-        statement_date="2025-03-12",
-    )
-    other_row, other_finding = _row(
-        "K002",
-        url="https://b.test/y",
-        value="20",
-        unit="GW",
-        target_ids=["req-b"],
-        finding_target_ids=["req-b"],
-    )
-    composition = _composition(
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-x",
-                title="t",
-                rationale="r",
-                search_queries=["q"],
-                success_criteria=["c"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="req-a",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                    EvidenceTarget(
-                        target_id="req-b",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                ],
-            )
-        ],
-        findings=[finding, other_finding],
-        fact_rows=[row, other_row],
-    )
-    table = findings_table(composition)
-    assert table is not None
-    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
-    assert "counted from the statement date, 2025-03-12" in what
-
-
-def test_period_resolved_from_falls_back_to_the_pages_date() -> None:
-    row, finding = _row(
-        "K001",
-        url="https://a.test/x",
-        value="10",
-        unit="GW",
-        period="2026",
-        period_resolved_from="2026-02-20",
-        subject="Battery storage capacity",
-        target_ids=["req-a"],
-        finding_target_ids=["req-a"],
-    )
-    other_row, other_finding = _row(
-        "K002",
-        url="https://b.test/y",
-        value="20",
-        unit="GW",
-        target_ids=["req-b"],
-        finding_target_ids=["req-b"],
-    )
-    composition = _composition(
-        sub_topics=[
-            SubTopic(
-                coverage_id="topic-x",
-                title="t",
-                rationale="r",
-                search_queries=["q"],
-                success_criteria=["c"],
-                priority=1,
-                evidence_targets=[
-                    EvidenceTarget(
-                        target_id="req-a",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                    EvidenceTarget(
-                        target_id="req-b",
-                        coverage_id="topic-x",
-                        question="q",
-                        required=True,
-                        measure="m",
-                    ),
-                ],
-            )
-        ],
-        findings=[finding, other_finding],
-        fact_rows=[row, other_row],
-    )
-    table = findings_table(composition)
-    assert table is not None
-    what = {r[0].row_ids[0]: r[0].text for r in table.rows}["K001"]
-    assert "counted from the page's date, 2026-02-20" in what
 
 
 # =============================================================================

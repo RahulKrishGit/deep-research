@@ -1745,6 +1745,75 @@ def test_a_graph_node_factory_refuses_a_blank_name() -> None:
 
 
 
+# --- notes-progress-report spec §6.1: the reviewer's start and result, live ---------
+
+
+@pytest.mark.asyncio
+async def test_reviewer_started_live(monkeypatch: pytest.MonkeyPatch) -> None:
+    """§6.1: the reviewer's graph.node.started is published live when the node starts,
+    and graph.report.reviewed -- with its five criteria and the notes' results -- before
+    the notes wait; both stay in the node's snapshot as the objects published."""
+    from deep_research.graph import nodes as nodes_module
+    from deep_research.graph.live import bind_live_sink
+
+    received: list = []
+    seen_at_wait: list[list[str]] = []
+
+    async def settled(*, timeout: float | None = None) -> bool:
+        seen_at_wait.append([event.event_type for event in received])
+        return True
+
+    monkeypatch.setattr(nodes_module, "notes_settled", settled)
+    with bind_live_sink(received.append):
+        loaded = load_state(await report_reviewer_node(FakeReviewer())(dump_state(_writer_state())))
+
+    assert [event.event_type for event in received] == ["graph.node.started", "graph.report.reviewed"]
+    assert received[0].metadata["node"] == "report_reviewer"
+    assert seen_at_wait == [["graph.node.started", "graph.report.reviewed"]]
+    ids = [event.event_id for event in loaded.events]
+    assert received[0].event_id in ids and received[1].event_id in ids
+    reviewed = received[1].metadata
+    assert [c["dimension"] for c in reviewed["criteria"]] == [
+        "completeness", "evidence_quality", "attribution", "uncertainty", "readability",
+    ]
+    assert all(c["met"] is True for c in reviewed["criteria"])
+    assert reviewed["notes"] == []
+
+
+@pytest.mark.asyncio
+async def test_reviewer_started_is_published_before_the_review_call() -> None:
+    """§6.1: Reviewing's clock starts when the node starts, not when the (slow) review
+    returns: at the moment the reviewer agent is called, the live sink already holds the
+    node's ``graph.node.started``, and nothing else."""
+    from deep_research.graph.live import bind_live_sink
+
+    received: list = []
+    held_when_called: list[list[str]] = []
+
+    class ProbingReviewer(FakeReviewer):
+        async def review(self, packet, *, previous=None):
+            held_when_called.append([event.event_type for event in received])
+            return await super().review(packet, previous=previous)
+
+    reviewer = ProbingReviewer()
+    with bind_live_sink(received.append):
+        await report_reviewer_node(reviewer)(dump_state(_writer_state()))
+
+    assert reviewer.calls == 1
+    assert held_when_called == [["graph.node.started"]]
+
+
+@pytest.mark.asyncio
+async def test_an_unscored_review_marks_no_criterion() -> None:
+    """§6.2: without a scored review every criterion is ``met: null``."""
+    loaded = load_state(await report_reviewer_node(
+        FakeReviewer([fake_report_review(status="provider_failed")])
+    )(dump_state(_writer_state())))
+
+    [reviewed] = [e for e in loaded.events if e.event_type == "graph.report.reviewed"]
+    assert [c["met"] for c in reviewed.metadata["criteria"]] == [None] * 5
+
+
 class _BatchPublisher(FakePublisher):
     """A publisher that can save every cited finding in one write."""
 

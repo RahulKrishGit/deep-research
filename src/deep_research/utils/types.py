@@ -1148,6 +1148,30 @@ NOTE_COVERAGE_PREFIX = "note-"
 """A note's own sub-topic is ``note-{note_id}``, and its targets carry the same prefix."""
 NOTE_TOPIC_TITLE_PREFIX = "Your note: "
 """A note's own sub-topic is titled ``Your note: {restatement}`` (live-briefs spec §4.6)."""
+MAX_NOTE_SHORT_CHARS = 24
+"""A note's label, ``ReaderNote.short``, is at most 24 characters (notes-progress-report spec §7.2)."""
+
+
+def note_short_label(restatement: str) -> str:
+    """The restatement's first three words, cut at 24 characters on a word boundary.
+
+    notes-progress-report spec §7.2: the label a note carries when its reading named
+    none — the fallback and replay readings, a live reading whose ``short`` broke its
+    bounds, and a note recorded before the field existed. A first word longer than 24
+    characters is cut to its first 24.
+    """
+    words = restatement.split()[:3]
+    label = ""
+    for word in words:
+        candidate = f"{label} {word}".strip()
+        if len(candidate) > MAX_NOTE_SHORT_CHARS:
+            break
+        label = candidate
+    if not label and words:
+        label = words[0][:MAX_NOTE_SHORT_CHARS]
+    return label
+
+
 ReaderNoteKind: TypeAlias = Literal[
     "emphasis", "exclude", "scope", "new_angle", "about_reader"
 ]
@@ -1173,12 +1197,20 @@ class ReaderNoteScope(ContractModel):
 class ReaderNote(ContractModel):
     """One interpreted reader note (live-briefs spec §4.6).
 
-    The first nine fields are fixed once the note is interpreted; the three
-    flags are the run's own bookkeeping, set by the graph: ``reviewed`` when a
-    review input carried the note, ``passed`` when its one targeted research
-    pass was bought, ``redrafted`` when its one redraft was (D11).
+    The first ten fields are fixed once the note is interpreted; the three
+    flags are the run's own bookkeeping, set by the graph: ``reviewed`` is set
+    on every note that was active when a review started, a ``new_angle``-only
+    note included although the review packet leaves it out, and is read only
+    for a note with a steering kind (``notes_due_a_redraft``); ``passed`` when
+    its one targeted research pass was bought, ``redrafted`` when its one
+    redraft was (D11). ``finalize_report`` takes in a note read after the run
+    decided to publish with all three set and ``replaces`` cleared: nothing is
+    owed it any more, so it cannot reopen the decision, and it retires no note
+    the report already followed (``graph.nodes._closed_notes_update``).
     ``restatement`` is the interpreter's plain-words reading, or the note's own
-    text when the interpretation failed.
+    text when the interpretation failed. ``short`` names the note's subject in
+    one to three words for a label (notes-progress-report spec §7.2): the
+    reading's own, or ``note_short_label(restatement)`` when it named none.
     """
 
     note_id: str = Field(pattern=r"^n([1-9]|10)$")
@@ -1187,6 +1219,7 @@ class ReaderNote(ContractModel):
     received_during: str = Field(min_length=1)
     kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
     restatement: str = Field(min_length=1, max_length=500)
+    short: str = Field(default="", max_length=MAX_NOTE_SHORT_CHARS)
     scope: ReaderNoteScope | None = None
     new_questions: list[str] = Field(default_factory=list, max_length=3)
     replaces: str | None = None
@@ -1213,12 +1246,34 @@ class ReaderNote(ContractModel):
             ]
         return value
 
+    @field_validator("short", mode="before")
+    @classmethod
+    def short_is_one_line(cls, value: object) -> object:
+        """The label is printed inside one line of the report (spec §7.2)."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def short_label_or_derived(self) -> ReaderNote:
+        """Every note carries a label: the reading's own, or its restatement's first words."""
+        if not self.short:
+            self.short = note_short_label(self.restatement)
+        return self
+
 
 class NoteDisposition(ContractModel):
     """What one review concluded about one reader note (live-briefs spec §4.6)."""
 
     note_id: str = Field(min_length=1)
     status: NoteDispositionStatus
+
+
+NOTE_LABEL_PREFIX = "Your note \u00b7 "
+"""A note's label in the bottom line (notes-progress-report spec §7.2): ``Your note · {short}``."""
+
+
+def note_label(note: ReaderNote) -> str:
+    """``Your note · {short}``: how the bottom line names a note and its topic (spec §7.2)."""
+    return f"{NOTE_LABEL_PREFIX}{note.short}"
 
 
 def active_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
@@ -1554,6 +1609,10 @@ class ReportSection(ContractModel):
     points: list[ReportPoint] = Field(default_factory=list)
     coverage_id: str = ""
     """The plan sub-topic this section renders; "" for a legacy composition."""
+    short_title: str = ""
+    """One to three words naming the part for the bottom line's label and the
+    contents list (notes-progress-report spec §7.2); "" for a composition
+    written before it, whose readers then use ``title``."""
 
 
 class ReportTerminalState(ContractModel):
@@ -1733,6 +1792,64 @@ class ReportTable(ContractModel):
         return self
 
 
+class BottomLineTopic(ContractModel):
+    """One topic line of the bottom line (notes-progress-report spec §7.2)."""
+
+    coverage_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    """The section's short title, or ``Your note · {short}`` for a note's topic."""
+    statement_id: str = Field(min_length=1)
+
+
+NoteLineOutcome: TypeAlias = Literal["covered", "not_found", "not_addressed", "not_checked"]
+
+
+class ReportNoteLine(ContractModel):
+    """One reader note's line in the bottom line, stamped when the report is
+    published (notes-progress-report spec §7.2): the note's terminal outcome, a
+    mixed note's steering half, and either the note's kept topic line
+    (``statement_id``) or code-written ``text``, or both."""
+
+    note_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    outcome: NoteLineOutcome
+    steering_outcome: NoteLineOutcome | None = None
+    statement_id: str | None = None
+    text: str = ""
+
+
+class BottomLineLayout(ContractModel):
+    """Which of a composition's ``summary`` statements are the direct answer and
+    which are topic lines, in the order the report prints them (spec §7.2)."""
+
+    answer_ids: list[str] = Field(default_factory=list)
+    topic_lines: list[BottomLineTopic] = Field(default_factory=list)
+    assembled: bool = False
+    """True when the fallback assembled the lines from the sections (spec §7.3)."""
+
+
+ReportOutlineKind: TypeAlias = Literal[
+    "bottom_line", "topic", "key_figures", "options", "not_confirmed", "sources"
+]
+
+
+class ReportOutlineEntry(ContractModel):
+    """One ``##`` heading of the reader report, in order (notes-progress-report spec §7.5).
+
+    ``heading`` is the heading's text exactly as printed; ``label`` is its short
+    name in the web's contents list. ``topic_index``/``topic_count`` number a
+    topic among the printed topic sections; ``note_id`` names the reader note a
+    note's topic answers.
+    """
+
+    heading: str = Field(min_length=1)
+    kind: ReportOutlineKind
+    label: str = Field(min_length=1)
+    topic_index: int | None = Field(default=None, ge=1)
+    topic_count: int | None = Field(default=None, ge=1)
+    note_id: str | None = None
+
+
 class ReportComposition(ContractModel):
     """Everything one written pass composed, and the evidence it renders.
 
@@ -1839,6 +1956,18 @@ class ReportComposition(ContractModel):
     finalizer published — and a renderer states nothing about checks it was
     not told about.
     """
+    bottom_line: BottomLineLayout | None = None
+    """The bottom line's shape: its answer, then one line per topic
+    (notes-progress-report spec §7.2). ``None`` when the bottom line is empty, and
+    for a composition written before the shape existed: both render ``summary``
+    as one paragraph."""
+    reader_answers: list[str] = Field(default_factory=list)
+    """The values of the reader's answers to the one-time check, in question
+    order, printed on the evidence line (spec §7.5); ``[]`` when it asked nothing."""
+    reader_note_lines: list[ReportNoteLine] = Field(default_factory=list)
+    """One line per active reader note, in receipt order, stamped at publication
+    (spec §7.2); ``[]`` in the writer's own composition, which prints a note's
+    topic line as a plain topic line."""
 
     @model_validator(mode="after")
     def canonicalize_evidence(self) -> ReportComposition:
@@ -1913,12 +2042,23 @@ class SectionDraft(ContractModel):
 
     title: str
     points: list[WriterPointDraft] = Field(default_factory=list)
+    short_title: str = ""
+    """The part named in one to three words for a contents list (notes-progress-report
+    spec §7.1); a reply without one keeps the section title in its place."""
+
+
+class TopicLineDraft(WriterPointDraft):
+    """One drafted bottom-line line for one listed topic (notes-progress-report spec §7.1)."""
+
+    topic: str = ""
+    """The coverage id at the start of the topic's ``## {id} · {title}`` heading."""
 
 
 class BottomLineDraft(ContractModel):
-    """The bottom-line call's drafted reply: 2-4 sentences (spec §6.6)."""
+    """The bottom-line call's drafted reply: a direct answer of one or two sentences, then one line per topic (notes-progress-report spec §7.1)."""
 
     sentences: list[WriterPointDraft] = Field(default_factory=list)
+    topics: list[TopicLineDraft] = Field(default_factory=list)
 
 
 # The one-time check (live-briefs spec §4.4): the dimensions a check question may

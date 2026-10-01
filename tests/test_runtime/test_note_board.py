@@ -114,3 +114,26 @@ async def test_the_board_is_bound_for_a_block_and_reaches_tasks_started_inside_i
         task = asyncio.create_task(read())
     assert current_note_board() is None
     assert await task == ["n1"]
+
+
+@pytest.mark.asyncio
+async def test_the_board_counts_every_add_and_drop_and_wakes_a_waiter() -> None:
+    """notes-progress-report spec §5.3: the researcher reads ``version`` before it scans the
+    board and then waits for the next add or drop, so no change between the two is lost.
+    Receiving a note is not a change: nothing can act on a note before it is read."""
+    board = NoteBoard()
+    _receive(board)
+    _receive(board)
+    assert board.version == 0
+    assert await asyncio.wait_for(board.wait_for_change(-1), timeout=1) == 0
+
+    waiter = asyncio.create_task(board.wait_for_change(0))
+    _receive(board)
+    await asyncio.sleep(0.01)
+    assert not waiter.done()
+    board.add(fake_reader_note("n1"))
+    assert await asyncio.wait_for(waiter, timeout=1) == 1
+    board.drop("n2")
+    board.drop("n3")
+    assert board.version == 3
+    assert await asyncio.wait_for(board.wait_for_change(1), timeout=1) == 3

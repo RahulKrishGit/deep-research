@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import calendar
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Literal, TypeAlias, get_args
 
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_RETRY_EFFORT,
@@ -37,7 +37,9 @@ from deep_research.agents.errors import (
 from deep_research.agents.events import agent_event, publish_live
 from deep_research.agents.reader_notes import (
     PLANNING_NOTES,
+    is_research_note,
     live_reader_notes,
+    note_sub_topic,
     render_reader_notes,
 )
 from deep_research.agents.prompts import (
@@ -62,6 +64,7 @@ from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
     MAX_TARGETS_PER_TOPIC,
+    NOTE_COVERAGE_PREFIX,
     AnswerContract,
     AnswerKind,
     ContractModel,
@@ -2694,6 +2697,16 @@ def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
         "question leaves open. Plan within these answers: a narrowing the "
         "reader asked for is not a missing part of the question."
     ]
+    lines.extend(reader_answer_lines(reader_answers))
+    return "\n".join(lines)
+
+
+def reader_answer_lines(reader_answers: Sequence[ReaderAnswer]) -> list[str]:
+    """One line per answer to the one-time check: the question, the answer, and
+    whether the reader gave it or the check assumed it -- the lines the planner
+    prints under its lead sentence and the bottom line prints alone
+    (notes-progress-report spec §7.1)."""
+    lines: list[str] = []
     for answer in reader_answers:
         said = (
             "a best guess; the reader did not answer"
@@ -2701,7 +2714,7 @@ def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
             else "the reader's answer"
         )
         lines.append(f"- {answer.text} {answer.value} ({said})")
-    return "\n".join(lines)
+    return lines
 
 
 def plan_messages(
@@ -2918,35 +2931,251 @@ def memory_recalled_event(memory_context: MemorySnapshot) -> ResearchEvent:
     )
 
 
-def planning_completed_event(outcome: AgentRun["ResearchPlan"]) -> ResearchEvent:
+def planning_completed_event(
+    outcome: AgentRun["ResearchPlan"],
+    *,
+    note_topics: Sequence[SubTopic] = (),
+    states: Mapping[str, str] | None = None,
+) -> ResearchEvent:
     """Report the finished plan's size, its sub-topics and how the scoping loop stopped.
 
     ``sub_topics`` lists each planned sub-topic's ``coverage_id`` and title, the
     title capped at 160 characters (live-briefs spec AC2): plan content a console
-    shows the reader, never provider error text (``agents/events.py``).
+    shows the reader, never provider error text (``agents/events.py``). The
+    reader's research notes the plan is published with follow, each with its
+    ``note_id`` (notes-progress-report spec §5.2); ``sub_topic_count`` counts
+    both, and ``note_topic_count`` the notes' alone.
     """
     plan = outcome.result
-    return agent_event(
+    planned = [] if plan is None else list(plan.sub_topics)
+    event = agent_event(
         agent_name=PLANNER_NAME,
         event_type="planner.planning.completed",
         message="Planning complete.",
         metadata={
-            "sub_topic_count": 0 if plan is None else len(plan.sub_topics),
-            "sub_topics": []
-            if plan is None
-            else [
-                {
-                    "coverage_id": sub_topic.coverage_id,
-                    "title": summarize_text(sub_topic.title, limit=160),
-                }
-                for sub_topic in plan.sub_topics
+            "sub_topic_count": len(planned) + len(note_topics),
+            "sub_topics": [
+                *(
+                    {
+                        "coverage_id": sub_topic.coverage_id,
+                        "title": summarize_text(sub_topic.title, limit=160),
+                    }
+                    for sub_topic in planned
+                ),
+                *(
+                    {
+                        "coverage_id": sub_topic.coverage_id,
+                        "title": summarize_text(sub_topic.title, limit=160),
+                        "note_id": sub_topic.coverage_id.removeprefix(
+                            NOTE_COVERAGE_PREFIX
+                        ),
+                    }
+                    for sub_topic in note_topics
+                ),
             ],
+            "note_topic_count": len(note_topics),
             "repair_attempted": False if plan is None else plan.repair_attempted,
             "stop_reason": outcome.react.stop_reason,
             "iterations": outcome.react.iterations,
             "tool_calls": outcome.react.tool_calls,
         },
     )
+    # notes-progress-report spec §6.1: with ``states`` each entry also carries
+    # its slot's final state (§6.3); without them the event is as Phase A built it.
+    return event if states is None else with_slot_states(event, states)
+
+
+# --- notes-progress-report spec §6.1-§6.3: Planning's live progress ----------
+
+#: What a plan slot reads (spec §6.3). ``planner.progress`` carries ``drafted``,
+#: ``checking``, ``being_fixed``, ``passed`` and ``fixed`` while the plan is
+#: drafted, checked and fixed; ``planner.planning.completed`` carries each
+#: slot's final state: ``passed``, ``fixed``, ``flagged`` or ``not_checked``.
+PLAN_SLOT_STATES: tuple[str, ...] = (
+    "drafted", "checking", "being_fixed", "passed", "fixed", "flagged", "not_checked",
+)
+_PLAN_TOPIC_ID = re.compile(r"\btopic-\d{2}\b")
+
+
+def flagged_topic_ids(texts: Sequence[str], sub_topics: Sequence[SubTopic]) -> set[str]:
+    """The plan's coverage ids that ``texts`` name (notes-progress-report spec §6.2).
+
+    Only ids leave this function, never the text it read: a problem line or a
+    plan review's ``repair_instruction`` is the model's own words.
+    """
+    known = {sub_topic.coverage_id for sub_topic in sub_topics}
+    return {
+        coverage_id
+        for text in texts
+        for coverage_id in _PLAN_TOPIC_ID.findall(text)
+        if coverage_id in known
+    }
+
+
+def plan_progress(
+    sub_topics: Sequence[SubTopic],
+    *,
+    flagged: set[str] | frozenset[str],
+    repaired: set[str] | frozenset[str],
+    step: str,
+    check_round: int,
+) -> dict[str, JsonValue]:
+    """``planner.progress`` metadata for the plan-side request about to start (spec §6.1).
+
+    ``step`` names the request: ``drafting`` (the draft), ``fixing`` (a repair)
+    or ``checking`` (a review), and ``check_round`` is 0 before the first
+    review, 1 for the review and its repair, 2 for the confirming review. Each
+    slot's ``state`` follows §6.3: every slot reads ``checking`` while a review
+    runs; a slot the text being acted on flagged reads ``being_fixed`` while its
+    repair runs; before any review a slot reads ``drafted``, and after one it
+    reads ``passed``, or ``fixed`` when a repair changed or added it.
+    """
+
+    def state(coverage_id: str) -> str:
+        if step == "checking":
+            return "checking"
+        if step == "fixing" and coverage_id in flagged:
+            return "being_fixed"
+        if check_round == 0:
+            return "drafted"
+        return "fixed" if coverage_id in repaired else "passed"
+
+    return {
+        "step": step,
+        "check_round": check_round,
+        "sub_topics": [
+            {
+                "coverage_id": sub_topic.coverage_id,
+                "title": summarize_text(sub_topic.title, limit=160),
+                "state": state(sub_topic.coverage_id),
+            }
+            for sub_topic in sub_topics
+        ],
+    }
+
+
+def planner_progress_event(metadata: dict[str, JsonValue]) -> ResearchEvent:
+    """One ``planner.progress`` event (notes-progress-report spec §4 item 1, §6.1).
+
+    Live-only: published through the run's sink and never returned in the
+    planner's state update, so it is never in ``ResearchState.events``.
+    """
+    return agent_event(
+        agent_name=PLANNER_NAME,
+        event_type="planner.progress",
+        message="Planning progress.",
+        metadata=metadata,
+    )
+
+
+def with_slot_states(event: ResearchEvent, states: Mapping[str, str]) -> ResearchEvent:
+    """``planner.planning.completed`` with each sub-topic's final slot state (spec §6.1).
+
+    A planned topic reads the state the plan checks left it in (``not_checked``
+    when none is recorded); a note topic the run appended (§5.2) reads
+    ``planned``.
+    """
+    entries = event.metadata.get("sub_topics")
+    if not isinstance(entries, list):
+        return event
+    stamped: list[JsonValue] = [
+        {
+            **entry,
+            "state": "planned"
+            if "note_id" in entry
+            else states.get(str(entry.get("coverage_id")), "not_checked"),
+        }
+        for entry in entries
+        if isinstance(entry, dict)
+    ]
+    return event.model_copy(
+        update={"metadata": {**event.metadata, "sub_topics": stamped}}
+    )
+
+
+def _plan_signature(sub_topic: SubTopic) -> str:
+    """What a repair can change about one slot: its title and its targets."""
+    return sub_topic.model_dump_json(include={"title", "evidence_targets"})
+
+
+class _PlanProgress:
+    """One planning run's slot states, published live as ``planner.progress`` (spec §6.2).
+
+    ``repaired`` collects the ids a repair changed or added. ``judged`` holds
+    each id's signature as the latest review that produced a verdict saw it,
+    and ``flagged`` the ids that verdict named; ``judged`` stays ``None`` until
+    a review produced a verdict.
+    """
+
+    def __init__(self) -> None:
+        self.repaired: set[str] = set()
+        self.judged: dict[str, str] | None = None
+        self.flagged: set[str] = set()
+
+    def publish(
+        self,
+        step: str,
+        check_round: int,
+        sub_topics: Sequence[SubTopic],
+        *,
+        flagged: set[str] | frozenset[str] = frozenset(),
+    ) -> None:
+        publish_live(
+            planner_progress_event(
+                plan_progress(
+                    sub_topics,
+                    flagged=flagged,
+                    repaired=self.repaired,
+                    step=step,
+                    check_round=check_round,
+                )
+            )
+        )
+
+    def mark_repaired(
+        self, before: Sequence[SubTopic], after: Sequence[SubTopic]
+    ) -> None:
+        earlier = {sub_topic.coverage_id: _plan_signature(sub_topic) for sub_topic in before}
+        self.repaired |= {
+            sub_topic.coverage_id
+            for sub_topic in after
+            if earlier.get(sub_topic.coverage_id) != _plan_signature(sub_topic)
+        }
+
+    def verdict(self, sub_topics: Sequence[SubTopic], review: PlanReviewDraft) -> None:
+        self.judged = {
+            sub_topic.coverage_id: _plan_signature(sub_topic) for sub_topic in sub_topics
+        }
+        self.flagged = (
+            set()
+            if review.sound
+            else flagged_topic_ids(
+                [*requested_problems(review), review.repair_instruction], sub_topics
+            )
+        )
+
+    def final(self, sub_topics: Sequence[SubTopic]) -> dict[str, str]:
+        """Each slot's final state (spec §6.3), for ``planner.planning.completed``.
+
+        ``not_checked`` when no review produced a verdict on the slot as it now
+        stands; otherwise ``flagged`` when that verdict named it (no repair is
+        left), ``fixed`` when a repair changed or added it, else ``passed``.
+        """
+        states: dict[str, str] = {}
+        for sub_topic in sub_topics:
+            coverage_id = sub_topic.coverage_id
+            if (
+                self.judged is None
+                or self.judged.get(coverage_id) != _plan_signature(sub_topic)
+            ):
+                states[coverage_id] = "not_checked"
+            elif coverage_id in self.flagged:
+                states[coverage_id] = "flagged"
+            elif coverage_id in self.repaired:
+                states[coverage_id] = "fixed"
+            else:
+                states[coverage_id] = "passed"
+        return states
 
 
 _UNCATEGORIZED = "unclassified"
@@ -3158,6 +3387,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         self._planned_coverage_ids: frozenset[str] = frozenset()
         # Counted per run so the review/repair cycle stays bounded.
         self._review_calls = 0
+        # Set by ``finalize`` (notes-progress-report spec §6.3): each slot's final
+        # state, which ``run`` stamps on ``planner.planning.completed``.
+        self._plan_states: dict[str, str] = {}
 
     @property
     def output_schema(self) -> type[ResearchPlan]:
@@ -3252,6 +3484,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             sub_topic.coverage_id for sub_topic in state.sub_topics
         )
         self._review_calls = 0
+        self._plan_states = {}
         events = [
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
@@ -3265,17 +3498,60 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise planning_provider_error("react_decision") from error
         finally:
             self._restricted_toolset = None
-        completed = planning_completed_event(outcome)
+        # notes-progress-report spec §5.2 (D1, D2): every research note read so
+        # far joins the plan it is published with, as its own sub-topic. Nothing
+        # from here to the live publication below awaits, so a note read after
+        # this line is the researcher's to pick up (§5.3).
+        note_topics = self._note_topics_for(state, outcome.result)
+        completed = planning_completed_event(
+            outcome, note_topics=note_topics, states=self._plan_states
+        )
         publish_live(completed)
         events.append(completed)
+        update: ResearchStateUpdate = {**outcome.state_update, "events": events}
+        if note_topics:
+            update["sub_topics"] = [*update.get("sub_topics", []), *note_topics]
+            update["initial_target_ids"] = [
+                *update.get("initial_target_ids", []),
+                *inventory_target_ids(note_topics),
+            ]
         return AgentRun(
             agent_name=outcome.agent_name,
             result=outcome.result,
             react=outcome.react,
             errors=outcome.errors,
-            state_update={**outcome.state_update, "events": events},
+            state_update=update,
             call_fingerprints=dict(outcome.call_fingerprints),
         )
+
+    def _note_topics_for(
+        self, state: ResearchState, plan: ResearchPlan | None
+    ) -> list[SubTopic]:
+        """The sub-topics of the research notes this plan is published with (spec §5.2).
+
+        Every active note read so far — the state's, then the board's newer ones —
+        whose kinds include ``new_angle`` and whose ``note-{id}`` neither the
+        session nor the plan holds yet, in receipt order, one priority after the
+        plan's last. None for a run that produced no plan: such a note is the
+        researcher's, or owes a note pass.
+        """
+        if plan is None:
+            return []
+        known = [*state.sub_topics, *plan.sub_topics]
+        known_ids = {topic.coverage_id for topic in known}
+        held = [
+            note
+            for note in live_reader_notes(self._reader_notes)
+            if is_research_note(note)
+            and f"{NOTE_COVERAGE_PREFIX}{note.note_id}" not in known_ids
+        ]
+        if not held:
+            return []
+        priority = max(topic.priority for topic in known) + 1
+        return [
+            note_sub_topic(note, priority=priority, reason="reader_note")
+            for note in held
+        ]
 
     def answer_contract_for(self, question: str) -> AnswerContract:
         """Freeze this run's answer contract from the injected clock.
@@ -3671,12 +3947,22 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise planning_provider_error("react_loop")
 
         contract = self.answer_contract_for(task.instruction)
+        # notes-progress-report spec §6.2: one live ``planner.progress`` right
+        # before each plan-side request; nothing runs between one request's
+        # return and the next one's start, so each event also marks the return.
+        progress = _PlanProgress()
+        progress.publish("drafting", 0, ())
         attempt = await self._request_plan(
             task, run, contract=contract, plan=_PLAN_DRAFT_LABEL
         )
+        draft = attempt
         repaired = False
         if attempt.structural or attempt.advisory:
             repaired = True
+            progress.publish(
+                "fixing", 0, attempt.sub_topics,
+                flagged=flagged_topic_ids(attempt.problems, attempt.sub_topics),
+            )
             try:
                 reattempt = await self._request_plan(
                     task,
@@ -3732,6 +4018,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                         problems=reattempt.labelled,
                     )
         attempt = self._without_defective_targets(attempt, contract=contract)
+        if repaired:
+            progress.mark_repaired(draft.sub_topics, attempt.sub_topics)
         self._record_defects(
             run,
             stage="plan_checks",
@@ -3739,6 +4027,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             problems=attempt.labelled_advisory,
         )
 
+        progress.publish("checking", 1, attempt.sub_topics)
         try:
             review = await self._review_plan(
                 contract, attempt.sub_topics, run=run
@@ -3760,8 +4049,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     error, label=attempt.plan, what="the plan review"
                 ),
             )
+            self._plan_states = progress.final(attempt.sub_topics)
             return self._plan_from(attempt, contract=contract, repaired=repaired)
+        progress.verdict(attempt.sub_topics, review)
         if review.sound:
+            self._plan_states = progress.final(attempt.sub_topics)
             return self._plan_from(attempt, contract=contract, repaired=repaired)
 
         requested = format_review_problems(review)
@@ -3772,6 +4064,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             f"{attempt.plan}: {problem}"
             for problem in requested_problems(review)
         ]
+        progress.publish("fixing", 1, attempt.sub_topics, flagged=progress.flagged)
         try:
             reattempt = await self._request_plan(
                 task,
@@ -3801,6 +4094,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     what="the plan review repair",
                 ),
             )
+            self._plan_states = progress.final(attempt.sub_topics)
             return self._plan_from(attempt, contract=contract, repaired=True)
         if not reattempt.usable:
             self._record_defects(
@@ -3815,7 +4109,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 plan=reattempt.plan,
                 problems=reattempt.labelled,
             )
+            self._plan_states = progress.final(attempt.sub_topics)
             return self._plan_from(attempt, contract=contract, repaired=True)
+        progress.mark_repaired(attempt.sub_topics, reattempt.sub_topics)
         attempt = reattempt
         self._record_defects(
             run,
@@ -3824,6 +4120,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             problems=attempt.labelled_advisory,
         )
         confirming: PlanReviewDraft | None = None
+        progress.publish("checking", 2, attempt.sub_topics)
         try:
             confirming = await self._review_plan(
                 contract, attempt.sub_topics, already_requested=requested, run=run
@@ -3839,6 +4136,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     what="the confirming plan review",
                 ),
             )
+        if confirming is not None:
+            progress.verdict(attempt.sub_topics, confirming)
         if confirming is not None and not confirming.sound:
             self._record_defects(
                 run,
@@ -3849,6 +4148,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     for problem in requested_problems(confirming)
                 ],
             )
+        self._plan_states = progress.final(attempt.sub_topics)
         return self._plan_from(attempt, contract=contract, repaired=True)
 
     def state_update(

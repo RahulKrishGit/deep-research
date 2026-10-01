@@ -757,7 +757,7 @@ The `graph.route.decided` fragment is always the router's own enumerated reason
 The in-process API exposes one research start endpoint, a session list
 endpoint, five session-scoped read endpoints (`status`, `stream`,
 `report`, `evidence`, `trace`), one session-scoped answers endpoint for the
-one-time check and one for the reader's notes, all served by a process-local
+one-time check, one for the reader's notes and one to stop a session, all served by a process-local
 `SessionStore`:
 
 | Method | Path | Response |
@@ -771,6 +771,7 @@ one-time check and one for the reader's notes, all served by a process-local
 | `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
 | `POST` | `/research/{session_id}/answers` | `202` `ResearchSessionResponse` (the one-time check's answers, below) |
 | `POST` | `/research/{session_id}/notes` | `202` `{"note_id": "n1", "status": "received"}` (a reader note, below) |
+| `POST` | `/research/{session_id}/stop` | `202` `ResearchSessionResponse` with `status: "stopped"` (Stop, below) |
 
 Start a session:
 
@@ -792,7 +793,7 @@ The `202` response carries the session snapshot: `session_id`, `query`, `status`
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, and `errors`. Sessions start immediately in a background task;
 `status` is `running` until the run reaches `completed`, `max_iterations`,
-`incomplete`, or `failed`. Poll `status` or subscribe to the stream —
+`incomplete`, or `failed` — or `stopped`, when the reader stops it (below). Poll `status` or subscribe to the stream —
 nothing blocks on research work.
 
 **The one-time check** (live-briefs spec §4.4). Unless the request sets
@@ -830,18 +831,56 @@ The note (1–500 characters, one line) is accepted at once as `session.note.rec
 (`{note_id, text}`), then read by the configured model, thinking disabled, within
 `hitl.note_interpret_timeout_s` (15 s): `session.note.interpreted` carries the run's
 reading (`{note_id, restatement, kinds, replaces, fallback}`). A reading that fails or
-times out keeps the note as written, as an emphasis, with `fallback: true`. Every step
-but evidence verification reads the notes (a later note replaces an earlier one it
-contradicts); a note the review finds no evidence for buys one targeted research pass,
-and a note the report ignores buys one redraft, neither spending the extra-pass budget
-or the writer's own re-run. Notes close once `finalize_report` has started: the run's
-published decision to publish (or to end) closes them (live-briefs Phase 3 plan,
-ambiguity 5). The status snapshot carries `notes` (each with its `text`, its
-`restatement` once read, and its `outcome`: `covered`, `not_found`, `not_addressed`
-when the report still does not follow the note after its one redraft, `replaced`, or
-`pending` while the run goes on or when no review judged it), `notes_remaining`,
-`note_passes`, and `clarification` (the one-time check's questions and the answers the
-run started with, or `null`).
+times out keeps the note as written, as an emphasis, with `fallback: true`. The planner
+reads every note; the researcher (its searches and its extraction), the source evaluator,
+the report writer and the report reviewer read each note's steering view, which leaves out
+the `new_angle` kind (a note of that kind alone has none, and a note of both kinds is read
+as its steering kinds only). Evidence verification reads no note. A later note replaces an
+earlier one it contradicts (a note the run reads only after it has decided to publish
+replaces none), and no step reads a replaced note.
+A research note (kind `new_angle`) is researched as a topic of its own: it
+joins the plan when it is read before the plan is published, gets its own research
+thread at once when it is read while research runs, and otherwise buys one note pass
+afterwards, in which only its part and the bottom line are redrafted. A steering note
+gets one targeted research pass when the review finds no evidence for it, and one full
+redraft when the report ignores it. A note of both kinds is researched like a research
+note, and its steering half is judged like a steering note's, which can buy that
+redraft. None of these spends the extra-pass budget or the writer's own re-run. Notes
+close once `finalize_report` has started: the run's published decision to publish (or
+to end) closes them (live-briefs Phase 3 plan, ambiguity 5). The status snapshot carries
+`notes` (each with its `text`, its `restatement` once read, and its `outcome`: `covered`,
+`not_found`, `not_addressed` when the report still does not follow the note after its
+one redraft, `replaced`, `pending` while the session goes on with nothing to judge the
+note by yet, or `not_checked` once it has ended that way, where a research note's
+outcome comes from its own topic's targets and a steering note's from the review; and
+its `steering_outcome`, the same words for a mixed note's steering half and `null` for
+every other note; no session that has ended reports `pending` in either field),
+`notes_remaining`, `note_passes`, and `clarification` (the one-time check's questions and
+the answers the run started with, or `null`). Once a report is published the snapshot also
+carries `report_outline`: the report's `##` headings in order, each
+`{heading, kind, label, topic_index, topic_count, note_id}` with `kind` one of
+`bottom_line`, `topic`, `key_figures`, `options`, `not_confirmed` or `sources`
+(notes-progress-report spec §7.5); it is `null` while the run goes on and for a session
+with no report.
+
+**Stop** (notes-progress-report spec §8). A session that is `running` or `needs_input`
+can be stopped at once, from the one-time check until the run decides to publish:
+
+```bash
+curl -X POST http://localhost:8000/research/<session_id>/stop
+```
+
+The `202` carries the snapshot with `status: "stopped"` and `stopped_step`: the step it
+was on — `check` while the one-time check waited, else the pipeline row (`planner` …
+`report_reviewer`). The run is cancelled where it stands, with every provider, search and
+page request it had in flight; nothing is published — no report, evidence log, quality
+record or memory entry — and the stream's last event is `session.stopped`
+(`{step, stopped_at, elapsed_seconds}`). A stopped session answers `/report` and
+`/evidence` as a halted run does (`409 report_unavailable`, `409 evidence_unavailable`),
+refuses notes and answers, and reads every note it took `not_checked`. A stop is refused
+with `409 not_stoppable` once the session has ended (`reason: finished`, a second stop
+included), once the run has decided to publish or end (`publishing`), and while the
+service shuts down (`closing`).
 
 A finished session's snapshot also carries the outcome's own readings, added
 to the response without changing any existing field: `evidence_path` and
@@ -881,8 +920,8 @@ Errors are structured and safe:
 | Status | Meaning |
 | --- | --- |
 | `422` | Invalid request body or override shape, or answers that do not fit the session's questions (an unknown or repeated `question_id`, a `choice` that was not offered); the error body lists field locations and types only, never rejected values |
-| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers` and `/notes` |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`) |
+| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers`, `/notes` and `/stop` |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`); a report or evidence log asked of a stopped session (`report_unavailable`, `evidence_unavailable`); a stop sent once the session has ended, once the run has decided to publish, or while the service shuts down (`not_stoppable`, with `reason` `finished`, `publishing` or `closing`) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
 
 Every response carries `X-Deep-Research-Mode: live` or `replay` (see *Run the app*).
@@ -917,11 +956,22 @@ running stage can be watched). A `POST /research` may name the case with the hea
 `X-Replay-Case: <case id>` (the ids of `e2e_evaluation/replay_matrix.py`); the session
 records the case's own question. The one-time check asks nothing in replay mode unless the
 `POST /research` also carries `X-Replay-Clarify: on`; then it asks a fixed set of three
-questions (Region, Period, For), so the check can be exercised offline. A reader note is
+questions (Region, Period, For), so the check can be exercised offline. A `POST /research` may
+also carry `X-Replay-Hold-After: <event type>[#<n>]`: the stream then stops after the n-th event
+of that type (the first when `#<n>` is left out) and holds until the session is stopped or the
+server exits; the step briefs' captures use it (notes-progress-report spec §6.10). Replay
+publishes each event stamped with the moment it releases it, so the steps' elapsed times read
+as they would live. A reader note is
 read in replay mode by a scripted interpreter that keeps it as written, as an emphasis;
 replay runs the graph at full speed and paces only the stream, so a note added while the
-running stage plays arrives after the engine has finished and ends `pending`. In replay mode the topbar
+running stage plays arrives after the engine has finished and ends `not_checked`, and the
+report's bottom line prints no line for it (a note gets its line only when the run has read it
+by the time it publishes). In replay mode the topbar
 shows a muted `replay mode` chip.
+While a session runs — from the one-time check through Reviewing — the topbar's **Stop**, beside
+the status chip, asks once and then sends `POST /research/{id}/stop`: the run is cancelled where it
+stands, nothing is published, and the page keeps the pipeline frozen where it stopped, with
+**Ask again**. Replay mode stops a session the same way.
 Sessions are held in the API process's memory: the sidebar's list empties when the API
 restarts.
 
@@ -1014,10 +1064,9 @@ telemetry names at the peak — `agents.verifier_concurrency` first, then
 `agents.sub_topic_concurrency` — and lower `agents.verifier_batch_size` only if
 the calls themselves are being truncated.
 
-**Progress is a post-run log, not a live stream.** `run_research_graph` invokes
-the graph to completion and returns one result, so the CLI prints
-`ResearchState.events` once the run is over. Live progress arrives with the
-API's server-sent-events endpoint.
+**Progress streams live.** The CLI hands `run_research` a `ProgressStream` as its
+`event_handler`, so the events it streams print as the graph produces them
+(`--verbose` and `--debug-events` widen the set); the API sends every event over SSE.
 
 **`--resume` only works inside one process.** `build_checkpointer` returns
 LangGraph's `InMemorySaver`, which does not survive the process that created

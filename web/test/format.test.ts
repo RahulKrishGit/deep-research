@@ -41,11 +41,17 @@ describe("statusNote — one rule per API status", () => {
     expect(statusNote(toSessionView({ ...base, status: "needs_input" }, "Planning"))).toBe("a few quick questions");
     expect(STATUS.needs_input).toEqual({ label: "Waiting for you", dot: "dot-warn" });
   });
+  it("stopped → Stopped by you · at {step}, on the neutral dot (notes-progress-report spec §8.4)", () => {
+    expect(statusNote(toSessionView({ ...base, status: "stopped", stopped_step: "researcher" }, "Researching"))).toBe("at Researching");
+    expect(statusNote(toSessionView({ ...base, status: "stopped", stopped_step: "check" }, "the questions"))).toBe("at the questions");
+    expect(statusNote(toSessionView({ ...base, status: "stopped" }))).toBe("step not recorded");
+    expect(STATUS.stopped).toEqual({ label: "Stopped by you", dot: "dot-neutral" });
+  });
 });
 
 describe("helpers", () => {
   it("isLive: a running session and one waiting for the reader are in progress; every other status is not", () => {
-    expect((["running", "needs_input", "completed", "max_iterations", "incomplete", "failed"] as const).map(isLive)).toEqual([true, true, false, false, false, false]);
+    expect((["running", "needs_input", "completed", "max_iterations", "incomplete", "failed", "stopped"] as const).map(isLive)).toEqual([true, true, false, false, false, false, false]);
   });
   it("qFitClass centres the question at 80 characters, not 81", () => {
     expect(qFitClass("a".repeat(80))).toBe(" q-center");

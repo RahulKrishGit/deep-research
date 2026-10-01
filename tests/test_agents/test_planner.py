@@ -5322,9 +5322,16 @@ async def test_the_planner_publishes_its_events_live_and_lists_the_planned_title
             outcome = await agent.run(_state())
 
     events = outcome.state_update["events"]
-    assert [event.event_id for event in received] == [event.event_id for event in events]
+    # notes-progress-report spec §4 item 1: planner.progress is published live
+    # and never returned; every other event is published live as the object returned.
+    progress = [event for event in received if event.event_type == "planner.progress"]
+    assert [event.metadata["step"] for event in progress] == ["drafting", "checking"]
+    assert [event.event_id for event in received if event not in progress] == [
+        event.event_id for event in events
+    ]
     assert events[2].metadata["sub_topics"] == [
-        {"coverage_id": s.coverage_id, "title": s.title} for s in outcome.result.sub_topics
+        {"coverage_id": s.coverage_id, "title": s.title, "state": "passed"}
+        for s in outcome.result.sub_topics
     ]
     assert [s["title"] for s in events[2].metadata["sub_topics"]] == [
         "Cryptography", "Hardware timelines", "Mitigations",

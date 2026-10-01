@@ -8,8 +8,8 @@ The rule this document exists to protect: **where a value is unavailable, the
 interface says so in muted text. It never renders `0`, `—`, `null`, a placeholder,
 or a disabled control.**
 
-The console is one page with five stages (DESIGN.md §3: 1 Idle, 2 Submitted,
-3 Running, 4 Report, 5 Failed), a one-time check that can come between 2 and 3
+The console is one page with six stages (DESIGN.md §3: 1 Idle, 2 Submitted,
+3 Running, 4 Report, 5 Failed, 6 Stopped by you), a one-time check that can come between 2 and 3
 (2a, live-briefs Phase 2) and a collapsible session sidebar, so gaps are
 keyed `{stage}.{n}` plus `SB.{n}` for the sidebar; E1, 1.1, 1.2, 3.1 and 3.7 are closed
 and recorded above. Re-keyed on 2026-09-26 to the
@@ -21,18 +21,20 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 
 | Method | Path | Returns |
 |---|---|---|
-| `POST` | `/research` | `202` `ResearchSessionResponse` (`api/app.py:159-188`; `max_iterations` is passed to the graph as `max_extra_passes`, `:183`) |
-| `GET` | `/research` | `200` `{"sessions": [ResearchSessionResponse, …]}`, newest first, `?limit=` 1–200, default 20 (`:198-205`) |
-| `GET` | `/research/{id}/status` | `200` `ResearchSessionResponse` (`:190-202`) |
-| `GET` | `/research/{id}/stream` | `200` `text/event-stream`, replayed from id 1 then live; ids restart at 1 per subscriber (`:204-236`, `api/events.py:14-27`) |
-| `GET` | `/research/{id}/report` | `200` `text/markdown`, or `409` `session_not_complete` / `report_unavailable` (`:238-263`) |
-| `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`:313-338`) |
-| `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:265-269`) |
-| `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:265-294`, `api/sessions.py` `submit_answers`) |
+| `POST` | `/research` | `202` `ResearchSessionResponse` (`api/app.py:258-290`; `max_iterations` is passed to the graph as `max_extra_passes`, `:282`) |
+| `GET` | `/research` | `200` `{"sessions": [ResearchSessionResponse, …]}`, newest first, `?limit=` 1–200, default 20 (`:245-256`) |
+| `GET` | `/research/{id}/status` | `200` `ResearchSessionResponse` (`:376-388`) |
+| `GET` | `/research/{id}/stream` | `200` `text/event-stream`, replayed from id 1 then live; ids restart at 1 per subscriber (`:390-422`, `api/events.py:14-27`) |
+| `GET` | `/research/{id}/report` | `200` `text/markdown`, or `409` `session_not_complete` / `report_unavailable` (`report_unavailable` for a stopped session too) (`:424-452`) |
+| `GET` | `/research/{id}/evidence` | `200` JSON or `text/markdown` (`?format=`), or `409` `session_not_complete` / `evidence_unavailable` (`evidence_unavailable` for a stopped session too) (`:454-485`) |
+| `GET` | `/research/{id}/trace` | `200` `TraceResponse` (`:487-514`) |
+| `POST` | `/research/{id}/answers` | `202` `ResearchSessionResponse`: the reader's answers to the one-time check, taken once; `404` unknown session, `409` `not_waiting_for_input`, `422` an answer that does not fit its question (`api/app.py:292-321`, `api/sessions.py` `submit_answers`) |
 | `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, once `finalize_report` has started — from the run's published decision to publish, live-briefs Phase 3 ambiguity 5 — or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
+| `POST` | `/research/{id}/stop` | `202` `ResearchSessionResponse` with `status: "stopped"`: the run is cancelled where it stands and writes nothing; `404` unknown session; `409` `not_stoppable` with `reason` `finished` (it has ended, a second stop included), `publishing` (from the run's published decision to publish or end) or `closing` (the service shutting down) (`api/app.py` `stop_research`, `api/sessions.py` `stop`; notes-progress-report spec §8) |
 
-`ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 22 fields: `session_id`, `query`, `status`,
+`ResearchSessionResponse` (`api/models.py:277-352`, assembled by `_session_response`,
+`api/app.py:143-158`, from `outcome_response_fields` and `session_note_fields`,
+`api/sessions.py:184-246` and `:249-293`), 24 fields: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, `errors`, `evidence_path`, `quality_path`,
 `quality_contract_version`, `semantic_review_status`,
@@ -40,14 +42,20 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 (`required_targets`, `answered_targets`, `missing_required_target_ids`,
 `not_found_target_ids`), `evidence_counts` (fifteen counts; `null`
 unless the run left both a composition and a quality snapshot,
-`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3):
+`runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3, except `stopped_step` and
+`report_outline`, notes-progress-report's):
 `notes` (each note as written, the run's reading of it and its outcome),
-`notes_remaining`, `note_passes` and `clarification` (the one-time check's
-questions and the answers the run started with, or `null`). `status` is one of `running`, `needs_input` (the
+`notes_remaining`, `note_passes`, `clarification` (the one-time check's
+questions and the answers the run started with, or `null`), `stopped_step` (the step a
+stopped session was stopped at — `check` or a pipeline row — else `null`) and
+`report_outline` (the published report's `##` headings in order, each with its kind, its
+contents label and, for a topic, its number and the note it answers; `null` without a
+published report — notes-progress-report spec §7.5). `status` is one of `running`, `needs_input` (the
 one-time check waiting for the reader; not terminal), `completed`,
-`max_iterations`, `incomplete`, `failed`. Not on the response:
+`max_iterations`, `incomplete`, `failed`, `stopped` (the reader stopped the run:
+terminal, nothing published). Not on the response:
 `quality_status`, `max_iterations`/`max_extra_passes`, token usage,
-tool-call totals, any report structure.
+tool-call totals, any report structure beyond `report_outline`.
 
 Every response carries `X-Deep-Research-Mode: live|replay`.
 
@@ -69,10 +77,20 @@ in state order, skipping any `event_id` already published live
 (`graph/orchestrator.py`, `_stream_graph_result`). Every event is delivered exactly
 once; a live event can arrive ahead of events its node recorded earlier; a node that
 halts after publishing live has delivered those events although its halted state
-keeps none of them. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays
-burst-safe: the state after event *k* depends only on events 1..*k*. The one-time
-check's `session.clarification.requested` and `.answered` are published by the
-session itself (`api/sessions.py`, `_clarify`), before the graph starts.
+keeps none of them. The reviewer node publishes its `graph.node.started` before its one
+review call and its `graph.report.reviewed` the moment the review lands, before it waits
+for notes still being read (`graph/nodes.py`); both also stay in the node's own events, and
+the snapshot skips them by `event_id`. Four progress types are live-only
+(notes-progress-report spec §4 item 1): `planner.progress`, `source_evaluator.progress`,
+`evidence_verifier.progress` and `report_writer.progress`. Each is published through the
+run's sink and never returned in a node's `state_update["events"]`, so it is never in the
+run's state or any snapshot; `ResearchSession.publish` records it, so a late `/stream`
+replays it. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays burst-safe: the
+state after event *k* depends only on events 1..*k*. The one-time check's
+`session.clarification.requested` and `.answered` are published by the session itself
+(`api/sessions.py`, `_clarify`), before the graph starts. A stopped session's last event
+is `session.stopped` (`{step, stopped_at, elapsed_seconds}`), published by the session
+itself (`api/sessions.py`, `stop`); nothing is published after it.
 
 ---
 
@@ -83,7 +101,7 @@ Kept as a record, one line each.
 | Old # | Gap | How it closed |
 |---|---|---|
 | 2.4 | `quality_status` | `completed` ⇔ route `report_accepted` (`graph/state.py:116`, `:322-337`); `semantic_review_status` splits the partial outcomes |
-| 3.2 | quality snapshot | `coverage`, `evidence_counts`, `semantic_review_status`, `semantic_review_score` are on the response (`api/sessions.py:73-128`) |
+| 3.2 | quality snapshot | `coverage`, `evidence_counts`, `semantic_review_status`, `semantic_review_score` are on the response (`api/sessions.py:184-246`) |
 | 3.3 | `evidence_path` | the path is served; the content moves to E1 |
 | 3.5 | claim verdicts and confidence | obsolete: the pipeline has no claims; findings carry a verification status instead (E1) |
 | 2.2 | tool-call counts | partly closed: the verifier, writer and reviewer make no tool calls; `researcher.tool_call` misses the planner's single budgeted call and `finalize_report`'s `write_document` and `save_to_memory` calls (`config.yaml:159`; `agents/planner.py:2999`; `agents/report_writer.py:3286-3293`; `graph/nodes.py:586`); the planner's count is recoverable from `planner.planning.completed.tool_calls`, but `finalize_report`'s calls carry no event-stream count at all — only `ResearchOutcome.tool_calls` (`tools/base.py:107-113`) sees them |
@@ -93,6 +111,7 @@ Kept as a record, one line each.
 | — | `/status.iteration` store fix | `ResearchSession.publish` copies `iteration` from `graph.*` events only (`api/sessions.py`), so `researcher.tool_call`'s ReAct step index never moves the pass |
 | 3.7 | live per-event delivery | closed 2026-09-28 (live-briefs spec E1–E3): every `ResearchEvent` carries an `event_id`; `agent_node` and the agents publish progress live through the run's sink (`graph/live.py`), and the snapshot loop skips ids already published, so each event is delivered once (`graph/orchestrator.py`) |
 | 3.1 | `max_iterations` echo | obsolete 2026-09-28: the console no longer shows a pass ceiling or sends a budget (live-briefs D14, D15); `max_extra_passes` stays on the stream at `graph.session.started` |
+| — | cancel a running session | closed 2026-09-30 (notes-progress-report spec §8): `POST /research/{id}/stop`, the terminal `stopped` status with `stopped_step`, and `session.stopped`; no report, evidence log, quality record or memory entry is written |
 
 ---
 
@@ -124,7 +143,7 @@ Kept as a record, one line each.
 | 3.5 | **Halting-type vocabulary** [2.5] | The failed stage headlines the halting type in plain words and the rail groups recoverable errors, but the client keeps its own copy of `HALTING_ERROR_TYPES` to know which is which. | `HALTING_ERROR_TYPES` in `graph/state.py:141-150` | Client copy, small and stable | `halting: bool` on `ResearchError`, or publish the enumerated set |
 | 3.6 | **Shutdown while running** [2.7] | On cancellation the store sets `finished_at` and leaves `status` as `running`, then the stream ends. The console sees a closed stream with a non-terminal status. | Deliberate: *"cancellation stays cancellation"* | On stream close, re-read `/status`; a closed stream with `finished_at` set and `status == "running"` means the service stopped | The terminal frame from 3.3, or an explicit status |
 | 3.8 | **No `checking` state for the one-time check** (live-briefs Phase 2, open issue O2) | While the live check call runs, for up to `hitl.check_timeout_s` (20 s), `status` reads `running` and the stream carries nothing, so the console shows stage 3 with Planning active; if questions come back, stage 2a replaces the pipeline card. Replay's checker answers at once, so replay never shows it. | `SessionStore._clarify` (`api/sessions.py`) knows the check is running but publishes nothing until the questions exist | Show stage 3 until `session.clarification.requested` arrives | A `session.clarification.started` event, or a `checking` status, pending the human's ruling on O2 |
-| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, and it ends `pending` (`not checked`). A live run applies every note that arrives before `finalize_report` starts (read from the run's decision to publish, ambiguity 5 of the same plan). | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
+| 3.9 | **A replay run never applies a reader note** (live-briefs Phase 3, open issue O2) | Replay runs the graph at full speed and paces only the stream, so by the time the running stage shows a step the engine has finished; a note sent then is received, read and acknowledged, but no step reads it, it ends `not_checked` (`not checked`), and the report's bottom line prints no line for it: a note gets its line only when the run has read it by the time it publishes, and a note that arrives after the run has ended gets none, which in replay is every note (notes-progress-report spec §7.2, owner-delegated decision of 2026-10-01). A live run applies every note that arrives before `finalize_report` starts (read from the run's decision to publish, ambiguity 5 of the same plan). | `ReplayRunner` (`api/replay.py`) drains its event queue after `run_research` returns | Prove the engine's use of notes offline (`tests/test_graph/test_reader_notes_replay.py`), and the page's flow on the replay server | A replay runner that holds each node until the stream has published the node's start, pending the human's ruling on O2 |
 
 ---
 
@@ -161,9 +180,10 @@ Recorded so nobody adds them later:
 
 - **Collaboration, sharing, orgs, billing.** Single local operator, no auth. There
   is no identity to attach any of them to.
-- **Re-run / cancel endpoints.** `SessionStore` cancels only on shutdown. A cancel
-  route would need task ownership and a partial-artifact question the API has not
-  answered; until it does, the console offers new research instead.
+- **Re-run endpoints.** The cancel half closed on 2026-09-30: `POST /research/{id}/stop`
+  cancels the session's task and writes no partial artifact, because `finalize_report`
+  never runs (notes-progress-report spec §8). A re-run or resume route stays out: a
+  stopped session's **Ask again** starts a new session with the same question.
 - **An embedded trace viewer.** `trace_url` leaves the application. LangSmith owns
   that surface and duplicating it would be a second, worse implementation.
 - **A rendered event log.** The stream is consumed as derived counters, not

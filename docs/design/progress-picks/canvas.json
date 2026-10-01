@@ -1,0 +1,22 @@
+{
+  "v": 3,
+  "attachments": {},
+  "boards": {
+    "Evaluating.dc.html": {"h": 780, "is_interactive": true, "title": "2 · Evaluating sources", "w": 2352, "x": 0, "y": 940},
+    "Main.dc.html": {"h": 820, "is_interactive": true, "title": "1 · Planning", "w": 2352, "x": 0, "y": 0},
+    "Reviewing.dc.html": {"h": 800, "is_interactive": true, "title": "5 · Reviewing", "w": 2352, "x": 0, "y": 3700},
+    "Verifying.dc.html": {"h": 800, "is_interactive": true, "title": "3 · Verifying evidence", "w": 2352, "x": 0, "y": 1840},
+    "Writing.dc.html": {"h": 820, "is_interactive": true, "title": "4 · Writing report", "w": 2352, "x": 0, "y": 2760},
+    "Report.dc.html": {"h": 2700, "is_interactive": true, "title": "6 · Report layout · cards with contents", "w": 2352, "x": 0, "y": 4620},
+    "Stop.dc.html": {"h": 900, "title": "7 · Stopping a run", "w": 2352, "x": 0, "y": 7440}
+  },
+  "createdOnFiles": {"at": "2026-09-30T20:45:00Z", "v": 1},
+  "designSystems": [],
+  "launch": {"view": "canvas"},
+  "notes": {
+    "head": {"kind": "title1", "maxW": 2352, "text": "How each step shows it is making progress", "w": 240, "x": 0, "y": -300}
+  },
+  "order": ["Main.dc.html", "Evaluating.dc.html", "Verifying.dc.html", "Writing.dc.html", "Reviewing.dc.html", "Report.dc.html", "Stop.dc.html"],
+  "pages": [],
+  "title": "Step progress options"
+}

@@ -6,7 +6,9 @@ import type { CoverageProgress, ResearchSessionResponse, SessionStatus } from ".
 export interface SessionView {
   status: SessionStatus;
   iteration: number;
-  /* The running row's label (live-briefs spec §4.2: "Running · {step}"); null when not known. */
+  /* The running row's label (live-briefs spec §4.2: "Running · {step}"), or the label of the step a
+     stopped session was stopped at (notes-progress-report spec §8.4: "Stopped by you · at {step}");
+     null when not known. */
   step: string | null;
   review: { status: string | null; score: number | null } | null;
   coverage: CoverageProgress | null;
@@ -20,14 +22,17 @@ export function toSessionView(s: ResearchSessionResponse, step: string | null = 
   return { status: s.status, iteration: s.iteration, step, review, coverage: s.coverage };
 }
 
-/* Label and dot per API status (api/models.py:13-19). The second clause is built by statusNote(). */
-export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "dot-ok" | "dot-warn" | "dot-danger" }> = {
+/* Label and dot per API status (api/models.py, SessionStatus). The second clause is built by
+   statusNote(). A session the reader stopped sits on a neutral dot: stopping is neither a failure
+   nor a warning (notes-progress-report spec D18). */
+export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "dot-ok" | "dot-warn" | "dot-danger" | "dot-neutral" }> = {
   running: { label: "Running", dot: "dot-live" },
   needs_input: { label: "Waiting for you", dot: "dot-warn" },
   completed: { label: "Completed", dot: "dot-ok" },
   max_iterations: { label: "Partially completed", dot: "dot-warn" },
   incomplete: { label: "Partially completed", dot: "dot-warn" },
   failed: { label: "Failed", dot: "dot-danger" },
+  stopped: { label: "Stopped by you", dot: "dot-neutral" },
 };
 /* A session still in progress: running, or waiting for the reader's answers to the one-time check
    (live-briefs spec §4.4: needs_input is not terminal). */
@@ -68,6 +73,7 @@ export function statusNote(s: SessionView): string {
     case "incomplete": return s.review && s.review.status === "scored" && score !== null ? "not accepted · " + score : "review unavailable";
     case "needs_input": return "a few quick questions";
     case "failed": return "halted";
+    case "stopped": return s.step === null ? "step not recorded" : "at " + s.step;
     default: return s.step ?? "starting";
   }
 }

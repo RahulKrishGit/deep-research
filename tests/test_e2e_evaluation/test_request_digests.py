@@ -58,54 +58,70 @@ from tests.replay_digests import (
 # statement-check-failure-keeps-sentences
 # unsupported-mechanism
 # validated-cache-reuse
+#
+# Merge of origin/main into notes-progress-report-stop: every row is re-pinned from the
+# merged tree (``python -m tests.replay_digests --pin``), and the two sides' moves explain
+# all of it. The branch (Phase C) changed what the writer, the Statement Check and the
+# reviewers are asked, so in all 35 rows full, timing_free and outside_research moved, and
+# broad-constraints' count went 58 -> 59 (one more Statement Check batch of the drafted
+# sentences, as on the branch alone). Measured request by request, the merged tree differs
+# from main's only in evidence_verifier:StatementCheckDraft, report_reviewer:ReportReviewDraft
+# and :ScopedReportReviewDraft and report_writer:BottomLineDraft and :SectionDraft, and every
+# researcher request, snapshot lines included, is byte-identical to main's in every row. It
+# differs from the branch's own tree only in researcher requests (the O4 snapshot timing,
+# the 22 rows listed above) and in report_reviewer:ReportReviewDraft in the three rows O9
+# moved: with ``SKIP_FINAL_ANSWER_TURN`` put back to False those three rows reproduce the
+# branch's outside-research requests, research requests (timing aside), events and counts.
+# No event digest moved: the branch changes no event of any replay row; main's three O9
+# moves are already pinned here.
 PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
-    "blocked-html-pdf-fallback": ("f67809c5da955cb1", "db1f65725d21a6ff", "e6da9e506e3611cf", 36),
-    "broad-constraints": ("da37e3288a6854dc", "e8b4c8b3530c2c76", "7284e3fb492f1474", 58),
-    "comparative-conflict": ("53934ee9cd2b8cdd", "ee30a028a71b6872", "705ad82f8c2ca49b", 33),
-    "comparison-target-names-both-products": ("495f338140060ea6", "7eb867a075de19a1", "dfcf5b3f4a03d8a9", 16),
-    "count-unit-period": ("add7bdaa7da74844", "eea8daec2e8872a2", "318c0f2e714a81e2", 39),
-    "decision-context-late-candidate": ("331426ac8912ed59", "97cdc51975b1f775", "e656d712a7307628", 37),
-    "empty-but-clean": ("1c1c315f7aa46046", "698388ce5a7c44f7", "6b6d55286aa22e4b", 40),
-    "evidence-words-not-on-page-rejected": ("1c696a07ce9f9fbc", "b6bd4390da7a6726", "cefccba119b6b89a", 33),
-    "extra-pass-finds-nothing": ("87ef8cb4f6baefd7", "18ebb999bde7e55c", "f38d7b18ebc53dda", 37),
+    "blocked-html-pdf-fallback": ("007666cb31f5212e", "899aacdb97e7a617", "250262dd58e797c6", 36),
+    "broad-constraints": ("a111a2648e94cca4", "33624bd297ab2166", "83527eb9236455ae", 59),
+    "comparative-conflict": ("7555bdbc114239a7", "ee04298f16d6b28b", "7dccd31e5b040067", 33),
+    "comparison-target-names-both-products": ("8cbb60c01660add5", "d7ed8bcb74b01e48", "9fa96fa5dd76de44", 16),
+    "count-unit-period": ("8dac99777a633d9a", "15197a4b59f8f19a", "ed1efe647b4a8f92", 39),
+    "decision-context-late-candidate": ("230314c195310eb5", "802e7eb80ba650c8", "ee83579ed3b734e1", 37),
+    "empty-but-clean": ("d02228cc8855fe88", "aef6caa41fa79668", "29fd24cea08b7d2f", 40),
+    "evidence-words-not-on-page-rejected": ("a3ba22adc19a91a7", "8512bffb0b583ab8", "ce02b1541e0533e5", 33),
+    "extra-pass-finds-nothing": ("e30dc98c33aff5e3", "05722cd095cfc654", "07765d9b14cebcd3", 37),
     # Latency plan Task 8 (audit O9): this row's script calls a tool on its
     # forced last turn, which a sub-topic loop no longer asks; the
     # obeying-model test below shows a model that answers as told loses
     # only that turn's own requests. Was ("cc4d4c93c0dcd75f", "f263e41636a8452e", "e3cd657e27a7db9a", 48).
-    "extra-pass-recovers-missing-target": ("745c7250a6b64e0b", "55ef472efae92f1f", "3350579877a260f7", 48),
+    "extra-pass-recovers-missing-target": ("f52091c37449783b", "0326f95dbec579bf", "3d329de1d1d19c72", 48),
     # Latency plan Task 8 (audit O9): this row's script calls a tool on its
     # forced last turn, which a sub-topic loop no longer asks; the
     # obeying-model test below shows a model that answers as told loses
     # only that turn's own requests. Was ("472eb4eb9a52e922", "7cb5411d8b2d9a81", "83358bd57ccf2f08", 41).
-    "extra-pass-redrafts-the-gaining-part": ("0ab8e3f254351883", "a4ae483223fdbe9a", "46412a78f67230c0", 41),
-    "figure-not-on-page-dropped": ("41f42a244f5ead0d", "ce1b5fe9cb957870", "a47f0478ca0589f8", 33),
-    "forecast-versus-actual-kept-apart": ("5d5fbec6536597fc", "c0652aaf18123aba", "e4f8dcaf15866edd", 41),
-    "maker-notes-vs-relay": ("7c773b2b6a776b8c", "3e530c1246b93fbf", "e468184a2274cd6a", 20),
-    "memory-is-not-read": ("26b89a7c329cc560", "3fd0f5bee828865f", "d8153bf008a4e5a9", 34),
+    "extra-pass-redrafts-the-gaining-part": ("405bc78441fbdcac", "bc0a68ee8bf6a8b1", "38b615bc05fd169a", 41),
+    "figure-not-on-page-dropped": ("3c7dc8ce949021fc", "3bfac55074629d62", "e04709adc1e21392", 33),
+    "forecast-versus-actual-kept-apart": ("f632bdf6f4ab7125", "4ad3ee88d833f1fa", "8e1cb9a396e4dca9", 41),
+    "maker-notes-vs-relay": ("e8ac145c1910a2d2", "454e28d55e0eb077", "8c9479eef7a31dd6", 20),
+    "memory-is-not-read": ("ff79f833c218bedc", "a2bc3bdebb97bf24", "b0ee9daa3f3c06bb", 34),
     # Latency plan Task 8 (audit O9): this row's script calls a tool on its
     # forced last turn, which a sub-topic loop no longer asks; the
     # obeying-model test below shows a model that answers as told loses
     # only that turn's own requests. Was ("271c9e9baa621249", "1f24dc4136dc4d03", "622613a384191f12", 46).
-    "missing-target-triggers-one-extra-pass": ("1dc87d451e2898d8", "fed5317482a6c3f7", "0c0026e85f61a62a", 46),
-    "non-constraint-answer": ("53f5e44a2e96739c", "662309350f5085db", "180551d103074c1e", 33),
-    "one-part-question": ("e4ef67c0f0d63d60", "fcb7ce1f08a13ba6", "74a3042d8bb99af5", 16),
-    "prose-only-question": ("215be06f95f0b548", "5a84a902de80cd04", "d8c01755432a06a0", 25),
-    "purchase-year-empty-period": ("66284e512d5fd16f", "d7ca14f09571703f", "6c567a743690ba09", 14),
-    "relative-period-resolved": ("ebf6a018b3b304eb", "1fd4167209b021d1", "ab8fee3beda50e6f", 18),
-    "report-relay-labelled-as-relay": ("8395dd5c4ef5bd72", "4434860a7419dc67", "f2670489eb870342", 32),
-    "report-scope-corrected-to-all-segments": ("769a8fa789c361a8", "2d48770a346902a9", "5e2ad1b4ba74638d", 30),
-    "review-unavailable": ("9e1b457c18cdabe2", "a17682fd1439a8e6", "d380ab2212280e0b", 33),
-    "revision-noted": ("8d83d2109dc384a3", "4f33ac8e9a1c0090", "a6962fe58fdf8b41", 33),
-    "same-work-mirror": ("24dace347c766918", "d42d4539e5aaf8da", "9f15e252e6d56266", 33),
-    "scoped-redraft-after-a-named-defect": ("9b014525db79e956", "f8638fbcac6b57fc", "ca638df6049f7fee", 29),
-    "scoped-review-invalid-reply-falls-back": ("851d7281ecb20832", "158a5ad023ee7078", "84dd2132c562fdcd", 30),
-    "single-subject-spellings": ("1c10afdb9fe40305", "96477bef674181a1", "5380145e2ad7a771", 18),
-    "statement-check-failure-keeps-sentences": ("846fc45df027eebb", "85e4f30db40c90c5", "2c6b8dcc792f4316", 31),
-    "two-subjects-one-value": ("c5d33fb3ed1c96a0", "19fa8302aefe7794", "6894ad7112662bed", 16),
-    "two-versions-one-target": ("2da292adfbf6f3a5", "99e09c68b45beb38", "276e8d5713259403", 16),
-    "unattributed-relay-prose": ("1d61a04946b21368", "65734e85e6a8427a", "4c4cdb2f0d4eec05", 16),
-    "unsupported-mechanism": ("69fb17fb2d8718c1", "984ef9c189dfa288", "01c45530b86c2b50", 33),
-    "validated-cache-reuse": ("eb6bfcf937be5fb7", "b3454fd3a120c614", "0c47717eadc38841", 28),
+    "missing-target-triggers-one-extra-pass": ("d75c5a90c152a830", "b80c35c7c2af39a4", "388fdb5b29b26938", 46),
+    "non-constraint-answer": ("10c6a71ce1bc6fa0", "07d53e7979077394", "8b3e1975ab5195c4", 33),
+    "one-part-question": ("907557702b4faf46", "b942154e38eb83ef", "1ed4931a212c59db", 16),
+    "prose-only-question": ("946def9068481038", "fc5944591ff1764a", "feceb235e3dd446a", 25),
+    "purchase-year-empty-period": ("5d95223ba4d9ad7b", "b391464597bc859c", "9efa4eccbb549709", 14),
+    "relative-period-resolved": ("7ade928fea14cbb6", "42cc83ecb85fc585", "3d2c2f7b78253ff8", 18),
+    "report-relay-labelled-as-relay": ("4dacac70bcd3e69b", "81a85835bbcc9b1f", "06ab2a93beb4ee80", 32),
+    "report-scope-corrected-to-all-segments": ("4a3fa338683482c2", "247a6cf829421cec", "19e8645552f0ad74", 30),
+    "review-unavailable": ("a2f8d153230e4d74", "b5da0ffee0dddda0", "2afc4e75220f4b29", 33),
+    "revision-noted": ("8a7f338be36e9a8a", "f9c42425ec2f5932", "421a7c6d7a99f78e", 33),
+    "same-work-mirror": ("57e4d294f39d8002", "9bd74bf24f924710", "489706afd35bb388", 33),
+    "scoped-redraft-after-a-named-defect": ("e24fb268a6f246db", "bd2f3a1a936bac7f", "126aa2d7cbbef83e", 29),
+    "scoped-review-invalid-reply-falls-back": ("37b292249be5fd7a", "6d1825e7b049a3d2", "60f50a23a460e4db", 30),
+    "single-subject-spellings": ("16536d5c509af416", "7d37df75f6be1412", "e2b18b4fa2c843d4", 18),
+    "statement-check-failure-keeps-sentences": ("4218c948ec8b73a6", "cb586914df711d1c", "ac8672b5735ade97", 31),
+    "two-subjects-one-value": ("9965f56586420ea6", "f864e02a6beea058", "0a9926b705ca7232", 16),
+    "two-versions-one-target": ("290c9cb58f2d7619", "9b469dabcb7b7df6", "249a41ee3e685a00", 16),
+    "unattributed-relay-prose": ("5962091717fdfd90", "5f1119c7995c420f", "3d9f3d2435df6a6f", 16),
+    "unsupported-mechanism": ("6ee2f13de7243f61", "e11f85e4649ce755", "3db97d2e6100f225", 33),
+    "validated-cache-reuse": ("b3e4d61078ef9e41", "a000bdf6623b0641", "aa22ef8759903050", 28),
 }
 
 PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {
