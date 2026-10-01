@@ -1808,6 +1808,28 @@ class BottomLineLayout(ContractModel):
     """True when the fallback assembled the lines from the sections (spec §7.3)."""
 
 
+ReportOutlineKind: TypeAlias = Literal[
+    "bottom_line", "topic", "key_figures", "options", "not_confirmed", "sources"
+]
+
+
+class ReportOutlineEntry(ContractModel):
+    """One ``##`` heading of the reader report, in order (notes-progress-report spec §7.5).
+
+    ``heading`` is the heading's text exactly as printed; ``label`` is its short
+    name in the web's contents list. ``topic_index``/``topic_count`` number a
+    topic among the printed topic sections; ``note_id`` names the reader note a
+    note's topic answers.
+    """
+
+    heading: str = Field(min_length=1)
+    kind: ReportOutlineKind
+    label: str = Field(min_length=1)
+    topic_index: int | None = Field(default=None, ge=1)
+    topic_count: int | None = Field(default=None, ge=1)
+    note_id: str | None = None
+
+
 class ReportComposition(ContractModel):
     """Everything one written pass composed, and the evidence it renders.
 

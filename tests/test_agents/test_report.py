@@ -406,8 +406,9 @@ def test_scope_is_stated_from_the_plan_alone() -> None:
 
 
 def test_citation_numbers_follow_bottom_line_then_sections() -> None:
-    """§5: ``written_citations`` order is bottom line, then the table, then
-    sections; with no table here, the bottom line's page takes reference 1.
+    """Notes-progress-report spec §7.5: ``written_citations`` order is bottom
+    line, then the sections, then the table; with no table here, the bottom
+    line's page takes reference 1.
     """
     composition = _written_composition(
         summary=[

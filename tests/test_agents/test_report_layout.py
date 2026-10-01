@@ -322,6 +322,7 @@ def test_the_reader_report_has_the_spec_skeleton_in_order() -> None:
         "# How much capacity was added in 2024?",
         "## Bottom line",
         "## Capacity",
+        "## Key figures",
         "## What we couldn't confirm",
         "## Sources",
     ]
@@ -504,7 +505,9 @@ def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
 # --- §5, §3.1.7-9: citation order and the Sources line --------------------------
 
 
-def test_citation_order_is_bottom_line_then_table_then_sections() -> None:
+def test_citation_order_is_bottom_line_then_sections_then_table() -> None:
+    """Notes-progress-report spec §7.5: the table prints after the topics, so its
+    pages are numbered after the sections'."""
     a = _finding("https://a.example.test/1", "A reports X.", "1", "unit", organisation="A")
     b = _finding("https://b.example.test/1", "B reports Y.", "2", "unit", organisation="B")
     c = _finding("https://c.example.test/1", "C reports Z.", "3", "unit", organisation="C")
@@ -527,7 +530,7 @@ def test_citation_order_is_bottom_line_then_table_then_sections() -> None:
 
     index = written_citations(composition)
 
-    assert [citation.url for citation in index] == [a.source_url, b.source_url, c.source_url]
+    assert [citation.url for citation in index] == [a.source_url, c.source_url, b.source_url]
 
 
 def _bare_finding(url: str, title: str, content: str) -> Finding:
@@ -1444,19 +1447,6 @@ Evidence as of 2026-09-25 · 4 sources
 
 For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar [1]. The Energy Information Administration's forecast, released 2025-06-10 and reported by Utility Dive, projects domestic storage capacity rising from about 28 GW at the end of Q1 2025 to 64.9 GW at the end of 2026 [2]. The U.S. Energy Information Administration reports that by the end of 2025 the U.S. power system had operational battery storage capacity of 43.6 GW [3].
 
-| What was measured | Result | Who reported it (and when) | Source |
-|---|---|---|---|
-| "Generators added 10.4 GW of new battery storage capacity in 2024, the second-largest generating capacity addition after solar." | 10.4 GW, actual | house.gov (stated 2025-03-12) | [1] |
-| "cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) in 2024, according to our January 2025 Preliminary Monthly…" | 26 gigawatts (GW), actual | house.gov (stated 2025-03-12) | [1] |
-| Battery storage capacity, 2025 | 43.6 gigawatts (GW), actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
-| Battery storage (first six months of 2026) | 8.3 GW, actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
-| "Utility-scale battery storage in the United States is poised to more than double over the next two years and will close out 2026 at nearly 65 GW…" | 65 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
-| Battery storage (utility-scale), Q1 2024 | 17 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
-| "Counting projects larger than 1 MW in the electric power sector, EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25…" | 28 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
-| "…EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25 to 64.9 GW at the end of 2026." | 64.9 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
-| ERCOT, 2025 | 15 GW, actual | EIA, reported by energi.media (stated 2026-01-21) | [4] |
-| ERCOT, 2027 | 37 GW, forecast | EIA, reported by energi.media (stated 2026-01-21) | [4] |
-
 ## Capacity added in 2024
 
 - For 2024, house.gov reports that generators added 10.4 GW of new battery storage capacity, the second-largest generating capacity addition after solar, from the January 2025 Preliminary Monthly Electric Generator Inventory [1].
@@ -1472,6 +1462,21 @@ For 2024, house.gov reports that generators added 10.4 GW of new battery storage
 ## Other forecasts
 
 - The EIA expects battery capacity in ERCOT to rise from about 15 GW in 2025 to 37 GW by the end of 2027, according to EIA, as reported by energi.media [4].
+
+## Key figures
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| "Generators added 10.4 GW of new battery storage capacity in 2024, the second-largest generating capacity addition after solar." | 10.4 GW, actual | house.gov (stated 2025-03-12) | [1] |
+| "cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) in 2024, according to our January 2025 Preliminary Monthly…" | 26 gigawatts (GW), actual | house.gov (stated 2025-03-12) | [1] |
+| Battery storage capacity, 2025 | 43.6 gigawatts (GW), actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| Battery storage (first six months of 2026) | 8.3 GW, actual | U.S. Energy Information Administration (stated 2026-08-07) | [3] |
+| "Utility-scale battery storage in the United States is poised to more than double over the next two years and will close out 2026 at nearly 65 GW…" | 65 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| Battery storage (utility-scale), Q1 2024 | 17 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "Counting projects larger than 1 MW in the electric power sector, EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25…" | 28 GW, actual | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| "…EIA said domestic storage capacity will rise from about 28 GW at the end of Q1'25 to 64.9 GW at the end of 2026." | 64.9 GW, forecast | Energy Information Administration, reported by Utility Dive (released 2025-06-10) | [2] |
+| ERCOT, 2025 | 15 GW, actual | EIA, reported by energi.media (stated 2026-01-21) | [4] |
+| ERCOT, 2027 | 37 GW, forecast | EIA, reported by energi.media (stated 2026-01-21) | [4] |
 
 ## What we couldn't confirm
 
@@ -1654,15 +1659,6 @@ Evidence as of 2026-09-25 · 5 sources
 
 Under the Constitution, each State appoints, in the manner its Legislature directs, a number of electors equal to its Senators and Representatives in Congress [1][2]; archives.gov reports 538 electoral votes in all, with 270 needed to elect, for the 2024 and 2028 presidential elections [3]. The electors meet in their respective states and vote by ballot for two persons [1], and if two or more candidates remain with equal votes, the Senate chooses the Vice President from them by ballot [2].
 
-| What was measured | Result | Who reported it (and when) | Source |
-|---|---|---|---|
-| The District of Columbia | three electors | National Archives | [3] |
-| "…Senators and Representatives in its U.S. Congressional delegation—two votes for its Senators in the U.S. Senate…" | two votes | National Archives | [3] |
-| Total Electoral Votes, 2024 and 2028 presidential elections | 538 electoral votes | National Archives | [3] |
-| Majority Needed to Elect, 2024 and 2028 presidential elections | 270 votes | National Archives | [3] |
-
-*No figure in this table is a forecast.*
-
 ## How many electors there are
 
 - archives.gov reports 538 total electoral votes and 270 votes as the majority needed to elect, for the 2024 and 2028 presidential elections, on allocations based on the 2020 Census [3].
@@ -1682,6 +1678,17 @@ Under the Constitution, each State appoints, in the manner its Legislature direc
 ## When no candidate has a majority
 
 - According to justia.com, if two or more candidates should remain with equal votes, the Senate shall choose from them by ballot the Vice President [2].
+
+## Key figures
+
+| What was measured | Result | Who reported it (and when) | Source |
+|---|---|---|---|
+| The District of Columbia | three electors | National Archives | [3] |
+| "…Senators and Representatives in its U.S. Congressional delegation—two votes for its Senators in the U.S. Senate…" | two votes | National Archives | [3] |
+| Total Electoral Votes, 2024 and 2028 presidential elections | 538 electoral votes | National Archives | [3] |
+| Majority Needed to Elect, 2024 and 2028 presidential elections | 270 votes | National Archives | [3] |
+
+*No figure in this table is a forecast.*
 
 ## What we couldn't confirm
 

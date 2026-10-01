@@ -4,11 +4,11 @@ One writer pass composes ``ReportComposition``, and this module turns it into
 the reader's three artifacts, all pure functions of that composition (and, for
 the quality record, the state and the review):
 
-* :func:`render_written_report` — spec §3: the answer-first skeleton --
-  title, evidence line, bottom line, the question-shaped table, part
-  sections, what could not be confirmed, and sources -- every citation
-  numbered in the order a reader meets it (bottom line, then the table, then
-  the sections);
+* :func:`render_written_report` — spec §3, as notes-progress-report spec §7.5
+  orders it: title, evidence line, bottom line, part sections, Key figures or
+  Options compared, what could not be confirmed, and sources -- every citation
+  numbered in the order a reader meets it (bottom line, then the sections, then
+  the table); :func:`report_outline` names those headings for the web;
 * :func:`render_finding_log` — spec §9: the audit trail -- an "About this
   report" block (counts, scope, exact as-of, the parts, the table's shape),
   every verified figure, every recorded finding with its snippet and its
@@ -73,6 +73,7 @@ from deep_research.utils.types import (
     ReadRecord,
     RejectedDraftPoint,
     ReportComposition,
+    ReportOutlineEntry,
     ReportPart,
     ReportPoint,
     ReportReview,
@@ -110,6 +111,7 @@ __all__ = [
     "render_quality_record",
     "render_written_report",
     "report_as_of",
+    "report_outline",
     "report_filename",
     "report_scope",
     "written_citations",
@@ -975,7 +977,8 @@ def _findings_by_id(composition: ReportComposition) -> dict[str, Finding]:
 def written_citations(composition: ReportComposition) -> list[Citation]:
     """Only the pages the report cites, numbered as a reader meets them.
 
-    Spec §5: bottom line, then the table, then the sections. Nothing here
+    Notes-progress-report spec §7.5: bottom line, then the sections, then the
+    table, which now prints after the topics. Nothing here
     walks ``fact_rows``: the Key Facts table that used to draw citations from
     every fact row is gone from the reader report (moved, unfiltered, to the
     evidence log, spec §9); the only fact rows the reader report cites are the
@@ -993,6 +996,10 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
     for point in composition.summary:
         for url in point.source_urls:
             add(url)
+    for section in composition.sections:
+        for point in section.points:
+            for url in point.source_urls:
+                add(url)
     table = composition.table
     if table is not None:
         for row in table.rows:
@@ -1003,10 +1010,6 @@ def written_citations(composition: ReportComposition) -> list[Citation]:
                     finding = by_id.get(fingerprint)
                     if finding is not None:
                         add(finding.source_url)
-    for section in composition.sections:
-        for point in section.points:
-            for url in point.source_urls:
-                add(url)
     titles = {normalize_source_url(s.url): s.title for s in composition.sources}
     for finding in composition.findings:
         titles.setdefault(normalize_source_url(finding.source_url), finding.source_title)
@@ -1066,12 +1069,14 @@ def _evidence_date(as_of: str) -> str | None:
 
 
 def _evidence_line(composition: ReportComposition, index: Sequence[Citation]) -> str:
-    """§3.1 rule 2: ``Evidence as of {date} · {n} source(s)``, or the honest
-    fallback when no evidence date can be read."""
+    """§3.1 rule 2: ``Evidence as of {date} · {n} source(s)``, then `` · {answer}``
+    for each of the reader's answers to the one-time check (notes-progress-report
+    spec §7.5); or the honest fallback when no evidence date can be read."""
     date = _evidence_date(composition.as_of)
     if date is None:
         return "No source could be checked."
-    return f"Evidence as of {date} · {_counted(len(index), 'source', 'sources')}"
+    answers = "".join(f" \u00b7 {value}" for value in composition.reader_answers)
+    return f"Evidence as of {date} \u00b7 {_counted(len(index), 'source', 'sources')}{answers}"
 
 
 #: A trailing closing quote or paren the sentence's own stop can sit inside
@@ -1223,9 +1228,39 @@ def _has_citable_finding(composition: ReportComposition) -> bool:
     )
 
 
+#: Notes-progress-report spec §7.5 item 3: the paragraph an assembled bottom line prints.
+_ASSEMBLED_BOTTOM_LINE = (
+    "*Assembled from the sections below; the summary could not be written this time.*"
+)
+
+
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
+    """Notes-progress-report spec §7.5 items 3-4: the ``## Bottom line`` body -- the
+    answer paragraph (or, for an assembled bottom line, the line that says so),
+    then one ``- **{label}:** {line}`` per topic line. A composition without a
+    layout prints one paragraph (``_plain_bottom_line``)."""
+    layout = composition.bottom_line
+    if layout is None:
+        return _plain_bottom_line(composition, index)
+    by_id = {point.statement_id: point for point in composition.summary if point.statement is not None}
+    if layout.assembled:
+        paragraph = _ASSEMBLED_BOTTOM_LINE
+    else:
+        paragraph = " ".join(
+            _rendered_point(by_id[statement_id], composition, index)
+            for statement_id in layout.answer_ids if statement_id in by_id
+        )
+    items = [
+        f"- **{line.label}:** {_rendered_point(by_id[line.statement_id], composition, index)}"
+        for line in layout.topic_lines if line.statement_id in by_id
+    ]
+    return "\n\n".join(block for block in (paragraph, "\n".join(items)) if block)
+
+
+def _plain_bottom_line(composition: ReportComposition, index: Sequence[Citation]) -> str:
     """§3.1 rule 3 and §10: one paragraph, or a fallback when nothing was
-    written.
+    written -- the bottom line of a composition without a layout
+    (notes-progress-report spec §7.5).
 
     The "nothing answered" sentence is reserved for a pass that cites
     nothing at all and holds no citable finding either: an empty ``index``,
@@ -1609,38 +1644,69 @@ def quality_report_filename(*, session_id: str, iteration: int) -> str:
     return f"{stem.removesuffix('.md')}-quality.json"
 
 
-def render_written_report(composition: ReportComposition) -> str:
-    """Spec §3: the answer-first skeleton.
+def report_outline(composition: ReportComposition) -> list[ReportOutlineEntry]:
+    """Notes-progress-report spec §7.5: one entry per ``##`` heading of the
+    reader report, in order. ``render_written_report`` prints its headings from
+    this list, so the web's contents list and cards pair with them exactly.
 
-    Title, evidence line, bottom line, the question-shaped table, one section
-    per non-empty part, what could not be confirmed, and sources -- every
-    citation numbered in the order a reader meets it. Cut entirely: the old
-    Executive summary, Key facts, Not found, header counts and scope (spec
-    §3.1 rule 9); those move to the evidence log (§9).
+    Topics are the sections with points, numbered among themselves -- a section
+    the bottom-line fallback emptied prints no heading and takes no number (§7.3).
+    A note's topic is labelled ``{short} (your note)``.
+    """
+    entries = [ReportOutlineEntry(heading="Bottom line", kind="bottom_line", label="Bottom line")]
+    printed = [section for section in composition.sections if section.points]
+    for number, section in enumerate(printed, start=1):
+        note_id = (
+            section.coverage_id.removeprefix(NOTE_COVERAGE_PREFIX)
+            if section.coverage_id.startswith(NOTE_COVERAGE_PREFIX) else None
+        )
+        short = section.short_title or section.title
+        entries.append(ReportOutlineEntry(
+            heading=section.title, kind="topic",
+            label=f"{short} (your note)" if note_id else short,
+            topic_index=number, topic_count=len(printed), note_id=note_id,
+        ))
+    if composition.table is not None:
+        if composition.table.shape == "options":
+            entries.append(ReportOutlineEntry(heading="Options compared", kind="options", label="Options compared"))
+        else:
+            entries.append(ReportOutlineEntry(heading="Key figures", kind="key_figures", label="Key figures"))
+    if _could_not_confirm_groups(composition):
+        entries.append(ReportOutlineEntry(
+            heading="What we couldn't confirm", kind="not_confirmed", label="Not confirmed",
+        ))
+    if written_citations(composition):
+        entries.append(ReportOutlineEntry(heading="Sources", kind="sources", label="Sources"))
+    return entries
+
+
+def render_written_report(composition: ReportComposition) -> str:
+    """Spec §3's answer-first skeleton, in notes-progress-report spec §7.5's order.
+
+    Title, evidence line, bottom line, one section per part with points, Key
+    figures or Options compared, what could not be confirmed, and sources --
+    each ``##`` heading taken from :func:`report_outline`, and every citation
+    numbered in the order a reader meets it. Cut entirely: the old Executive
+    summary, Key facts, Not found, header counts and scope (spec §3.1 rule 9);
+    those move to the evidence log (§9).
     """
     index = written_citations(composition)
-    lines = [f"# {composition.question}", "", _evidence_line(composition, index)]
-    lines += ["", "## Bottom line", "", _bottom_line_block(composition, index)]
-
-    table = composition.table
-    if table is not None:
-        lines.append("")
-        lines.extend(_table_lines(table, composition, index))
-
-    for section in composition.sections:
-        if not section.points:
-            continue
-        lines += ["", f"## {section.title}", ""]
-        lines += [_written_bullet(point, composition, index) for point in section.points]
-
     groups = _could_not_confirm_groups(composition)
-    if groups:
-        lines += ["", "## What we couldn't confirm", ""]
-        lines.append("\n\n".join("\n".join(group) for group in groups))
-
-    if index:
-        lines += ["", "## Sources", ""]
-        lines.extend(_source_line(citation, composition) for citation in index)
+    printed = iter([section for section in composition.sections if section.points])
+    lines = [f"# {composition.question}", "", _evidence_line(composition, index)]
+    for entry in report_outline(composition):
+        lines += ["", f"## {entry.heading}", ""]
+        if entry.kind == "bottom_line":
+            lines.append(_bottom_line_block(composition, index))
+        elif entry.kind == "topic":
+            section = next(printed)
+            lines += [_written_bullet(point, composition, index) for point in section.points]
+        elif entry.kind in ("key_figures", "options") and composition.table is not None:
+            lines.extend(_table_lines(composition.table, composition, index))
+        elif entry.kind == "not_confirmed":
+            lines.append("\n\n".join("\n".join(group) for group in groups))
+        elif entry.kind == "sources":
+            lines.extend(_source_line(citation, composition) for citation in index)
 
     lines += [
         "",

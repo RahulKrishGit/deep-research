@@ -154,7 +154,7 @@ PINNED_PACKETS = {
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    "report_reviewer:ReportReviewDraft": "2026d6a3ba612fff",
+    "report_reviewer:ReportReviewDraft": "34668604c0fbb5bb",
 }
 
 
