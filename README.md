@@ -851,7 +851,12 @@ outcome comes from its own topic's targets and a steering note's from the review
 its `steering_outcome`, the same words for a mixed note's steering half and `null` for
 every other note; no session that has ended reports `pending` in either field),
 `notes_remaining`, `note_passes`, and `clarification` (the one-time check's questions and
-the answers the run started with, or `null`).
+the answers the run started with, or `null`). Once a report is published the snapshot also
+carries `report_outline`: the report's `##` headings in order, each
+`{heading, kind, label, topic_index, topic_count, note_id}` with `kind` one of
+`bottom_line`, `topic`, `key_figures`, `options`, `not_confirmed` or `sources`
+(notes-progress-report spec §7.5); it is `null` while the run goes on and for a session
+with no report.
 
 **Stop** (notes-progress-report spec §8). A session that is `running` or `needs_input`
 can be stopped at once, from the one-time check until the run decides to publish:

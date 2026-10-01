@@ -35,6 +35,7 @@ from deep_research.api.models import (
     CoverageProgressResponse,
     EvidenceCountsResponse,
     ReaderNoteResponse,
+    ReportOutlineEntryResponse,
     SessionStatus,
 )
 from deep_research.api.notes import (
@@ -46,6 +47,7 @@ from deep_research.api.notes import (
     reader_note,
 )
 from deep_research.api.stop import CHECK_STEP, active_row, session_stopped_event
+from deep_research.agents.report import report_outline
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.notes import NoteBoard, ReceivedNote, bind_note_board
 from deep_research.runtime.outcome import ResearchOutcome
@@ -234,6 +236,13 @@ def outcome_response_fields(
             context_unchecked_findings=counts.context_unchecked_findings,
             cited_findings=counts.cited_findings,
         )
+    # Notes-progress-report spec §7.5: the headings of the report ``/report``
+    # serves -- the Markdown and the outline come from one composition.
+    composition = outcome.composition
+    if composition is not None and outcome.report is not None:
+        fields["report_outline"] = [
+            ReportOutlineEntryResponse(**entry.model_dump()) for entry in report_outline(composition)
+        ]
     return fields
 
 

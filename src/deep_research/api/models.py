@@ -25,6 +25,7 @@ from deep_research.utils.types import (
     FindingDropReason,
     FindingStatus,
     ReaderAnswerSource,
+    ReportOutlineKind,
     ResearchError,
     SourceEvaluationStatus,
 )
@@ -256,6 +257,23 @@ class EvidenceCountsResponse(ApiModel):
     cited_findings: int = Field(ge=0)
 
 
+class ReportOutlineEntryResponse(ApiModel):
+    """One ``##`` heading of the published report, in order (notes-progress-report spec §7.5).
+
+    ``heading`` is the heading exactly as the Markdown prints it and ``label`` its
+    short name in the console's contents list; ``topic_index`` and ``topic_count``
+    number a topic among the printed topics; ``note_id`` names the reader note a
+    note's own topic answers.
+    """
+
+    heading: str = Field(min_length=1)
+    kind: ReportOutlineKind
+    label: str = Field(min_length=1)
+    topic_index: int | None = Field(default=None, ge=1)
+    topic_count: int | None = Field(default=None, ge=1)
+    note_id: str | None = None
+
+
 class ResearchSessionResponse(ApiModel):
     """The immutable snapshot of one session the API returns.
 
@@ -321,6 +339,11 @@ class ResearchSessionResponse(ApiModel):
 
     clarification: ClarificationRecordResponse | None = None
     """The one-time check the session asked, or ``None`` when it asked nothing."""
+
+    report_outline: list[ReportOutlineEntryResponse] | None = None
+    """The published report's ``##`` headings, in order (notes-progress-report spec
+    §7.5), so the console lays the report out as cards with a contents list;
+    ``None`` while the run goes on and for a session with no report."""
 
     stopped_step: str | None = None
     """The step the reader stopped the run at — ``check`` (the one-time check) or a
