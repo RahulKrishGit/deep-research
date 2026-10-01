@@ -426,9 +426,12 @@ def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome()
     assert (first.status_code, first.json()) == (202, {"note_id": "n1", "status": "received"})
     assert (second.json()["note_id"], third.json()["note_id"]) == ("n2", "n3")
     assert running["notes"] == [
-        {"note_id": "n1", "text": "Pumped hydro", "restatement": "leave out pumped hydro", "outcome": "pending"},
-        {"note_id": "n2", "text": "Flow batteries", "restatement": "leave out flow batteries", "outcome": "pending"},
-        {"note_id": "n3", "text": "Grid codes", "restatement": "leave out grid codes", "outcome": "pending"},
+        {"note_id": "n1", "text": "Pumped hydro", "restatement": "leave out pumped hydro", "outcome": "pending",
+         "steering_outcome": None},
+        {"note_id": "n2", "text": "Flow batteries", "restatement": "leave out flow batteries", "outcome": "pending",
+         "steering_outcome": None},
+        {"note_id": "n3", "text": "Grid codes", "restatement": "leave out grid codes", "outcome": "pending",
+         "steering_outcome": None},
     ]
     assert (running["notes_remaining"], running["note_passes"], running["clarification"]) == (7, 1, None)
     # A note the report still ignores is reported as such, never as covered (live-briefs Phase 3, O8).

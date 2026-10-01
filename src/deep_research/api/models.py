@@ -170,8 +170,17 @@ class ReaderNoteResponse(ApiModel):
     text: str = Field(min_length=1)
     restatement: str | None = None
     outcome: Literal[
-        "covered", "not_found", "not_addressed", "pending", "not_checked", "replaced"
+        "covered", "not_found", "not_addressed", "pending", "replaced", "not_checked"
     ]
+    steering_outcome: (
+        Literal[
+            "covered", "not_found", "not_addressed", "pending", "replaced", "not_checked"
+        ]
+        | None
+    ) = None
+    """A mixed note's steering half (notes-progress-report spec §5.6, D20): the
+    review's verdict on what the note asked besides research, in ``outcome``'s
+    words; ``None`` for every other note."""
 
 
 class ClarificationQuestionResponse(ApiModel):

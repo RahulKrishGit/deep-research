@@ -246,21 +246,20 @@ def session_note_fields(session: ResearchSession) -> dict[str, object]:
     and the pass count; while it runs, the stream's count stands in.
     """
     state = session.outcome.state if session.outcome is not None else None
-    # notes-progress-report spec §4 item 2, §5.6: once the session has ended — a terminal
-    # status, or closed out by a shutdown — a note nothing judged reads not_checked.
+    # notes-progress-report spec §5.6: a session that has ended never reports a
+    # note ``pending``; a note nothing judged reads ``not_checked``.
     terminal = session.status in TERMINAL_STATUSES or session.finished_at is not None
     check = session.check
     return {
         "notes": [
             ReaderNoteResponse(
-                note_id=received.note_id,
-                text=received.text,
-                restatement=restatement,
-                outcome=outcome,
+                note_id=record.received.note_id,
+                text=record.received.text,
+                restatement=record.restatement,
+                outcome=record.outcome,
+                steering_outcome=record.steering_outcome,
             )
-            for received, restatement, outcome in note_records(
-                session.note_board, state, terminal=terminal
-            )
+            for record in note_records(session.note_board, state, terminal=terminal)
         ],
         "notes_remaining": session.note_board.remaining,
         "note_passes": state.note_passes if state is not None else session.note_passes,
