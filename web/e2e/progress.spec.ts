@@ -31,6 +31,9 @@ test("Planning: titles fill the slots and the check runs; the surplus skeleton l
   await expect(planning.locator(".ps-slots > .ln:not([data-gone]) .tt")).toHaveText(["1Adoption rate", "2Widget funding", "3Widget exports"]);
   await expect(planning.locator(".ps-slots > .ln[data-topic='running']")).toHaveCount(3);
   await expect(planning.locator(".ps-slots > [data-gone='1']")).toBeHidden();
+  // The leaving skeleton fades at once; it does not inherit the open row's per-line stagger (about 520 ms
+  // for the fourth line). The built stylesheet writes 0ms as 0s.
+  await expect(planning.locator(".ps-slots > [data-gone='1']")).toHaveCSS("--d-c", "0s");
   await stop(request, id);
 });
 

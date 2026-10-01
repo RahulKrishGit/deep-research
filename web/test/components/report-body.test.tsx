@@ -231,6 +231,20 @@ describe("the bottom line card (spec §7.5 items 3-4, §7.6 Cards)", () => {
       ["Part one: ", "Agency One reports part one [1]."],
     ]);
   });
+
+  it("prints the no-answer disclosure as a muted line above its topic lines, with no lead", () => {
+    stackCards();
+    const markdown = "# Q\n\nEvidence as of 2026-09-30 · 1 source\n\n## Bottom line\n\n"
+      + "*The direct answer could not be checked this time; each topic's checked line follows.*\n\n"
+      + "- **Part one:** Agency One reports part one [1].\n\n## Sources\n\n1. a.test — [A](https://a.test/)\n";
+    const { container } = show([fixed("Bottom line", "bottom_line", "Bottom line"), fixed("Sources", "sources", "Sources")], markdown);
+    const card = container.querySelector("#rep-bottom-line")!;
+    expect(card.querySelector("p.lead")).toBeNull();
+    expect(card.querySelector("p.b-sub")!.textContent).toBe("The direct answer could not be checked this time; each topic's checked line follows.");
+    expect([...card.querySelectorAll(".bl-list > li")].map((li) => [li.querySelector(".k")!.textContent, li.querySelector(".bl-line")!.textContent])).toEqual([
+      ["Part one: ", "Agency One reports part one [1]."],
+    ]);
+  });
 });
 
 describe("citations, tables and the evidence line across cards", () => {

@@ -1281,12 +1281,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs .b-why[data-kind="extra_pass"]{color:var(--status-warn)}
 /* Researching's checklist (pick 2C): mark · number · title · fact, hairlines between topics. Divs, not
    list items: the verbatim `.spine-lg li` rules would otherwise style every topic as a pipeline row. */
-.ps-topics,.ps-titles{display:flex;flex-direction:column}
+.ps-topics{display:flex;flex-direction:column}
 .ps-topics > .ln{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:6px 0;font-size:var(--text-sm);color:var(--muted)}
-.ps-titles > .ln{display:grid;grid-template-columns:18px minmax(0,1fr);gap:var(--space-3);padding:6px 0;font-size:var(--text-sm);color:var(--fg)}
-.ps-topics > .ln + .ln,.ps-titles > .ln + .ln{border-top:1px solid var(--border-soft)}
+.ps-topics > .ln + .ln{border-top:1px solid var(--border-soft)}
 .ps-topics > [data-topic="running"],.ps-topics > [data-topic="done"]{color:var(--fg)}
-.ps-topics .tn,.ps-titles .tn{font-family:var(--font-mono);color:var(--muted);margin-right:6px}
+.ps-topics .tn{font-family:var(--font-mono);color:var(--muted);margin-right:6px}
 .ps-topics .tt{min-width:0;overflow-wrap:anywhere}
 .ps-topics .tf{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ps-topics > [data-topic="running"] .tf{color:var(--status-ok)}
@@ -1548,6 +1547,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 /* The from-row's lines are opacity-only (above); a skeleton that leaves while Planning holds that role still
    fades before it leaves the layout. */
 .spine-lg.briefs > li[data-handoff="from"] .ps-slots > [data-gone="1"]{transition-property:opacity,display}
+/* The surplus skeleton fades at once: the open row's per-line stagger (--d-c, about 520 ms for the fourth
+   line) is for lines that rise, and would hold the leaving skeleton in place that long before it fades. */
+.spine-lg.briefs > li .ps-slots > [data-gone="1"]{--d-c:0ms}
 .spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ps-slots > [data-rise="1"]{--d-c:0ms}
 @starting-style{.spine-lg.briefs > li[data-open="1"] .ps-slots > [data-rise="1"]{opacity:0;transform:translateY(4px)}}
 /* The amber ✗ (progress.css:82-88): a slot still flagged, a check that did not pass, a note not met. */
