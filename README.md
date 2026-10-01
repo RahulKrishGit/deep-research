@@ -757,7 +757,7 @@ The `graph.route.decided` fragment is always the router's own enumerated reason
 The in-process API exposes one research start endpoint, a session list
 endpoint, five session-scoped read endpoints (`status`, `stream`,
 `report`, `evidence`, `trace`), one session-scoped answers endpoint for the
-one-time check and one for the reader's notes, all served by a process-local
+one-time check, one for the reader's notes and one to stop a session, all served by a process-local
 `SessionStore`:
 
 | Method | Path | Response |
@@ -771,6 +771,7 @@ one-time check and one for the reader's notes, all served by a process-local
 | `GET` | `/research/{session_id}/trace` | `200` `TraceResponse` |
 | `POST` | `/research/{session_id}/answers` | `202` `ResearchSessionResponse` (the one-time check's answers, below) |
 | `POST` | `/research/{session_id}/notes` | `202` `{"note_id": "n1", "status": "received"}` (a reader note, below) |
+| `POST` | `/research/{session_id}/stop` | `202` `ResearchSessionResponse` with `status: "stopped"` (Stop, below) |
 
 Start a session:
 
@@ -792,7 +793,7 @@ The `202` response carries the session snapshot: `session_id`, `query`, `status`
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, and `errors`. Sessions start immediately in a background task;
 `status` is `running` until the run reaches `completed`, `max_iterations`,
-`incomplete`, or `failed`. Poll `status` or subscribe to the stream —
+`incomplete`, or `failed` — or `stopped`, when the reader stops it (below). Poll `status` or subscribe to the stream —
 nothing blocks on research work.
 
 **The one-time check** (live-briefs spec §4.4). Unless the request sets
@@ -844,6 +845,25 @@ when the report still does not follow the note after its one redraft, `replaced`
 `notes_remaining`, `note_passes`, and `clarification` (the one-time check's questions and
 the answers the run started with, or `null`).
 
+**Stop** (notes-progress-report spec §8). A session that is `running` or `needs_input`
+can be stopped at once, from the one-time check until the run decides to publish:
+
+```bash
+curl -X POST http://localhost:8000/research/<session_id>/stop
+```
+
+The `202` carries the snapshot with `status: "stopped"` and `stopped_step`: the step it
+was on — `check` while the one-time check waited, else the pipeline row (`planner` …
+`report_reviewer`). The run is cancelled where it stands, with every provider, search and
+page request it had in flight; nothing is published — no report, evidence log, quality
+record or memory entry — and the stream's last event is `session.stopped`
+(`{step, stopped_at, elapsed_seconds}`). A stopped session answers `/report` and
+`/evidence` as a halted run does (`409 report_unavailable`, `409 evidence_unavailable`),
+refuses notes and answers, and reads every note it took `not_checked`. A stop is refused
+with `409 not_stoppable` once the session has ended (`reason: finished`, a second stop
+included), once the run has decided to publish or end (`publishing`), and while the
+service shuts down (`closing`).
+
 A finished session's snapshot also carries the outcome's own readings, added
 to the response without changing any existing field: `evidence_path` and
 `quality_path` (the other two files of the published set), the
@@ -882,8 +902,8 @@ Errors are structured and safe:
 | Status | Meaning |
 | --- | --- |
 | `422` | Invalid request body or override shape, or answers that do not fit the session's questions (an unknown or repeated `question_id`, a `choice` that was not offered); the error body lists field locations and types only, never rejected values |
-| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers` and `/notes` |
-| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`) |
+| `404` | Unknown `session_id`, identical for `/status`, `/stream`, `/report`, `/evidence`, `/trace`, `/answers`, `/notes` and `/stop` |
+| `409` | Report requested while no outcome exists yet (`session_not_complete`), or from a session that finished without a report (`report_unavailable`) or without an evidence log (`evidence_unavailable`, on `/evidence`); answers sent to a session that is not waiting for them (`not_waiting_for_input`: never asked, already answered, or past its deadline); a note sent while the session waits for answers, once `finalize_report` has started (from the run's published decision to publish, live-briefs Phase 3 plan ambiguity 5), or after it finished (`notes_closed`), or past its tenth note (`note_limit_reached`); a report or evidence log asked of a stopped session (`report_unavailable`, `evidence_unavailable`); a stop sent once the session has ended, once the run has decided to publish, or while the service shuts down (`not_stoppable`, with `reason` `finished`, `publishing` or `closing`) |
 | `500` | Missing or invalid service configuration (`configuration_error`), without file contents, secret values, provider text, or tracebacks |
 
 Every response carries `X-Deep-Research-Mode: live` or `replay` (see *Run the app*).

@@ -15,7 +15,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
+from deep_research.api.app import create_app
 from deep_research.api.models import ClarificationAnswersRequest
 from deep_research.api.notes import NoteInterpretation
 from deep_research.api.replay import ReplayRunner
@@ -34,7 +36,9 @@ from deep_research.utils.config import ConfigSettings, HitlConfig
 from deep_research.utils.types import ResearchEvent
 from tests.test_api.fakes import GateRunner, ScriptedRunner, make_outcome
 from tests.test_api.replay_support import EXTRA_PASS_CASE, guarded
+from tests.test_api.test_app import valid_preflight, wait_until_terminal
 from tests.test_api.test_clarification import Checker
+from tests.test_api.test_replay import frames
 
 QUESTION = "What limits grid-scale battery storage?"
 HITL = HitlConfig(check_timeout_s=0.5, answer_wait_s=5.0, note_interpret_timeout_s=0.2)
@@ -375,3 +379,133 @@ async def test_replay_stop_mid_stream(tmp_path: Path) -> None:
     assert [event.event_id for event in session.events[:-1]] == [event.event_id for event in before]
     assert _types(session.events)[-1] == "session.stopped"
     assert (session.status, session.outcome) == ("stopped", None)
+
+
+# --- the route (spec §8.1, §8.4) -------------------------------------------------------
+
+
+def _status(client: TestClient, session_id: str) -> dict[str, Any]:
+    return client.get(f"/research/{session_id}/status").json()
+
+
+def _wait(client: TestClient, session_id: str, predicate: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        body = _status(client, session_id)
+        if predicate(body):
+            return body
+        time.sleep(0.01)
+    raise AssertionError("status never matched")
+
+
+def _error(response: Any) -> tuple[int, str, str | None]:
+    error = response.json()["error"]
+    return response.status_code, error["code"], error["reason"]
+
+
+def test_stop_route_codes() -> None:
+    """AC28, AC30, AC31 through the route: a running session stops with 202 and the stopped
+    session; its stream ends with ``session.stopped``; /status, /trace and the list name it;
+    its note reads ``not_checked``; /report and /evidence (both formats) answer 409 as a halted
+    run does, a note 409 ``notes_closed``, answers 409 ``not_waiting_for_input``; a second stop
+    is 409 ``not_stoppable`` ``finished``; an unknown id is 404."""
+    runner = GateRunner()
+    app = create_app(runner=runner, preflight=valid_preflight)
+    with TestClient(app) as client:
+        session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        _wait(client, session_id, lambda body: body["current_agent"] == "planner")
+        client.post(f"/research/{session_id}/notes", json={"text": "Pumped hydro"})
+        _wait(client, session_id, lambda body: body["notes"][0]["restatement"] is not None)
+        stopped = client.post(f"/research/{session_id}/stop")
+        # Checked before the stream is read: a session that did not stop never ends its stream.
+        assert stopped.status_code == 202, stopped.text
+        stream = client.get(f"/research/{session_id}/stream").text
+        status = _status(client, session_id)
+        trace = client.get(f"/research/{session_id}/trace").json()
+        listed = client.get("/research").json()["sessions"]
+        later = {
+            "report": client.get(f"/research/{session_id}/report"),
+            "evidence": client.get(f"/research/{session_id}/evidence"),
+            "evidence_md": client.get(f"/research/{session_id}/evidence?format=markdown"),
+            "note": client.post(f"/research/{session_id}/notes", json={"text": "too late"}),
+            "answers": client.post(f"/research/{session_id}/answers", json={"answers": [], "skip": True}),
+            "again": client.post(f"/research/{session_id}/stop"),
+        }
+        unknown = client.post("/research/missing/stop")
+
+    body = stopped.json()
+    assert (body["status"], body["stopped_step"], body["current_agent"]) == ("stopped", "planner", None)
+    assert body["finished_at"] is not None
+    assert frames(stream)[-1] == "session.stopped"
+    assert (status["status"], status["stopped_step"], status["finished_at"]) == ("stopped", "planner", body["finished_at"])
+    assert [(note["note_id"], note["outcome"]) for note in status["notes"]] == [("n1", "not_checked")]
+    assert trace["metadata"]["status"] == "stopped"
+    assert [(item["session_id"], item["status"], item["stopped_step"]) for item in listed] == [
+        (session_id, "stopped", "planner"),
+    ]
+    assert {name: _error(response) for name, response in later.items()} == {
+        "report": (409, "report_unavailable", None),
+        "evidence": (409, "evidence_unavailable", None),
+        "evidence_md": (409, "evidence_unavailable", None),
+        "note": (409, "notes_closed", None),
+        "answers": (409, "not_waiting_for_input", None),
+        "again": (409, "not_stoppable", "finished"),
+    }
+    assert later["again"].json()["error"]["message"] == "Research session can no longer be stopped."
+    assert _error(unknown) == (404, "session_not_found", None)
+
+
+def test_the_stop_route_says_why_it_refuses() -> None:
+    """AC30: 409 ``not_stoppable`` with ``finished`` once a run has completed or failed,
+    ``publishing`` once the route decided to publish, ``closing`` while the store shuts down."""
+    with TestClient(create_app(runner=ScriptedRunner(), preflight=valid_preflight)) as client:
+        completed_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        wait_until_terminal(client, completed_id)
+        completed = client.post(f"/research/{completed_id}/stop")
+    failing = create_app(runner=ScriptedRunner(error=RuntimeError("boom")), preflight=valid_preflight)
+    with TestClient(failing) as client:
+        failed_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        wait_until_terminal(client, failed_id)
+        failed = client.post(f"/research/{failed_id}/stop")
+    runner = GateRunner()
+    app = create_app(runner=runner, preflight=valid_preflight)
+    store = app.state.session_store
+    with TestClient(app) as client:
+        publishing_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        closing_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        for session_id in (publishing_id, closing_id):
+            _wait(client, session_id, lambda body: body["current_agent"] == "planner")
+        client.portal.call(
+            store.require(publishing_id).publish,
+            _event("graph.route.decided", destination="finalize", reason="report_accepted", iteration=0),
+        )
+        publishing = client.post(f"/research/{publishing_id}/stop")
+        store._closing = True
+        closing = client.post(f"/research/{closing_id}/stop")
+        store._closing = False
+        client.portal.call(runner.release.set)
+
+    assert [_error(response) for response in (completed, failed, publishing, closing)] == [
+        (409, "not_stoppable", "finished"),
+        (409, "not_stoppable", "finished"),
+        (409, "not_stoppable", "publishing"),
+        (409, "not_stoppable", "closing"),
+    ]
+
+
+def test_a_stop_while_the_check_waits_answers_202_and_refuses_the_answers() -> None:
+    """AC28 for a session in ``needs_input`` (D33's step ``check``) and AC31's answers half; the
+    check's questions stay on the status, answered by nobody."""
+    app = create_app(runner=GateRunner(), preflight=valid_preflight, clarity_checker=Checker())
+    with TestClient(app) as client:
+        session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        _wait(client, session_id, lambda body: body["status"] == "needs_input")
+        stopped = client.post(f"/research/{session_id}/stop")
+        answers = client.post(f"/research/{session_id}/answers", json={"answers": [], "skip": True})
+        status = _status(client, session_id)
+
+    assert stopped.status_code == 202
+    assert (stopped.json()["status"], stopped.json()["stopped_step"]) == ("stopped", "check")
+    assert _error(answers) == (409, "not_waiting_for_input", None)
+    assert [question["id"] for question in status["clarification"]["questions"]] == ["q1", "q2", "q3"]
+    assert status["clarification"]["answers"] == []
