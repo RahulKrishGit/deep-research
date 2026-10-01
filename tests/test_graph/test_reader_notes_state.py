@@ -33,6 +33,7 @@ from deep_research.utils.types import (
     ResearchState,
     active_reader_notes,
     merge_research_state,
+    note_short_label,
     with_board_notes,
 )
 from tests.graph_fakes import (
@@ -56,6 +57,7 @@ def test_a_reader_note_holds_its_reading_and_starts_unflagged() -> None:
         "received_during": "researcher",
         "kinds": ["scope", "exclude"],
         "restatement": "more weight on grid storage (n1)",
+        "short": "more weight on",
         "scope": {"geography": "United States", "period": None},
         "new_questions": [],
         "replaces": None,
@@ -72,6 +74,7 @@ def test_a_reader_note_holds_its_reading_and_starts_unflagged() -> None:
         {"restatement": "   "},
         {"new_questions": ["a", "b", "c", "d"]},
         {"text": "x" * 501},
+        {"short": "x" * 25},
     ):
         with pytest.raises(ValidationError):
             ReaderNote.model_validate({**note.model_dump(), **bad})
@@ -300,3 +303,15 @@ async def test_the_researcher_reads_the_boards_count_readings_and_untopiced_rese
         assert await asyncio.wait_for(waiter, timeout=1) == 4
         assert notes_being_read() is False
         assert [note.note_id for note in research_notes_without_a_topic([], {"note-n1"})] == ["n4"]
+
+
+
+def test_a_notes_label_is_its_first_three_words_cut_on_a_word_boundary() -> None:
+    """notes-progress-report spec §7.2 "Note short": the label a note carries when its reading
+    named none — the restatement's first three words, cut at 24 characters on a word boundary."""
+    assert note_short_label("more weight on grid storage") == "more weight on"
+    assert note_short_label("internationalisation standards everywhere") == "internationalisation"
+    assert note_short_label("extraordinarily-long-hyphenated-subject words") == "extraordinarily-long-hyp"
+    assert note_short_label("only  the\tEU") == "only the EU"
+    assert fake_reader_note("n1").short == "more weight on"
+    assert fake_reader_note("n1", short=" grid  storage ").short == "grid storage"

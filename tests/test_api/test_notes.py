@@ -18,6 +18,7 @@ from deep_research.api.models import (
     ResearchSessionResponse,
 )
 from deep_research.api.notes import (
+    NOTE_INSTRUCTION,
     NOTE_MAX_TOKENS,
     NoteInterpretation,
     NoteInterpretationDraft,
@@ -105,6 +106,23 @@ def test_a_valid_reading_keeps_its_fields_and_a_known_replaces() -> None:
 )
 def test_an_invalid_reading_is_refused_whole(over: dict[str, Any]) -> None:
     assert validated_interpretation(_draft(**over), earlier=EARLIER) is None
+
+
+def test_a_reading_names_its_note_in_one_to_three_words_or_the_note_derives_it() -> None:
+    """notes-progress-report spec §7.2 "Note short": the reading's label is kept at 1-3 words
+    and at most 24 characters; a label outside those bounds is dropped — never the reading —
+    and the board's note then derives one from its restatement, as the fallback's and
+    replay's notes always do."""
+    named = validated_interpretation(_draft(short=" United  States "), earlier=EARLIER)
+    assert named is not None and named.short == "United States"
+    assert reader_note(RECEIVED, named).short == "United States"
+    for bad in ("", "   ", "the whole of the United States", "x" * 25):
+        reading = validated_interpretation(_draft(short=bad), earlier=EARLIER)
+        assert reading is not None and reading.short == "", bad
+        assert reader_note(RECEIVED, reading).short == "only the United", bad
+    assert reader_note(RECEIVED, fallback_interpretation("Mostly the US, please.")).short == "Mostly the US,"
+    assert "- short: the note's subject in one to three words for a label, lower case.\n" in NOTE_INSTRUCTION
+    assert NOTE_INSTRUCTION.index("- restatement:") < NOTE_INSTRUCTION.index("- short:") < NOTE_INSTRUCTION.index("- scope:")
 
 
 def test_the_fallback_keeps_the_note_as_written_as_an_emphasis() -> None:

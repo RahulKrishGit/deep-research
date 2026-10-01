@@ -1148,6 +1148,30 @@ NOTE_COVERAGE_PREFIX = "note-"
 """A note's own sub-topic is ``note-{note_id}``, and its targets carry the same prefix."""
 NOTE_TOPIC_TITLE_PREFIX = "Your note: "
 """A note's own sub-topic is titled ``Your note: {restatement}`` (live-briefs spec §4.6)."""
+MAX_NOTE_SHORT_CHARS = 24
+"""A note's label, ``ReaderNote.short``, is at most 24 characters (notes-progress-report spec §7.2)."""
+
+
+def note_short_label(restatement: str) -> str:
+    """The restatement's first three words, cut at 24 characters on a word boundary.
+
+    notes-progress-report spec §7.2: the label a note carries when its reading named
+    none — the fallback and replay readings, a live reading whose ``short`` broke its
+    bounds, and a note recorded before the field existed. A first word longer than 24
+    characters is cut to its first 24.
+    """
+    words = restatement.split()[:3]
+    label = ""
+    for word in words:
+        candidate = f"{label} {word}".strip()
+        if len(candidate) > MAX_NOTE_SHORT_CHARS:
+            break
+        label = candidate
+    if not label and words:
+        label = words[0][:MAX_NOTE_SHORT_CHARS]
+    return label
+
+
 ReaderNoteKind: TypeAlias = Literal[
     "emphasis", "exclude", "scope", "new_angle", "about_reader"
 ]
@@ -1173,12 +1197,14 @@ class ReaderNoteScope(ContractModel):
 class ReaderNote(ContractModel):
     """One interpreted reader note (live-briefs spec §4.6).
 
-    The first nine fields are fixed once the note is interpreted; the three
+    The first ten fields are fixed once the note is interpreted; the three
     flags are the run's own bookkeeping, set by the graph: ``reviewed`` when a
     review input carried the note, ``passed`` when its one targeted research
     pass was bought, ``redrafted`` when its one redraft was (D11).
     ``restatement`` is the interpreter's plain-words reading, or the note's own
-    text when the interpretation failed.
+    text when the interpretation failed. ``short`` names the note's subject in
+    one to three words for a label (notes-progress-report spec §7.2): the
+    reading's own, or ``note_short_label(restatement)`` when it named none.
     """
 
     note_id: str = Field(pattern=r"^n([1-9]|10)$")
@@ -1187,6 +1213,7 @@ class ReaderNote(ContractModel):
     received_during: str = Field(min_length=1)
     kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
     restatement: str = Field(min_length=1, max_length=500)
+    short: str = Field(default="", max_length=MAX_NOTE_SHORT_CHARS)
     scope: ReaderNoteScope | None = None
     new_questions: list[str] = Field(default_factory=list, max_length=3)
     replaces: str | None = None
@@ -1212,6 +1239,19 @@ class ReaderNote(ContractModel):
                 for question in value
             ]
         return value
+
+    @field_validator("short", mode="before")
+    @classmethod
+    def short_is_one_line(cls, value: object) -> object:
+        """The label is printed inside one line of the report (spec §7.2)."""
+        return collapse_whitespace(value) if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def short_label_or_derived(self) -> ReaderNote:
+        """Every note carries a label: the reading's own, or its restatement's first words."""
+        if not self.short:
+            self.short = note_short_label(self.restatement)
+        return self
 
 
 class NoteDisposition(ContractModel):

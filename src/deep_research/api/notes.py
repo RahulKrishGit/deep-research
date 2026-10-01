@@ -36,6 +36,7 @@ from deep_research.runtime.notes import NoteBoard, ReceivedNote
 from deep_research.utils.config import ConfigSettings
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
+    MAX_NOTE_SHORT_CHARS,
     ReaderNote,
     ReaderNoteKind,
     ReaderNoteScope,
@@ -77,6 +78,7 @@ class NoteInterpretationDraft(BaseModel):
 
     kinds: list[str] = Field(default_factory=list)
     restatement: str = ""
+    short: str = ""
     scope: NoteScopeDraft | None = None
     new_questions: list[str] = Field(default_factory=list)
     replaces: str | None = None
@@ -89,6 +91,9 @@ class NoteInterpretation(BaseModel):
 
     kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
     restatement: str = Field(min_length=1, max_length=500)
+    short: str = Field(default="", max_length=MAX_NOTE_SHORT_CHARS)
+    """The note's subject in 1-3 words for a label, or ``""`` when the reading named
+    none (notes-progress-report spec §7.2); the board's note then derives it."""
     scope: ReaderNoteScope | None = None
     new_questions: list[str] = Field(default_factory=list, max_length=MAX_NEW_QUESTIONS)
     replaces: str | None = None
@@ -146,12 +151,17 @@ def validated_interpretation(
     one over 120 characters; more than three new questions, or one empty or
     over 200 characters; a scope field over 120 characters. A ``replaces`` that
     names no earlier note of this run is dropped rather than failing the
-    reading: the note itself stands.
+    reading: the note itself stands. So is a ``short`` that is not one to three
+    words of at most 24 characters (notes-progress-report spec §7.2): a label
+    never costs the reading, and the board's note derives one instead.
     """
     earlier_ids = {note.note_id for note in earlier}
     restatement = collapse_whitespace(draft.restatement)
     if not restatement or len(restatement) > MAX_RESTATEMENT_CHARS:
         return None
+    short = collapse_whitespace(draft.short)
+    if not 1 <= len(short.split()) <= 3 or len(short) > MAX_NOTE_SHORT_CHARS:
+        short = ""
     scope = draft.scope
     geography = collapse_whitespace(scope.geography or "") if scope is not None else ""
     period = collapse_whitespace(scope.period or "") if scope is not None else ""
@@ -159,6 +169,7 @@ def validated_interpretation(
         reading = NoteInterpretation(
             kinds=[kind.strip() for kind in draft.kinds],  # type: ignore[misc]
             restatement=restatement,
+            short=short,
             scope=(
                 ReaderNoteScope(geography=geography or None, period=period or None)
                 if geography or period
@@ -191,6 +202,7 @@ NOTE_INSTRUCTION = (
     "- restatement: what the note asks, in plain words, at most 120 "
     "characters, starting in lower case and never quoting the note back, for "
     "example \"more weight on fire-safety standards\".\n"
+    "- short: the note's subject in one to three words for a label, lower case.\n"
     "- scope: the geography or period a scope note sets, or null.\n"
     "- new_questions: for a new_angle note, or a scope that widens the "
     "question, up to 3 research questions it raises; otherwise an empty list.\n"
@@ -310,6 +322,7 @@ def reader_note(received: ReceivedNote, reading: NoteInterpretation) -> ReaderNo
         received_during=received.received_during,
         kinds=list(reading.kinds),
         restatement=reading.restatement,
+        short=reading.short,
         scope=reading.scope,
         new_questions=list(reading.new_questions),
         replaces=replaces,
