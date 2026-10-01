@@ -836,7 +836,8 @@ reads every note; the researcher (its searches and its extraction), the source e
 the report writer and the report reviewer read each note's steering view, which leaves out
 the `new_angle` kind (a note of that kind alone has none, and a note of both kinds is read
 as its steering kinds only). Evidence verification reads no note. A later note replaces an
-earlier one it contradicts, and no step reads a replaced note.
+earlier one it contradicts (a note the run reads only after it has decided to publish
+replaces none), and no step reads a replaced note.
 A research note (kind `new_angle`) is researched as a topic of its own: it
 joins the plan when it is read before the plan is published, gets its own research
 thread at once when it is read while research runs, and otherwise buys one note pass

@@ -264,7 +264,8 @@ next edit. The report then states what became of each note in its bottom line, a
 topic lines: one line per note the run has read by the time it publishes (a replaced note has
 none), labelled `Your note · {short}` (the note's subject in one to three words). A note read
 after the reviewer's last merge is taken in as already settled when the report is published, so
-it changes no route and reads as a note nothing judged; a note that arrives after the run has
+it changes no route, replaces no earlier note (that note keeps its line) and reads as a note
+nothing judged; a note that arrives after the run has
 ended has no line, and in replay mode that is every note, because the engine finishes before the
 stream is paced out (notes-progress-report §7.2, owner-delegated decision of 2026-10-01). A
 research note's line is its own topic's line or, when
