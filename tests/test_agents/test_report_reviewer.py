@@ -937,11 +937,11 @@ async def test_a_real_written_report_builds_the_same_packet(
 
     async def consistent(
         provider, items, *, question, fingerprint=None,
-        batch_size=None, concurrency=None, gate=None,
+        batch_size=None, concurrency=None, gate=None, on_batch=None,
     ):
         # The bounds and the shared gate are part of the call the real
         # checker accepts (PD-12; spec §6.5's shared semaphore).
-        del provider, question, fingerprint, batch_size, concurrency, gate
+        del provider, question, fingerprint, batch_size, concurrency, gate, on_batch
         return {item.label: _Verdict(item.label) for item in items}, []
 
     monkeypatch.setattr(
@@ -2769,9 +2769,9 @@ async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_s
 
     async def consistent(
         provider, items, *, question, fingerprint=None,
-        batch_size=None, concurrency=None, gate=None,
+        batch_size=None, concurrency=None, gate=None, on_batch=None,
     ):
-        del provider, question, fingerprint, batch_size, concurrency, gate
+        del provider, question, fingerprint, batch_size, concurrency, gate, on_batch
         return {item.label: _Verdict(item.label) for item in items}, []
 
     monkeypatch.setattr(

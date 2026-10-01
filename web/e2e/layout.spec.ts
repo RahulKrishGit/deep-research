@@ -149,7 +149,11 @@ for (const width of [1252, 1568, 1920]) {
         const s = getComputedStyle(el);
         return { left: r.left + parseFloat(s.paddingLeft), right: r.right - parseFloat(s.paddingRight) };
       });
-      const groupLeft = card.x;
+      // notes-progress-report spec §7.6 (D28): from a 1310px report stage the contents rail leads the
+      // group (1920px with the sidebar expanded); below it the contents are chips above the cards.
+      const contentsMode = await page.locator(".rep-layout").getAttribute("data-contents");
+      expect(contentsMode).toBe(width === 1920 ? "rail" : "chips");
+      const groupLeft = contentsMode === "rail" ? (await page.locator(".rep-contents").boundingBox())!.x : card.x;
       const groupRight = rail.x + rail.width;
       const groupCentre = (groupLeft + groupRight) / 2;
       const mainCentre = (viewportBox.left + viewportBox.right) / 2;

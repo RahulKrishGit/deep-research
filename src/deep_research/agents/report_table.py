@@ -3,13 +3,14 @@
 Decision 1's structural choice rule (§4.1), picked *after* the writer's
 statements are checked: an **options table** assembled from option marks on
 kept (``consistent``/``corrected``) statements, when a required part on its
-own names >= 2 options; else a **findings table** of verified figures, when
->= 2 qualify; else no table. No model call ever writes table text — every
-word in a cell is either a verbatim span of a checked sentence (options) or a
-page-verified field (findings).
+own names >= 2 options; else **Key figures** (notes-progress-report spec
+§7.4), the verified figures labelled ``item · measure`` and merged per
+passage, when >= 2 rows qualify; else no table. No model call ever writes
+table text — every word in a cell is either a verbatim span of a checked
+sentence (options) or a page-verified field (Key figures).
 
 :func:`build_table` is the one entry point the Report Writer calls
-(spec §6.7); :func:`options_table` and :func:`findings_table` are exposed
+(spec §6.7); :func:`options_table` and :func:`key_figures_table` are exposed
 separately because each is independently testable against its own fixture
 (spec §14 T2) and each may be asked to build a table the caller then decides
 not to use.
@@ -20,38 +21,38 @@ from __future__ import annotations
 import re
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import NamedTuple
 
 from deep_research.agents.evidence import cosmetic_text, excerpt_matches
-from deep_research.agents.figures import parse_figure, quantities_in, same_quantity
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.sources import normalize_source_url, publisher_identity
-from deep_research.agents.verified_facts import (
-    same_organisation,
-    same_period,
-    same_subject,
-)
+from deep_research.agents.verified_facts import same_organisation
 from deep_research.utils.types import (
+    NOTE_COVERAGE_PREFIX,
+    NOTE_TOPIC_TITLE_PREFIX,
     EarlierEdition,
+    EvidenceTarget,
     FactRow,
-    FigureResult,
     Finding,
     ItemMark,
     PageCredit,
     ReportComposition,
     ReportStatement,
     ReportTable,
+    SubTopic,
     TableCell,
     TableEntry,
 )
 
-__all__ = ["build_table", "options_table", "findings_table"]
+__all__ = ["KeyFigureGroup", "build_table", "key_figures_table", "merge_key_figures", "options_table"]
 
-# Row/column bounds (§4.2, §4.3): a table is a summary, never the whole log.
+# Row/column bounds (§4.2; notes-progress-report spec §7.4): a table is a
+# summary, never the whole log.
 MAX_OPTION_ROWS = 8
 MAX_OPTION_PART_COLUMNS = 4
 MAX_FULL_PAGES_PER_CELL = 2
-MAX_FINDING_ROWS = 12
+MAX_KEY_FIGURE_ROWS = 10
 
 _KEPT_VERDICTS = frozenset({"consistent", "corrected"})
 
@@ -62,12 +63,15 @@ _KEPT_VERDICTS = frozenset({"consistent", "corrected"})
 _QUANTITY_ONLY_ANSWER_KINDS = frozenset({"explanation", "constraints"})
 _OPTIONS_COLUMNS_HEAD = "Option"
 _RECOMMENDED_BY_COLUMN = "Recommended by"
-_FINDINGS_COLUMNS = [
-    "What was measured",
-    "Result",
-    "Who reported it (and when)",
-    "Source",
-]
+_KEY_FIGURE_COLUMNS = ["What", "Figure", "Source"]
+#: ``verified_facts.fact_rows``' measure for a figure no planned target or unit names.
+_STATED_FIGURE = "stated figure"
+#: A note topic's label in the Key figures table: at most this many characters, cut on a
+#: word boundary, so a planner-sized measure ("battery storage power capacity added")
+#: and a note's subject or question read alike.
+_NOTE_MEASURE_CHARS = 40
+#: A value's shape (spec §7.4 item 3): each run of digits, dots and commas reads ``#``.
+_VALUE_NUMBERS = re.compile(r"[\d.,]+")
 _OPTIONS_CAPTION = (
     "Each cell quotes the report's own sentence about the option in that "
     "part; the whole sentence is in the section of the same name. "
@@ -75,7 +79,6 @@ _OPTIONS_CAPTION = (
     "picked by more sources come first."
 )
 _POSSESSIVE_PRONOUNS = frozenset({"it", "its", "this", "these", "their", "they"})
-_QUOTE_CLAMP_CHARS = 140
 
 _DASH_CLASS = re.compile(r"\s*[-\u2010\u2011\u2012\u2013\u2014\u2015\u2212]\s*")
 _WORD = re.compile(r"[a-z0-9]+")
@@ -314,15 +317,15 @@ def _required_part_option_counts(
 
 
 def build_table(composition: ReportComposition) -> ReportTable | None:
-    """§4.1: options when one required part alone marks >= 2 options; else findings when >= 2 qualify; else none.
+    """§4.1: options when one required part alone marks >= 2 options; else Key figures when >= 2 rows qualify; else none.
 
     The >= 2 test applies per required part (consistent with the column
     rule, §4.2): two different required parts each marking one distinct
     option do not qualify, since neither part alone names a comparison. If
     the gate passes but the resulting options table still has fewer than 2
     rows (every marked option's only cell lay outside the parts that
-    ultimately qualified as columns), this falls through to the findings
-    table instead of publishing a near-empty options table.
+    ultimately qualified as columns), this falls through to Key figures
+    instead of publishing a near-empty options table.
     """
     resolved_marks, dropped = _resolve_marks(composition)
     _merge_dropped_marks(composition, dropped)
@@ -332,7 +335,7 @@ def build_table(composition: ReportComposition) -> ReportTable | None:
         table = _build_options_table(resolved_marks, composition)
         if table is not None and len(table.rows) >= 2:
             return table
-    table = findings_table(composition)
+    table = key_figures_table(composition)
     if table is not None and len(table.rows) >= 2:
         return table
     return None
@@ -544,7 +547,7 @@ def options_table(composition: ReportComposition) -> ReportTable:
 
 
 # =============================================================================
-# §4.3 findings table
+# §4.3's eligible figures, as notes-progress-report spec §7.4's Key figures
 # =============================================================================
 
 
@@ -632,40 +635,19 @@ def _row_eligible(
     return bool(_row_and_duplicate_ids(row) & cited)
 
 
-def _select_rows(
-    eligible: Sequence[FactRow],
+def _row_priority(
+    row: FactRow,
     finding_by_id: Mapping[str, Finding],
     required_target_ids: set[str],
     bottom_line_cited: set[str],
-) -> list[FactRow]:
-    if len(eligible) <= MAX_FINDING_ROWS:
-        return list(eligible)
-
-    def priority(row: FactRow) -> int:
-        if _explicitly_answers_required(row, finding_by_id, required_target_ids):
-            return 0
-        if _row_and_duplicate_ids(row) & bottom_line_cited:
-            return 1
-        return 2
-
-    ordered = sorted(
-        eligible, key=priority
-    )  # stable: keeps original order within a priority group
-    return ordered[:MAX_FINDING_ROWS]
-
-
-def _display_order(
-    rows: Sequence[FactRow], composition: ReportComposition
-) -> list[FactRow]:
-    part_by_finding = _part_by_finding(composition)
-    plan_order = [topic.coverage_id for topic in composition.sub_topics]
-
-    def key(row: FactRow) -> tuple[int, str]:
-        part = part_by_finding.get(row.finding_id)
-        index = plan_order.index(part) if part in plan_order else len(plan_order)
-        return (index, row.row_id)
-
-    return sorted(rows, key=key)
+) -> int:
+    """§4.3's cap priority: a row that explicitly answers a required target
+    first, then one the bottom line cites, then the rest."""
+    if _explicitly_answers_required(row, finding_by_id, required_target_ids):
+        return 0
+    if _row_and_duplicate_ids(row) & bottom_line_cited:
+        return 1
+    return 2
 
 
 def _words(text: str) -> set[str]:
@@ -677,112 +659,6 @@ def _words_present(candidate: str, text: str) -> bool:
     if not wanted:
         return True
     return wanted <= _words(text)
-
-
-def _kept_figure_result(finding: Finding, row: FactRow) -> FigureResult | None:
-    """The finding's own kept figure that states ``row``'s value (mirrors report.py's context lookup)."""
-    if finding.verification is None:
-        return None
-    stated = quantities_in(row.value)
-    for result in finding.verification.figure_results:
-        if not result.kept:
-            continue
-        quantity = parse_figure(result.figure.value, result.figure.unit)
-        if quantity is not None and any(
-            same_quantity(quantity, other) for other in stated
-        ):
-            return result
-        if cosmetic_text(
-            f"{result.figure.value} {result.figure.unit}"
-        ) == cosmetic_text(row.value):
-            return result
-    return None
-
-
-def _clamp_around_value(words: str, value: str) -> str:
-    """§4.3: clamped to 140 characters at word boundaries around the value."""
-    if len(words) <= _QUOTE_CLAMP_CHARS:
-        return words
-    anchor = 0
-    lead = (value or "").strip().split()
-    if lead:
-        found = cosmetic_text(words).find(cosmetic_text(lead[0]))
-        if found >= 0:
-            anchor = found
-    half = _QUOTE_CLAMP_CHARS // 2
-    start = max(0, anchor - half)
-    end = min(len(words), anchor + half)
-    if start > 0:
-        next_space = words.find(" ", start)
-        if 0 <= next_space < anchor:
-            start = next_space + 1
-    if end < len(words):
-        prev_space = words.rfind(" ", 0, end)
-        if prev_space > anchor:
-            end = prev_space
-    prefix = "…" if start > 0 else ""
-    suffix = "…" if end < len(words) else ""
-    return f"{prefix}{words[start:end].strip()}{suffix}"
-
-
-def _quoted_form(finding: Finding | None, row: FactRow) -> str:
-    result = _kept_figure_result(finding, row) if finding is not None else None
-    words = (result.evidence_words if result is not None else None) or row.value
-    return f'"{_clamp_around_value(words, row.value)}"'
-
-
-def _has_rival(row: FactRow, table_rows: Sequence[FactRow]) -> bool:
-    """§4.3: same kind, matching periods (or both empty), compatible subjects, a different value."""
-    for other in table_rows:
-        if other is row:
-            continue
-        if row.kind != other.kind:
-            continue
-        periods_match = same_period(row.period, other.period) or (
-            not row.period and not other.period
-        )
-        if not periods_match:
-            continue
-        if not same_subject(row.subject, other.subject):
-            continue
-        if row.value == other.value:
-            continue
-        return True
-    return False
-
-
-def _period_resolved_from_basis(row: FactRow, finding: Finding | None) -> str:
-    """P3-3: name the actual basis a relative period was resolved from, rather
-    than always saying "the page's date" — a resolved period may specifically
-    be counted from the finding's own admitted release or statement date."""
-    if finding is not None and row.period_resolved_from:
-        if finding.release_date and row.period_resolved_from == finding.release_date:
-            return "the release date"
-        if (
-            finding.statement_date
-            and row.period_resolved_from == finding.statement_date
-        ):
-            return "the statement date"
-    return "the page's date"
-
-
-def _what_was_measured(row: FactRow, finding: Finding | None, rival: bool) -> str:
-    subject = (row.subject or "").strip()
-    starts_with_pronoun = (
-        bool(subject) and cosmetic_text(subject).split()[0] in _POSSESSIVE_PRONOUNS
-    )
-    if not subject or starts_with_pronoun or rival:
-        return _quoted_form(finding, row)
-    text = subject[0].upper() + subject[1:]
-    if row.scope and not _words_present(row.scope, text):
-        text = f"{text} ({row.scope})"
-    if row.period:
-        if row.period_resolved_from:
-            basis = _period_resolved_from_basis(row, finding)
-            text = f"{text}, {row.period} (counted from {basis}, {row.period_resolved_from})"
-        elif not _words_present(row.period, text):
-            text = f"{text}, {row.period}"
-    return text
 
 
 def _earlier_edition_date(
@@ -826,9 +702,10 @@ def _when_text(finding: Finding | None, kind: str) -> str:
     return ""
 
 
-def _who_text(
+def _who_name(
     row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
 ) -> str:
+    """Who a row's figure is credited to, as the Source column names it, its date left off."""
     source_url = finding.source_url if finding is not None else ""
     host = publisher_identity(source_url) if source_url else ""
     credited = _page_publisher(page_credits, source_url) if source_url else None
@@ -836,16 +713,212 @@ def _who_text(
         org = row.organisation
         if not org or same_organisation(org, host):
             org = credited or host
-        who = org
-    elif row.attribution == "relayed":
-        who = f"{row.organisation}, reported by {credited or (row.relay_host or '')}"
-    else:  # unattributed
-        who = credited or host
-    return f"{who}{_when_text(finding, row.kind)}"
+        return org
+    if row.attribution == "relayed":
+        return f"{row.organisation}, reported by {credited or (row.relay_host or '')}"
+    return credited or host  # unattributed
 
 
-def findings_table(composition: ReportComposition) -> ReportTable | None:
-    """§4.3: eligible verified figures, capped and ordered, or ``None`` when fewer than 2 qualify."""
+def _who_text(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    return f"{_who_name(row, finding, page_credits)}{_when_text(finding, row.kind)}"
+
+
+def _label_source(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    """D40: the source that reported a row, for the label of a row with no named
+    item -- the organisation a relayed figure is credited to, else the name the
+    Source column prints (the publisher, or the page's own site)."""
+    if row.attribution == "relayed" and row.organisation:
+        return row.organisation
+    return _who_name(row, finding, page_credits)
+
+
+@dataclass(frozen=True)
+class KeyFigureGroup:
+    """One merged Key figures row (notes-progress-report spec §7.4 item 3): the
+    values one passage states about one item, under one label. ``rows`` holds
+    every fact row merged here, in row order; ``shown`` the ones whose values
+    print -- a row whose value repeats a shown one only adds its finding ids."""
+
+    label: str
+    rows: tuple[FactRow, ...]
+    shown: tuple[FactRow, ...]
+
+    @property
+    def values(self) -> str:
+        return " \u00b7 ".join(row.value for row in self.shown)
+
+
+def _capitalised(text: str) -> str:
+    """``text`` with its first letter upper-cased -- unless its second letter
+    already is, as in a name written ``iJava`` or ``eBay``, whose case stands."""
+    if len(text) > 1 and text[1].isupper():
+        return text
+    return text[:1].upper() + text[1:]
+
+
+def _short_label(text: str, *, cut: bool = True) -> str:
+    """``text`` as a table label: whitespace normalised, trailing punctuation dropped,
+    and, when ``cut``, at most ``_NOTE_MEASURE_CHARS`` characters, cut on a word
+    boundary."""
+    text = " ".join(text.split()).rstrip(" .?!:;,")
+    if cut and len(text) > _NOTE_MEASURE_CHARS:
+        head = text[: _NOTE_MEASURE_CHARS + 1]
+        boundary = head.rfind(" ")
+        text = (head[:boundary] if boundary > 0 else text[:_NOTE_MEASURE_CHARS]).rstrip(" .?!:;,")
+    return text
+
+
+def _note_topic_measure(topic: SubTopic, target: EvidenceTarget) -> str:
+    """Final review P3-1: a research note's own targets carry the note's whole question as
+    their measure (``reader_notes.note_sub_topic``), which is no label for a table cell.
+
+    The label is per note topic when the topic has exactly one target: its title without
+    the "Your note: " prefix, trimmed (``_short_label``). With more than one target, rows
+    about one item that answer different targets would share that label and the
+    one-row-per-label rule (§7.4 item 3) would drop all but one, so each row is labelled
+    by its own target's question, trimmed the same way. When trimming would make two of
+    the topic's questions read alike, the questions stay whole. ``""`` when nothing is
+    left, and the target's own measure then stands."""
+    if len(topic.evidence_targets) == 1:
+        return _short_label(topic.title.removeprefix(NOTE_TOPIC_TITLE_PREFIX))
+    questions = {_short_label(item.question, cut=False) for item in topic.evidence_targets}
+    cut = {_short_label(item.question) for item in topic.evidence_targets}
+    return _short_label(target.question, cut=len(cut) == len(questions))
+
+
+def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
+    """Spec §7.4 item 2: read the row by the sub-topic owning the most of its
+    planned targets (the earlier in plan order on a tie), and take that
+    sub-topic's first such target in plan order whose ``unit_dimension`` is
+    set, else its first such target; a row answering no planned target keeps
+    ``row.measure``. ``row.measure`` itself is the first answered target in
+    sorted id order (``verified_facts.fact_rows``), which can name another
+    sub-topic's measure. A note's own topic (``note-{id}``) is labelled by a
+    short subject instead (``_note_topic_measure``); the target keeps its measure."""
+    wanted = set(row.target_ids)
+    owning = [
+        (index, [target for target in topic.evidence_targets if target.target_id in wanted])
+        for index, topic in enumerate(composition.sub_topics)
+    ]
+    owning = [(index, targets) for index, targets in owning if targets]
+    if not owning:
+        return row.measure
+    index, targets = max(owning, key=lambda pair: (len(pair[1]), -pair[0]))
+    topic = composition.sub_topics[index]
+    quantity = next((target for target in targets if target.unit_dimension is not None), None)
+    chosen = quantity or targets[0]
+    if topic.coverage_id.startswith(NOTE_COVERAGE_PREFIX):
+        short = _note_topic_measure(topic, chosen)
+        if short:
+            return short
+    return chosen.measure
+
+
+def _key_figure_label(
+    row: FactRow, composition: ReportComposition, finding_by_id: Mapping[str, Finding]
+) -> str | None:
+    """Spec §7.4 item 2, as D40 amends it: ``{Item} \u00b7 {measure}``, the item
+    being the row's subject unless it starts with a pronoun; a row with no named
+    item is labelled by the source that reported it, ``{Source} \u00b7 {Measure}``
+    (``_label_source``), so figures from different findings keep separate rows --
+    ``{Measure}`` alone only when no source can be named. Then ``, {period}``
+    when the label does not already say it. ``None`` for a row with no item whose
+    measure is only "stated figure": such a row is not eligible. Never a quoted
+    snippet."""
+    subject = " ".join((row.subject or "").split())
+    item = "" if subject and cosmetic_text(subject).split()[0] in _POSSESSIVE_PRONOUNS else subject
+    measure = " ".join(_key_figure_measure(row, composition).split())
+    if not item and cosmetic_text(measure) == _STATED_FIGURE:
+        return None
+    if item:
+        label = f"{_capitalised(item)} \u00b7 {measure}"
+    else:
+        finding = finding_by_id.get(row.finding_id)
+        source = " ".join(_label_source(row, finding, composition.page_credits).split())
+        label = f"{source} \u00b7 {_capitalised(measure)}" if source else _capitalised(measure)
+    if row.period and not _words_present(row.period, label):
+        label = f"{label}, {row.period}"
+    return label
+
+
+def _value_shape(value: str) -> str:
+    return cosmetic_text(_VALUE_NUMBERS.sub("#", value))
+
+
+def merge_key_figures(rows: Sequence[FactRow], composition: ReportComposition) -> list[KeyFigureGroup]:
+    """Spec §7.4 items 2-3, before eligibility and the cap: label each row (D40:
+    a row with no named item by the source that reported it), and merge the
+    values one passage states about one item.
+
+    Rows sharing (label, primary finding, kind) form a group. Within a group, a
+    row whose value equals a shown value (``cosmetic_text``) only joins that
+    merged row; any other joins the first merged row holding no value of its
+    shape, or starts a new one -- so "4.2 of 5 bubbles" and "87 reviews" from
+    one passage merge, while two ratings never share a row. Rows from two
+    passages never merge. Merged rows come back in the order their first rows
+    appear; a row ``_key_figure_label`` refuses is left out.
+    """
+    finding_by_id = _finding_by_id(composition)
+    merged: list[tuple[str, list[FactRow], list[FactRow]]] = []
+    positions_by_group: dict[tuple[str, str, str], list[int]] = {}
+    for row in rows:
+        label = _key_figure_label(row, composition, finding_by_id)
+        if label is None:
+            continue
+        positions = positions_by_group.setdefault((label, row.finding_id, row.kind), [])
+        same = next(
+            (p for p in positions
+             if any(cosmetic_text(shown.value) == cosmetic_text(row.value) for shown in merged[p][2])),
+            None,
+        )
+        if same is not None:
+            merged[same][1].append(row)
+            continue
+        shape = _value_shape(row.value)
+        slot = next(
+            (p for p in positions if all(_value_shape(shown.value) != shape for shown in merged[p][2])),
+            None,
+        )
+        if slot is None:
+            merged.append((label, [], []))
+            slot = len(merged) - 1
+            positions.append(slot)
+        merged[slot][1].append(row)
+        merged[slot][2].append(row)
+    return [KeyFigureGroup(label=label, rows=tuple(all_rows), shown=tuple(shown)) for label, all_rows, shown in merged]
+
+
+def _group_display_order(
+    groups: Sequence[KeyFigureGroup], composition: ReportComposition
+) -> list[KeyFigureGroup]:
+    """Each merged row in the plan order of its first row's part, then by row id."""
+    part_by_finding = _part_by_finding(composition)
+    plan_order = [topic.coverage_id for topic in composition.sub_topics]
+
+    def key(group: KeyFigureGroup) -> tuple[int, str]:
+        part = part_by_finding.get(group.rows[0].finding_id)
+        index = plan_order.index(part) if part in plan_order else len(plan_order)
+        return (index, group.rows[0].row_id)
+
+    return sorted(groups, key=key)
+
+
+def key_figures_table(composition: ReportComposition) -> ReportTable | None:
+    """Notes-progress-report spec §7.4: the eligible verified figures (§4.3's
+    rule, ``_row_eligible``) labelled and merged, one row per label, at most
+    ``MAX_KEY_FIGURE_ROWS``, with the What / Figure / Source columns; ``None``
+    when fewer than 2 fact rows qualify.
+
+    The cap keeps the merged rows whose best fact row ranks first by §4.3's
+    priority (``_row_priority``; stable within a rank); of merged rows sharing
+    a label only the first by that priority prints -- the table cannot tell
+    them apart, and a repeated label with different figures reads as a
+    contradiction (D36) -- and every other stays in the evidence log.
+    """
     required_target_ids = {
         target.target_id
         for topic in composition.sub_topics
@@ -860,24 +933,31 @@ def findings_table(composition: ReportComposition) -> ReportTable | None:
         if composition.answer_kind in _QUANTITY_ONLY_ANSWER_KINDS
         else None
     )
-
     eligible = [
         row
         for row in composition.fact_rows
-        if _row_eligible(
-            row, finding_by_id, required_target_ids, cited, quantity_target_ids
-        )
+        if _row_eligible(row, finding_by_id, required_target_ids, cited, quantity_target_ids)
     ]
-    if len(eligible) < 2:
+    groups = merge_key_figures(eligible, composition)
+    eligible_count = sum(len(group.rows) for group in groups)
+    if eligible_count < 2:
         return None
 
-    total = len(eligible)
-    selected = _select_rows(
-        eligible, finding_by_id, required_target_ids, bottom_line_cited
-    )
-    displayed = _display_order(selected, composition)
+    def priority(group: KeyFigureGroup) -> int:
+        return min(
+            _row_priority(row, finding_by_id, required_target_ids, bottom_line_cited)
+            for row in group.rows
+        )
 
-    kinds = {row.kind for row in displayed}
+    labels: set[str] = set()
+    distinct: list[KeyFigureGroup] = []
+    for group in sorted(groups, key=priority):  # stable: appearance order within a rank
+        if group.label not in labels:
+            labels.add(group.label)
+            distinct.append(group)
+    displayed = _group_display_order(distinct[:MAX_KEY_FIGURE_ROWS], composition)
+
+    kinds = {group.rows[0].kind for group in displayed}
     mixed = len(kinds) > 1
     kind_caption = ""
     if not mixed and kinds:
@@ -888,39 +968,24 @@ def findings_table(composition: ReportComposition) -> ReportTable | None:
             kind_caption = "Every figure in this table is a forecast."
 
     rows: list[list[TableCell]] = []
-    for row in displayed:
-        finding = finding_by_id.get(row.finding_id)
-        rival = _has_rival(row, displayed)
-        row_ids = [row.row_id]
-        finding_ids = _row_finding_ids(row)
-        rows.append(
-            [
-                TableCell(
-                    text=_what_was_measured(row, finding, rival),
-                    row_ids=row_ids,
-                    finding_ids=finding_ids,
-                ),
-                TableCell(
-                    text=_result_text(row, mixed, finding_by_id),
-                    row_ids=row_ids,
-                    finding_ids=finding_ids,
-                ),
-                TableCell(
-                    text=_who_text(row, finding, composition.page_credits),
-                    row_ids=row_ids,
-                    finding_ids=finding_ids,
-                ),
-                TableCell(text="", row_ids=row_ids, finding_ids=finding_ids),
-            ]
-        )
+    for group in displayed:
+        first = group.rows[0]
+        row_ids = [row.row_id for row in group.rows]
+        finding_ids = list(dict.fromkeys(fid for row in group.rows for fid in _row_finding_ids(row)))
+        figure = " \u00b7 ".join(_result_text(row, mixed, finding_by_id) for row in group.shown)
+        who = _who_text(first, finding_by_id.get(first.finding_id), composition.page_credits)
+        rows.append([
+            TableCell(text=group.label, row_ids=row_ids, finding_ids=finding_ids),
+            TableCell(text=figure, row_ids=row_ids, finding_ids=finding_ids),
+            TableCell(text=who, row_ids=row_ids, finding_ids=finding_ids),
+        ])
 
-    if total > MAX_FINDING_ROWS:
-        caption = f"Showing {MAX_FINDING_ROWS} of {total} verified figures; all are in the evidence log."
+    shown_count = sum(len(group.rows) for group in displayed)
+    caption = kind_caption
+    if shown_count < eligible_count:
+        caption = f"Showing {shown_count} of {eligible_count} verified figures; all are in the evidence log."
         if kind_caption:
             caption = f"{caption} {kind_caption}"
-    else:
-        caption = kind_caption
-
     return ReportTable(
-        shape="findings", columns=list(_FINDINGS_COLUMNS), rows=rows, caption=caption
+        shape="findings", columns=list(_KEY_FIGURE_COLUMNS), rows=rows, caption=caption
     )

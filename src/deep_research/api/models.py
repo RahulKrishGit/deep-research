@@ -25,6 +25,7 @@ from deep_research.utils.types import (
     FindingDropReason,
     FindingStatus,
     ReaderAnswerSource,
+    ReportOutlineKind,
     ResearchError,
     SourceEvaluationStatus,
 )
@@ -32,6 +33,8 @@ from deep_research.utils.types import (
 # ``needs_input`` is the one waiting status (live-briefs spec §4.4): the one-time
 # check is waiting for the reader's answers. It is not terminal, and it returns to
 # ``running`` when the answers arrive, the reader skips, or the wait times out.
+# ``stopped`` is terminal: the reader stopped the run, which published nothing
+# (notes-progress-report spec §8).
 SessionStatus = Literal[
     "running",
     "needs_input",
@@ -39,6 +42,7 @@ SessionStatus = Literal[
     "max_iterations",
     "incomplete",
     "failed",
+    "stopped",
 ]
 
 
@@ -155,16 +159,29 @@ class ReaderNoteResponse(ApiModel):
     """One accepted note in the session response (live-briefs spec §4.6).
 
     ``restatement`` is the run's reading of it, ``None`` until the note is
-    interpreted. ``outcome`` is the finished run's conclusion — ``covered``,
+    interpreted. ``outcome`` is the run's conclusion — ``covered``,
     ``not_found``, ``not_addressed`` (the report still does not follow the
-    note, though the findings bore on it) or ``replaced`` — and ``pending``
-    while the run is going or when no review judged the note.
+    note, though the findings bore on it) or ``replaced`` — or, with nothing
+    to judge the note by, ``pending`` while the session goes on and
+    ``not_checked`` once it has ended: no session that has ended reports
+    ``pending`` (notes-progress-report spec §4 item 2).
     """
 
     note_id: str = Field(min_length=1)
     text: str = Field(min_length=1)
     restatement: str | None = None
-    outcome: Literal["covered", "not_found", "not_addressed", "pending", "replaced"]
+    outcome: Literal[
+        "covered", "not_found", "not_addressed", "pending", "replaced", "not_checked"
+    ]
+    steering_outcome: (
+        Literal[
+            "covered", "not_found", "not_addressed", "pending", "replaced", "not_checked"
+        ]
+        | None
+    ) = None
+    """A mixed note's steering half (notes-progress-report spec §5.6, D20): the
+    review's verdict on what the note asked besides research, in ``outcome``'s
+    words; ``None`` for every other note."""
 
 
 class ClarificationQuestionResponse(ApiModel):
@@ -240,6 +257,23 @@ class EvidenceCountsResponse(ApiModel):
     cited_findings: int = Field(ge=0)
 
 
+class ReportOutlineEntryResponse(ApiModel):
+    """One ``##`` heading of the published report, in order (notes-progress-report spec §7.5).
+
+    ``heading`` is the heading exactly as the Markdown prints it and ``label`` its
+    short name in the console's contents list; ``topic_index`` and ``topic_count``
+    number a topic among the printed topics; ``note_id`` names the reader note a
+    note's own topic answers.
+    """
+
+    heading: str = Field(min_length=1)
+    kind: ReportOutlineKind
+    label: str = Field(min_length=1)
+    topic_index: int | None = Field(default=None, ge=1)
+    topic_count: int | None = Field(default=None, ge=1)
+    note_id: str | None = None
+
+
 class ResearchSessionResponse(ApiModel):
     """The immutable snapshot of one session the API returns.
 
@@ -305,6 +339,17 @@ class ResearchSessionResponse(ApiModel):
 
     clarification: ClarificationRecordResponse | None = None
     """The one-time check the session asked, or ``None`` when it asked nothing."""
+
+    report_outline: list[ReportOutlineEntryResponse] | None = None
+    """The published report's ``##`` headings, in order (notes-progress-report spec
+    §7.5), so the console lays the report out as cards with a contents list;
+    ``None`` while the run goes on and for a session with no report."""
+
+    stopped_step: str | None = None
+    """The step the reader stopped the run at — ``check`` (the one-time check) or a
+    pipeline row, ``planner`` … ``report_reviewer`` — when ``status`` is ``stopped``;
+    ``None`` otherwise. A stop is refused once the run decides to publish, so it is
+    never ``finalize_report`` (notes-progress-report spec §4 item 3, §8.4)."""
 
 
 class SessionListResponse(ApiModel):

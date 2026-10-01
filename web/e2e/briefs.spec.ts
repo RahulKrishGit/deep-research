@@ -1,7 +1,7 @@
 // live-briefs spec §4.3: the step briefs on the real (replay) stream — AC4 (open/close by click and
 // keyboard), AC5 (every title, never a bare 0 or a dash), AC6 (connector and arc geometry).
 import { expect, test, type Page } from "@playwright/test";
-import { connectorOffsets, submit, waitTerminal } from "./support";
+import { API, connectorOffsets, submit, waitTerminal } from "./support";
 
 const ACME_TITLES = ["Adoption rate", "Widget funding", "Widget exports"];
 const settledTransitions = (page: Page) => page.waitForFunction(() => document.getAnimations().filter((a) => a instanceof CSSTransition).length === 0);
@@ -15,12 +15,13 @@ test("the active row is open; a done row reopens and closes by click, Enter and 
   const planning = page.locator('#spine li[data-stage="planner"]');
   const head = planning.locator("button.ps-toggle");
   await expect(planning).toHaveAttribute("data-open", "0");
-  await expect(planning.locator(".m-out")).toHaveText("3 sub-topics");
+  // notes-progress-report spec §6.3: the outcome ends with Planning's duration.
+  await expect(planning.locator(".m-out")).toHaveText(/^3 sub-topics · \dm \d\ds$/);
   await expect(head).toHaveAttribute("aria-expanded", "false");
   await head.click();
   await expect(planning).toHaveAttribute("data-open", "1");
   await expect(head).toHaveAttribute("aria-expanded", "true");
-  await expect(planning.locator(".ps-titles > .ln")).toHaveText(ACME_TITLES.map((t, i) => `${i + 1}${t}`));
+  await expect(planning.locator(".ps-slots > .ln:not([data-gone]) .tt")).toHaveText(ACME_TITLES.map((t, i) => `${i + 1}${t}`));
   await head.focus();
   await page.keyboard.press("Enter");
   await expect(planning).toHaveAttribute("data-open", "0");
@@ -63,9 +64,14 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
 }
 
 test("the extra-pass arc stays attached to both nodes after Researching reopens, within 2px (AC6)", async ({ page, request, context }) => {
-  await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
+  await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Hold-After": "graph.extra_pass.started" });
   const id = await submit(page, "q");
   await expect(page.locator('#spineWrap[data-arc="extra_pass"]')).toHaveAttribute("data-loop", "settled", { timeout: 30_000 });
+  // Decision D39: Reviewing holds its verdict for HANDOFF_HOLD_MS before Researching reopens. The replay's
+  // own extra pass (0.9 s of paced events) ends before that hold does, so the run would be past Researching
+  // and it would never open: the stream is held after graph.extra_pass.started (and stopped at the end), and
+  // the page's own timer hands over to a Researching that is still running.
+  await expect(page.locator('#spine li[data-stage="researcher"]')).toHaveAttribute("data-open", "1");
   await settledTransitions(page);
   const gap = await page.evaluate(() => {
     const host = document.getElementById("spineWrap")!.getBoundingClientRect();
@@ -75,5 +81,5 @@ test("the extra-pass arc stays attached to both nodes after Researching reopens,
   });
   expect(gap.leave).toBeLessThanOrEqual(2);
   expect(gap.enter).toBeLessThanOrEqual(2);
-  await waitTerminal(request, id);
+  expect((await request.post(`${API}/research/${id}/stop`)).status()).toBe(202);
 });

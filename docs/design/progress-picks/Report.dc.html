@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Report layout, cards with contents</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="progress.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="board" style="width: 2352px; padding: 40px 48px 64px; display: flex; flex-direction: column; gap: 24px; font-family: var(--font-body); color: var(--fg)">
+<span class="cap">B + C · each section its own card · a contents list beside them jumps to any heading (click one) · on a phone the list becomes a row of chips under the header · sample built from the latte run's real findings</span>
+<div style="display: flex; gap: 96px; align-items: flex-start">
+
+<div style="display: flex; flex-direction: column; gap: 16px">
+<div class="vlabel"><span class="vk">Desktop</span><span class="vn">The report column; the Review · Coverage · Evidence panel stays to its right</span></div>
+<div class="rp">
+<div class="rhead" style="padding-left: 208px">
+<span class="eyebrow">Report</span>
+<h1>Where can we get the best tasting lattes in San Jose</h1>
+<p class="cap">Evidence as of 2026-09-30 · 29 sources · San Jose plus nearby South Bay · a place to go now · top 3–5 spots</p>
+</div>
+<div class="rBC">
+<nav class="rail" aria-label="Report contents">
+<span class="eyebrow rail-h">Contents</span>
+<a href="#d-bl" aria-current="true"><span class="tn"></span>Bottom line</a>
+<sc-for list="{{sections}}" as="sc" hint-placeholder-count="5">
+<a href="#{{sc.dId}}"><span class="tn">{{sc.n}}</span>{{sc.short}}</a>
+</sc-for>
+<a href="#d-figs"><span class="tn"></span>Key figures</a>
+<a href="#d-gaps"><span class="tn"></span>Not confirmed</a>
+</nav>
+<div class="cards">
+<section class="rsec" id="d-bl">
+<span class="eyebrow">Bottom line</span>
+<p class="lead">{{answer}} <span class="cite">{{answerCite}}</span></p>
+<ul class="bl-list">
+<sc-for list="{{lines}}" as="ln" hint-placeholder-count="6">
+<li><span class="k"><span class="{{ln.cls}}">{{ln.mark}}</span>{{ln.k}}</span><span>{{ln.t}} <span class="cite">{{ln.c}}</span></span></li>
+</sc-for>
+</ul>
+</section>
+<sc-for list="{{sections}}" as="sc" hint-placeholder-count="5">
+<section class="rsec" id="{{sc.dId}}">
+<span class="eyebrow">{{sc.eyebrow}}</span>
+<h2>{{sc.title}}</h2>
+<ul>
+<sc-for list="{{sc.points}}" as="pt" hint-placeholder-count="2">
+<li>{{pt.t}} <span class="cite">{{pt.c}}</span></li>
+</sc-for>
+</ul>
+</section>
+</sc-for>
+<section class="rsec" id="d-figs">
+<span class="eyebrow">Key figures</span>
+<table class="rtab">
+<thead><tr><th>What</th><th>Figure</th><th>Source</th></tr></thead>
+<tbody>
+<sc-for list="{{figs}}" as="fg" hint-placeholder-count="5">
+<tr><td>{{fg.w}}</td><td class="n">{{fg.v}}</td><td>{{fg.s}} <span class="cite">{{fg.c}}</span></td></tr>
+</sc-for>
+</tbody>
+</table>
+<p class="cap">5 of 56 verified figures · all are in the evidence log</p>
+</section>
+<section class="rsec" id="d-gaps">
+<span class="eyebrow">What we couldn't confirm</span>
+<p class="b-sub">Two pages could not be opened: a pulled.coffee latte guide (the site returned an error) and a r/SanJose thread (access was denied).</p>
+</section>
+</div>
+</div>
+</div>
+</div>
+
+<div style="display: flex; flex-direction: column; gap: 16px">
+<div class="vlabel"><span class="vk">Phone</span><span class="vn">390 px · the chips scroll sideways</span></div>
+<div class="phone-frame">
+<nav class="jump" aria-label="Report contents">
+<a href="#p-bl" aria-current="true">Bottom line</a>
+<sc-for list="{{sections}}" as="sc" hint-placeholder-count="5">
+<a href="#{{sc.pId}}">{{sc.n}} · {{sc.short}}</a>
+</sc-for>
+<a href="#p-figs">Key figures</a>
+</nav>
+<div class="rp ph">
+<div class="rhead">
+<h1>Where can we get the best tasting lattes in San Jose</h1>
+<p class="cap">2026-09-30 · 29 sources</p>
+</div>
+<div class="cards">
+<section class="rsec" id="p-bl">
+<span class="eyebrow">Bottom line</span>
+<p class="lead">{{answer}} <span class="cite">{{answerCite}}</span></p>
+<ul class="bl-list">
+<sc-for list="{{lines}}" as="ln" hint-placeholder-count="6">
+<li><span class="k"><span class="{{ln.cls}}">{{ln.mark}}</span>{{ln.k}}</span><span>{{ln.t}} <span class="cite">{{ln.c}}</span></span></li>
+</sc-for>
+</ul>
+</section>
+<sc-for list="{{sections}}" as="sc" hint-placeholder-count="5">
+<section class="rsec" id="{{sc.pId}}">
+<span class="eyebrow">{{sc.eyebrow}}</span>
+<h2>{{sc.title}}</h2>
+<ul>
+<sc-for list="{{sc.points}}" as="pt" hint-placeholder-count="2">
+<li>{{pt.t}} <span class="cite">{{pt.c}}</span></li>
+</sc-for>
+</ul>
+</section>
+</sc-for>
+<section class="rsec" id="p-figs">
+<span class="eyebrow">Key figures</span>
+<table class="rtab">
+<thead><tr><th>What</th><th>Figure</th></tr></thead>
+<tbody>
+<sc-for list="{{figs}}" as="fg" hint-placeholder-count="5">
+<tr><td>{{fg.w}} <span class="cite">{{fg.c}}</span></td><td class="n">{{fg.v}}</td></tr>
+</sc-for>
+</tbody>
+</table>
+</section>
+</div>
+</div>
+</div>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":2352,"height":2700}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const sections = [
+      { n: '1', eyebrow: 'Topic 1 of 5', short: 'Published picks', title: 'Published picks for the area’s best-tasting lattes', points: [
+        { t: 'Sprudge’s guide to coffee in San Jose names Chromatic Coffee, Academic Coffee, Voyager Craft Coffee, Moonwake Coffee Roasters, Coffee & Water Lab, Nirvana Soul and AM Craft.', c: '[5]' },
+        { t: 'Avi Salem’s review at SanJose.com calls Voyager the only place in San Jose to get “a latte fit for a unicorn”, naming the Valencia latte as the favourite.', c: '[9]' },
+        { t: 'Passport To Eden recommends Voyager’s Destination Lattes, its favourite being the Tokyo, with cherry blossom water and sweet vanilla.', c: '[4]' }
+      ] },
+      { n: '2', eyebrow: 'Topic 2 of 5', short: 'Ratings and reviews', title: 'Customer ratings and reviews', points: [
+        { t: 'Tripadvisor gives Voltaire Coffee House 4.7 of 5 from 20 reviews, ranked #3 of 88 coffee spots in San Jose, and Roy’s Station 4.6 of 5 from 30 reviews, ranked #4.', c: '[10][11]' },
+        { t: 'At Roy’s Station, Tripadvisor reviewers praise a “fabulous, creamy latte” and a great oat latte, iced and hot.', c: '[11]' }
+      ] },
+      { n: '3', eyebrow: 'Topic 3 of 5', short: 'Espresso and milk', title: 'What the cafés say about their espresso and milk', points: [
+        { t: 'Nirvana Soul’s Cafe Blend espresso combines beans from Colombia, Ethiopia and Guatemala, roasted at its North San Jose facility.', c: '[18][19]' },
+        { t: 'Voyager Craft Coffee’s menu lists Burundi as its single-origin espresso and its latte as two shots with 10 oz of steamed milk.', c: '[20]' }
+      ] },
+      { n: '4', eyebrow: 'Topic 4 of 5', short: 'Going now', title: 'Going now: hours and addresses', points: [
+        { t: 'Voyager Craft Coffee lists everyday hours of 7:00 AM to 5:00 PM at its Santa Clara and St. John shops.', c: '[24]' },
+        { t: 'Tripadvisor gives Voltaire Coffee House hours of 7:00 AM to 4:00 PM, Monday to Saturday, closed on Sunday.', c: '[10]' }
+      ] },
+      { n: '5', eyebrow: 'Topic 5 of 5 · from your note', short: 'Pastries (your note)', title: 'Pastries at the cafés', points: [
+        { t: 'This Bliss Life says Chromatic Coffee serves locally sourced pastries and Hannah Coffee is a neighbourhood spot for catching up over pastries.', c: '[7]' },
+        { t: 'Nirvana Soul’s express shop at Hotel De Anza offers a smaller selection of specialty lattes and pastries.', c: '[22]' }
+      ] }
+    ].map((s) => Object.assign({ dId: 'd-t' + s.n, pId: 'p-t' + s.n }, s));
+    return {
+      sections,
+      answer: 'Four cafés stand out across the guides and the reviews: Voyager Craft Coffee, Chromatic Coffee, Nirvana Soul and Voltaire Coffee House. Sprudge, Passport To Eden and This Bliss Life all name the first three, and Voltaire has the highest Tripadvisor rating of the four at 4.7 of 5 from 20 reviews.',
+      answerCite: '[4][5][7][10]',
+      lines: [
+        { k: 'Published picks', mark: '', cls: '', t: 'Sprudge’s San Jose guide lists Chromatic, Academic, Voyager, Moonwake, Coffee & Water Lab, Nirvana Soul and AM Craft; two travel blogs overlap on Voyager, Chromatic and Nirvana Soul.', c: '[4][5][7]' },
+        { k: 'Ratings and reviews', mark: '', cls: '', t: 'Tripadvisor ranks Voltaire Coffee House (4.7) and Roy’s Station (4.6) highest in San Jose; reviewers single out smooth, creamy lattes at both.', c: '[10][11]' },
+        { k: 'Espresso and milk', mark: '', cls: '', t: 'Nirvana Soul roasts its own three-origin espresso blend and Voyager pulls a single-origin Burundi; both offer oat and almond milk.', c: '[18][20][22]' },
+        { k: 'Going now', mark: '', cls: '', t: 'Voyager is open 7 am to 5 pm every day; Voltaire closes at 4 pm and is shut on Sundays.', c: '[10][24]' },
+        { k: 'Your note · open now', mark: '✓', cls: 'ok', t: 'Only cafés whose hours the sources state are recommended for going now.', c: '' },
+        { k: 'Your note · pastries', mark: '✓', cls: 'ok', t: 'Chromatic serves locally sourced pastries, Nirvana Soul’s Hotel De Anza bar sells pastries, and Con Azucar serves pan dulce.', c: '[7][22]' }
+      ],
+      figs: [
+        { w: 'Voltaire Coffee House · Tripadvisor rating', v: '4.7 of 5 · 20 reviews', s: 'Tripadvisor', c: '[10]' },
+        { w: 'Roy’s Station Coffee and Tea · Tripadvisor rating', v: '4.6 of 5 · 30 reviews', s: 'Tripadvisor', c: '[11]' },
+        { w: 'Voyager Craft Coffee, Santa Clara · Tripadvisor rating', v: '4.9 of 5 · 14 reviews', s: 'Tripadvisor', c: '[14]' },
+        { w: 'Philz Coffee · Tripadvisor rating', v: '4.5 of 5 · 70 reviews', s: 'Tripadvisor', c: '[6]' },
+        { w: 'Voyager Craft Coffee · locations', v: '6', s: 'Sprudge', c: '[5]' }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

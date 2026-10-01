@@ -149,6 +149,8 @@ async def test_the_planner_reads_the_answers_from_its_state_into_both_requests_a
 # (8994d5a, a00ef0a) and after it, because the check adds sections only when
 # there are answers (spec §4.4 "Replay").
 PINNED_PACKETS = {
+    # notes-progress-report Phase C re-pinned these values: its writer requests and the report
+    # the review reads changed (spec §7.1, §7.4, §7.5).
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
@@ -156,7 +158,15 @@ PINNED_PACKETS = {
     # the forced last research turn is never asked (see
     # tests/test_graph/test_reader_notes_replay.py); no answer is involved.
     # Was "824e2b4aa04d2944".
-    "report_reviewer:ReportReviewDraft": "a173c40737e32644",
+    # Merge of origin/main (the latency work) into notes-progress-report-stop: both
+    # moves above apply to this one packet. The last review reads the report the
+    # writer drafted (Phase C's moves, `824e2b4aa04d2944` -> `ba466f328de6eb67` on the
+    # branch) over the evidence a run that never asks its forced last research turn
+    # leaves (the latency plan's O9, `824e2b4aa04d2944` -> `a173c40737e32644` on main).
+    # With ``SKIP_FINAL_ANSWER_TURN`` put back to False the merged tree prints the
+    # branch's `ba466f328de6eb67` again; the three planner packets are unchanged.
+    # Moved `ba466f328de6eb67` (branch) / `a173c40737e32644` (main) -> `79717e2e3e6a9ae0`.
+    "report_reviewer:ReportReviewDraft": "79717e2e3e6a9ae0",
 }
 
 
@@ -184,7 +194,8 @@ async def test_without_answers_the_replay_packets_are_byte_identical(tmp_path: P
 
     assert status == "completed"
     assert {key: hashlib.sha256(packets[key].encode("utf-8")).hexdigest()[:16] for key in PINNED_PACKETS} == PINNED_PACKETS
-    assert not any("# Reader answers" in text for text in packets.values())
+    # The section, not the bottom line's rule that names it (notes-progress-report spec §7.1).
+    assert not any("\n# Reader answers\n" in text for text in packets.values())
 
 
 @pytest.mark.asyncio

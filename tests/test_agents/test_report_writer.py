@@ -18,7 +18,7 @@ from deep_research.agents.report_writer import (
     BOTTOM_LINE_INSTRUCTION,
     BOTTOM_LINE_SYSTEM_PROMPT,
     CONTEXT_ONLY_RELEVANCE,
-    MAX_BOTTOM_LINE_SENTENCES,
+    MAX_ANSWER_SENTENCES,
     MAX_POINT_CHARS,
     REPORT_WRITER_NAME,
     SECTION_INSTRUCTION,
@@ -1048,7 +1048,8 @@ def test_section_instruction_describes_the_redraft_rule():
 
 
 def test_bottom_line_system_prompt_states_the_sentence_bound():
-    assert "two to four sentences" in BOTTOM_LINE_SYSTEM_PROMPT
+    assert "one or two sentences" in BOTTOM_LINE_SYSTEM_PROMPT
+    assert MAX_ANSWER_SENTENCES == 2
 
 
 def test_bottom_line_instruction_forbids_a_pick_of_its_own():
@@ -1129,8 +1130,8 @@ class _FakeChecker:
         of ``consistent``."""
 
     async def __call__(self, provider, items, *, question, fingerprint=None,
-                       batch_size=None, concurrency=None, gate=None):
-        del provider, question, fingerprint, batch_size, concurrency
+                       batch_size=None, concurrency=None, gate=None, on_batch=None):
+        del provider, question, fingerprint, batch_size, concurrency, on_batch
         self.gates.append(gate)
         batch = list(items)
         self.calls.append(batch)
@@ -2681,7 +2682,7 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
     from deep_research.agents.evidence_verifier import StatementCheckItem
     import deep_research.agents.evidence_verifier as ev
 
-    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None):
+    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
         return {item.label: _verdict("consistent") for item in items}, []
 
     original = ev.check_statements
@@ -2865,7 +2866,7 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
 
     markdown = render_written_report(composition)
     evidence = render_finding_log(composition)
-    assert "| What was measured | Result |" in markdown
+    assert "| What | Figure | Source |" in markdown
     assert "(2026-01-05)" in markdown
     assert "(updated 2026-02-10)" in markdown
     assert "A denied page" in markdown
@@ -3272,7 +3273,7 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
 
     calls = {"n": 0}
 
-    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None):
+    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
         calls["n"] += 1
         if calls["n"] == 2:
             # Attempt 1's own bottom-line check: refuse it to buy a re-ask.
@@ -3631,4 +3632,335 @@ async def test_the_report_written_event_is_published_live(
 
     [written] = run.state_update["events"]
     assert written.event_type == "report_writer.report.written"
-    assert [event.event_id for event in received] == [written.event_id]
+    # notes-progress-report spec §4 item 1: the progress events are live-only.
+    progress = [event.metadata for event in received if event.event_type == "report_writer.progress"]
+    assert [event.event_id for event in received if event.event_type != "report_writer.progress"] == [written.event_id]
+    # The bottom line never reaches the check here (no section was checked), so the
+    # bar fills when it settles with nothing to count: its share is the whole 1/(P+1).
+    assert [(m["parts_total"], m["parts_returned"], m["fraction"]) for m in progress] == [
+        (1, 0, 0.0), (1, 1, 0.5), (1, 1, 1.0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """notes-progress-report spec §5.4, D4, AC6: after a note pass the writer drafts the notes'
+    own parts, any part with no previous section (P2-1) and the bottom line — fresh, with no
+    defect fed back — and carries every other part over unchanged, with its verdicts."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    tn = make_target("note-n1-target-01", coverage_id="note-n1", required=True,
+                     question="How much battery capacity was recycled in 2024?")
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                 target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                 target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    fn = _checked("https://a.test/3", "3 GW were recycled in 2024.", "3", "GW", organisation=EIA,
+                 target_ids=["note-n1-target-01"])
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2]),
+              _topic("note-n1", "Your note: how much was recycled", [tn], priority=2)]
+    previous_statement = ReportStatement(statement_id="S001", text="10.4 GW in 2024.",
+                                         finding_ids=[finding_fingerprint(f1)], target_ids=["topic-01-target-01"])
+    previous_section = ReportSection(title="First", coverage_id="topic-01",
+                                     points=[ReportPointFor("10.4 GW in 2024.", previous_statement)])
+    # The note's own part already holds a section, so only the coverage-id rule (not the
+    # no-previous-section rule, P2-1) can make the writer redraft it.
+    previous_note_section = ReportSection(title="Your note: how much was recycled", coverage_id="note-n1",
+                                          points=[])
+    from deep_research.utils.types import ReportComposition
+    previous = ReportComposition(question="Q?", session_id="s1",
+                                 sections=[previous_section, previous_note_section], summary=[],
+                                 sub_topics=topics, statement_verdicts={"S001": "corrected"})
+    marker = ResearchEvent(event_type="graph.note_pass.started", source="graph", message="Note pass started.",
+                           metadata={"iteration": 0, "note_passes": 1, "note_ids": ["n1"],
+                                     "targets": ["note-n1-target-01"]})
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                          verified_findings=[f1, f2, fn], composition=previous,
+                          report_review=_scored_review([]), events=[marker])
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(state)
+    label_by_url = {finding.source_url: label for label, finding in task.registry}
+    calls: list[str] = []
+
+    def route(messages, schema):
+        body = messages[-1].content
+        if schema.__name__ == "BottomLineDraft":
+            calls.append("bottom_line")
+            # A kept sentence, so no fallback moves a carried point out of its section.
+            return BottomLineDraft(sentences=[WriterPointDraft(
+                text="According to the source, 3 GW were recycled in 2024.",
+                finding_labels=[label_by_url["https://a.test/3"]])])
+        if "3 GW were recycled in 2024." in body:
+            calls.append("note-n1")
+            return SectionDraft(title="Your note: how much was recycled", points=[WriterPointDraft(
+                text="According to the source, 3 GW were recycled in 2024.",
+                finding_labels=[label_by_url["https://a.test/3"]])])
+        if "5 GW in 2025." in body:
+            calls.append("topic-02")
+            return SectionDraft(title="Second", points=[WriterPointDraft(
+                text="According to the source, 5 GW in 2025.", finding_labels=[label_by_url["https://a.test/2"]])])
+        calls.append("topic-01")
+        return SectionDraft(title="First", points=[])
+
+    completer = ScriptedCompleter(outputs=[route, route, route])
+
+    composition = await compose_written_report(task, provider=completer, section_concurrency=7)
+
+    assert (task.note_pass_coverage_ids, task.defects, task.previous) == (["note-n1"], [], previous)
+    assert sorted(calls) == ["bottom_line", "note-n1", "topic-02"]
+    statuses = {part.coverage_id: part.status for part in composition.parts}
+    assert statuses == {"topic-01": "carried_over", "topic-02": "written", "note-n1": "written"}
+    [carried] = [section for section in composition.sections if section.coverage_id == "topic-01"]
+    assert (carried.title, [point.text for point in carried.points]) == ("First", ["10.4 GW in 2024."])
+    assert carried.points[0].statement.finding_ids == [finding_fingerprint(f1)]
+    assert composition.statement_verdicts[carried.points[0].statement.statement_id] == "corrected"
+    from deep_research.graph.nodes import _arrived_via_redraft_hop
+    assert _arrived_via_redraft_hop([marker]) is False  # the review after a note pass is a full one
+
+
+# --- notes-progress-report spec §6.1, §6.2, §6.6: Writing's live progress ----------
+
+SECRET_VERDICT = "SECRET-VERDICT-REASON"
+
+
+def _two_part_state() -> ResearchState:
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                  target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                  target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2])]
+    return ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                         verified_findings=[f1, f2])
+
+
+def _two_part_route(messages, schema):
+    """Sections, the bottom line, and the real Statement Check's replies: a sentence
+    about growth is refused, the 2025 one corrected, every other one consistent."""
+    import re
+
+    from deep_research.agents.evidence_verifier import (
+        StatementCheckDraft,
+        StatementVerdictDraft,
+    )
+
+    body = messages[-1].content
+    if schema.__name__ == "StatementCheckDraft":
+        verdicts = []
+        for label, text in re.findall(r"^## (\S+)\nsentence: (.*)$", body, re.M):
+            if "grew" in text:
+                verdicts.append(StatementVerdictDraft(label=label, verdict="inconsistent", reason=SECRET_VERDICT))
+            elif "2025" in text:
+                verdicts.append(StatementVerdictDraft(
+                    label=label, verdict="corrected", reason=SECRET_VERDICT,
+                    corrected_text="According to the source, 5 GW is forecast for 2025."))
+            else:
+                verdicts.append(StatementVerdictDraft(label=label, verdict="consistent", reason=SECRET_VERDICT))
+        return StatementCheckDraft(statements=verdicts)
+    if schema.__name__ == "BottomLineDraft":
+        return BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])])
+    if "First" in body.split("# This part of the question")[1][:40]:
+        return SectionDraft(title="First", points=[
+            WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, storage grew in 2024.", finding_labels=["F01"]),
+        ])
+    return SectionDraft(title="Second", points=[
+        WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"]),
+    ])
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_fraction_monotonic(tracker: Tracker, tmp_path: Path) -> None:
+    """AC17: one event when the jobs are built, one per returned part, one per Statement
+    Check batch and one when the bottom line starts; samples are real drafted sentences
+    with their check's verdict (the corrected text when corrected); ``fraction`` never
+    decreases and reaches 1; never the check's reason text."""
+    import json
+
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_two_part_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert progress[0] == {
+        "phase": "sections", "parts_total": 2, "parts_returned": 0, "parts_failed": 0,
+        "sentences_drafted": 0, "sentences_checked": 0, "backed": 0, "removed": 0, "unchecked": 0,
+        "fraction": 0.0, "sample": None,
+    }
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    phases = [m["phase"] for m in progress]
+    assert phases.index("bottom_line") == len(phases) - 2
+    assert {k: progress[-1][k] for k in ("parts_returned", "sentences_drafted", "sentences_checked",
+                                         "backed", "removed", "unchecked")} == {
+        "parts_returned": 2, "sentences_drafted": 4, "sentences_checked": 4,
+        "backed": 3, "removed": 1, "unchecked": 0,
+    }
+    samples = [m["sample"] for m in progress if m["sample"] is not None]
+    assert {(s["text"], s["verdict"], s["findings"], s["section"]) for s in samples} == {
+        ("According to the source, 10.4 GW in 2024.", "backed", 1, "First"),
+        ("According to the source, storage grew in 2024.", "removed", 1, "First"),
+        ("According to the source, 5 GW is forecast for 2025.", "backed", 1, "Second"),
+        ("According to the source, 10.4 GW in 2024.", "backed", 1, "Bottom line"),
+    }
+    assert all(SECRET_VERDICT not in json.dumps(m) for m in progress)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_counts_what_a_substituted_checker_returns(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """A checker that never reports a batch (the tests' own substitutes) is counted once
+    it returns: the last event still reads every sentence checked."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_two_part_route] * 4), section_concurrency=7,
+        )
+
+    last = [e.metadata for e in received if e.event_type == "report_writer.progress"][-1]
+    assert (last["sentences_drafted"], last["sentences_checked"], last["backed"], last["fraction"]) == (4, 4, 4, 1.0)
+
+
+def test_writing_progress_counts_a_sentence_once() -> None:
+    """Review M13: a batch reported as two halves, then whole, counts each label once."""
+    from deep_research.agents.report_writer import _WritingProgress
+
+    progress = _WritingProgress(parts_total=1)
+    progress.part_returned("topic-01", ["P01.01", "P01.02"])
+    a = _FakeStatementCheckItem(label="P01.01", text="A.", labels=["F01"])
+    b = _FakeStatementCheckItem(label="P01.02", text="B.", labels=["F01", "F02"])
+    verdicts = {"P01.01": _verdict("consistent"), "P01.02": _verdict("inconsistent")}
+
+    first = progress.count("First", [a], verdicts)
+    second = progress.count("First", [b], verdicts)
+    again = progress.count("First", [a, b], verdicts)
+
+    assert first == {"text": "A.", "verdict": "backed", "findings": 1, "section": "First"}
+    assert second == {"text": "B.", "verdict": "removed", "findings": 2, "section": "First"}
+    assert again is None
+    assert (len(progress.backed), len(progress.removed), len(progress.unchecked)) == (1, 1, 0)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_fills_when_a_part_draft_fails(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """A part whose draft fails twice counts as returned with nothing to check (its
+    share is whole), and with no checked section the bottom line settles empty: the
+    bar still ends full."""
+    completer = ScriptedCompleter(outputs=[_output_limit_error(), _output_limit_error()])
+    agent = _writer(tracker, completer, report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_one_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(task, provider=completer)
+
+    assert composition.parts[0].status == "failed"
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert [(m["parts_returned"], m["sentences_drafted"], m["fraction"]) for m in progress] == [
+        (0, 0, 0.0), (1, 0, 0.5), (1, 0, 1.0),
+    ]
+    # Owner decision O1: the failed part still counts as returned (the fraction above is
+    # unchanged), and ``parts_failed`` says it did not come back written.
+    assert [(m["parts_returned"], m["parts_failed"]) for m in progress] == [(0, 0), (1, 1), (1, 1)]
+
+
+def _first_part_fails_route(messages, schema):
+    """``_two_part_route``, except the provider refuses "First"'s draft with text of its own."""
+    if schema.__name__ == "SectionDraft" and "First" in messages[-1].content.split("# This part of the question")[1][:40]:
+        raise ProviderResponseError(
+            f"provider refused the draft: {SECRET_VERDICT}", retryable=False,
+            failure_category="http", http_status_code=400, failure_origin="sdk",
+        )
+    return _two_part_route(messages, schema)
+
+
+def _first_part_all_refused_route(messages, schema):
+    """``_two_part_route``, except "First"'s draft returns one sentence the Statement Check refuses."""
+    if schema.__name__ == "SectionDraft" and "First" in messages[-1].content.split("# This part of the question")[1][:40]:
+        return SectionDraft(title="First", points=[
+            WriterPointDraft(text="According to the source, storage grew in 2024.", finding_labels=["F01"]),
+        ])
+    return _two_part_route(messages, schema)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_counts_a_part_whose_every_point_was_refused_as_failed(
+    tracker: Tracker, tmp_path: Path,
+) -> None:
+    """Owner decision O1, the second failure exit: a draft that returned but whose every point
+    the Statement Check refused ends ``failed`` (nothing of it is written), so ``parts_failed``
+    counts it too. It was already in ``parts_returned``, so ``failed <= returned``, the fraction
+    is the one a settled part always had, and the bar still ends full."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_first_part_all_refused_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    assert {part.coverage_id: part.status for part in composition.parts} == {
+        "topic-01": "failed", "topic-02": "written",
+    }
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert all(m["parts_failed"] <= m["parts_returned"] <= m["parts_total"] for m in progress)
+    failed = [m["parts_failed"] for m in progress]
+    assert failed == sorted(failed) and failed[0] == 0
+    last = progress[-1]
+    assert (last["parts_total"], last["parts_returned"], last["parts_failed"]) == (2, 2, 1)
+    # The refused sentence was drafted and checked (removed); the failed part adds no figure of its own.
+    assert (last["removed"], last["unchecked"]) == (1, 0)
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    # Becoming failed moves no fraction: the event that says so carries the fraction of the one before it.
+    first_failed = next(i for i, m in enumerate(progress) if m["parts_failed"] == 1)
+    assert progress[first_failed]["fraction"] == progress[first_failed - 1]["fraction"]
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_names_the_parts_that_failed(tracker: Tracker, tmp_path: Path) -> None:
+    """Owner decision O1: ``parts_failed`` counts each part whose draft failed, as it settles.
+    ``parts_returned`` keeps meaning settled (written or failed), so the bar's arithmetic is
+    untouched and the page can print written = returned - failed; the bar still ends full, and
+    nothing the provider said is in any event."""
+    import json
+
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_first_part_fails_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    assert {part.coverage_id: part.status for part in composition.parts} == {
+        "topic-01": "failed", "topic-02": "written",
+    }
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert (progress[0]["parts_returned"], progress[0]["parts_failed"]) == (0, 0)
+    failed = [m["parts_failed"] for m in progress]
+    assert failed == sorted(failed) and set(failed) == {0, 1}
+    assert all(m["parts_failed"] <= m["parts_returned"] <= m["parts_total"] for m in progress)
+    last = progress[-1]
+    assert (last["parts_total"], last["parts_returned"], last["parts_failed"]) == (2, 2, 1)
+    assert last["parts_returned"] - last["parts_failed"] == 1  # one section written
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    assert all(type(m["parts_failed"]) is int and m["parts_failed"] >= 0 for m in progress)
+    assert all(SECRET_VERDICT not in json.dumps(m) and "refused" not in json.dumps(m) for m in progress)

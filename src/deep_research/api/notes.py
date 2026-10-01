@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Literal, TypeAlias
+from typing import Any, NamedTuple, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -30,12 +30,18 @@ from pydantic import (
 )
 
 from deep_research.api.clarify import clarity_llm_config
+from deep_research.graph.note_outcomes import (
+    NoteOutcome,
+    note_outcome,
+    note_steering_outcome,
+)
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import ChatMessage, build_chat_provider
 from deep_research.runtime.notes import NoteBoard, ReceivedNote
 from deep_research.utils.config import ConfigSettings
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
+    MAX_NOTE_SHORT_CHARS,
     ReaderNote,
     ReaderNoteKind,
     ReaderNoteScope,
@@ -50,9 +56,6 @@ NOTE_TRACE_SESSION = "note-interpreter"
 MAX_RESTATEMENT_CHARS = 120
 MAX_NEW_QUESTIONS = 3
 MAX_NEW_QUESTION_CHARS = 200
-NoteOutcome: TypeAlias = Literal[
-    "covered", "not_found", "not_addressed", "pending", "replaced"
-]
 
 
 class NoteScopeDraft(BaseModel):
@@ -75,6 +78,7 @@ class NoteInterpretationDraft(BaseModel):
 
     kinds: list[str] = Field(default_factory=list)
     restatement: str = ""
+    short: str = ""
     scope: NoteScopeDraft | None = None
     new_questions: list[str] = Field(default_factory=list)
     replaces: str | None = None
@@ -87,6 +91,9 @@ class NoteInterpretation(BaseModel):
 
     kinds: list[ReaderNoteKind] = Field(min_length=1, max_length=3)
     restatement: str = Field(min_length=1, max_length=500)
+    short: str = Field(default="", max_length=MAX_NOTE_SHORT_CHARS)
+    """The note's subject in 1-3 words for a label, or ``""`` when the reading named
+    none (notes-progress-report spec §7.2); the board's note then derives it."""
     scope: ReaderNoteScope | None = None
     new_questions: list[str] = Field(default_factory=list, max_length=MAX_NEW_QUESTIONS)
     replaces: str | None = None
@@ -144,12 +151,17 @@ def validated_interpretation(
     one over 120 characters; more than three new questions, or one empty or
     over 200 characters; a scope field over 120 characters. A ``replaces`` that
     names no earlier note of this run is dropped rather than failing the
-    reading: the note itself stands.
+    reading: the note itself stands. So is a ``short`` that is not one to three
+    words of at most 24 characters (notes-progress-report spec §7.2): a label
+    never costs the reading, and the board's note derives one instead.
     """
     earlier_ids = {note.note_id for note in earlier}
     restatement = collapse_whitespace(draft.restatement)
     if not restatement or len(restatement) > MAX_RESTATEMENT_CHARS:
         return None
+    short = collapse_whitespace(draft.short)
+    if not 1 <= len(short.split()) <= 3 or len(short) > MAX_NOTE_SHORT_CHARS:
+        short = ""
     scope = draft.scope
     geography = collapse_whitespace(scope.geography or "") if scope is not None else ""
     period = collapse_whitespace(scope.period or "") if scope is not None else ""
@@ -157,6 +169,7 @@ def validated_interpretation(
         reading = NoteInterpretation(
             kinds=[kind.strip() for kind in draft.kinds],  # type: ignore[misc]
             restatement=restatement,
+            short=short,
             scope=(
                 ReaderNoteScope(geography=geography or None, period=period or None)
                 if geography or period
@@ -189,6 +202,7 @@ NOTE_INSTRUCTION = (
     "- restatement: what the note asks, in plain words, at most 120 "
     "characters, starting in lower case and never quoting the note back, for "
     "example \"more weight on fire-safety standards\".\n"
+    "- short: the note's subject in one to three words for a label, lower case.\n"
     "- scope: the geography or period a scope note sets, or null.\n"
     "- new_questions: for a new_angle note, or a scope that widens the "
     "question, up to 3 research questions it raises; otherwise an empty list.\n"
@@ -308,6 +322,7 @@ def reader_note(received: ReceivedNote, reading: NoteInterpretation) -> ReaderNo
         received_during=received.received_during,
         kinds=list(reading.kinds),
         restatement=reading.restatement,
+        short=reading.short,
         scope=reading.scope,
         new_questions=list(reading.new_questions),
         replaces=replaces,
@@ -340,54 +355,32 @@ def note_interpreted_event(note: ReaderNote, *, fallback: bool) -> ResearchEvent
     )
 
 
-def note_outcome(note_id: str, state: ResearchState | None) -> NoteOutcome:
-    """What the finished run concluded about one note.
+class NoteRecord(NamedTuple):
+    """One accepted note as the session response reports it (notes-progress-report spec §5.6)."""
 
-    ``covered`` when the last review judged that the report follows it
-    (``honoured``); ``not_found`` when it found no evidence bearing on it;
-    ``not_addressed`` when it judged it ``ignored_with_evidence`` — the
-    findings bore on the note and the report still does not follow it, after
-    its one redraft or because the run ended before it — which is never
-    ``covered`` (live-briefs Phase 3, open issue O8); ``replaced`` when a later
-    note replaced it; and ``pending`` while the run is going or when no review
-    judged it (a note that arrived too late, or a review that could not be
-    made).
-    """
-    if state is None:
-        return "pending"
-    notes = [note for note in state.reader_notes if note.note_id == note_id]
-    if not notes:
-        return "pending"
-    if note_id not in {note.note_id for note in active_reader_notes(state.reader_notes)}:
-        return "replaced"
-    review = state.report_review
-    verdicts = (
-        {entry.note_id: entry.status for entry in review.note_dispositions}
-        if review is not None
-        else {}
-    )
-    verdict = verdicts.get(note_id)
-    if verdict == "no_evidence":
-        return "not_found"
-    if verdict == "ignored_with_evidence":
-        return "not_addressed"
-    if verdict == "honoured":
-        return "covered"
-    return "pending"
+    received: ReceivedNote
+    restatement: str | None
+    """The run's reading of the note, ``None`` until it is read."""
+    outcome: NoteOutcome
+    steering_outcome: NoteOutcome | None
+    """A mixed note's steering half (D20); ``None`` for every other note."""
 
 
 def note_records(
-    board: NoteBoard, state: ResearchState | None
-) -> list[tuple[ReceivedNote, str | None, NoteOutcome]]:
-    """Every accepted note in receipt order: as received, its restatement once read, its outcome."""
-    records: list[tuple[ReceivedNote, str | None, NoteOutcome]] = []
+    board: NoteBoard, state: ResearchState | None, *, terminal: bool
+) -> list[NoteRecord]:
+    """Every accepted note in receipt order: as received, its restatement once read, and both outcomes."""
+    records: list[NoteRecord] = []
     for received in board.received():
         interpreted = board.interpreted(received.note_id)
         records.append(
-            (
-                received,
-                interpreted.restatement if interpreted is not None else None,
-                note_outcome(received.note_id, state),
+            NoteRecord(
+                received=received,
+                restatement=interpreted.restatement if interpreted is not None else None,
+                outcome=note_outcome(received.note_id, state, terminal=terminal),
+                steering_outcome=note_steering_outcome(
+                    received.note_id, state, terminal=terminal, note=interpreted
+                ),
             )
         )
     return records
@@ -403,6 +396,7 @@ __all__ = [
     "NoteInterpretationDraft",
     "NoteInterpreter",
     "NoteOutcome",
+    "NoteRecord",
     "NoteScopeDraft",
     "fallback_interpretation",
     "live_note_interpreter",
@@ -411,6 +405,7 @@ __all__ = [
     "note_outcome",
     "note_received_event",
     "note_records",
+    "note_steering_outcome",
     "reader_note",
     "scripted_note_interpreter",
     "validated_interpretation",

@@ -18,10 +18,10 @@ instead of a fabricated floor.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Mapping, Sequence
-from typing import NamedTuple, Protocol
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Literal, NamedTuple, Protocol, TypeAlias
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
 from deep_research.agents.errors import (
@@ -55,7 +55,11 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.reader_notes import SOURCE_NOTES, render_reader_notes
+from deep_research.agents.reader_notes import (
+    SOURCE_NOTES,
+    render_reader_notes,
+    steering_notes,
+)
 from deep_research.agents.sources import (
     SourceGroup,
     group_findings_by_url,
@@ -97,6 +101,10 @@ RELEVANCE_WEIGHT = 0.40
 REPUTATION_BLEND = 0.4
 
 LOW_CONFIDENCE_THRESHOLD = 0.4
+# notes-progress-report spec §6.2: Evaluating's split on ``overall_score``. Strong
+# at 0.70 and above, weak below ``LOW_CONFIDENCE_THRESHOLD`` (exactly today's
+# ``low_confidence``), fair in between.
+STRONG_SOURCE_THRESHOLD = 0.70
 DEFAULT_BATCH_SIZE = 12
 DEFAULT_MAX_TOTAL_SOURCES = 36
 # Compatibility alias for callers that imported the old cap constant. The
@@ -546,6 +554,84 @@ def low_confidence_count(sources: Sequence[ScoredSource]) -> int:
     )
 
 
+SourceStrength: TypeAlias = Literal["strong", "fair", "weak"]
+
+
+def source_strength(source: ScoredSource) -> SourceStrength | None:
+    """Strong, fair or weak (notes-progress-report spec §6.2); ``None`` unscored."""
+    if source.evaluation_status != "scored" or source.overall_score is None:
+        return None
+    if source.overall_score >= STRONG_SOURCE_THRESHOLD:
+        return "strong"
+    if source.overall_score >= LOW_CONFIDENCE_THRESHOLD:
+        return "fair"
+    return "weak"
+
+
+def strength_counts(sources: Sequence[ScoredSource]) -> dict[str, int]:
+    """How many scored sources are strong, fair and weak (spec §6.1)."""
+    strengths = [source_strength(source) for source in sources]
+    return {
+        "strong_count": strengths.count("strong"),
+        "fair_count": strengths.count("fair"),
+        "weak_count": strengths.count("weak"),
+    }
+
+
+class _EvaluationProgress:
+    """One scoring pass's running counts (notes-progress-report spec §6.1, §6.2).
+
+    Each source is counted once, the first time a settled batch reports it, so
+    a total never depends on how many events arrive or how sources were
+    batched (review M13). ``rated``/``unrated`` hold urls; ``rated`` maps each
+    scored url to its strength.
+    """
+
+    def __init__(self, *, to_rate: int, reused: int, capped: int, batches: int) -> None:
+        self.to_rate = to_rate
+        self.reused = reused
+        self.capped = capped
+        self.batches = batches
+        self.batches_done = 0
+        self.rated: dict[str, SourceStrength] = {}
+        self.unrated: set[str] = set()
+
+    def record(self, sources: Iterable[ScoredSource]) -> None:
+        for source in sources:
+            if source.url in self.rated or source.url in self.unrated:
+                continue
+            strength = source_strength(source)
+            if strength is None:
+                self.unrated.add(source.url)
+            else:
+                self.rated[source.url] = strength
+
+    def metadata(self) -> dict[str, JsonValue]:
+        strengths = list(self.rated.values())
+        return {
+            "to_rate": self.to_rate,
+            "reused": self.reused,
+            "capped": self.capped,
+            "rated": len(self.rated),
+            "strong": strengths.count("strong"),
+            "fair": strengths.count("fair"),
+            "weak": strengths.count("weak"),
+            "unrated": len(self.unrated),
+            "batches": self.batches,
+            "batches_done": self.batches_done,
+        }
+
+
+def evaluation_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
+    """One ``source_evaluator.progress`` event (spec §4 item 1, §6.1): live-only."""
+    return agent_event(
+        agent_name=SOURCE_EVALUATOR_NAME,
+        event_type="source_evaluator.progress",
+        message="Source evaluation progress.",
+        metadata=metadata,
+    )
+
+
 def evaluation_status_counts(
     sources: Sequence[ScoredSource],
 ) -> dict[str, int]:
@@ -960,6 +1046,7 @@ def evaluation_completed_event(
             "low_confidence_count": low_confidence_count(sources),
             "unique_source_count": len(sources),
             **status_counts,
+            **strength_counts(sources),
             "reputation_hits": reputation_hits,
             "reputation_failures": reputation_failures,
         },
@@ -1104,9 +1191,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         return SourceEvaluationTask(
             instruction=state.original_question,
             # live-briefs spec §4.6: the reader's notes fill the request's
-            # ``# Context`` slot, for relevance only; ``""`` without notes.
+            # ``# Context`` slot, for relevance only; ``""`` without notes. Their
+            # steering views only (notes-progress-report spec §5.1): a note whose
+            # only kind is new_angle is its own topic, and that topic is among the
+            # sub-topics a source cited for it is judged with.
             guidance=render_reader_notes(
-                active_reader_notes(state.reader_notes), instruction=SOURCE_NOTES
+                steering_notes(active_reader_notes(state.reader_notes)),
+                instruction=SOURCE_NOTES,
             ),
             groups=groups,
             reputations=reputations,
@@ -1167,6 +1258,8 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
     async def score_sources(
         self,
         task: SourceEvaluationTask,
+        *,
+        on_progress: Callable[[dict[str, JsonValue]], None] | None = None,
     ) -> tuple[list[ScoredSource], list[ResearchError], bool]:
         """Score canonical sources in deterministic batches.
 
@@ -1181,8 +1274,17 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         sources ``unscored_provider``, and no other batch is marked on the
         strength of its failure. The returned snapshot is assembled in
         ``task.groups`` order whatever order the batches finished in.
+
+        ``on_progress`` (notes-progress-report spec §6.2) is called once the
+        batches are planned, before the first scoring call -- with nothing to
+        score, once with every count 0 -- then once each batch settles, scored
+        or failed, with cumulative counts in completion order.
         """
         if not task.groups:
+            if on_progress is not None:
+                on_progress(
+                    _EvaluationProgress(to_rate=0, reused=0, capped=0, batches=0).metadata()
+                )
             return [], [], False
 
         prior = {
@@ -1207,6 +1309,14 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             groups_to_score[start : start + self._batch_size]
             for start in range(0, len(groups_to_score), self._batch_size)
         ]
+        progress = _EvaluationProgress(
+            to_rate=len(groups_to_score),
+            reused=len(task.groups) - len(eligible_groups),
+            capped=len(capped),
+            batches=len(batches),
+        )
+        if on_progress is not None:
+            on_progress(progress.metadata())
 
         errors: list[ResearchError] = []
         provider_failed = False
@@ -1216,6 +1326,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         # however the batches were scheduled, and each batch's groups are
         # marked from the batch's own failure alone.
         batch_errors: list[list[ResearchError]] = [[] for _ in batches]
+
+        def settled_batch(batch: list[SourceGroup]) -> None:
+            """Count one settled batch's sources and report the running totals."""
+            progress.batches_done += 1
+            progress.record(assessed[group.url] for group in batch if group.url in assessed)
+            if on_progress is not None:
+                on_progress(progress.metadata())
 
         async def score_one(position: int, batch: list[SourceGroup]) -> None:
             """Score one batch, marking its own sources when it fails."""
@@ -1241,6 +1358,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                         reason="unscored_provider",
                         dossier=task.dossiers.get(group.url),
                     )
+                settled_batch(batch)
                 return
 
             drafts: dict[str, SourceScoreDraft] = {}
@@ -1266,6 +1384,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                         reputation=task.reputations.get(group.url),
                         dossier=task.dossiers.get(group.url),
                     )
+            settled_batch(batch)
 
         settled = await asyncio.gather(
             *(
@@ -1385,7 +1504,11 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             task, lookup_errors, hits = await self.lookup_reputations(task)
             errors.extend(lookup_errors)
             sources, scoring_errors, provider_failed = await self.score_sources(
-                task
+                task,
+                # notes-progress-report spec §6.2: each count, live-only.
+                on_progress=lambda metadata: publish_live(
+                    evaluation_progress_event(metadata)
+                ),
             )
             errors.extend(scoring_errors)
             if not task.groups:

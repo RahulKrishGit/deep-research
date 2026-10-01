@@ -16,10 +16,11 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from pydantic import JsonValue
 
+from deep_research.agents.report import report_outline
 from deep_research.api.clarify import (
     ClarityChecker,
     ClarityQuestion,
@@ -35,6 +36,7 @@ from deep_research.api.models import (
     CoverageProgressResponse,
     EvidenceCountsResponse,
     ReaderNoteResponse,
+    ReportOutlineEntryResponse,
     SessionStatus,
 )
 from deep_research.api.notes import (
@@ -45,6 +47,7 @@ from deep_research.api.notes import (
     note_records,
     reader_note,
 )
+from deep_research.api.stop import CHECK_STEP, active_row, session_stopped_event
 from deep_research.runtime.errors import ResearchConfigurationError
 from deep_research.runtime.notes import NoteBoard, ReceivedNote, bind_note_board
 from deep_research.runtime.outcome import ResearchOutcome
@@ -52,7 +55,7 @@ from deep_research.utils.config import HitlConfig
 from deep_research.utils.types import ReaderAnswer, ResearchError, ResearchEvent
 
 TERMINAL_STATUSES = frozenset(
-    {"completed", "max_iterations", "incomplete", "failed"}
+    {"completed", "max_iterations", "incomplete", "failed", "stopped"}
 )
 
 ResearchRunner: TypeAlias = Callable[..., Awaitable[ResearchOutcome]]
@@ -65,6 +68,22 @@ class NotWaitingForInput(Exception):
 
 class NotesClosed(Exception):
     """A note arrived for a session that no longer takes notes (a 409, spec §4.6)."""
+
+
+StopRefusal: TypeAlias = Literal["finished", "publishing", "closing"]
+
+
+class NotStoppable(Exception):
+    """A stop for a session that can no longer be stopped (a 409, notes-progress-report spec §8.1).
+
+    ``reason`` says why: ``finished`` once the session has ended (a stopped one
+    included), ``publishing`` once the run has decided to publish or to end, and
+    ``closing`` while the service shuts down.
+    """
+
+    def __init__(self, session_id: str, reason: StopRefusal) -> None:
+        super().__init__(session_id)
+        self.reason: StopRefusal = reason
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,9 +147,18 @@ class ResearchSession:
     note_passes: int = 0
     run_settings: Any = None
     hitl: HitlConfig = field(default_factory=HitlConfig)
+    stopped_step: str | None = None
+    """The step the reader stopped the run at (notes-progress-report spec §8.2), else ``None``."""
 
     def publish(self, event: ResearchEvent) -> None:
-        """Record one progress event and update the live status fields."""
+        """Record one progress event and update the live status fields.
+
+        A stopped session takes no more events (notes-progress-report spec §8.2), so
+        ``session.stopped`` stays its last — whatever a task finishing its own
+        cancellation still hands over, a replay's pacer for one.
+        """
+        if self.status == "stopped":
+            return
         self.events.append(event.model_copy(deep=True))
         node = event.metadata.get("node")
         iteration = event.metadata.get("iteration")
@@ -208,6 +236,13 @@ def outcome_response_fields(
             context_unchecked_findings=counts.context_unchecked_findings,
             cited_findings=counts.cited_findings,
         )
+    # Notes-progress-report spec §7.5: the headings of the report ``/report``
+    # serves -- the Markdown and the outline come from one composition.
+    composition = outcome.composition
+    if composition is not None and outcome.report is not None:
+        fields["report_outline"] = [
+            ReportOutlineEntryResponse(**entry.model_dump()) for entry in report_outline(composition)
+        ]
     return fields
 
 
@@ -220,16 +255,20 @@ def session_note_fields(session: ResearchSession) -> dict[str, object]:
     and the pass count; while it runs, the stream's count stands in.
     """
     state = session.outcome.state if session.outcome is not None else None
+    # notes-progress-report spec §5.6: a session that has ended never reports a
+    # note ``pending``; a note nothing judged reads ``not_checked``.
+    terminal = session.status in TERMINAL_STATUSES or session.finished_at is not None
     check = session.check
     return {
         "notes": [
             ReaderNoteResponse(
-                note_id=received.note_id,
-                text=received.text,
-                restatement=restatement,
-                outcome=outcome,
+                note_id=record.received.note_id,
+                text=record.received.text,
+                restatement=record.restatement,
+                outcome=record.outcome,
+                steering_outcome=record.steering_outcome,
             )
-            for received, restatement, outcome in note_records(session.note_board, state)
+            for record in note_records(session.note_board, state, terminal=terminal)
         ],
         "notes_remaining": session.note_board.remaining,
         "note_passes": state.note_passes if state is not None else session.note_passes,
@@ -370,6 +409,55 @@ class SessionStore:
         pending.submitted.set_result(
             ClarificationSubmission(answers=answers, skipped=request.skip)
         )
+        return session
+
+    def stop(self, session_id: str) -> ResearchSession:
+        """Stop one session at once (notes-progress-report spec §8.2, D17).
+
+        Raises ``KeyError`` for an unknown session and ``NotStoppable`` when it can no
+        longer be stopped: ``finished`` once it has ended (a stopped one included),
+        ``publishing`` once its stream shows the run's decision to publish or end — the
+        notes cutoff — and ``closing`` while the store shuts down. Otherwise, with no
+        ``await`` anywhere: the step it was on is read from what it has published
+        (``check`` while the one-time check waits); ``session.stopped`` is published as
+        its last event; the session ends ``stopped``; a pending check is cancelled; and
+        the run's task and every note reading are cancelled, which cancels every call
+        they have in flight. Nothing more is published, so nothing is written.
+        """
+        session = self.require(session_id)
+        if session.status in TERMINAL_STATUSES or session.finished_at is not None:
+            raise NotStoppable(session_id, "finished")
+        if session.notes_closed:
+            raise NotStoppable(session_id, "publishing")
+        if self._closing:
+            raise NotStoppable(session_id, "closing")
+        if session.status == "needs_input":
+            step = CHECK_STEP
+        else:
+            row = active_row(session.events)
+            if row is None:
+                # No row is active only once the run is ending: each event that leaves
+                # none follows the decision that closes notes (spec ambiguity 3).
+                raise NotStoppable(session_id, "publishing")
+            step = row
+        now = datetime.now(timezone.utc)
+        session.publish(
+            session_stopped_event(
+                step, now, int((now - session.started_at).total_seconds())
+            )
+        )
+        session.status = "stopped"
+        session.stopped_step = step
+        session.finished_at = now
+        session.current_agent = None
+        pending = session.clarification
+        if pending is not None and not pending.submitted.done():
+            pending.submitted.cancel()
+        session.clarification = None
+        session.changed.set()
+        for task in (session.task, *session.note_tasks):
+            if task is not None and not task.done():
+                task.cancel()
         return session
 
     def add_note(self, session_id: str, text: str) -> ReceivedNote:
@@ -520,7 +608,10 @@ class SessionStore:
         is not a failure and always propagates; the ``finally`` still closes
         the session out so subscribers wake and readers see timestamps. A run
         cancelled while it waited for answers reads ``running`` with
-        ``finished_at`` set, like any other interrupted run.
+        ``finished_at`` set, like any other interrupted run. A run the reader
+        stopped was closed out by ``stop`` already: it keeps its ``stopped``
+        status and the time of the stop, and nothing it returns or raises on
+        the way out is folded in.
 
         With the one-time check on and questions asked, the runner is called
         with ``reader_answers``; otherwise it is called exactly as before.
@@ -560,19 +651,24 @@ class SessionStore:
                 details={"exception_type": type(error).__name__},
             )
         else:
-            session.status = outcome.status
-            session.iteration = outcome.state.iteration
-            session.report_path = outcome.report_path
-            session.trace_url = outcome.trace_url
-            session.errors = [
-                error.model_copy(deep=True) for error in outcome.errors
-            ]
-            session.outcome = outcome
+            # A runner that caught the stop's cancellation and returned anyway does not
+            # undo the stop: a stopped session keeps no outcome (spec §8.4).
+            if session.status != "stopped":
+                session.status = outcome.status
+                session.iteration = outcome.state.iteration
+                session.report_path = outcome.report_path
+                session.trace_url = outcome.trace_url
+                session.errors = [
+                    error.model_copy(deep=True) for error in outcome.errors
+                ]
+                session.outcome = outcome
         finally:
             if session.status == "needs_input":
                 session.status = "running"
             session.clarification = None
-            session.finished_at = datetime.now(timezone.utc)
+            # A stop closed the session out at the moment the reader asked for it.
+            if session.finished_at is None:
+                session.finished_at = datetime.now(timezone.utc)
             session.current_agent = None
             session.changed.set()
 
@@ -647,7 +743,13 @@ def _record_failure(
     message: str,
     details: dict[str, str],
 ) -> None:
-    """Record one safe, non-recoverable failure on a session."""
+    """Record one safe, non-recoverable failure on a session.
+
+    A stopped session records none: whatever its cancellation raised on the way
+    out, the reader's stop is how it ended (notes-progress-report spec §8.4).
+    """
+    if session.status == "stopped":
+        return
     session.status = "failed"
     session.publish(
         ResearchEvent(

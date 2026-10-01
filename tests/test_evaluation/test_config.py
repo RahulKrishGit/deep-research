@@ -999,11 +999,30 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # decision context. Without notes every request is byte-identical;
     # agents.prompts was untouched, so the evidence_verifier pin and the Judge
     # pin are unchanged. Moved `e9b74316ad14` -> `d1ba46ce147f`.
+    # notes-progress-report Phase A (spec §5.2, 2026-09-30): the reader's
+    # research notes join the plan as their own sub-topics when it is
+    # published, planning.completed lists them, and the planning lead says the
+    # run adds them. Without notes every request is byte-identical;
+    # agents.prompts was untouched. Moved `d1ba46ce147f` -> `3934bea57f61`.
+    # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
+    # then-topics request and reply contract. Moved `3934bea57f61` ->
+    # `55c1f86bac40`.
+    # Phase B (notes-progress-report spec §6.1-§6.3, 2026-09-30): the planner
+    # publishes a live planner.progress before each plan-side request and
+    # stamps each slot's final state on planner.planning.completed. No request
+    # text changed; agents.prompts was untouched. Moved `55c1f86bac40` ->
+    # `75d84b30f360`.
     # Latency plan Task 4 (audit O8, 2026-09-30): each plan-side request is
     # named for the run's call records (plan_draft, plan_repair, plan_review,
     # plan_review_repair, plan_confirming_review) through call_label. Module
     # code only; no request changed and agents.prompts was untouched. Moved `d1ba46ce147f` -> `584e0a466031`.
-    "planner": "584e0a466031",
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `75d84b30f360` (branch) / `584e0a466031` (main)
+    # -> `d7e79b55f97a`.
+    "planner": "d7e79b55f97a",
     # Run-2 review F4 (FixSelection) moved the researcher source once more:
     # `7314b246b217` -> `37bb78b1eca8` — the required-target exemption in
     # `bound_sub_topic_findings` is now capped at two findings per required
@@ -1159,6 +1178,12 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # (## Reader notes) and into its extraction requests (# Reader notes),
     # only when there are any. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `de7506bed63e` -> `a8c9528f0c20`.
+    # notes-progress-report Phase A (spec §5.3, 2026-09-30): a dispatcher
+    # replaces the one gather, so a research note read while the loops run gets
+    # its own ungated thread; note topics are never capped; the turns and the
+    # extraction read the notes' steering views. Without notes every request is
+    # byte-identical; agents.prompts was untouched. Moved `a8c9528f0c20` ->
+    # `b9caf536e3f0`.
     # Latency plan Task 2 (audit O8, 2026-09-30): each live
     # researcher.tool_call carries lock_wait_s and duration_s, handed over by
     # run_react_loop's on_tool_timing. Module code only; no request changed
@@ -1182,7 +1207,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # the run's loops share a ToolGate instead of one tool lock, so reads of
     # different pages overlap while a page is still fetched once. Module code
     # only; agents.prompts was untouched. Moved `3e34870d9d67` -> `f0378c699608`.
-    "researcher": "f0378c699608",
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `b9caf536e3f0` (branch) / `f0378c699608` (main)
+    # -> `aa4a1b519318`.
+    "researcher": "aa4a1b519318",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can
@@ -1201,10 +1232,25 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # scoring request's # Context slot, for relevance only. Without notes
     # every request is byte-identical; agents.prompts was untouched. Moved
     # `fb7f60d73873` -> `24809aa975a3`.
+    # notes-progress-report Phase A (spec §5.1, 2026-09-30): the scoring
+    # request's # Context slot carries the notes' steering views only (a note
+    # whose only kind is new_angle is its own topic instead). Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `24809aa975a3` -> `cc5a310b0aa0`.
+    # Phase B (notes-progress-report spec §6.2, §6.4, 2026-09-30): live
+    # source_evaluator.progress once the batches are planned and as each
+    # settles, and the strong/fair/weak split on evaluation.completed. No
+    # request text changed. Moved `cc5a310b0aa0` -> `356d1486f0e3`.
     # Latency plan Task 11 (audit O12): every source's remembered reputation
     # is looked up at once and applied in source order. Module code only; no
     # request changed and agents.prompts was untouched. Moved `24809aa975a3` -> `eceba70b743d`.
-    "source_evaluator": "eceba70b743d",
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `356d1486f0e3` (branch) / `eceba70b743d` (main)
+    # -> `272363eac42b`.
+    "source_evaluator": "272363eac42b",
     # Run-2 improvement 9 (a date is not a figure) moved the verifier's own
     # module: `fbad809c4414` -> `9f5515f04833`. The correction branches now read
     # the figure's own unit shape and, for the scope they propose, the reply's
@@ -1282,6 +1328,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Live briefs (live-briefs spec E3, 2026-09-28): verification.completed is
     # published live. Module code only; no prompt string changed and
     # agents.prompts was untouched. Moved `0dc169302934` -> `4a3d56fab932`.
+    # Phase B (notes-progress-report spec §6.2, §6.5, 2026-09-30): live
+    # evidence_verifier.progress after Figure Match and as each Context Check
+    # batch settles, and check_statements' on_batch. No request text changed;
+    # LB-D10 holds. Moved `4a3d56fab932` -> `2c360ecb7315`.
     # Latency plan Task 4 (audit O8, 2026-09-30): the Context Check and the
     # Statement Check name their calls for the run's call records
     # (context_check, statement_check) through call_label. Module code only;
@@ -1294,7 +1344,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # question and items to capture_statement_check, which writes nothing
     # unless an experiment bound a capture. Module code only; no request
     # changed and agents.prompts was untouched. Moved `34e275cf57f9` -> `31bcab803a6a`.
-    "evidence_verifier": "31bcab803a6a",
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `2c360ecb7315` (branch) / `31bcab803a6a` (main)
+    # -> `3df423028612`.
+    "evidence_verifier": "3df423028612",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -1397,11 +1453,64 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # of the section and bottom-line requests, and drafts afresh after a note
     # pass or a note redraft. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
+    # notes-progress-report Phase A (spec §5.1, 2026-09-30): the section and
+    # bottom-line requests carry the notes' steering views only. Without notes
+    # every request is byte-identical; agents.prompts was untouched. Moved
+    # `6e1aedc2888e` -> `cafa5ba3d613`.
+    # notes-progress-report Phase A (spec §5.4, 2026-09-30): after a note
+    # pass the writer drafts only the notes' own parts and the bottom line,
+    # and carries every other part over. Without notes every request is
+    # byte-identical; agents.prompts was untouched. Moved `cafa5ba3d613` ->
+    # `a27544eee344`.
+    # notes-progress-report Phase C (spec §7.1): the bottom line's answer-
+    # then-topics request and reply contract. Moved `a27544eee344` ->
+    # `7ed80d440f0a`.
+    # notes-progress-report Phase C (spec §7.1-§7.3): one line per topic, the
+    # bottom line's layout and the fallback in the same shape. Moved
+    # `7ed80d440f0a` -> `f11d61b869d9`.
+    # Phase B (notes-progress-report spec §6.2, §6.6, 2026-09-30): live
+    # report_writer.progress as the parts and the bottom line are drafted and
+    # checked, through a per-composition ContextVar. No request text changed.
+    # Moved `f11d61b869d9` -> `c4082e94159e`.
+    # Phase B Task 5 review fix I1 (notes-progress-report spec §6.2):
+    # Writing's bar ends full when the bottom line falls back or never reaches
+    # the Statement Check. No request text changed. Moved `c4082e94159e` ->
+    # `ea77570646c9`.
+    # notes-progress-report final fix wave (2026-10-01): the short-title check
+    # has its own verdict-word set without ``pick\w*`` (spec §7.1's own example
+    # "Published picks" is kept); a bottom line of topic lines alone records
+    # the recoverable ``report_writer_bottom_line_no_answer``; the citation-order
+    # docstring states the order the code uses. No request text changed;
+    # agents.prompts was untouched. Moved `ea77570646c9` -> `7764df3e0fcc`.
+    # notes-progress-report final review F1 (2026-10-01, P2-1): a later pass
+    # (a note pass or a redraft) puts back the points an assembled (fallback)
+    # bottom line moved out of the previous sections before it carries them
+    # over or routes a defect to them, so the moved points stay in the report.
+    # Only this module's own source moved (a new helper and its call site); no
+    # request text changed and agents.prompts was untouched. Moved
+    # `7764df3e0fcc` -> `7165ec336250`.
+    # notes-progress-report owner decision O1 (2026-10-01): Writing's progress
+    # metadata gains ``parts_failed``, the count of parts whose draft failed
+    # (``parts_returned`` still counts a failed part as settled, so the bar's
+    # arithmetic is unchanged). Only this module's own source moved (one set,
+    # one key, one keyword); no request text changed and agents.prompts was
+    # untouched. Moved `7165ec336250` -> `87e5ae8e9dc9`.
+    # O1 fix round 1 (2026-10-01): a part whose draft returned but ended
+    # ``failed`` (the Statement Check refused every point) counts in
+    # ``parts_failed`` too, through ``_WritingProgress.part_failed``. Only this
+    # module's own source moved; no request text changed and agents.prompts was
+    # untouched. Moved `87e5ae8e9dc9` -> `e7e6f11e2c83`.
     # Latency plan Task 6 (audit O2, 2026-09-30): the writer, as the terminal
     # publisher, saves every cited finding in one memory write
     # (publish_findings over SaveToMemoryTool.save_many). Module code only; no
     # request changed and agents.prompts was untouched. Moved `6e1aedc2888e` -> `879b0e4e2530`.
-    "report_writer": "879b0e4e2530",
+    # Merge of origin/main (the latency work, PRs #29 and #30) into
+    # notes-progress-report-stop: both sides edited this module and each kept its
+    # own pin above; the merged source is their union, and agents.prompts was
+    # untouched by either, so the value is re-pinned on the merged source, from
+    # the pin test's reported value. Moved `e7e6f11e2c83` (branch) / `879b0e4e2530` (main)
+    # -> `bb0586006fd8`.
+    "report_writer": "bb0586006fd8",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

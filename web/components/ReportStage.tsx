@@ -94,7 +94,7 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
       {view === "report" ? (
         <div className="with-rail report-main">
           <div className="stack" style={{ gap: "var(--space-6)" }}>
-            {report.kind === "ready" ? <ReportBody markdown={report.value} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} notes={status.notes ?? []} />
+            {report.kind === "ready" ? <ReportBody markdown={report.value} outline={status.report_outline ?? null} evidenceLoaded={evidenceLoaded} onOpenEvidence={() => setView("evidence")} />
               : <article className="card"><p className="avail">{report.kind === "unavailable" ? "Not published" : "loading report"}</p></article>}
           </div>
           <ReportRail status={status} evidence={evidenceLoaded ? evidence.value : null} />

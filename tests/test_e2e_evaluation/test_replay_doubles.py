@@ -31,9 +31,11 @@ from deep_research.agents.report_reviewer import (
     build_report_review_input,
     review_messages,
 )
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report_writer import (
     PartJob,
     ReportWriterTask,
+    bottom_line_messages,
     compose_written_report,
     section_messages,
 )
@@ -54,6 +56,9 @@ from deep_research.utils.types import (
     FindingVerification,
     ItemMarkDraft,
     ReadRecord,
+    ReportPoint,
+    ReportSection,
+    ReportStatement,
     ResearchState,
     SectionDraft,
     SubTopic,
@@ -593,7 +598,9 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
     assert "Acme Institute's own figure" in request
     assert not re.search(r"(?m)^  F\d+: ", request)
 
-    kept_texts = [point.text for point in composition.summary]
+    # The sections print every kept sentence; the bottom line answers with the
+    # first only (notes-progress-report spec §7.7).
+    kept_texts = [point.text for section in composition.sections for point in section.points]
     assert "Acme Institute reports 10.4 GW for 2024." in kept_texts
     assert "Corrected reports 9.8 GW for 2024." in kept_texts
     assert not any("18.9" in text for text in kept_texts)
@@ -707,11 +714,10 @@ async def test_the_writer_double_drafts_one_kept_point_per_registry_line() -> No
         task, provider=completer, fingerprint=None,
     )
     assert composition.rejected_points == []
-    # Both section points are kept and checked, so the bottom line -- drafted
-    # only from checked section statements (spec §6.6) -- restates them both.
-    assert [point.text for point in composition.summary] == [
-        point.text for point in draft.points
-    ]
+    assert draft.short_title == "Battery storage"  # the title's first two words (§7.7)
+    # The bottom line answers with the first checked section statement
+    # (notes-progress-report spec §7.7), in the section's own words.
+    assert composition.summary[0].text == draft.points[0].text
 
 
 def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_it() -> None:
@@ -741,30 +747,50 @@ def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_i
     assert verdict.reason
 
 
-@pytest.mark.asyncio
-async def test_the_writer_double_caps_the_bottom_line_at_four_checked_statements() -> None:
-    """Up to 4 of the checked section statements reach the bottom line, with
-    their labels (spec §11.3), however many the section itself kept."""
+def test_the_writer_double_answers_once_and_drafts_one_line_per_topic() -> None:
+    """notes-progress-report spec §7.7: the first statement of the first
+    ``## {coverage_id} · {title}`` block is the one answer sentence, and the
+    first statement of each block is that topic's line, with its labels."""
     sources = tuple(
-        page(f"finding{n}", value=str(n), unit="GW", period="2024") for n in range(1, 6)
+        page(f"finding{n}", value=str(n), unit="GW", period="2024") for n in range(1, 5)
     )
     completer = ReplayCompleter(scenario(*sources))
     task = writer_task(
         [(f"F{n:02d}", verified(source)) for n, source in enumerate(sources, start=1)]
     )
+    registry = dict(task.registry)
 
-    composition = await compose_written_report(
-        task, provider=completer, fingerprint=None,
+    def section(coverage_id: str, title: str, labels: list[str]) -> ReportSection:
+        points = [
+            ReportPoint(
+                text=f"{label} statement.",
+                statement=ReportStatement(
+                    statement_id=f"S-{label}", text=f"{label} statement.",
+                    finding_ids=[finding_fingerprint(registry[label])],
+                ),
+            )
+            for label in labels
+        ]
+        return ReportSection(title=title, coverage_id=coverage_id, points=points)
+
+    request = "\n".join(
+        message.content
+        for message in bottom_line_messages(
+            task,
+            [section("topic-01", "First part", ["F01", "F02"]),
+             section("topic-02", "Second part", ["F03", "F04"])],
+        )
     )
 
-    kept_section_texts = [point.text for point in composition.sections[0].points]
-    assert len(kept_section_texts) == 5
-    assert len(composition.summary) == 4
-    assert [point.text for point in composition.summary] == kept_section_texts[:4]
-    assert all(
-        point.statement is not None and len(point.statement.finding_ids) == 1
-        for point in composition.summary
-    )
+    draft = completer._reply_BottomLineDraft(request)
+
+    assert [(point.text, point.finding_labels) for point in draft.sentences] == [
+        ("F01 statement.", ["F01"]),
+    ]
+    assert [(line.topic, line.text, line.finding_labels) for line in draft.topics] == [
+        ("topic-01", "F01 statement.", ["F01"]),
+        ("topic-02", "F03 statement.", ["F03"]),
+    ]
 
 
 def test_every_manifest_entry_declares_the_result_its_builder_expects() -> None:
@@ -813,10 +839,11 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
 
     reply = completer._reply_ReportReviewDraft(request)
 
-    # One finding, checked twice (its own section point, and the bottom line
-    # that restates it): the parallel writer statement-checks both, so the
-    # packet manifests both ids rather than the single-call writer's one.
-    assert len(packet.expected_statement_ids) == 2
+    # One finding, checked three times -- its own section point, the bottom
+    # line's answer that restates it, and its topic's line (notes-progress-report
+    # spec §7.7): the parallel writer statement-checks all three, so the packet
+    # manifests all three ids rather than the single-call writer's one.
+    assert len(packet.expected_statement_ids) == 3
     assert set(reply.dimensions.as_dimensions()) == {
         "completeness",
         "prioritization",
@@ -863,3 +890,39 @@ async def test_a_scenario_can_script_a_statement_unsupported_and_a_score() -> No
     }
     assert dispositions["S001"] == "unsupported"
     assert set(dispositions.values()) == {"unsupported", "supported"}
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_bottom_line_keeps_its_answer_and_its_topic_line() -> None:
+    """notes-progress-report spec §7.7, end to end through the real writer: the
+    double's answer and its topic line are both checked and kept, the topic line
+    labelled with the section's short title."""
+    source = page("answered", value="10.4")
+    completer = ReplayCompleter(scenario(source))
+    task = writer_task([("F01", verified(source))])
+
+    composition = await compose_written_report(task, provider=completer, fingerprint=None)
+
+    assert composition.rejected_points == []
+    layout = composition.bottom_line
+    assert layout is not None and not layout.assembled
+    assert layout.answer_ids == ["S001"]
+    assert [(line.coverage_id, line.label, line.statement_id) for line in layout.topic_lines] == [
+        ("topic-01", "Battery storage", "S002"),
+    ]
+    assert [point.statement_id for point in composition.summary] == ["S001", "S002"]
+
+
+def test_the_statement_double_answers_the_topic_line_keys() -> None:
+    """``BT``/``RT`` are the bottom line's topic-line flight keys (spec §7.1)."""
+    source = page("topic", value="10.4")
+    completer = ReplayCompleter(scenario(source))
+    items = [
+        StatementCheckItem(label=label, text="Acme Institute reports 10.4 GW for 2024.",
+                           findings=[verified(source)], labels=["Acme Institute's own figure"])
+        for label in ("B01", "BT01", "R01", "RT01")
+    ]
+
+    reply = completer._reply_StatementCheckDraft(statement_request(items))
+
+    assert [draft.label for draft in reply.statements] == ["B01", "BT01", "R01", "RT01"]

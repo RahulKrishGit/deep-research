@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Evaluating sources progress options</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="progress.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="board" style="width: 2352px; height: 780px; padding: 40px 48px; display: flex; flex-direction: column; gap: 24px; font-family: var(--font-body); color: var(--fg)">
+<div class="ctl">
+<button class="btn btn-ghost btn-sm" onClick="{{toggle}}">{{playLabel}}</button>
+<button class="btn btn-quiet btn-sm" onClick="{{replay}}">Replay</button>
+<span class="cap">10 s loop · 44 sources rated in batches of 12 · each batch is one real update</span>
+</div>
+<div class="stagewrap cols" data-fade="{{fade}}" data-snap="{{snap}}">
+
+<div class="col">
+<div class="vlabel"><span class="vk">A</span><span class="vn">Count and bar · the strong / fair / weak split fills in as batches land</span></div>
+<div class="card">
+<ul class="ps">
+<li class="ps-row" data-s="done" data-fed="1"><span class="ps-node">2</span><div><div class="ps-head"><span class="ps-name">Researching</span><span class="ps-meta"><span class="m-out">5 topics · 71 pages read · 384 findings</span></span></div></div></li>
+<li class="ps-row" data-s="{{rowS}}" data-open="1">
+<span class="ps-node">3</span>
+<div>
+<div class="ps-head"><span class="ps-name">Evaluating sources</span><span class="ps-meta"><span class="m-tools">{{ratedLine}}</span><span class="m-out">{{outLine}}</span></span></div>
+<div class="ps-x"><div class="ps-xi"><div class="ps-brief">
+<p class="b-now">Rating 44 sources for trustworthiness and relevance</p>
+<span class="pb"><i style="transform: scaleX({{frac}})"></i></span>
+<div class="stats">
+<div class="stat"><span class="eyebrow">Rated</span><span class="v">{{shown}} of 44</span></div>
+<div class="stat"><span class="eyebrow">Strong</span><span class="v">{{strong}}</span></div>
+<div class="stat"><span class="eyebrow">Fair</span><span class="v">{{fair}}</span></div>
+<div class="stat"><span class="eyebrow">Weak</span><span class="v">{{weak}}</span></div>
+</div>
+</div></div></div>
+</div>
+</li>
+<li class="ps-row" data-s="pending"><span class="ps-node">4</span><div><div class="ps-head"><span class="ps-name">Verifying evidence</span><span class="ps-meta"><span class="m-tools">snippet on page · context check</span></span></div></div></li>
+</ul>
+</div>
+</div>
+
+<div class="col">
+<div class="vlabel"><span class="vk">B</span><span class="vn">A feed of the sources just rated, newest rising in at the bottom</span></div>
+<div class="card">
+<ul class="ps">
+<li class="ps-row" data-s="done" data-fed="1"><span class="ps-node">2</span><div><div class="ps-head"><span class="ps-name">Researching</span><span class="ps-meta"><span class="m-out">5 topics · 71 pages read · 384 findings</span></span></div></div></li>
+<li class="ps-row" data-s="{{rowS}}" data-open="1">
+<span class="ps-node">3</span>
+<div>
+<div class="ps-head"><span class="ps-name">Evaluating sources</span><span class="ps-meta"><span class="m-tools">{{ratedLine}}</span><span class="m-out">{{outLine}}</span></span></div>
+<div class="ps-x"><div class="ps-xi"><div class="ps-brief">
+<p class="b-now">Rating each source for trustworthiness and relevance</p>
+<div class="feed"><div class="feed-in" style="transform: translateY({{feedY}})">
+<sc-for list="{{srcs}}" as="sr" hint-placeholder-count="5">
+<div class="feed-row" data-on="{{sr.on}}"><span>{{sr.d}}</span><span class="tag soft" data-r="{{sr.r}}">{{sr.r}}</span></div>
+</sc-for>
+</div></div>
+<p class="b-facts"><b>{{shown}}</b> of 44 rated · <b>{{strong}}</b> strong</p>
+</div></div></div>
+</div>
+</li>
+<li class="ps-row" data-s="pending"><span class="ps-node">4</span><div><div class="ps-head"><span class="ps-name">Verifying evidence</span><span class="ps-meta"><span class="m-tools">snippet on page · context check</span></span></div></div></li>
+</ul>
+</div>
+</div>
+
+<div class="col">
+<div class="vlabel"><span class="vk">C</span><span class="vn">One dot per source · dots fill by rating as each batch returns</span></div>
+<div class="card">
+<ul class="ps">
+<li class="ps-row" data-s="done" data-fed="1"><span class="ps-node">2</span><div><div class="ps-head"><span class="ps-name">Researching</span><span class="ps-meta"><span class="m-out">5 topics · 71 pages read · 384 findings</span></span></div></div></li>
+<li class="ps-row" data-s="{{rowS}}" data-open="1">
+<span class="ps-node">3</span>
+<div>
+<div class="ps-head"><span class="ps-name">Evaluating sources</span><span class="ps-meta"><span class="m-tools">{{ratedLine}}</span><span class="m-out">{{outLine}}</span></span></div>
+<div class="ps-x"><div class="ps-xi"><div class="ps-brief">
+<p class="b-now">Rating 44 sources for trustworthiness and relevance</p>
+<div class="df">
+<sc-for list="{{dots}}" as="dt" hint-placeholder-count="44">
+<i data-r="{{dt.r}}"></i>
+</sc-for>
+</div>
+<div class="lg cap"><span><i class="s"></i>strong {{strong}}</span><span><i class="f"></i>fair {{fair}}</span><span><i class="w"></i>weak {{weak}}</span></div>
+</div></div></div>
+</div>
+</li>
+<li class="ps-row" data-s="pending"><span class="ps-node">4</span><div><div class="ps-head"><span class="ps-name">Verifying evidence</span><span class="ps-meta"><span class="m-tools">snippet on page · context check</span></span></div></div></li>
+</ul>
+</div>
+</div>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":2352,"height":780}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { t: 0, playing: true };
+  }
+  componentDidMount() {
+    this.timer = setInterval(() => {
+      if (this.state.playing) this.setState({ t: (this.state.t + 50) % 10000 });
+    }, 50);
+  }
+  componentWillUnmount() { clearInterval(this.timer); }
+  renderVals() {
+    const t = this.state.t;
+    const domains = [
+      'yelp.com', 'reddit.com/r/SanJose', 'mercurynews.com', 'eater.com', 'sfgate.com', 'a café’s own site',
+      'tripadvisor.com', 'sanjose.org', 'theinfatuation.com', 'sprudge.com', 'timeout.com', 'a café’s own site',
+      'google.com/maps', 'instagram.com', 'kqed.org', 'baristamagazine.com', 'a café’s own site', 'patch.com',
+      'reddit.com/r/bayarea', 'sanjoseinside.com', 'a café’s own site', 'yelp.com/collections', 'metroactive.com', 'foursquare.com',
+      'a local food blog', 'a café’s own site', 'eater.com/maps', 'a café’s own site', 'medium.com', 'a local food blog',
+      'thrillist.com', 'a café’s own site', 'youtube.com', 'a café’s own site', 'siliconvalley.com', 'sjsu.edu',
+      'a café’s own site', 'reddit.com/r/Coffee', 'a local food blog', 'a café’s own site', 'opentable.com', 'a café’s own site',
+      'tiktok.com', 'a local food blog'
+    ];
+    const pattern = 'ssfsfsfsswfsfswfsfsffswsfsfwsfsfsfwsfsfsfwfs';
+    const rating = (i) => ({ s: 'strong', f: 'fair', w: 'weak' })[pattern[i]];
+    const lands = [2200, 3400, 5600, 7200];
+    const counts = [12, 24, 36, 44];
+    let rated = 0, prev = 0, landAt = 0;
+    lands.forEach((l, i) => { if (t >= l) { prev = rated; rated = counts[i]; landAt = l; } });
+    const ease = (x) => 1 - Math.pow(1 - Math.max(0, Math.min(1, x)), 3);
+    const shownN = rated === 0 ? 0 : Math.round(prev + (rated - prev) * ease((t - landAt) / 600));
+    let strong = 0, fair = 0, weak = 0;
+    for (let i = 0; i < shownN; i++) { const r = rating(i); if (r === 'strong') strong++; else if (r === 'fair') fair++; else weak++; }
+    const nv = (n) => (shownN === 0 ? 'not yet' : String(n));
+    const srcs = domains.map((d, i) => ({ d, r: rating(i), on: i < rated ? '1' : '0' }));
+    const dots = domains.map((d, i) => ({ r: i < rated ? rating(i) : 'pending' }));
+    const done = t >= 8000;
+    return {
+      srcs, dots,
+      shown: String(shownN),
+      strong: nv(strong), fair: nv(fair), weak: nv(weak),
+      frac: String(shownN / 44),
+      feedY: (-Math.max(0, rated - 5) * 34) + 'px',
+      ratedLine: rated === 0 ? 'starting · not yet rated' : shownN + ' of 44 rated',
+      outLine: '44 sources rated · 20 strong · 18 fair · 6 weak',
+      rowS: done ? 'done' : 'active',
+      fade: t >= 9600 || t < 120 ? '1' : '0',
+      snap: t < 120 ? '1' : '0',
+      playLabel: this.state.playing ? 'Pause' : 'Play',
+      toggle: () => this.setState({ playing: !this.state.playing }),
+      replay: () => this.setState({ t: 0, playing: true })
+    };
+  }
+}
+</script>
+</body>
+</html>

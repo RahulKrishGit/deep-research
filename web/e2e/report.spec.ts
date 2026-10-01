@@ -6,9 +6,10 @@ test("the default case ends on the Report stage with the body, the rail and both
   await waitTerminal(request, id);
   await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 });
   await expect(page.locator("#topbarStatus .chip")).toContainText(/^Completed · review accepted · \d\.\d\d/);
-  await expect(page.locator("#stage-report .prose p.avail").first()).toContainText(/^Evidence as of|^No source could be checked/);
-  await expect(page.locator("#stage-report .prose h2", { hasText: "Bottom line" })).toBeVisible();
-  await expect(page.locator("#stage-report .prose h2", { hasText: "Sources" })).toBeVisible();
+  // notes-progress-report spec §7.6: the evidence line is lifted out of the cards; each card keeps its h2.
+  await expect(page.locator("#reportEvidence")).toContainText(/^Evidence as of|^No source could be checked/);
+  await expect(page.locator("#stage-report .rsec .prose h2", { hasText: "Bottom line" })).toBeVisible();
+  await expect(page.locator("#stage-report .rsec .prose h2", { hasText: "Sources" })).toBeVisible();
   await expect(page.locator("#stage-report")).not.toContainText("Executive Summary");
   for (const sel of ["#downloadBtn", "#downloadEvidenceBtn"]) {
     const href = await page.locator(sel).getAttribute("href");

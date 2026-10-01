@@ -21,6 +21,7 @@ from deep_research.agents.source_evaluator import (
     RECENCY_WEIGHT,
     RELEVANCE_WEIGHT,
     REPUTATION_BLEND,
+    STRONG_SOURCE_THRESHOLD,
     EvaluatedSources,
     SourceEvaluationTask,
     SourceEvaluatorAgent,
@@ -36,6 +37,7 @@ from deep_research.agents.source_evaluator import (
     fallback_scored_source,
     low_confidence_count,
     overall_score,
+    source_strength,
 )
 from deep_research.agents.sources import SourceGroup, normalize_source_url
 from deep_research.agents.steps import ReActRun
@@ -3079,8 +3081,128 @@ async def test_the_evaluation_events_are_published_live(tracker: Tracker) -> Non
         "source_evaluator.evaluation.started",
         "source_evaluator.evaluation.completed",
     ]
-    assert [event.event_id for event in received] == [event.event_id for event in events]
+    # notes-progress-report spec §4 item 1: the progress event is live-only.
+    assert [event.event_type for event in received] == [
+        "source_evaluator.evaluation.started",
+        "source_evaluator.progress",
+        "source_evaluator.evaluation.completed",
+    ]
+    assert [
+        event.event_id for event in received if event.event_type != "source_evaluator.progress"
+    ] == [event.event_id for event in events]
 
+
+# --- notes-progress-report spec §6.1, §6.2, §6.4: Evaluating's live progress --------
+
+
+def _strength_source(url: str, overall: float | None, *, status: str = "scored") -> ScoredSource:
+    if status != "scored":
+        return fallback_scored_source(_group(url=url), reason=status)
+    return ScoredSource(
+        url=url, title="t", authority_score=overall, recency_score=overall,
+        relevance_score=overall, overall_score=overall, rationale="r",
+        low_confidence=overall < LOW_CONFIDENCE_THRESHOLD,
+    )
+
+
+def test_source_strength_split() -> None:
+    """§6.2: strong at 0.70 and above, weak below 0.40 (today's low_confidence),
+    fair between, and no strength for an unscored source."""
+    assert STRONG_SOURCE_THRESHOLD == 0.70
+    assert source_strength(_strength_source("https://a.test/1", 0.70)) == "strong"
+    assert source_strength(_strength_source("https://a.test/2", 0.69)) == "fair"
+    assert source_strength(_strength_source("https://a.test/3", 0.40)) == "fair"
+    assert source_strength(_strength_source("https://a.test/4", 0.39)) == "weak"
+    assert source_strength(_strength_source("https://a.test/5", None, status="unscored_provider")) is None
+
+
+@pytest.mark.asyncio
+async def test_evaluator_progress_split(tracker: Tracker) -> None:
+    """AC15: one event once the batches are planned, then one per settled batch in
+    completion order, scored or failed; strong + fair + weak is always ``rated``,
+    and the bar's (rated + unrated) / to_rate reaches 1 exactly at the last batch."""
+    findings = [_eval_finding(f"https://source-{index}.test/page") for index in range(5)]
+    first = SourceScoresDraft(sources=[
+        _draft(url="https://source-0.test/page", authority=0.8, recency=0.6, relevance=0.9),
+        _draft(url="https://source-1.test/page", authority=0.5, recency=0.5, relevance=0.5),
+    ])
+    last = SourceScoresDraft(sources=[
+        _draft(url="https://source-4.test/page", authority=0.2, recency=0.2, relevance=0.2),
+    ])
+    completer = ScriptedCompleter(outputs=[first, _output_limit_error(), last])
+    agent = _evaluator(
+        tracker, completer, batch_size=2, max_total_sources=5,
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0, source_scoring_concurrency=1),
+    )
+    task, _, _ = await agent.lookup_reputations(agent.build_task(_eval_state(findings)))
+    seen: list[dict] = []
+
+    await agent.score_sources(task, on_progress=seen.append)
+
+    base = {"to_rate": 5, "reused": 0, "capped": 0, "batches": 3}
+    assert seen == [
+        {**base, "rated": 0, "strong": 0, "fair": 0, "weak": 0, "unrated": 0, "batches_done": 0},
+        {**base, "rated": 2, "strong": 1, "fair": 1, "weak": 0, "unrated": 0, "batches_done": 1},
+        {**base, "rated": 2, "strong": 1, "fair": 1, "weak": 0, "unrated": 2, "batches_done": 2},
+        {**base, "rated": 3, "strong": 1, "fair": 1, "weak": 1, "unrated": 2, "batches_done": 3},
+    ]
+    assert [(m["rated"] + m["unrated"]) / m["to_rate"] for m in seen] == [0.0, 0.4, 0.8, 1.0]
+    assert all(m["strong"] + m["fair"] + m["weak"] == m["rated"] for m in seen)
+
+
+@pytest.mark.asyncio
+async def test_evaluator_progress_counts_reused_and_capped_sources_apart(tracker: Tracker) -> None:
+    """§6.1: a reused assessment and a capped source are never rated in this pass."""
+    findings = [_eval_finding(f"https://source-{index}.test/page") for index in range(3)]
+    prior = _strength_source("https://source-0.test/page", 0.9)
+    completer = ScriptedCompleter(outputs=[SourceScoresDraft(sources=[
+        _draft(url="https://source-1.test/page"),
+    ])])
+    agent = _evaluator(tracker, completer, batch_size=2, max_total_sources=1)
+    received: list[ResearchEvent] = []
+
+    async with tracker.session_span("session-1", "q"):
+        with bind_live_sink(received.append):
+            await agent.run(_eval_state(findings, evaluated_sources=[prior]))
+
+    progress = [e.metadata for e in received if e.event_type == "source_evaluator.progress"]
+    assert progress[0] == {
+        "to_rate": 1, "reused": 1, "capped": 1, "rated": 0, "strong": 0, "fair": 0,
+        "weak": 0, "unrated": 0, "batches": 1, "batches_done": 0,
+    }
+    assert progress[-1]["rated"] == 1 and progress[-1]["batches_done"] == 1
+
+
+def test_evaluation_progress_counts_a_source_once() -> None:
+    """Review M13: a source reported twice -- a batch's halves reported on their own,
+    or one report repeated -- is counted once."""
+    from deep_research.agents.source_evaluator import _EvaluationProgress
+
+    progress = _EvaluationProgress(to_rate=2, reused=0, capped=0, batches=1)
+    strong = _strength_source("https://a.test/1", 0.9)
+    failed = _strength_source("https://a.test/2", None, status="unscored_provider")
+    progress.record([strong])
+    progress.record([strong, failed])
+    progress.record([failed])
+
+    assert progress.metadata()["rated"] == 1
+    assert progress.metadata()["strong"] == 1
+    assert progress.metadata()["unrated"] == 1
+
+
+def test_evaluation_completed_carries_the_split() -> None:
+    """§6.1: the completed event counts strong, fair and weak over the snapshot's
+    scored sources; an unscored source is in none of them."""
+    sources = [
+        _strength_source("https://a.test/1", 0.9),
+        _strength_source("https://a.test/2", 0.5),
+        _strength_source("https://a.test/3", 0.1),
+        _strength_source("https://a.test/4", None, status="unscored_cap"),
+    ]
+    metadata = evaluation_completed_event(sources, reputation_hits=0, reputation_failures=0).metadata
+
+    assert (metadata["strong_count"], metadata["fair_count"], metadata["weak_count"]) == (1, 1, 1)
+    assert metadata["low_confidence_count"] == metadata["weak_count"]
 
 
 class _SlowReputationSource(FakeReputationSource):

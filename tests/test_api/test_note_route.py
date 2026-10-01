@@ -24,7 +24,7 @@ from deep_research.api.notes import (
     reader_note,
     scripted_note_interpreter,
 )
-from deep_research.api.sessions import NotesClosed, SessionStore
+from deep_research.api.sessions import NotesClosed, SessionStore, session_note_fields
 from deep_research.runtime.notes import NoteBoard, NoteLimitReached, current_note_board
 from deep_research.runtime.outcome import ResearchOutcome
 from deep_research.utils.config import ConfigSettings, HitlConfig
@@ -426,9 +426,12 @@ def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome()
     assert (first.status_code, first.json()) == (202, {"note_id": "n1", "status": "received"})
     assert (second.json()["note_id"], third.json()["note_id"]) == ("n2", "n3")
     assert running["notes"] == [
-        {"note_id": "n1", "text": "Pumped hydro", "restatement": "leave out pumped hydro", "outcome": "pending"},
-        {"note_id": "n2", "text": "Flow batteries", "restatement": "leave out flow batteries", "outcome": "pending"},
-        {"note_id": "n3", "text": "Grid codes", "restatement": "leave out grid codes", "outcome": "pending"},
+        {"note_id": "n1", "text": "Pumped hydro", "restatement": "leave out pumped hydro", "outcome": "pending",
+         "steering_outcome": None},
+        {"note_id": "n2", "text": "Flow batteries", "restatement": "leave out flow batteries", "outcome": "pending",
+         "steering_outcome": None},
+        {"note_id": "n3", "text": "Grid codes", "restatement": "leave out grid codes", "outcome": "pending",
+         "steering_outcome": None},
     ]
     assert (running["notes_remaining"], running["note_passes"], running["clarification"]) == (7, 1, None)
     # A note the report still ignores is reported as such, never as covered (live-briefs Phase 3, O8).
@@ -518,3 +521,38 @@ def test_a_timing_too_long_or_not_finite_is_refused_with_the_request(wait: float
     assert refused.status_code == 422
     assert refused.json()["error"]["code"] == "validation_error"
     assert listed == []
+
+
+
+# --- notes-progress-report spec §4 item 2: no session that has ended reports ``pending`` ---------
+
+
+def test_a_note_nothing_judged_reads_pending_while_the_session_runs_and_not_checked_once_it_ends() -> None:
+    runner = GateRunner()
+    app = create_app(runner=runner, preflight=valid_preflight, note_interpreter=Interpreter())
+    with TestClient(app) as client:
+        session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
+        client.post(f"/research/{session_id}/notes", json={"text": "Pumped hydro"})
+        running = _wait(client, session_id, lambda body: body["notes"][0]["restatement"] is not None)
+        client.portal.call(runner.release.set)
+        done = _wait(client, session_id, lambda body: body["status"] == "completed")
+
+    assert [(note["note_id"], note["outcome"]) for note in running["notes"]] == [("n1", "pending")]
+    assert [(note["note_id"], note["outcome"]) for note in done["notes"]] == [("n1", "not_checked")]
+
+
+@pytest.mark.asyncio
+async def test_a_session_closed_out_by_a_shutdown_reads_its_notes_not_checked() -> None:
+    """A service shutdown leaves a session ``running`` with ``finished_at`` set: it has ended too."""
+    runner = HeldRunner()
+    store = SessionStore(runner=runner, note_interpreter=Interpreter())
+    _start(store)
+    session = store.require("s1")
+    await _until(lambda: runner.board is not None)
+    store.add_note("s1", "Pumped hydro")
+    await _until(lambda: len(session.note_board.snapshot()) == 1)
+
+    assert [note.outcome for note in session_note_fields(session)["notes"]] == ["pending"]
+    await store.close()
+    assert (session.status, session.finished_at is not None) == ("running", True)
+    assert [note.outcome for note in session_note_fields(session)["notes"]] == ["not_checked"]
