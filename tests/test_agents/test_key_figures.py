@@ -166,7 +166,7 @@ def test_key_figures_measure_rule() -> None:
 
 def test_a_note_topics_row_is_labelled_by_the_notes_short_subject_not_its_question() -> None:
     """Final review P3-1: a research note's target measure is its whole question
-    (``reader_notes._note_topic``), so a row it answered printed "Item · {whole question}".
+    (``reader_notes.note_sub_topic``), so a row it answered printed "Item · {whole question}".
     The label takes the note topic's title without "Your note: ", trimmed; the target the
     agents read keeps its measure."""
     question = "Which San Jose cafés known for lattes also serve well-reviewed pastries?"
@@ -191,6 +191,56 @@ def test_a_note_topics_row_is_labelled_by_the_notes_short_subject_not_its_questi
         "Bijan Bakery \u00b7 aggregate rating",
     ]
     assert note_target.measure == question  # the target the agents read is unchanged
+
+
+def test_a_note_topic_with_several_targets_keeps_one_row_per_target() -> None:
+    """Final review P3-1, round 1: the per-topic short subject would label two rows about one
+    item that answer different targets of one note alike, and the one-row-per-label rule
+    (D36) would drop the second. A note topic with several targets labels each row by its
+    own target's question, cut at 40 characters on a word boundary; one target keeps the
+    topic's short subject."""
+    def note_target(number: int, question: str) -> EvidenceTarget:
+        return EvidenceTarget(target_id=f"note-n1-target-{number:02d}", coverage_id="note-n1",
+                              question=question, required=True, measure=question)
+
+    almond = "Which San Jose caf\u00e9s sell almond croissants?"
+    pain = "Which San Jose caf\u00e9s sell pain au chocolat?"
+    plan = [_topic("note-n1", note_target(1, almond), note_target(2, pain)).model_copy(
+        update={"title": "Your note: pastries at the caf\u00e9s"})]
+    findings = []
+    for name in ("a", "b"):
+        read = make_read(f"Page {name}.", url=f"https://{name}.example.test/p", title=name)
+        findings.append(make_finding(read, f"Page {name}.", target_ids=["note-n1-target-01", "note-n1-target-02"])
+                        .model_copy(update={"verification": FindingVerification(status="verified")}))
+    ids = [finding_fingerprint(finding) for finding in findings]
+    rows = [
+        _fact("K001", finding_id=ids[0], subject="Bijan Bakery", value="3 almond croissants",
+              target_ids=("note-n1-target-01",)),
+        _fact("K002", finding_id=ids[1], subject="Bijan Bakery", value="2 pain au chocolat",
+              target_ids=("note-n1-target-02",)),
+    ]
+    composition = ReportComposition(question="q", session_id="s", sub_topics=plan, findings=findings,
+                                    fact_rows=rows)
+
+    table = key_figures_table(composition)
+
+    assert [(row[0].text, row[1].text, row[0].row_ids) for row in table.rows] == [
+        ("Bijan Bakery \u00b7 Which San Jose caf\u00e9s sell almond", "3 almond croissants", ["K001"]),
+        ("Bijan Bakery \u00b7 Which San Jose caf\u00e9s sell pain au", "2 pain au chocolat", ["K002"]),
+    ]
+    # A topic with one target still labels by its short subject.
+    one = [_topic("note-n1", note_target(1, almond)).model_copy(update={"title": "Your note: pastries at the caf\u00e9s"})]
+    assert _labels(composition.model_copy(update={"sub_topics": one}), rows[0].model_copy(
+        update={"target_ids": ["note-n1-target-01"]})) == ["Bijan Bakery \u00b7 pastries at the caf\u00e9s"]
+    # Questions that the cut would make read alike stay whole, so their rows stay apart.
+    lattes_a = "Which San Jose caf\u00e9s known for lattes also serve almond croissants?"
+    lattes_b = "Which San Jose caf\u00e9s known for lattes also serve pain au chocolat?"
+    alike = composition.model_copy(update={"sub_topics": [_topic("note-n1", note_target(1, lattes_a),
+                                                                 note_target(2, lattes_b))]})
+    assert _labels(alike, *rows) == [
+        "Bijan Bakery \u00b7 Which San Jose caf\u00e9s known for lattes also serve almond croissants",
+        "Bijan Bakery \u00b7 Which San Jose caf\u00e9s known for lattes also serve pain au chocolat",
+    ]
 
 
 def test_key_figure_labels_name_the_item_never_a_snippet() -> None:
