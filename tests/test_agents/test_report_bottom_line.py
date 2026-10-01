@@ -257,15 +257,29 @@ def test_the_rules_ask_for_the_answer_then_one_line_per_topic() -> None:
         ("Capacity", "Capacity"),
         ("  Opening\nhours ", "Opening hours"),
         ("Value for money", "Value for money"),
+        # The two examples the prompt itself gives the model (§7.1): both must be kept, so a
+        # model that follows the prompt gets its own label, not the section's full title.
+        ("Published picks", "Published picks"),
+        ("Opening hours", "Opening hours"),
         ("Four words are many", "Capacity added in 2024"),
         ("Added in 2024", "Capacity added in 2024"),
         ("Best picks", "Capacity added in 2024"),
+        ("Top value", "Capacity added in 2024"),
+        ("Worst case", "Capacity added in 2024"),
+        ("Winners", "Capacity added in 2024"),
+        ("Leading models", "Capacity added in 2024"),
+        ("Recommended models", "Capacity added in 2024"),
         ("Supercalifragilisticexpia", "Capacity added in 2024"),
         ("", "Capacity added in 2024"),
     ],
 )
 def test_a_short_title_keeps_one_to_three_plain_words(drafted: str, expected: str) -> None:
     assert _section_short_title(drafted, "Capacity added in 2024") == expected
+
+
+def test_the_prompts_short_title_examples_are_the_ones_the_check_keeps() -> None:
+    """The parametrized examples above are the prompt's own two (§7.1), so they cannot drift."""
+    assert '("Published picks", "Opening hours")' in SECTION_INSTRUCTION
 
 
 @pytest.mark.asyncio
@@ -508,6 +522,71 @@ async def test_every_sentence_refused_falls_back_to_one_line_per_topic(checker, 
         "Every drafted bottom-line sentence was refused; one checked section point per topic stands in for it."
         in [e.message for e in composition.errors]
     )
+
+
+_NO_ANSWER_ERROR = "report_writer_bottom_line_no_answer"
+
+
+@pytest.mark.asyncio
+async def test_a_bottom_line_of_topic_lines_alone_records_that_it_has_no_answer(
+    checker, tracker, tmp_path: Path,
+) -> None:
+    """Final wave (Phase C review P2-1, writer half): every answer sentence refused but the
+    topic lines kept is published with ``answer_ids == []``; the writer records a recoverable
+    error, so the missing direct answer is in the run's record and not only in the report."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    labels = _labels(task)
+    one, two = labels["https://one.test/1"], labels["https://two.test/1"]
+    route = _sections_route(task)
+    draft = BottomLineDraft(
+        sentences=[WriterPointDraft(text="An unlabelled claim.", finding_labels=["F99"])],
+        topics=[
+            TopicLineDraft(topic="topic-01", text="According to the source, part one holds.", finding_labels=[one]),
+            TopicLineDraft(topic="topic-02", text="According to the source, part two holds.", finding_labels=[two]),
+        ],
+    )
+
+    composition = await compose_written_report(
+        task, provider=ScriptedCompleter(outputs=[route, route, draft]), section_concurrency=1,
+    )
+
+    layout = composition.bottom_line
+    assert layout is not None and not layout.assembled
+    assert layout.answer_ids == []
+    assert [line.coverage_id for line in layout.topic_lines] == ["topic-01", "topic-02"]
+    [error] = [e for e in composition.errors if e.error_type == _NO_ANSWER_ERROR]
+    assert error.recoverable is True
+    assert error.source == "agent.report_writer"
+    assert error.details == {}
+    assert error.message == (
+        "No direct-answer sentence was kept after the check; the bottom line holds the topic lines alone."
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_bottom_line_with_a_kept_answer_records_no_missing_answer(
+    checker, tracker, tmp_path: Path,
+) -> None:
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    labels = _labels(task)
+    one, two = labels["https://one.test/1"], labels["https://two.test/1"]
+    route = _sections_route(task)
+    draft = BottomLineDraft(
+        sentences=[WriterPointDraft(text="According to the source, part one holds.", finding_labels=[one])],
+        topics=[
+            TopicLineDraft(topic="topic-01", text="According to the source, part one holds.", finding_labels=[one]),
+            TopicLineDraft(topic="topic-02", text="According to the source, part two holds.", finding_labels=[two]),
+        ],
+    )
+
+    composition = await compose_written_report(
+        task, provider=ScriptedCompleter(outputs=[route, route, draft]), section_concurrency=1,
+    )
+
+    assert composition.bottom_line is not None and composition.bottom_line.answer_ids == ["S001"]
+    assert _NO_ANSWER_ERROR not in {e.error_type for e in composition.errors}
 
 
 async def _fraction_events(compose) -> list[float]:

@@ -1410,7 +1410,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Writing's bar ends full when the bottom line falls back or never reaches
     # the Statement Check. No request text changed. Moved `c4082e94159e` ->
     # `ea77570646c9`.
-    "report_writer": "ea77570646c9",
+    # notes-progress-report final fix wave (2026-10-01): the short-title check
+    # has its own verdict-word set without ``pick\w*`` (spec §7.1's own example
+    # "Published picks" is kept); a bottom line of topic lines alone records
+    # the recoverable ``report_writer_bottom_line_no_answer``; the citation-order
+    # docstring states the order the code uses. No request text changed;
+    # agents.prompts was untouched. Moved `ea77570646c9` -> `7764df3e0fcc`.
+    "report_writer": "7764df3e0fcc",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

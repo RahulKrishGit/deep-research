@@ -1918,23 +1918,27 @@ def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
 #: options-table column header, so it falls back to the sub-topic's own
 #: title instead. Matched on whole words only, with simple inflections
 #: (\w* lets "recommended"/"recommends", "tops"/"topped", "winners" through).
-_TITLE_VERDICT_WORD = re.compile(
-    r"\b(?:best|worst|top\w*|winner\w*|leading|recommend\w*|pick\w*)\b", re.IGNORECASE,
-)
+_VERDICT_WORDS = r"best|worst|top\w*|winner\w*|leading|recommend\w*"
+_TITLE_VERDICT_WORD = re.compile(rf"\b(?:{_VERDICT_WORDS}|pick\w*)\b", re.IGNORECASE)
+#: The short title's own set (notes-progress-report spec §7.2, final-wave ruling): the
+#: lexicon above without ``pick\w*``, because the §7.1 prompt's own example short title is
+#: "Published picks" -- a label that names a part of the question, not a pick made.
+_SHORT_TITLE_VERDICT_WORD = re.compile(rf"\b(?:{_VERDICT_WORDS})\b", re.IGNORECASE)
 _TITLE_DIGIT = re.compile(r"\d")
 
 
 def _section_short_title(drafted_short_title: str, title: str) -> str:
     """Notes-progress-report spec §7.2: the drafted short title when it has one to
-    three words, at most 24 characters, no digit and no verdict word; otherwise
-    the section's own title stands in."""
+    three words, at most 24 characters, no digit and no verdict word (the short
+    title's own set, which leaves out ``pick\\w*``); otherwise the section's own
+    title stands in."""
     short = " ".join(drafted_short_title.split())
     if (
         not short
         or len(short.split()) > _SHORT_TITLE_WORDS
         or len(short) > _SHORT_TITLE_CHARS
         or _TITLE_DIGIT.search(short)
-        or _TITLE_VERDICT_WORD.search(short)
+        or _SHORT_TITLE_VERDICT_WORD.search(short)
     ):
         return title
     return short
@@ -3214,8 +3218,20 @@ async def _run_bottom_line(
                     [*draft_errors, *check_errors, error], rejected, dropped_marks, moved,
                     _assembled_layout(fallback_points, fallback_topics))
 
-    return (points, verdict_map, [*draft_errors, *check_errors], rejected, dropped_marks, set(),
-            _drafted_layout(points, topic_of))
+    layout = _drafted_layout(points, topic_of)
+    errors = [*draft_errors, *check_errors]
+    if layout is not None and not layout.answer_keys:
+        # Phase C review P2-1: topic lines kept, no answer sentence. The renderer prints
+        # its own disclosure line; this keeps the loss in the run's record too, in plain
+        # words (no provider text).
+        errors.append(agent_error(
+            agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_no_answer",
+            message=(
+                "No direct-answer sentence was kept after the check; the bottom line "
+                "holds the topic lines alone."
+            ),
+        ))
+    return points, verdict_map, errors, rejected, dropped_marks, set(), layout
 
 
 def _topic_line_order(coverage_id: str, task: ReportWriterTask) -> tuple[int, int]:
@@ -3357,8 +3373,9 @@ def _assemble_composition(composition: ReportComposition, task: ReportWriterTask
     ``composition.page_credits`` to name a relayed or unattributed row's
     publisher (``report_table._who_text``/``_recommended_by_cell``), but the
     final credits are keyed on ``written_citations(composition)``, which
-    itself reads the table (spec §5's citation order: bottom line, table,
-    sections). So a provisional map -- every finding URL's credit, the same
+    itself reads the table (the citation order is the bottom line, then the
+    sections, then the table, as the report prints them: notes-progress-report
+    spec §7.5). So a provisional map -- every finding URL's credit, the same
     ``_page_credit`` call the final map uses -- is set before the table is
     built; the final map then only re-keys it to the table's own citations,
     never recomputing a credit.
