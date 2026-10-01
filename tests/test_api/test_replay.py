@@ -351,3 +351,8 @@ def test_hold_after_holds_the_stream_until_the_session_is_stopped(tmp_path: Path
 
     assert names.count("graph.report.reviewed") == 1
     assert names[-2:] == ["graph.report.reviewed", "session.stopped"]
+    # This ``/stream`` connection is a late one: it replays what the session recorded. The four
+    # live-only progress types are in that record (``ResearchSession.publish`` records them,
+    # spec §4 item 1), so a reconnect replays them, each before the review it led up to.
+    assert PROGRESS_TYPES <= set(names)
+    assert names.index("graph.report.reviewed") > max(names.index(kind) for kind in PROGRESS_TYPES)

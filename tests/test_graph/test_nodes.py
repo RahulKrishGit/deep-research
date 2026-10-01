@@ -1777,6 +1777,29 @@ async def test_reviewer_started_live(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reviewer_started_is_published_before_the_review_call() -> None:
+    """§6.1: Reviewing's clock starts when the node starts, not when the (slow) review
+    returns: at the moment the reviewer agent is called, the live sink already holds the
+    node's ``graph.node.started``, and nothing else."""
+    from deep_research.graph.live import bind_live_sink
+
+    received: list = []
+    held_when_called: list[list[str]] = []
+
+    class ProbingReviewer(FakeReviewer):
+        async def review(self, packet, *, previous=None):
+            held_when_called.append([event.event_type for event in received])
+            return await super().review(packet, previous=previous)
+
+    reviewer = ProbingReviewer()
+    with bind_live_sink(received.append):
+        await report_reviewer_node(reviewer)(dump_state(_writer_state()))
+
+    assert reviewer.calls == 1
+    assert held_when_called == [["graph.node.started"]]
+
+
+@pytest.mark.asyncio
 async def test_an_unscored_review_marks_no_criterion() -> None:
     """§6.2: without a scored review every criterion is ``met: null``."""
     loaded = load_state(await report_reviewer_node(
