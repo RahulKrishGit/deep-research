@@ -1038,12 +1038,17 @@ class _WritingProgress:
     weighs each drafted part and the bottom line ``1/(P+1)``; a scope
     contributes its settled share once drafted, a part that returned nothing
     to check contributes in full, and the value never decreases.
+
+    ``returned`` holds every part that has settled, written or failed, so the bar's
+    arithmetic does not care how a part ended; ``failed`` is the subset whose draft
+    failed (owner decision O1), so the page can say how many were written.
     """
 
     def __init__(self, parts_total: int) -> None:
         self.parts_total = parts_total
         self.phase = "sections"
         self.returned: set[str] = set()
+        self.failed: set[str] = set()
         self.drafted: dict[str, frozenset[str]] = {}
         self.backed: set[str] = set()
         self.removed: set[str] = set()
@@ -1063,6 +1068,7 @@ class _WritingProgress:
             "phase": self.phase,
             "parts_total": self.parts_total,
             "parts_returned": len(self.returned),
+            "parts_failed": len(self.failed),
             "sentences_drafted": sum(len(keys) for keys in self.drafted.values()),
             "sentences_checked": len(self.backed) + len(self.removed),
             "backed": len(self.backed),
@@ -1072,9 +1078,14 @@ class _WritingProgress:
             "sample": sample,
         }))
 
-    def part_returned(self, coverage_id: str, keys: Sequence[str]) -> None:
-        """A part's draft returned with these candidate keys (none when it failed)."""
+    def part_returned(
+        self, coverage_id: str, keys: Sequence[str], *, failed: bool = False
+    ) -> None:
+        """A part settled: its draft returned with these candidate keys, or ``failed``
+        (then it has none, and ``parts_failed`` counts it)."""
         self.returned.add(coverage_id)
+        if failed:
+            self.failed.add(coverage_id)
         self.drafted[coverage_id] = frozenset(keys)
         self.publish()
 
@@ -2586,7 +2597,7 @@ async def _run_part(
     if draft is None:
         progress = _WRITING_PROGRESS.get()
         if progress is not None:
-            progress.part_returned(job.coverage_id, ())
+            progress.part_returned(job.coverage_id, (), failed=True)
         return _PartOutcome(job=job, section=None, status="failed", errors=draft_errors, verdicts={})
 
     placed_ids = {finding_fingerprint(f) for f in [*job.findings, *job.context_findings]}

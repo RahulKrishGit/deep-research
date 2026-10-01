@@ -3791,9 +3791,9 @@ async def test_writer_progress_fraction_monotonic(tracker: Tracker, tmp_path: Pa
 
     progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
     assert progress[0] == {
-        "phase": "sections", "parts_total": 2, "parts_returned": 0, "sentences_drafted": 0,
-        "sentences_checked": 0, "backed": 0, "removed": 0, "unchecked": 0, "fraction": 0.0,
-        "sample": None,
+        "phase": "sections", "parts_total": 2, "parts_returned": 0, "parts_failed": 0,
+        "sentences_drafted": 0, "sentences_checked": 0, "backed": 0, "removed": 0, "unchecked": 0,
+        "fraction": 0.0, "sample": None,
     }
     fractions = [m["fraction"] for m in progress]
     assert fractions == sorted(fractions) and fractions[-1] == 1.0
@@ -3871,3 +3871,51 @@ async def test_writer_progress_fills_when_a_part_draft_fails(checker, tracker: T
     assert [(m["parts_returned"], m["sentences_drafted"], m["fraction"]) for m in progress] == [
         (0, 0, 0.0), (1, 0, 0.5), (1, 0, 1.0),
     ]
+    # Owner decision O1: the failed part still counts as returned (the fraction above is
+    # unchanged), and ``parts_failed`` says it did not come back written.
+    assert [(m["parts_returned"], m["parts_failed"]) for m in progress] == [(0, 0), (1, 1), (1, 1)]
+
+
+def _first_part_fails_route(messages, schema):
+    """``_two_part_route``, except the provider refuses "First"'s draft with text of its own."""
+    if schema.__name__ == "SectionDraft" and "First" in messages[-1].content.split("# This part of the question")[1][:40]:
+        raise ProviderResponseError(
+            f"provider refused the draft: {SECRET_VERDICT}", retryable=False,
+            failure_category="http", http_status_code=400, failure_origin="sdk",
+        )
+    return _two_part_route(messages, schema)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_names_the_parts_that_failed(tracker: Tracker, tmp_path: Path) -> None:
+    """Owner decision O1: ``parts_failed`` counts each part whose draft failed, as it settles.
+    ``parts_returned`` keeps meaning settled (written or failed), so the bar's arithmetic is
+    untouched and the page can print written = returned - failed; the bar still ends full, and
+    nothing the provider said is in any event."""
+    import json
+
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        composition = await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_first_part_fails_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    assert {part.coverage_id: part.status for part in composition.parts} == {
+        "topic-01": "failed", "topic-02": "written",
+    }
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert (progress[0]["parts_returned"], progress[0]["parts_failed"]) == (0, 0)
+    failed = [m["parts_failed"] for m in progress]
+    assert failed == sorted(failed) and set(failed) == {0, 1}
+    assert all(m["parts_failed"] <= m["parts_returned"] <= m["parts_total"] for m in progress)
+    last = progress[-1]
+    assert (last["parts_total"], last["parts_returned"], last["parts_failed"]) == (2, 2, 1)
+    assert last["parts_returned"] - last["parts_failed"] == 1  # one section written
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    assert all(type(m["parts_failed"]) is int and m["parts_failed"] >= 0 for m in progress)
+    assert all(SECRET_VERDICT not in json.dumps(m) and "refused" not in json.dumps(m) for m in progress)

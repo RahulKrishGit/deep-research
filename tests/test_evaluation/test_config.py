@@ -1423,7 +1423,13 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Only this module's own source moved (a new helper and its call site); no
     # request text changed and agents.prompts was untouched. Moved
     # `7764df3e0fcc` -> `7165ec336250`.
-    "report_writer": "7165ec336250",
+    # notes-progress-report owner decision O1 (2026-10-01): Writing's progress
+    # metadata gains ``parts_failed``, the count of parts whose draft failed
+    # (``parts_returned`` still counts a failed part as settled, so the bar's
+    # arithmetic is unchanged). Only this module's own source moved (one set,
+    # one key, one keyword); no request text changed and agents.prompts was
+    # untouched. Moved `7165ec336250` -> `87e5ae8e9dc9`.
+    "report_writer": "87e5ae8e9dc9",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
