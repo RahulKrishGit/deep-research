@@ -2,24 +2,24 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status** draft for review, written 2026-09-30 by the spec-plan-author agent from the approved spec at `73b4d7a6`; to be reviewed by `spec-plan-reviewer` (Fable 5.1, max effort) until clean. One item needs the human (Open issues, O-1). · **Branch** `feat/notes-progress-report-stop`, executed after Phases D and A are merged into it (spec §9: D → A → C → B).
+**Status** revised 2026-09-30 for Fable's review 1 (`.superpowers/reviews/2026-09-30-plan-c-review-1.md`: approved with changes; every finding resolved under "Review 1: how each finding was resolved") and the human's ruling D40 on its I2; written the same day by the spec-plan-author agent from the approved spec at `73b4d7a6` (draft `bd48725c`). One item needs the human's eye (Open issues, O-1). · **Branch** `feat/notes-progress-report-stop`, executed after Phases D and A are merged into it (spec §9: D → A → C → B).
 
 **Goal:** The published report answers first — a direct answer of at most two sentences, then one checked line per topic and one per reader note with its result — puts a merged, labelled Key figures (or Options compared) table after the topics, and reads in the console as one card per section with a contents list, so a reader sees the answer, the evidence per topic and what became of their notes at a glance.
 
 **Architecture:**
 - **Writer** (`agents/report_writer.py`, spec §7.1–§7.3). The bottom-line request prints the reader's one-time-check answers and heads each checked section `## {coverage_id} · {title}`; the reply is `sentences` (the direct answer, at most `MAX_ANSWER_SENTENCES = 2`) plus `topics` (one `TopicLineDraft` per listed topic). Answer sentences and topic lines are checked by the same Statement Check and keep every existing honesty rule; a `BottomLineLayout` on the composition records which kept statements are the answer and which are whose topic line. The fallback builds the same shape from the sections (one checked point per topic, `assembled = true`). Each section gets a `short_title`, the topic line's label.
-- **Renderer** (`agents/report.py`, `agents/report_table.py`, spec §7.4–§7.5). `report_outline(composition)` lists the `##` headings in their new order — bottom line, topics, Key figures or Options compared, what we couldn't confirm, sources — and `render_written_report` prints from it; the evidence line carries the reader's answers. `key_figures_table` replaces `findings_table`: labels from the sub-topic a row mostly answers, values from one passage merged, one row per label, at most ten. At publication the finalizer stamps `reader_note_lines` from each note's terminal outcome (`graph/note_outcomes.py`, moved below the API so the graph can read it), and the bottom line prints them with ✓/✗.
+- **Renderer** (`agents/report.py`, `agents/report_table.py`, spec §7.4–§7.5). `report_outline(composition)` lists the `##` headings in their new order — bottom line, topics, Key figures or Options compared, what we couldn't confirm, sources — and `render_written_report` prints from it; the evidence line carries the reader's answers. `key_figures_table` replaces `findings_table`: labels from the sub-topic a row mostly answers — a row with no named item labelled by the source that reported it (D40) — values from one passage merged, one row per label, at most ten. At publication the finalizer stamps `reader_note_lines` from each note's terminal outcome (`graph/note_outcomes.py`, moved below the API so the graph can read it), and the bottom line prints them with ✓/✗.
 - **Console** (`web/`, spec §7.6). `/status` carries `report_outline`; `ReportBody` splits the Markdown at its `##` headings into cards paired with the outline, with a contents list that is a sticky rail from a 1310 px report stage and a sticky chip row below it, the current entry marked as the reader scrolls; the "Your notes" block is gone.
 
 **Tech Stack:** Python 3.12 (`.venv`), pydantic 2, LangGraph 1.2.10, pytest 9 + pytest-asyncio, ruff; Node v24, Next.js 16, React 19, react-markdown 10 + remark-gfm (mdast types only), Vitest 5 + Testing Library + jsdom, Playwright 1.63 (Chromium) against the API in replay mode, TypeScript 7. Windows 11; every command below is for PowerShell in the main checkout.
 
-**Spec:** `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` (commit `73b4d7a6`, reviewed clean by Fable in three rounds) — Phase C only: §7 (7.1–7.8), §4 item 5 (what C takes from A), §3.7–§3.8 (the ground truth §7 cites), AC22–AC27, AC36 and AC34's bottom-line part, the Phase C rows of §11.1–§11.3, and R5. Decisions D13–D16, D20 (its bottom-line part), D27, D28, D32, D36, D37 and D19 (§2) are closed; nothing here reopens them. Where this plan had to choose, the choice is under "Spec ambiguities resolved here"; the one statement that cannot be kept exactly as worded is under "Open issues".
+**Spec:** `docs/superpowers/specs/2026-09-30-notes-progress-report-stop-design.md` (commit `73b4d7a6`, reviewed clean by Fable in three rounds) — Phase C only: §7 (7.1–7.8), §4 item 5 (what C takes from A), §3.7–§3.8 (the ground truth §7 cites), AC22–AC27, AC36 and AC34's bottom-line part, the Phase C rows of §11.1–§11.3, and R5. Decisions D13–D16, D20 (its bottom-line part), D27, D28, D32, D36, D37, D19 and D40 (the human's ruling of 2026-09-30 on this plan's review, recorded in the spec's §2 and §7.4) are closed; nothing here reopens them. Where this plan had to choose, the choice is under "Spec ambiguities resolved here"; the one statement that cannot be kept exactly as worded is under "Open issues".
 
-**Sources of truth.** The spec's §2 decisions, then its §4 contracts, then its §7. Phases D and A are merged before this plan starts; this plan anchors on the text their plans leave — `docs/superpowers/plans/2026-09-30-phase-d-stop.md` and `docs/superpowers/plans/2026-09-30-phase-a-notes.md` as of 2026-09-30 — and Task 1 checks every piece it builds on before anything is edited. Names taken from A, exactly as spec §4 item 5 gives them: `is_research_note`, `has_steering_kind`, `steering_view`, `steering_notes` (`agents/reader_notes.py`), `note_outcome(note_id, state, *, terminal)` and `note_steering_outcome(note_id, state, *, terminal, note=None)` (`api/notes.py`, moved here to `graph/note_outcomes.py` with a re-export), `ReaderNote.short` (with A's `MAX_NOTE_SHORT_CHARS = 24` and `note_short_label`). Every `path:line` below was read at `73b4d7a6` (whose code is `f4282818`'s) unless it says "on the D+A tree", which means the tree the two plans leave.
+**Sources of truth.** The spec's §2 decisions, then its §4 contracts, then its §7. Phases D and A are merged before this plan starts; this plan anchors on the text their plans leave — `docs/superpowers/plans/2026-09-30-phase-d-stop.md` (as revised in `996a22a1`) and `docs/superpowers/plans/2026-09-30-phase-a-notes.md` (as revised in `796e88b8` and `e07a8f9c`) — and Task 1 checks every piece it builds on before anything is edited. Names taken from A, exactly as spec §4 item 5 gives them: `is_research_note`, `has_steering_kind`, `steering_view`, `steering_notes` (`agents/reader_notes.py`), `note_outcome(note_id, state, *, terminal)` and `note_steering_outcome(note_id, state, *, terminal, note=None)` (`api/notes.py`, moved here to `graph/note_outcomes.py` with a re-export), `ReaderNote.short` (with A's `MAX_NOTE_SHORT_CHARS = 24` and `note_short_label`). Every `path:line` below was read at `73b4d7a6` (whose code is `f4282818`'s) unless it says "on the D+A tree", which means the tree the two plans leave.
 
 **Evidence.** Planning executed this document's blocks on 2026-09-30:
-- A scratch tree was built from `git archive 73b4d7a6`, then every edit block of the Phase D plan (Tasks 2–9: 118 anchors, 12 creates, 11 appends) and of the Phase A plan (Tasks 2–10: 140 anchors, 5 spans, 1 create, 10 appends) was applied with an anchor-exact applier; all applied with no problem. On that D+A tree the full suite printed `5017 passed, 2 deselected`, Vitest `32` files and `258` tests, and the agent fingerprints `planner 3934bea57f61`, `report_writer a27544eee344` (the others unchanged from `73b4d7a6`).
-- Every block of Tasks 2–12 was then applied in order to that tree, each step's tests run as the step says, and every `Expected:` line of Tasks 1–10 and 12 is what that run printed (pytest with `PYTHONPATH=src` on the export, so the export's code was the code under test). The finished tree: `5067 passed, 2 deselected`; Vitest `33` files, `276` tests; `typecheck` clean; `check:css` `OK`; pyflakes findings one fewer than before and none new.
+- A scratch tree was built from `git archive` of the branch (code `73b4d7a6`'s), then every edit block of the Phase D plan as revised in `996a22a1` (Tasks 2–9) and of the Phase A plan as revised in `796e88b8`/`e07a8f9c` (Tasks 2–10) was applied with an anchor-exact applier; all applied with no problem. On that D+A tree the full suite printed `5017 passed, 2 deselected`, Vitest `32` files and `259` tests, and the five agent fingerprints `['3934bea57f61', 'b9caf536e3f0', 'cc5a310b0aa0', '4a3d56fab932', 'a27544eee344']` (planner, researcher, source evaluator, evidence verifier, report writer): A re-pinned the planner, researcher, source evaluator and writer (at `73b4d7a6` they read `d1ba46ce147f`, `a8c9528f0c20`, `24809aa975a3` and `6e1aedc2888e`, `tests/test_evaluation/test_config.py`), and only the verifier's is unchanged since `73b4d7a6`.
+- Every block of Tasks 2–12 was then applied in order to that tree, each step's tests run as the step says, and every `Expected:` line of Tasks 1–10 and 12 is what that run printed (pytest with `PYTHONPATH=src` on the export, so the export's code was the code under test). The finished tree: `5069 passed, 2 deselected`; Vitest `33` files, `276` tests; `typecheck` clean; `check:css` `OK`; pyflakes findings one fewer than before and none new. Task 1 Step 3's check of every anchor printed `problems: 0` on that D+A tree.
 - Not run in planning, because they start replay sessions and the dispatch forbade running any research session: Task 11's Playwright runs and captures. Their specs were type-checked (`npm run -s typecheck` covers `e2e/`) and listed (`npx playwright test --list`: chromium `76 tests in 21 files`, visual `17 tests in 1 file`, from `68`/`20` and `14`/`1`); their pass/fail outcomes are marked **[not run in planning]** with the reasoning behind each.
 
 ## Global Constraints
@@ -36,12 +36,13 @@
   - D28: "**(O4 and review M15, default accepted)** The contents rail shows only when the report stage is at least 1310 px wide; below that, the chip row. At the 1252 px capture width, and at 1568 px with the sidebar expanded, the report shows chips (§7.6 gives the viewport arithmetic)."
   - D32: "**(O10, default accepted)** On a phone, Key figures shows the source under each row's label."
   - D36: "**(O16, default accepted)** Key figures merges values from one passage (one primary finding) and shows one row per label."
+  - D40 (the human's ruling of 2026-09-30 on this plan's review, I2; amends D36 and §7.4 items 2–3): "When a fact row has no named item (subject is None), the Key figures label falls back to the source that reported it, e.g. "Tripadvisor · Rating, 2024", so figures from different findings keep separate rows; merging still only happens for the same item from the same passage; one row per label and the 10-row cap stay."
   - D37: "**(O17, default accepted)** A bottom-line note line whose outcome is not checked carries no mark."
   - D19: "DESIGN.md theme rules hold: tokens only; colour is status (green active/ok, amber warn, red danger, purple only on the one primary button); one surface per region; motion tokens; reduced motion turns movement into fades; unknown values read "not yet", never 0, —, or null."
 - **Exact values (spec §7.1–§7.6).** `MAX_ANSWER_SENTENCES = 2`; no name `MAX_BOTTOM_LINE_SENTENCES` remains in `src/` or `tests/` (AC36); a short title or a note's short is 1–3 words and at most 24 characters; `MAX_KEY_FIGURE_ROWS = 10`; Key figures columns "What" | "Figure" | "Source"; the contents rail from a report-stage width of `1310` px (176 + 32 + 770 + 32 + 300); the current-section line and `scroll-margin-top` `var(--topbar) + 56px + var(--space-4)`; the bottom line's key column `132px`; `--report-card-w` `calc(var(--reading-max) + 2 * var(--space-6) + 2px)`.
 - **Copy (spec §7.1–§7.5, used as written; (I) marks the spec's illustrative copy).** The bottom-line prompts and reply examples are the spec's §7.1 text byte for byte (Task 3's blocks). Refusal reasons: "over the direct answer's two sentences", "a line for a topic the request did not list", "a second line for one topic", "a topic line cites a finding its topic does not". Fallback errors (I): "The bottom-line draft failed twice; one checked section point per topic stands in for it." and "Every drafted bottom-line sentence was refused; one checked section point per topic stands in for it.". Assembled line (I): "*Assembled from the sections below; the summary could not be written this time.*". Note label: "Your note · {short}". Note-line texts (I) as §7.2 lists them (Task 7). Headings: "Bottom line", "Key figures", "Options compared" (I), "What we couldn't confirm", "Sources"; contents labels "Not confirmed", "{short} (your note)"; eyebrows "Topic {i} of {N}" and "Topic {i} of {N} · from your note". Key figures caption: "Showing {k} of {n} verified figures; all are in the evidence log.".
 - **CSS.** `web/app/globals.css` lines 1–1131 stay the prototype's CSS verbatim; new rules go at the end of the file, inside the app-only section, with no colour literal: `Push-Location web; npm run -s check:css; Pop-Location` prints `OK`. The contents list never uses the class `.rail`, which is the Review rail's (`web/e2e/layout.spec.ts:47` measures `.rail` at 300 px).
-- **Fingerprints and digests are re-pinned, never typed.** Task 1 records the five agent fingerprints as baselines (B-planner, B-writer, …). A task that changes an agent's prompt text or a replay run's requests runs the re-pin helper, which recomputes each value exactly as its test does and rewrites only those that moved; its Expected line names which keys move and which stay, with the value the planning run printed for reference. The latency workstream (D38) may land first and move a baseline; the moves this plan makes are the same keys either way.
+- **Fingerprints and digests are re-pinned, never typed.** Task 1 records the five agent fingerprints as baselines (B-planner, B-writer, …). A task that changes an agent's prompt text or a replay run's requests runs the re-pin helper, which recomputes each value exactly as its test does and rewrites only those that moved; its Expected line names which keys move and which stay, with the value the planning run printed for reference. A replay run's request count is the baseline's own and no task of this plan changes it: Task 1 records both counts (46 and 29 on the D+A tree; different if the latency branch's verifier batch size landed first). The latency workstream (D38) may land first and move a baseline; the moves this plan makes are the same keys either way.
 - **Viewports.** `1252 × 853` desktop, `390 × 844` phone, `1920 × 1080` for the rail capture; captures `fullPage: true` (spec §11.3).
 
 ### Conventions every task uses
@@ -68,6 +69,7 @@
 | D28 | The rail from a 1310 px report stage, chips below | Tasks 9, 10, 11 |
 | D32 | On a phone, Key figures shows the source under each label | Tasks 10, 11 |
 | D36 | Merge within one passage, one row per label | Task 6 |
+| D40 | A row with no named item is labelled by the source that reported it | Task 6 (and the spec's §2 and §7.4, amended with this revision) |
 | D37 | No mark on a not-checked note line | Task 7 |
 | D19 | Theme rules | Tasks 10, 12 |
 
@@ -76,7 +78,7 @@
 1. **The reply contract** (Task 3): the request's `# Reader answers` and `## {coverage_id} · {title}` headers, the two reply examples (each validates, names only its own headers' topics, marks are spans of their point), the third-answer refusal and the re-ask text. → `test_bottom_line_request_reader_answers_and_ids`, `test_bottom_line_examples_valid_and_name_topics`, `test_answer_overflow_refused`, `test_missing_outcome_reask_text`.
 2. **Topic lines and the fallback** (Task 4): a topic line cites only its own topic's labels, one per topic, never split; answer and topic lines keep separate restatement guards; the fallback moves one checked point per topic (a section it empties loses its card). → `test_bottom_line_topic_line_rules`, `test_a_topic_line_may_restate_the_answer_fact`, `test_fallback_one_line_per_topic`, `test_fallback_move_drops_emptied_section`.
 3. **One outline, one Markdown** (Task 5): `render_written_report` prints its headings from `report_outline`, so the web can pair them by position. → `test_report_outline_matches_headings`, `test_markdown_heading_order`.
-4. **Key figures** (Task 6): the label rule, the passage-level merge, one row per label, the cap and the caption, on the latte run's real rows. → `test_key_figures_labels_and_merge_latte`, `test_key_figures_measure_rule`.
+4. **Key figures** (Task 6): the label rule — with D40's source label for a row with no named item — the passage-level merge, one row per label, the cap and the caption, on the latte run's real rows and on the replay default case. → `test_key_figures_labels_and_merge_latte`, `test_key_figures_measure_rule`, `test_a_row_with_no_named_item_is_labelled_by_its_source`, `test_the_replay_default_case_labels_its_figures_by_their_sources`.
 5. **Note lines at publication** (Task 7): stamped from `note_outcome(..., terminal=True)` outside the review's fingerprint; marks per D20/D37. → `test_note_lines_stamped_at_publication`, `test_mixed_note_line_both_results`, `test_fingerprint_ignores_note_lines`.
 6. **The cards** (Task 10): the plugin that splits each bottom-line row into key and line, the Key figures phone copy, the contents' rail/chips decision and the jump's focus (a memoised card, so the focused heading survives the current-entry update).
 
@@ -90,19 +92,21 @@
 6. **Topic-line flight keys are `BT01`… and `RT01`…** (answer keys stay `B`/`R`); the replay Statement Check double answers `(?:S|P\d+\.|BT|RT|B|R)` labels so replay checks them.
 7. **The order the bottom line prints** (§7.2 "summary"): plan topics in plan order, then note topics by note number (`n1` first); `_topic_line_order` reads a note topic's number from its `note-n{k}` coverage id.
 8. **A note topic's contents label** is the section's short title plus " (your note)", as §7.5 says; the bottom line's label for the same topic is "Your note · {short}" (the note's own short), as §7.2 says.
-9. **Key figures' label capitalises only a first lower-case letter**, so a brand such as "iJava" keeps its case; a row whose label would be "stated figure" with no item is not eligible (§7.4 item 2); merged rows that end with one label keep the first by the cap's priority (D36). Planning saw the consequence on the replay default case: five fact rows print as two Key figures rows ("Rate, 2024" and "Value, 2024"), because two sub-topics' targets share the measure "value" and one row per label stands.
-10. **`findings_table` is deleted, not kept beside `key_figures_table`.** Its private helpers go with it (`_select_rows`'s priority survives as `_row_priority`); the five tests that pinned its columns and quoted-snippet labels are deleted, and the others now read `key_figures_table`.
-11. **A composition with no layout** (written before this change) prints its bottom line as one paragraph and then any note lines; the evidence line's answers are printed only on the "Evidence as of …" form, never on "No source could be checked.".
-12. **The web's fallback.** With no outline, or one whose headings do not match the chunks one to one, every card is kind `section`, id `rep-sec-{n}`, its heading as the eyebrow and no topic number (§7.6). Only the Bottom line card runs the bottom-line plugin; every other card runs the Key figures plugin, which acts only on a table whose header reads What / Figure / Source.
-13. **The contents mode is decided twice, on one width.** `ReportBody` sets `data-contents` from `#stage-report`'s `clientWidth` (a `ResizeObserver`), and the rail rules sit under `@container report (min-width:1310px)` on the same element; in rail mode the report group, its head and the Evidence view widen together to `176px + 2 × --space-8 + --report-card-w + --rail` so `layout.spec.ts`'s alignment checks hold.
-14. **A click holds the current entry** until the jump's `scrollend`, the reader's own wheel, touch or key, or 1.5 s — whichever is first — so a jump to a card the page cannot scroll to the top (Sources, at the end) still marks it current.
-15. **Topic titles keep the app's `.prose h2` size** (`web/app/globals.css:828`): §7.6's port table does not list the canvas's `.rp h2`, and the app's report already sets heading sizes.
-16. **The reader-notes e2e and capture.** Replay never applies a note (api-gaps 3.9; `web/README.md:38-40`), so `e2e/notes.spec.ts` and `12-report-notes` now prove the absence of the old block and of any note line; the note lines' look is proved by Vitest and by one Playwright test that serves a noted report through a route (precedent: `web/e2e/layout.spec.ts:204`).
-17. **Docs beyond §7.8.** The API reference (`README.md`, `docs/design/api-gaps.md`) gains `report_outline`, `DESIGN.md` §2.A's order sentence is updated, and `web/README.md` names the new spec and captures; §7.8's three rows are done as written.
+9. **Key figures' label capitalises only a first lower-case letter**, so a brand such as "iJava" keeps its case; a row whose label would be "stated figure" with no item is not eligible (§7.4 item 2, which D40 leaves as it is); merged rows that end with one label keep the first by the cap's priority (D36).
+10. **D40's source label** (the human's ruling on this plan's review, I2). "No named item" is read as the label rule's own: `subject` is None, or it starts with a pronoun, which §7.4 item 2 already treats as no item; both used to print a measure-only label, and both now take the source. "The source that reported it" is the name the Source column prints with its date left off — the row's organisation, or the page's credited publisher (else its site) when the organisation is the page's own site or the figure is unattributed — except that a relayed figure is labelled by the organisation it is credited to ("EIA", not "EIA, reported by energi.media"). The label reads `{Source} · {Measure}` with the measure capitalised as the measure-only label was, matching the ruling's example "Tripadvisor · Rating, 2024"; `, {period}` follows as before. Merging is unchanged — (label, primary finding, kind) — so one source's values from one passage still merge, and one row per label still keeps the first of one source's rows from different passages. On the replay default case the five subject-less figures come from five findings at five sources: they print as five rows ("Acme Institute 17 · Rate, 2024", "Acme Institute 2 · Value, 2024", "Independent Bureau 2 · Value, 2024", "Acme Institute 3 · Value, 2024", "Independent Bureau 3 · Value, 2024"), where the measure-only labels printed two; `test_the_replay_default_case_labels_its_figures_by_their_sources` pins them.
+11. **`findings_table` is deleted, not kept beside `key_figures_table`.** Its private helpers go with it (`_select_rows`'s priority survives as `_row_priority`). The five tests that pinned its quoted-snippet labels and its "What was measured" column go with it: `test_rival_rows_both_get_quoted_form`, `test_row_with_no_subject_is_quoted_even_without_a_rival`, and the three `test_period_resolved_from_*` tests, which pinned P3-3's "(counted from the release date, …)" qualifier and `_what_was_measured`'s "({scope})" suffix — the Key figures label carries neither, so the period basis and scope leave the reader table, and the evidence log keeps `period_resolved_from` ("period resolved from the page date …", `agents/report.py:845-846`). The others now read `key_figures_table`.
+12. **`noteCaption` is deleted** (review 1, M3). Once the report's "Your notes" block is gone (Task 10) no component calls A's `noteCaption` (`web/lib/notes.ts`); Phase B's Reviewing rows use their own words table, so Task 10 deletes the function and its `web/test/notes.test.ts` case. `OUTCOME_TEXT` stays: its own test pins it.
+13. **A composition with no layout** (written before this change) prints its bottom line as one paragraph and then any note lines; the evidence line's answers are printed only on the "Evidence as of …" form, never on "No source could be checked.".
+14. **The web's fallback.** With no outline, or one whose headings do not match the chunks one to one, every card is kind `section`, id `rep-sec-{n}`, its heading as the eyebrow and no topic number (§7.6). Only the Bottom line card runs the bottom-line plugin; every other card runs the Key figures plugin, which acts only on a table whose header reads What / Figure / Source.
+15. **The contents mode is decided twice, on one width.** `ReportBody` sets `data-contents` from `#stage-report`'s `clientWidth` (a `ResizeObserver`), and the rail rules sit under `@container report (min-width:1310px)` on the same element; in rail mode the report group, its head and the Evidence view widen together to `176px + 2 × --space-8 + --report-card-w + --rail` so `layout.spec.ts`'s alignment checks hold.
+16. **A click holds the current entry** until the jump's `scrollend`, the reader's own wheel, touch or key, or 1.5 s — whichever is first — so a jump to a card the page cannot scroll to the top (Sources, at the end) still marks it current.
+17. **Topic titles keep the app's `.prose h2` size** (`web/app/globals.css:828`): §7.6's port table does not list the canvas's `.rp h2`, and the app's report already sets heading sizes.
+18. **The reader-notes e2e and capture.** Replay never applies a note (api-gaps 3.9; `web/README.md:38-40`), so `e2e/notes.spec.ts` and `12-report-notes` now prove the absence of the old block and of any note line; the note lines' look is proved by Vitest and by one Playwright test that serves a noted report through a route (precedent: `web/e2e/layout.spec.ts:204`).
+19. **Docs beyond §7.8.** The API reference (`README.md`, `docs/design/api-gaps.md`) gains `report_outline`, `DESIGN.md` §2.A's order sentence is updated, and `web/README.md` names the new spec and captures, and its `capture:visual` line counts the new captures (review 1, M5); §7.8's three rows are done as written.
 
 ## Open issues
 
-- **O-1 (needs the human's eye, not a decision): the latte fixture's source exists only in this checkout.** AC25's fixture is generated from `output/report-a02a75fd75d44d8481f34953a4ff52e1-0-quality.json`, which git ignores (`.gitignore:224`). Task 6 generates and commits `tests/fixtures/latte-key-figures.json` from it in this checkout (the spec's plan); a worktree or another machine cannot regenerate it, and the committed fixture is what the tests read. If the output file is gone when Task 6 runs, stop and report it.
+- **O-1 (needs the human's eye, not a decision): the latte fixture's source exists only in this checkout.** AC25's fixture is generated from `output/report-a02a75fd75d44d8481f34953a4ff52e1-0-quality.json`, which git ignores (`.gitignore:224`). Task 6 generates and commits `tests/fixtures/latte-key-figures.json` from it in this checkout (the spec's plan); a worktree or another machine cannot regenerate it, and the committed fixture is what the tests read. The fixture names its own provenance: its `source` key holds the record's path, which carries the session id (`a02a75fd75d44d8481f34953a4ff52e1`), and its `question` key the session's question. If the output file is gone when Task 6 runs, stop and report it.
 - **O-2 (coordination).** Phase B lands after C and changes `check_statements`' signature (`on_batch`). This plan adds no new substitute: its new tests reuse `_FakeChecker` (`tests/test_agents/test_report_writer.py:1131-1132`, one of the five §3.6 lists) through a fixture, so B's change to `_FakeChecker.__call__` covers them; B's grep will list the new fixture's `monkeypatch.setattr(... check_statements, fake ...)` line in `tests/test_agents/test_report_bottom_line.py`.
 
 ## File map
@@ -116,14 +120,15 @@
 | `src/deep_research/agents/planner.py`, `agents/__init__.py` | `reader_answer_lines`; exports | 3, 5, 6 |
 | `src/deep_research/agents/report_writer.py` | the request, the reply contract, topic lines, the layout, the fallback, short titles | 3, 4 |
 | `src/deep_research/agents/report.py` | `report_outline`, the heading order, the evidence line's answers, the bottom line's list and note lines, the Key figures Source cell | 5, 6, 7 |
-| `src/deep_research/agents/report_table.py` | `key_figures_table`, `merge_key_figures`, `KeyFigureGroup`, `MAX_KEY_FIGURE_ROWS` | 6 |
+| `src/deep_research/agents/report_table.py` | `key_figures_table`, `merge_key_figures`, `KeyFigureGroup`, `MAX_KEY_FIGURE_ROWS`; D40's source label (`_who_name`, `_label_source`) | 6 |
 | `src/deep_research/e2e_evaluation/replay.py` | the section and bottom-line doubles; the Statement Check double's topic-line keys | 3, 4 |
 | `src/deep_research/api/models.py`, `api/sessions.py` | `ReportOutlineEntryResponse`, `ResearchSessionResponse.report_outline` | 8 |
 | `tests/test_graph/test_note_outcomes.py`, `tests/test_agents/test_report_bottom_line.py`, `test_report_markdown.py`, `test_key_figures.py`, `tests/test_graph/test_note_lines.py` (new); `tests/fixtures/latte-key-figures.json` (new) | the tests of §11.1's Phase C row | 2–7 |
 | `tests/test_agents/test_report_writer.py`, `test_tool_free_prompts.py`, `test_planner_reader_answers.py`, `test_report_layout.py`, `test_report.py`, `test_report_table.py`, `tests/test_e2e_evaluation/test_replay_doubles.py`, `tests/test_imports.py`, `tests/test_api/test_sessions.py`; re-pins in `tests/test_evaluation/test_config.py`, `tests/test_graph/test_reader_notes_replay.py` | §11.2's Phase C rows | 2–8 |
 | `web/lib/api.ts`, `web/lib/report.ts` (new) | `ReportOutlineEntry`; splitting, pairing, the evidence line's parts, the contents' helpers | 9 |
 | `web/components/ReportBody.tsx`, `ReportStage.tsx`, `web/app/globals.css` | the cards, the contents list, the plugins; the props; the CSS | 10 |
-| `web/test/report.test.ts` (new), `web/test/components/report-body.test.tsx`, `reader-notes.test.tsx`, `report-stage.test.tsx` | Vitest | 9, 10 |
+| `web/lib/notes.ts` | `noteCaption` deleted (no caller once "Your notes" is gone) | 10 |
+| `web/test/report.test.ts` (new), `web/test/components/report-body.test.tsx`, `reader-notes.test.tsx`, `report-stage.test.tsx`, `web/test/notes.test.ts` | Vitest | 9, 10 |
 | `web/e2e/report-layout.spec.ts` (new), `report.spec.ts`, `layout.spec.ts`, `notes.spec.ts`, `visual.spec.ts` | Playwright and captures | 11 |
 | `README.md`, `docs/design/api-gaps.md`, `docs/design/DESIGN.md`, `docs/superpowers/specs/2026-09-25-consumer-report-format.md`, `web/README.md` | the API reference; the design record; the superseding note; running the app | 8, 12 |
 
@@ -139,7 +144,7 @@ Thirteen tasks, each with its own test cycle and a deliverable a reviewer could 
 
 **Interfaces:**
 - Consumes: Phases D and A merged into `feat/notes-progress-report-stop`.
-- Produces: the proof that every block of Tasks 2–12 applies in order; the baselines B-py (full suite), B-web (Vitest), B-e2e and B-visual (Playwright listings), the five fingerprints (B-planner, B-researcher, B-evaluator, B-verifier, B-writer); `move_outcomes.moved(api_text) -> (api_text, graph_text, names)` (Task 2); `repin.py digests` and `repin.py fingerprints "<why>"` (Tasks 3–6); `lint_compare.py save|compare` (Task 13).
+- Produces: the proof that every block of Tasks 2–12 applies in order; the baselines B-py (full suite), B-web (Vitest), B-e2e and B-visual (Playwright listings), the five fingerprints (B-planner, B-researcher, B-evaluator, B-verifier, B-writer) and the two pinned replay runs' request counts (B-count-extra, B-count-redraft); `move_outcomes.moved(api_text) -> (api_text, graph_text, names)` (Task 2); `repin.py digests` and `repin.py fingerprints "<why>"` (Tasks 3–6); `lint_compare.py save|compare` (Task 13).
 
 - [ ] **Step 1: Create the helpers**
 
@@ -194,12 +199,14 @@ notes-progress-report spec §7.2: the finalizer stamps the bottom line's note li
 ``note_outcome`` and ``note_steering_outcome``, and ``graph`` cannot import ``api``. This
 moves, unchanged, whatever Phase A left between ``_VERDICT_OUTCOMES`` and ``note_records``
 (and the ``NoteOutcome`` alias); ``api/notes.py`` then imports the three public names back.
+It refuses a span that holds anything but the four functions below, or ``class NoteRecord``.
 Run from the repository root: ``.venv\\Scripts\\python.exe .superpowers\\sdd\\2026-09-30-phase-c\\move_outcomes.py``.
 """
 from pathlib import Path
 
 API = Path("src/deep_research/api/notes.py")
 GRAPH = Path("src/deep_research/graph/note_outcomes.py")
+MOVED = ["note_outcome", "note_steering_outcome", "_research_outcome", "_verdict_outcome"]
 HEADER = '''"""What a run concluded about each reader note (notes-progress-report spec §5.6).
 
 Moved here unchanged from ``api/notes.py`` by Phase C, so the finalizer can read
@@ -242,6 +249,11 @@ def moved(api_text: str) -> tuple[str, str, list[str]]:
     start = text.index("_VERDICT_OUTCOMES: dict[str, NoteOutcome] = {\n")
     end = text.index("def note_records(\n", start)
     body = text[start:end].rstrip("\n") + "\n"
+    if "\nclass NoteRecord(" in "\n" + body:
+        raise SystemExit(f"{API}: class NoteRecord lies inside the span to move; it must stay in api/notes.py")
+    names = [line.split("(")[0][4:] for line in body.splitlines() if line.startswith("def ")]
+    if names != MOVED:
+        raise SystemExit(f"{API}: the span holds {names}, not {MOVED}")
     text = text[:start] + text[end:]
     if text.count(IMPORT_ANCHOR) != 1:
         raise SystemExit(f"{API}: the import anchor {IMPORT_ANCHOR!r} is not there exactly once")
@@ -253,7 +265,6 @@ def moved(api_text: str) -> tuple[str, str, list[str]]:
         "    note_steering_outcome,\n"
         ")\n" + IMPORT_ANCHOR,
     )
-    names = [line.split("(")[0][4:] for line in body.splitlines() if line.startswith("def ")]
     return text, HEADER + alias + "\n\n" + body + FOOTER, names
 
 
@@ -530,7 +541,7 @@ Run:
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\check_blocks.py
 ```
 
-Expected: `anchors: 186 exactly once; spans: 2; whole files: 2; creates: 9 absent; appends: 5; moves: 1; problems: 0`, and no `PROBLEM` line. A `PROBLEM` line names an anchor that is not in the tree D and A left: stop and report it; the remedy is a plan amendment, never a guessed anchor.
+Expected: `anchors: 192 exactly once; spans: 2; whole files: 2; creates: 9 absent; appends: 5; moves: 1; problems: 0`, and no `PROBLEM` line. A `PROBLEM` line names an anchor that is not in the tree D and A left: stop and report it; the remedy is a plan amendment, never a guessed anchor.
 
 - [ ] **Step 4: Record the baselines**
 
@@ -539,6 +550,7 @@ Run:
 ```powershell
 .venv\Scripts\python.exe -m pytest -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config
 .venv\Scripts\python.exe -c "from deep_research.evaluation.config import agent_prompt_fingerprint as f; print([f(n) for n in ('planner', 'researcher', 'source_evaluator', 'evidence_verifier', 'report_writer')])"
+.venv\Scripts\python.exe -c "from tests.test_graph.test_reader_notes_replay import PINNED_RUN_DIGESTS as p; print(p)"
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\lint_compare.py save
 Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; npx playwright test --list --project=chromium | Select-Object -Last 1; npx playwright test --list --project=visual | Select-Object -Last 1; Pop-Location
 ```
@@ -546,11 +558,12 @@ Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; npx pla
 Expected:
 - the pytest line ends `passed, 2 deselected` with no `failed` or `error`: record its count as **B-py** (the planning D+A tree printed `5017 passed, 2 deselected`);
 - five fingerprints: record them as B-planner, B-researcher, B-evaluator, B-verifier, B-writer (planning: `['3934bea57f61', 'b9caf536e3f0', 'cc5a310b0aa0', '4a3d56fab932', 'a27544eee344']`);
+- the two pinned replay runs, each `(digest, request count)`: record the counts as **B-count-extra** and **B-count-redraft** (planning: `{'missing-target-triggers-one-extra-pass': ('03e113e5584707da', 46), 'scoped-redraft-after-a-named-defect': ('875313d15f3325f2', 29)}`; the counts differ if the latency branch's verifier batch size landed first). No task of this plan changes either count;
 - `saved N findings` (planning: `26`);
-- Vitest `Test Files  N passed`, `Tests  M passed` with no failure: record M as **B-web** (planning: `32` files, `258` tests); `typecheck` prints nothing; `check:css` prints `OK`;
+- Vitest `Test Files  N passed`, `Tests  M passed` with no failure: record M as **B-web** (planning: `32` files, `259` tests); `typecheck` prints nothing; `check:css` prints `OK`;
 - `Total: 68 tests in 20 files` and `Total: 14 tests in 1 file` (record them as B-e2e and B-visual if they differ). Listing starts no server.
 
-If a baseline differs from the planning value because D or A landed differently, record the observed value: every later count shifts by the same amount. The increments this plan adds are B-py + 50, B-web + 18 tests (+1 file), B-e2e + 8 tests (+1 file), B-visual + 3.
+If a baseline differs from the planning value because D or A landed differently, record the observed value: every later count shifts by the same amount. The increments this plan adds are B-py + 52, B-web + 17 tests (+1 file), B-e2e + 8 tests (+1 file), B-visual + 3.
 
 - [ ] **Step 5: The five `check_statements` substitutes stay as they are**
 
@@ -653,7 +666,7 @@ Run:
 .venv\Scripts\ruff.exe check --select F401 --fix src/deep_research/api/notes.py
 ```
 
-Expected: `moved: ['note_outcome', 'note_steering_outcome', '_research_outcome', '_verdict_outcome']`, then `Found 4 errors (4 fixed, 0 remaining).` — the imports only the moved code used: `typing.Literal`, `has_steering_kind`, `is_research_note` and `NOTE_COVERAGE_PREFIX`. The helper writes `graph/note_outcomes.py` as its module docstring and imports, A's `NoteOutcome` alias, the moved block exactly as A left it, and
+Expected: `moved: ['note_outcome', 'note_steering_outcome', '_research_outcome', '_verdict_outcome']` (the helper stops instead, naming what it found, if the span between `_VERDICT_OUTCOMES` and `def note_records(` holds any other function or `class NoteRecord`), then `Found 4 errors (4 fixed, 0 remaining).` — the imports only the moved code used: `typing.Literal`, `has_steering_kind`, `is_research_note` and `NOTE_COVERAGE_PREFIX`. The helper writes `graph/note_outcomes.py` as its module docstring and imports, A's `NoteOutcome` alias, the moved block exactly as A left it, and
 
 ```python
 __all__ = [
@@ -2133,7 +2146,7 @@ Run:
 ```
 
 Expected, one line per value (planning values in brackets):
-- `missing-target-triggers-one-extra-pass: (<old>, 46) -> (<new>, 46)` [`03e113e5584707da` → `e7aa9a4cc1ddbe55`] and `scoped-redraft-after-a-named-defect: (<old>, 29) -> (<new>, 29)` [`875313d15f3325f2` → `e9a1b5b09e61171a`]: new digests, the same request counts;
+- `missing-target-triggers-one-extra-pass: (<old>, <B-count-extra>) -> (<new>, <B-count-extra>)` [`03e113e5584707da` → `e7aa9a4cc1ddbe55`] and `scoped-redraft-after-a-named-defect: (<old>, <B-count-redraft>) -> (<new>, <B-count-redraft>)` [`875313d15f3325f2` → `e9a1b5b09e61171a`]: new digests, each count the baseline's own (B-count-extra, B-count-redraft), unchanged by this task: 46 and 29 on the D+A tree, different if the latency branch's batch size landed first;
 - `planner:react`, `planner:ResearchPlanDraft` and `planner:PlanReviewDraft` each `X -> X` (unchanged: the planner's requests carry no answers in this case), and `report_reviewer:ReportReviewDraft: <old> -> <new>` [`824e2b4aa04d2944` → `92cb55eb182d36cf`];
 - `planner: <B-planner> -> <new>` [`3934bea57f61` → `55c1f86bac40`], `researcher: … (unchanged)`, `source_evaluator: … (unchanged)`, `evidence_verifier: … (unchanged)`, `report_writer: <B-writer> -> <new>` [`a27544eee344` → `7ed80d440f0a`].
 
@@ -3533,7 +3546,7 @@ Run:
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\repin.py fingerprints "notes-progress-report Phase C (spec §7.1-§7.3): one line per topic, the bottom line's layout and the fallback in the same shape."
 ```
 
-Expected: both run digests move with the same counts (46, 29) [planning `1baf10d33103cdf4`, `a2139e2c14155b31`]; the three planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`2026d6a3ba612fff`]; only `report_writer` moves [`f11d61b869d9`], every other agent `(unchanged)`.
+Expected: both run digests move, each count the baseline's own (B-count-extra, B-count-redraft), unchanged by this task: 46 and 29 on the D+A tree, different if the latency branch's batch size landed first [planning `1baf10d33103cdf4`, `a2139e2c14155b31`]; the three planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`2026d6a3ba612fff`]; only `report_writer` moves [`f11d61b869d9`], every other agent `(unchanged)`.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -4387,7 +4400,7 @@ Run:
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\repin.py digests
 ```
 
-Expected: both run digests move with the same counts [planning `b642638db6939e43`, `21f775d0b1ce5183`]; the planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`34668604c0fbb5bb`]. No fingerprint moves (`agents/report.py` is not an agent's prompt module), so the fingerprints are not re-run.
+Expected: both run digests move, each count the baseline's own (B-count-extra, B-count-redraft), unchanged by this task: 46 and 29 on the D+A tree, different if the latency branch's batch size landed first [planning `b642638db6939e43`, `21f775d0b1ce5183`]; the planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`34668604c0fbb5bb`]. No fingerprint moves (`agents/report.py` is not an agent's prompt module), so the fingerprints are not re-run.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -4404,19 +4417,19 @@ git commit -m "feat(report): answer-first heading order with the table after the
 
 ---
 
-### Task 6: Key figures (AC25)
+### Task 6: Key figures (AC25, D40)
 
-Spec §7.4 (D15, D27, D36): `key_figures_table` replaces `findings_table` inside `build_table` — eligible rows as today, labelled item · measure from the sub-topic the row mostly answers, values from one passage merged, one row per label, at most ten, columns What / Figure / Source, the Source cell printed as "{text} {markers}"; the options branch is unchanged.
+Spec §7.4 (D15, D27, D36, as D40 amends them): `key_figures_table` replaces `findings_table` inside `build_table` — eligible rows as today, labelled item · measure from the sub-topic the row mostly answers, a row with no named item labelled by the source that reported it (D40, spec ambiguity 10), values from one passage merged, one row per label, at most ten, columns What / Figure / Source, the Source cell printed as "{text} {markers}"; the options branch is unchanged.
 
 **Files:**
-- Modify: `src/deep_research/agents/report_table.py` (`__all__` `:48`; `MAX_FINDING_ROWS` `:54`; `build_table` `:316-338`; the findings-table helpers through `findings_table` `:847-926`, deleted)
+- Modify: `src/deep_research/agents/report_table.py` (`__all__` `:48`; `MAX_FINDING_ROWS` `:54`; `build_table` `:316-338`; `_who_text` `:829-844`, split into `_who_name` and `_who_text`; the findings-table helpers through `findings_table` `:847-926`, deleted)
 - Modify: `src/deep_research/agents/report.py` (the table cell's last column, `:1348-1351` at `73b4d7a6`), `src/deep_research/agents/__init__.py`
 - Create: `tests/fixtures/latte-key-figures.json` (generated), `.superpowers/sdd/2026-09-30-phase-c/make_latte_fixture.py` (git-ignored)
 - Test: `tests/test_agents/test_key_figures.py` (new), `tests/test_agents/test_report_table.py`, `tests/test_agents/test_report_layout.py`, `tests/test_agents/test_report_writer.py`; re-pins as Task 5
 
 **Interfaces:**
 - Consumes: `fact_rows` rows (`FactRow`: `subject`, `measure`, `target_ids`, `finding_id`, `duplicate_finding_ids`, `kind`, `period`, …); `composition.sub_topics` and their `evidence_targets` (`unit_dimension`); today's `_row_eligible`, `_result_text`, `_who_text`, `cosmetic_text`.
-- Produces: `report_table.MAX_KEY_FIGURE_ROWS = 10`; `KeyFigureGroup` (frozen dataclass: `label`, `rows`, `shown`, property `values`); `merge_key_figures(rows, composition) -> list[KeyFigureGroup]`; `key_figures_table(composition: ReportComposition) -> ReportTable | None`; `__all__ = ["KeyFigureGroup", "build_table", "key_figures_table", "merge_key_figures", "options_table"]` (`findings_table` is gone; all four exported from `deep_research.agents`).
+- Produces: `report_table.MAX_KEY_FIGURE_ROWS = 10`; `KeyFigureGroup` (frozen dataclass: `label`, `rows`, `shown`, property `values`); `merge_key_figures(rows, composition) -> list[KeyFigureGroup]` (each row labelled by the private `_key_figure_label(row, composition, finding_by_id)`; D40's source by `_label_source(row, finding, page_credits)`, built on `_who_name`, the Source column's name without its date); `key_figures_table(composition: ReportComposition) -> ReportTable | None`; `__all__ = ["KeyFigureGroup", "build_table", "key_figures_table", "merge_key_figures", "options_table"]` (`findings_table` is gone; all four exported from `deep_research.agents`).
 
 - [ ] **Step 1: Generate the latte fixture**
 
@@ -4498,14 +4511,17 @@ Expected: `tests/fixtures/latte-key-figures.json: 140 fact rows, 96 findings, 9 
 
 - [ ] **Step 2: Write the failing tests**
 
+`test_report_table.py` loses the five tests that pinned `findings_table`'s output (spec ambiguity 11): its two quoted-snippet tests, and the three `test_period_resolved_from_*` tests, which pinned P3-3's "(counted from the release date, …)" qualifier and `_what_was_measured`'s "({scope})" suffix. The Key figures label carries neither: the period basis and scope leave the reader table, and the evidence log keeps `period_resolved_from` (`agents/report.py:845-846`). `test_key_figures.py` pins D40 twice: on hand-built rows (`test_a_row_with_no_named_item_is_labelled_by_its_source`) and on the replay default case, whose five figures now print as five rows (`test_the_replay_default_case_labels_its_figures_by_their_sources`).
+
 Create `tests/test_agents/test_key_figures.py`:
 
 ```python
-"""Key figures (notes-progress-report spec §7.4; AC25, D15, D36).
+"""Key figures (notes-progress-report spec §7.4; AC25, D15, D36, D40).
 
 The verified figures leave the bottom line for their own section after the topics:
-each row labelled ``item · measure`` (never a quoted snippet), the values one passage
-states about one item merged, one row per label, at most ten rows.
+each row labelled ``item · measure`` (never a quoted snippet) -- a row with no named
+item by the source that reported it (D40) -- the values one passage states about one
+item merged, one row per label, at most ten rows.
 """
 
 from __future__ import annotations
@@ -4536,6 +4552,7 @@ from deep_research.utils.types import (
     SubTopic,
 )
 from tests.evidence_fakes import make_finding, make_read
+from tests.test_api.replay_support import EXTRA_PASS_CASE, replay_outcome
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "latte-key-figures.json"
 
@@ -4667,8 +4684,14 @@ def test_key_figures_measure_rule() -> None:
 
 def test_key_figure_labels_name_the_item_never_a_snippet() -> None:
     plan = ReportComposition(question="q", session_id="s")
-    assert _labels(plan, _fact("K001", subject=None, measure="aggregate rating")) == ["Aggregate rating"]
-    assert _labels(plan, _fact("K001", subject="its new location", measure="opening hours")) == ["Opening hours"]
+    # D40: with no named item -- no subject, or one that starts with a pronoun -- the
+    # label names the source that reported the row.
+    assert _labels(plan, _fact("K001", subject=None, measure="aggregate rating")) == [
+        "Example Org \u00b7 Aggregate rating",
+    ]
+    assert _labels(plan, _fact("K001", subject="its new location", measure="opening hours")) == [
+        "Example Org \u00b7 Opening hours",
+    ]
     assert _labels(plan, _fact("K001", subject=None, measure="stated figure")) == []
     assert _labels(plan, _fact("K001", subject="Example Cafe", measure="stated figure")) == [
         "Example Cafe \u00b7 stated figure",
@@ -4731,6 +4754,34 @@ def test_key_figures_print_one_row_per_label() -> None:
     )
 
 
+def test_a_row_with_no_named_item_is_labelled_by_its_source() -> None:
+    """D40: a row with no named item is labelled by the source that reported it, so
+    figures from different findings keep separate rows. One passage's values about it
+    still merge; under one label only the first row prints (D36); a relayed figure is
+    labelled by the organisation it is credited to."""
+    def unnamed(row_id: str, finding_id: str, organisation: str, value: str, **fields) -> FactRow:
+        return _fact(row_id, finding_id=finding_id, subject=None, value=value, period="2024").model_copy(
+            update={"organisation": organisation, **fields})
+
+    composition = _eligible_composition([
+        unnamed("K001", "a", "Tripadvisor", "4.7 of 5"),
+        unnamed("K002", "a", "Tripadvisor", "20 reviews"),
+        unnamed("K003", "b", "Yelp", "4.4 of 5"),
+        unnamed("K004", "c", "Tripadvisor", "4.1 of 5"),
+        unnamed("K005", "d", "EIA", "38 GW", attribution="relayed", relay_host="energi.media"),
+    ])
+    table = key_figures_table(composition)
+    assert [(row[0].text, row[1].text, row[2].text, row[0].row_ids) for row in table.rows] == [
+        ("Tripadvisor \u00b7 Rating, 2024", "4.7 of 5 \u00b7 20 reviews", "Tripadvisor", ["K001", "K002"]),
+        ("Yelp \u00b7 Rating, 2024", "4.4 of 5", "Yelp", ["K003"]),
+        ("EIA \u00b7 Rating, 2024", "38 GW", "EIA, reported by energi.media", ["K005"]),
+    ]
+    assert table.caption == (
+        "Showing 4 of 5 verified figures; all are in the evidence log. "
+        "No figure in this table is a forecast."
+    )
+
+
 def test_key_figures_cap_at_ten_rows_and_count_fact_rows() -> None:
     rows = []
     for n in range(12):
@@ -4753,6 +4804,22 @@ def test_a_key_figures_source_prints_its_text_then_its_markers() -> None:
     markdown = render_written_report(composition.model_copy(update={"table": key_figures_table(composition)}))
     assert "| Starbucks \u00b7 rating | 3.5 of 5 | Example Org [1] |" in markdown
     assert re.search(r"\| Philz Coffee \u00b7 rating \| 4\.5 of 5 \| Example Org \[2\] \|", markdown)
+
+
+def test_the_replay_default_case_labels_its_figures_by_their_sources(tmp_path: Path) -> None:
+    """D40 on the replay server's default case: its five figures name no item and come
+    from five findings, so each keeps its own row, labelled by its source -- where a
+    measure-only label printed two rows of five."""
+    table = replay_outcome(EXTRA_PASS_CASE, tmp_path).composition.table
+    assert table is not None and table.columns == ["What", "Figure", "Source"]
+    assert [(row[0].text, row[1].text) for row in table.rows] == [
+        ("Acme Institute 17 \u00b7 Rate, 2024", "40 percent"),
+        ("Acme Institute 2 \u00b7 Value, 2024", "12 million dollars"),
+        ("Independent Bureau 2 \u00b7 Value, 2024", "12 million dollars"),
+        ("Acme Institute 3 \u00b7 Value, 2024", "3.4 million units"),
+        ("Independent Bureau 3 \u00b7 Value, 2024", "3.4 million units"),
+    ]
+    assert table.caption == "No figure in this table is a forecast."
 ```
 
 `tests/test_agents/test_report_layout.py` — replace
@@ -6097,6 +6164,64 @@ with
 `src/deep_research/agents/report_table.py` — replace
 
 ```python
+def _who_text(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    source_url = finding.source_url if finding is not None else ""
+    host = publisher_identity(source_url) if source_url else ""
+    credited = _page_publisher(page_credits, source_url) if source_url else None
+    if row.attribution == "own":
+        org = row.organisation
+        if not org or same_organisation(org, host):
+            org = credited or host
+        who = org
+    elif row.attribution == "relayed":
+        who = f"{row.organisation}, reported by {credited or (row.relay_host or '')}"
+    else:  # unattributed
+        who = credited or host
+    return f"{who}{_when_text(finding, row.kind)}"
+```
+
+with
+
+```python
+def _who_name(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    """Who a row's figure is credited to, as the Source column names it, its date left off."""
+    source_url = finding.source_url if finding is not None else ""
+    host = publisher_identity(source_url) if source_url else ""
+    credited = _page_publisher(page_credits, source_url) if source_url else None
+    if row.attribution == "own":
+        org = row.organisation
+        if not org or same_organisation(org, host):
+            org = credited or host
+        return org
+    if row.attribution == "relayed":
+        return f"{row.organisation}, reported by {credited or (row.relay_host or '')}"
+    return credited or host  # unattributed
+
+
+def _who_text(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    return f"{_who_name(row, finding, page_credits)}{_when_text(finding, row.kind)}"
+
+
+def _label_source(
+    row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
+) -> str:
+    """D40: the source that reported a row, for the label of a row with no named
+    item -- the organisation a relayed figure is credited to, else the name the
+    Source column prints (the publisher, or the page's own site)."""
+    if row.attribution == "relayed" and row.organisation:
+        return row.organisation
+    return _who_name(row, finding, page_credits)
+```
+
+`src/deep_research/agents/report_table.py` — replace
+
+```python
 
 
 def findings_table(composition: ReportComposition) -> ReportTable | None:
@@ -6155,18 +6280,28 @@ def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
     return (quantity or targets[0]).measure
 
 
-def _key_figure_label(row: FactRow, composition: ReportComposition) -> str | None:
-    """Spec §7.4 item 2: ``{Item} \u00b7 {measure}``, or ``{Measure}`` with no
-    item -- the item being the row's subject unless it starts with a pronoun --
-    plus ``, {period}`` when the label does not already say it. ``None`` for a
-    row with no item whose measure is only "stated figure": such a row is not
-    eligible. Never a quoted snippet."""
+def _key_figure_label(
+    row: FactRow, composition: ReportComposition, finding_by_id: Mapping[str, Finding]
+) -> str | None:
+    """Spec §7.4 item 2, as D40 amends it: ``{Item} \u00b7 {measure}``, the item
+    being the row's subject unless it starts with a pronoun; a row with no named
+    item is labelled by the source that reported it, ``{Source} \u00b7 {Measure}``
+    (``_label_source``), so figures from different findings keep separate rows --
+    ``{Measure}`` alone only when no source can be named. Then ``, {period}``
+    when the label does not already say it. ``None`` for a row with no item whose
+    measure is only "stated figure": such a row is not eligible. Never a quoted
+    snippet."""
     subject = " ".join((row.subject or "").split())
     item = "" if subject and cosmetic_text(subject).split()[0] in _POSSESSIVE_PRONOUNS else subject
     measure = " ".join(_key_figure_measure(row, composition).split())
     if not item and cosmetic_text(measure) == _STATED_FIGURE:
         return None
-    label = f"{_capitalised(item)} \u00b7 {measure}" if item else _capitalised(measure)
+    if item:
+        label = f"{_capitalised(item)} \u00b7 {measure}"
+    else:
+        finding = finding_by_id.get(row.finding_id)
+        source = " ".join(_label_source(row, finding, composition.page_credits).split())
+        label = f"{source} \u00b7 {_capitalised(measure)}" if source else _capitalised(measure)
     if row.period and not _words_present(row.period, label):
         label = f"{label}, {row.period}"
     return label
@@ -6177,8 +6312,9 @@ def _value_shape(value: str) -> str:
 
 
 def merge_key_figures(rows: Sequence[FactRow], composition: ReportComposition) -> list[KeyFigureGroup]:
-    """Spec §7.4 items 2-3, before eligibility and the cap: label each row, and
-    merge the values one passage states about one item.
+    """Spec §7.4 items 2-3, before eligibility and the cap: label each row (D40:
+    a row with no named item by the source that reported it), and merge the
+    values one passage states about one item.
 
     Rows sharing (label, primary finding, kind) form a group. Within a group, a
     row whose value equals a shown value (``cosmetic_text``) only joins that
@@ -6188,10 +6324,11 @@ def merge_key_figures(rows: Sequence[FactRow], composition: ReportComposition) -
     passages never merge. Merged rows come back in the order their first rows
     appear; a row ``_key_figure_label`` refuses is left out.
     """
+    finding_by_id = _finding_by_id(composition)
     merged: list[tuple[str, list[FactRow], list[FactRow]]] = []
     positions_by_group: dict[tuple[str, str, str], list[int]] = {}
     for row in rows:
-        label = _key_figure_label(row, composition)
+        label = _key_figure_label(row, composition, finding_by_id)
         if label is None:
             continue
         positions = positions_by_group.setdefault((label, row.finding_id, row.kind), [])
@@ -6391,7 +6528,7 @@ Run:
 .venv\Scripts\ruff.exe check --select F src/deep_research/agents/report_table.py tests/test_agents/test_key_figures.py tests/test_agents/test_report_table.py
 ```
 
-Expected: `3 failed, 310 passed` — the same three pinned digest tests as Task 5 Step 4 (the replay case's table is now Key figures); then `All checks passed!`.
+Expected: `3 failed, 312 passed` — the same three pinned digest tests as Task 5 Step 4 (the replay case's table is now Key figures, its five rows labelled by source); then `All checks passed!`.
 
 - [ ] **Step 6: Re-pin**
 
@@ -6401,19 +6538,19 @@ Run:
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\repin.py digests
 ```
 
-Expected: both run digests move with the same counts [planning `593379964423addd`, `372fa419f195289b`]; the planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`97035831ad97c962`].
+Expected: both run digests move, each count the baseline's own (B-count-extra, B-count-redraft), unchanged by this task: 46 and 29 on the D+A tree, different if the latency branch's batch size landed first [planning `d92891c23a2cfe2e`, `9ac8c34e25224206`]; the planner packets unchanged; `report_reviewer:ReportReviewDraft` moves [`ba466f328de6eb67`].
 
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run the first Step 5 command again.
 
-Expected: `313 passed`.
+Expected: `315 passed`.
 
 - [ ] **Step 8: Commit**
 
 ```powershell
 git add src/deep_research/agents/report_table.py src/deep_research/agents/report.py src/deep_research/agents/__init__.py tests/fixtures/latte-key-figures.json tests/test_agents/test_key_figures.py tests/test_agents/test_report_table.py tests/test_agents/test_report_layout.py tests/test_agents/test_report_writer.py tests/test_graph/test_reader_notes_replay.py tests/test_agents/test_planner_reader_answers.py
-git commit -m "feat(report): Key figures - labelled, merged within one passage, one row per label, after the topics"
+git commit -m "feat(report): Key figures - labelled (by source when no item is named), merged within one passage, one row per label, after the topics"
 ```
 
 ---
@@ -7588,7 +7725,8 @@ Spec §7.6: `ReportBody` is rewritten — the evidence line lifted out as `p.cap
 **Files:**
 - Modify: `web/components/ReportBody.tsx` (the whole file; the "Your notes" block was `:120-131` at `73b4d7a6`), `web/components/ReportStage.tsx:97`
 - Modify: `web/app/globals.css` (`:1207` and `:1217`, `--report-card-w`; the "Your notes" rules `:1404-1410`; a new section at the end)
-- Test: `web/test/components/report-body.test.tsx` (the whole file), `web/test/components/reader-notes.test.tsx` (its "Your notes" tests, A's mixed-note caption test among them, go: the block they test is gone), `web/test/components/report-stage.test.tsx` (two report fixtures gain a `## Bottom line` heading: a report with no `##` heading renders no card)
+- Test: `web/test/components/report-body.test.tsx` (the whole file), `web/test/components/reader-notes.test.tsx` (its "Your notes" tests, A's mixed-note caption test among them, go: the block they test is gone), `web/test/components/report-stage.test.tsx` (two report fixtures gain a `## Bottom line` heading: a report with no `##` heading renders no card), `web/test/notes.test.ts` (A's `noteCaption` case goes with the function)
+- Modify: `web/lib/notes.ts` (`noteCaption`, `:103-108` on the D+A tree, deleted with its `ReaderNoteRecord` import: no component calls it once the "Your notes" block is gone; spec ambiguity 12)
 
 **Interfaces:**
 - Consumes: Task 9's helpers and `ReportOutlineEntry`; `reducedMotion()` (`web/lib/handoff.ts:21`); the remark plugin API (`react-markdown`'s `Options["remarkPlugins"]`; mdast types only).
@@ -7944,15 +8082,46 @@ with
         return reportCalls === 1 ? unreachable : md("# Q\n\n## Bottom line\n\nBody text.\n");
 ```
 
+`web/test/notes.test.ts` — replace
+
+```ts
+import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, noteCaption, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
+```
+
+with
+
+```ts
+import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
+```
+
+`web/test/notes.test.ts` — replace
+
+```ts
+  });
+
+  it("captions a mixed note with both of its results, and every other note with its one", () => {
+    expect(noteCaption({ outcome: "covered", steering_outcome: "not_addressed" })).toBe("covered; the rest of your note: not addressed in the report");
+    expect(noteCaption({ outcome: "not_checked", steering_outcome: "not_checked" })).toBe("not checked; the rest of your note: not checked");
+    expect(noteCaption({ outcome: "not_checked", steering_outcome: null })).toBe(OUTCOME_TEXT.not_checked);
+    expect(noteCaption({ outcome: "pending" })).toBe("not checked yet");
+  });
+```
+
+with
+
+```ts
+  });
+```
+
 - [ ] **Step 2: Run them to verify they fail**
 
 Run:
 
 ```powershell
-Push-Location web; npx vitest run test/components/report-body.test.tsx test/components/reader-notes.test.tsx test/components/report-stage.test.tsx; Pop-Location
+Push-Location web; npx vitest run test/components/report-body.test.tsx test/components/reader-notes.test.tsx test/components/report-stage.test.tsx test/notes.test.ts; Pop-Location
 ```
 
-Expected: `Test Files  1 failed | 2 passed (3)`, `Tests  14 failed | 12 passed (26)` — every test of `report-body.test.tsx` (the old body renders one article, no cards).
+Expected: `Test Files  1 failed | 3 passed (4)`, `Tests  14 failed | 27 passed (41)` — every test of `report-body.test.tsx` (the old body renders one article, no cards).
 
 - [ ] **Step 3: Rewrite `ReportBody`, pass the outline, and add the CSS**
 
@@ -8399,6 +8568,37 @@ Append to `web/app/globals.css`:
 }
 ```
 
+`web/lib/notes.ts` — replace
+
+```ts
+import type { ReaderNoteOutcome, ReaderNoteRecord } from "./api";
+```
+
+with
+
+```ts
+import type { ReaderNoteOutcome } from "./api";
+```
+
+`web/lib/notes.ts` — replace
+
+```ts
+/* notes-progress-report spec §5.7 (D20): a mixed note's caption reads both of its results, its own topic's
+   first; every other note's caption is its one outcome. */
+export function noteCaption(note: Pick<ReaderNoteRecord, "outcome" | "steering_outcome">): string {
+  const words = OUTCOME_TEXT[note.outcome];
+  return note.steering_outcome ? words + "; the rest of your note: " + OUTCOME_TEXT[note.steering_outcome] : words;
+}
+
+/* How many more notes the run takes: the last /status's count, lowered by every note the stream has
+```
+
+with
+
+```ts
+/* How many more notes the run takes: the last /status's count, lowered by every note the stream has
+```
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run:
@@ -8407,12 +8607,12 @@ Run:
 Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; Pop-Location
 ```
 
-Expected: `Test Files  33 passed (33)`, `Tests  276 passed (276)` (B-web + 18: report.test.ts's 10, report-body's 14 in place of 3, reader-notes' 3 report tests gone); `typecheck` prints nothing; `check:css` prints `OK`.
+Expected: `Test Files  33 passed (33)`, `Tests  276 passed (276)` (B-web + 17: report.test.ts's 10, report-body's 14 in place of 3, reader-notes' 3 report tests and notes.test.ts's `noteCaption` case gone); `typecheck` prints nothing; `check:css` prints `OK`.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add web/components/ReportBody.tsx web/components/ReportStage.tsx web/app/globals.css web/test/components/report-body.test.tsx web/test/components/reader-notes.test.tsx web/test/components/report-stage.test.tsx
+git add web/components/ReportBody.tsx web/components/ReportStage.tsx web/app/globals.css web/lib/notes.ts web/test/components/report-body.test.tsx web/test/components/reader-notes.test.tsx web/test/components/report-stage.test.tsx web/test/notes.test.ts
 git commit -m "feat(web): the report as section cards with a contents rail or chip row"
 ```
 
@@ -8785,7 +8985,7 @@ Expected: `17 passed`, and `web/visual/phase-c/` holds, among the others, `04-re
 
 Open `.superpowers/progress-canvas/project/Report.dc.html` (styled by `progress.css` over `theme.css`) beside each capture and check, writing one line per capture into the task summary:
 - `18b-report-cards-1920`: the 176 px contents rail left of the cards, headed "Contents", Bottom line current, topic numbers in the mono `.tn` column; cards on the page ground; the Review rail at right; the head and the evidence line aligned to the group (canvas desktop artboard).
-- `18-report-cards` and `04-report`: the chip row above the cards with Bottom line current, under the evidence line; the bottom line card's lead, then its rows with a 132 px key column and hairlines; topic cards with "Topic i of 3" eyebrows; Key figures with its caption; no "Your notes" block.
+- `18-report-cards` and `04-report`: the chip row above the cards with Bottom line current, under the evidence line; the bottom line card's lead, then its rows with a 132 px key column and hairlines; topic cards with "Topic i of 3" eyebrows; Key figures with five rows, each labelled by its source (D40), and the caption "No figure in this table is a forecast."; no "Your notes" block.
 - `18-report-cards-phone`: the evidence line reads `{date} · {n} sources`; chips scroll sideways; cards at 16 px padding; bottom-line rows stacked; Key figures with no Source column and the source under each label (canvas phone artboard).
 - `12-report-notes(-phone)`: the report as cards with no note line and no "Your notes" block (replay never applies a note).
 
@@ -8802,10 +9002,10 @@ git commit -m "test(web): the report's cards, contents and note lines end to end
 
 ### Task 12: The design record
 
-Spec §7.8, plus spec ambiguity 17: `DESIGN.md` §3's inventory row 4 and the note paragraph, §2.A's order sentence, a §5.6 bullet for the contents jump under reduced motion; the superseding note on the consumer-format spec; `web/README.md`'s running notes.
+Spec §7.8, plus spec ambiguity 19: `DESIGN.md` §3's inventory row 4 and the note paragraph, §2.A's order sentence, a §5.6 bullet for the contents jump under reduced motion; the superseding note on the consumer-format spec; `web/README.md`'s running notes.
 
 **Files:**
-- Modify: `docs/design/DESIGN.md` (§2.A `:66-68`, row 4 `:161`, the note paragraph `:254-263` on the D+A tree, §5.6's bullets), `docs/superpowers/specs/2026-09-25-consumer-report-format.md:1`, `web/README.md:38-40` on the D+A tree
+- Modify: `docs/design/DESIGN.md` (§2.A `:66-68`, row 4 `:161`, the note paragraph `:254-263` on the D+A tree, §5.6's bullets), `docs/superpowers/specs/2026-09-25-consumer-report-format.md:1`, `web/README.md` (`:23-24`, the `capture:visual` line D wrote, and `:38-40`, on the D+A tree)
 
 **Interfaces:**
 - Consumes: Tasks 5–11 as built.
@@ -8933,6 +9133,22 @@ with
   `18b-report-cards-1920` captures use it.
 ```
 
+The captures line counts what Task 11 adds: thirteen stages and views at each of 1252 and 390 px (D's twelve and `18-report-cards`), and `18b-report-cards-1920` (review 1, M5).
+
+`web/README.md` — replace
+
+```markdown
+- `npm run capture:visual` — the twenty-four full-page captures (12 stages/views × 1252 and
+  390 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
+```
+
+with
+
+```markdown
+- `npm run capture:visual` — the twenty-seven full-page captures (13 stages/views × 1252 and
+  390 px, and the report's cards at 1920 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
+```
+
 - [ ] **Step 2: Check that nothing still describes the old report**
 
 Run:
@@ -8965,10 +9181,10 @@ Run:
 .venv\Scripts\python.exe -m pytest -q --deselect tests/test_config.py::test_the_evidence_verifier_pipeline_config
 .venv\Scripts\python.exe .superpowers\sdd\2026-09-30-phase-c\lint_compare.py compare
 git grep -n "MAX_BOTTOM_LINE_SENTENCES" -- src tests
-git grep -n "findings_table" -- src tests web
+git grep -n -w "findings_table" -- src tests web
 ```
 
-Expected: `B-py + 50 passed, 2 deselected` (planning: `5067 passed, 2 deselected`); `new: none` and `gone:` exactly the one `tests\test_agents\test_report_writer.py: F401 … MAX_BOTTOM_LINE_SENTENCES imported but unused` finding; the two greps print nothing.
+Expected: `B-py + 52 passed, 2 deselected` (planning: `5069 passed, 2 deselected`); `new: none` and `gone:` exactly the one `tests\test_agents\test_report_writer.py: F401 … MAX_BOTTOM_LINE_SENTENCES imported but unused` finding; the two greps print nothing (`-w` matches the name alone, not the two kept tests named `test_capped_findings_table_keeps_the_*_caption`, which now exercise Key figures' captions).
 
 - [ ] **Step 2: The web**
 
@@ -8978,17 +9194,17 @@ Run:
 Push-Location web; npm test; npm run -s typecheck; npm run -s check:css; Pop-Location
 ```
 
-Expected: `Tests  B-web + 18 passed` (planning `276`), no `typecheck` output, `OK`.
+Expected: `Tests  B-web + 17 passed` (planning `276`), no `typecheck` output, `OK`.
 
 - [ ] **Step 3: The acceptance criteria, each by its test**
 
 Run:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest "tests/test_agents/test_report_bottom_line.py::test_bottom_line_request_reader_answers_and_ids" "tests/test_agents/test_report_bottom_line.py::test_answer_overflow_refused" "tests/test_agents/test_report_bottom_line.py::test_missing_outcome_reask_text" "tests/test_agents/test_report_bottom_line.py::test_bottom_line_examples_valid_and_name_topics" "tests/test_agents/test_report_bottom_line.py::test_no_old_sentence_cap_name_remains" "tests/test_agents/test_report_bottom_line.py::test_bottom_line_topic_line_rules" "tests/test_agents/test_report_bottom_line.py::test_fallback_one_line_per_topic" "tests/test_agents/test_report_bottom_line.py::test_fallback_move_drops_emptied_section" "tests/test_agents/test_report_markdown.py::test_bottom_line_layout_and_markdown" "tests/test_agents/test_report_markdown.py::test_markdown_heading_order" "tests/test_agents/test_report_markdown.py::test_report_outline_matches_headings" "tests/test_agents/test_report_markdown.py::test_the_outline_numbers_only_the_topic_sections_that_remain" "tests/test_agents/test_key_figures.py::test_key_figures_labels_and_merge_latte" "tests/test_agents/test_key_figures.py::test_key_figures_measure_rule" "tests/test_graph/test_note_lines.py::test_note_lines_stamped_at_publication" "tests/test_graph/test_note_lines.py::test_mixed_note_line_both_results" "tests/test_graph/test_note_lines.py::test_fingerprint_ignores_note_lines" -q
+.venv\Scripts\python.exe -m pytest "tests/test_agents/test_report_bottom_line.py::test_bottom_line_request_reader_answers_and_ids" "tests/test_agents/test_report_bottom_line.py::test_answer_overflow_refused" "tests/test_agents/test_report_bottom_line.py::test_missing_outcome_reask_text" "tests/test_agents/test_report_bottom_line.py::test_bottom_line_examples_valid_and_name_topics" "tests/test_agents/test_report_bottom_line.py::test_no_old_sentence_cap_name_remains" "tests/test_agents/test_report_bottom_line.py::test_bottom_line_topic_line_rules" "tests/test_agents/test_report_bottom_line.py::test_fallback_one_line_per_topic" "tests/test_agents/test_report_bottom_line.py::test_fallback_move_drops_emptied_section" "tests/test_agents/test_report_markdown.py::test_bottom_line_layout_and_markdown" "tests/test_agents/test_report_markdown.py::test_markdown_heading_order" "tests/test_agents/test_report_markdown.py::test_report_outline_matches_headings" "tests/test_agents/test_report_markdown.py::test_the_outline_numbers_only_the_topic_sections_that_remain" "tests/test_agents/test_key_figures.py::test_key_figures_labels_and_merge_latte" "tests/test_agents/test_key_figures.py::test_key_figures_measure_rule" "tests/test_agents/test_key_figures.py::test_a_row_with_no_named_item_is_labelled_by_its_source" "tests/test_agents/test_key_figures.py::test_the_replay_default_case_labels_its_figures_by_their_sources" "tests/test_graph/test_note_lines.py::test_note_lines_stamped_at_publication" "tests/test_graph/test_note_lines.py::test_mixed_note_line_both_results" "tests/test_graph/test_note_lines.py::test_fingerprint_ignores_note_lines" -q
 ```
 
-Expected: `17 passed`. AC27's checks are Task 11 Step 3's `e2e/report-layout.spec.ts` run.
+Expected: `19 passed`. AC27's checks are Task 11 Step 3's `e2e/report-layout.spec.ts` run.
 
 - [ ] **Step 4: Nothing left uncommitted**
 
@@ -9012,7 +9228,7 @@ Expected: `git status` prints nothing; the log's top eleven commits are this pla
 | AC23 | `## Bottom line`: the answer paragraph and a list — one line per kept topic line (its short title) and one per active note ("Your note · {short}", mark per outcome; a mixed note's both results) | Tasks 4, 5, 7 | `test_bottom_line_layout_and_markdown`, `test_note_lines_stamped_at_publication`, `test_mixed_note_line_both_results`, `test_a_research_note_without_a_kept_line_names_its_outcome`, `test_steering_note_lines_follow_the_reviews_verdicts`; the look: `report-body.test.tsx`, `report-layout.spec.ts` (served report) |
 | AC34 (bottom-line part) | A mixed note's bottom-line line shows both results with the combined mark | Task 7 | `test_mixed_note_line_both_results` |
 | AC24 | The fallback: the assembled label, one checked line per topic, floor and dispute protections; a topic whose only point moved has no section and no card; `report_outline` numbers the sections that remain | Tasks 4, 5 | `test_fallback_one_line_per_topic`, `test_fallback_move_drops_emptied_section`, `test_every_sentence_refused_falls_back_to_one_line_per_topic`, `test_the_outline_numbers_only_the_topic_sections_that_remain`, `test_an_assembled_bottom_line_says_so_above_its_topic_lines` |
-| AC25 | The latte rows: the merged row "Bijan Bakery · aggregate customer rating" / "4.2 of 5 bubbles · 87 reviews"; no merged row from two primary findings; no quoted-snippet label; Key figures after the topics, ≤ 10 rows, distinct labels, What / Figure / Source | Tasks 5, 6 | `test_key_figures_labels_and_merge_latte`, `test_key_figures_measure_rule`, `test_markdown_heading_order` |
+| AC25 | The latte rows: the merged row "Bijan Bakery · aggregate customer rating" / "4.2 of 5 bubbles · 87 reviews"; no merged row from two primary findings; no quoted-snippet label; Key figures after the topics, ≤ 10 rows, distinct labels, What / Figure / Source; with D40, a row with no named item labelled by its source | Tasks 5, 6 | `test_key_figures_labels_and_merge_latte`, `test_key_figures_measure_rule`, `test_a_row_with_no_named_item_is_labelled_by_its_source`, `test_the_replay_default_case_labels_its_figures_by_their_sources`, `test_markdown_heading_order` |
 | AC26 | The heading order of §7.5, and `report_outline` one to one with the headings | Task 5 (served by Task 8) | `test_markdown_heading_order`, `test_report_outline_matches_headings`, `test_session_response_carries_the_report_outline` |
 | AC27 | Each section its own card; the rail at ≥ 1310 px container width, chips below (1920 rail; 1252 and 1568-with-sidebar chips); the current entry marked while scrolling; no "Your notes" block; the Review rail present; at 390 px the evidence line reads "{date} · {n} sources" only; no horizontal scroll at 1252 or 390 px | Tasks 9, 10 | `report-body.test.tsx`, `report.test.ts`; `report-layout.spec.ts`, `layout.spec.ts`, `notes.spec.ts`, captures `18-report-cards(-phone)`, `18b-report-cards-1920` (Task 11) |
 
@@ -9023,7 +9239,7 @@ Expected: `git status` prints nothing; the log's top eleven commits are this pla
 | §7.1 | Reply schema (`SectionDraft.short_title`, `TopicLineDraft`, `BottomLineDraft.topics`), prompts and rules verbatim, the two reply examples, `MAX_ANSWER_SENTENCES`, the request's `# Reader answers` and headers, the topic-line refusals, the Statement Check over both, the re-ask text | 3, 4 |
 | §7.2 | `bottom_line` layout, `reader_note_lines` stamped by the finalizer, `reader_answers`, `ReportSection.short_title`, `summary` order and `_renumber`, labels, note short (A's), the note-line texts and marks, outside the fingerprint | 4, 7 (A: the short) |
 | §7.3 | The fallback in the same shape, its two messages, the move that can empty a section | 4 |
-| §7.4 | `key_figures_table`, label, merge, cap, columns, caption; placement after the topics; Options compared | 5, 6 |
+| §7.4 | `key_figures_table`, label (with D40's source label), merge, cap, columns, caption; placement after the topics; Options compared | 5, 6 |
 | §7.5 | The heading order, the evidence line's answers, the assembled line, the list, citation order, `report_outline` on the response | 5, 8 |
 | §7.6 | Structure, chunks, rendering with `sourceIds`, cards, card box, contents (rail/chips, D28), current section, the phone's evidence line and Key figures, removal of "Your notes", types, CSS | 9, 10, 11 |
 | §7.7 | The section and bottom-line replay doubles | 3, 4 |
@@ -9039,3 +9255,19 @@ Expected: `git status` prints nothing; the log's top eleven commits are this pla
 2. **Placeholders.** None: every code step carries its code; the two values a step cannot know in advance (re-pinned digests and fingerprints) are computed by the helper, with the keys that move named and the planning values given; Task 11's run outcomes are marked [not run in planning] with their reasoning.
 3. **Type consistency.** The names Tasks 2–10 produce are the ones later tasks consume: `note_outcome`/`note_steering_outcome` (2 → 7), `TopicLineDraft`, `BottomLineDraft.topics`, `ReportSection.short_title`, `reader_answer_lines`, `MAX_ANSWER_SENTENCES` (3 → 4, 5), `BottomLineLayout`, `BottomLineTopic`, `note_label`, `ReportComposition.bottom_line`/`.reader_answers` (4 → 5, 7), `ReportOutlineEntry`, `report_outline` (5 → 8, 9), `key_figures_table` (6), `ReportNoteLine`, `reader_note_lines`, `report_note_lines` (7), `ReportOutlineEntryResponse`, `report_outline` on `/status` (8 → 9), `splitReport`, `reportCards`, `parseEvidenceLine`, `sourceIdsOf`, `currentCard`, `revealChip`, `contentsModeFor` (9 → 10), and Task 10's DOM ids and classes (→ 11).
 4. **Anchors.** Every block was applied in order to the tree Phases D and A leave (see Evidence), and Task 1 Step 3 re-checks them all before the first edit.
+
+
+## Review 1: how each finding was resolved
+
+Fable's review 1 (`.superpowers/reviews/2026-09-30-plan-c-review-1.md`, of `bd48725c`): approved with changes. Every changed step was re-run on a D+A tree rebuilt from the revised D and A plans; Task 1 Step 3's anchor check prints `problems: 0` there.
+
+| Finding | Resolution |
+|---|---|
+| I1 — the replay digests' request counts were hard-coded | Every re-pin Expected line now names each count as the baseline's own, unchanged by the task (46/29 on the D+A tree; different if the latency branch's batch size landed first): Task 3 Step 5, Task 4 Step 5, Task 5 Step 5, Task 6 Step 6. Task 1 Step 4 prints `PINNED_RUN_DIGESTS` and records the two counts as B-count-extra and B-count-redraft; Global Constraints says no task changes them. |
+| I2 — a measure-only label collapsed figures from different findings (the human's ruling, D40) | D40 is built in Task 6: a row with no named item is labelled `{Source} · {Measure}` by the source that reported it (`_label_source`, on `_who_name`, the Source column's name without its date); merging and one row per label are unchanged; spec ambiguity 10 records the reading of "no named item" and of "the source". New tests: `test_a_row_with_no_named_item_is_labelled_by_its_source` and `test_the_replay_default_case_labels_its_figures_by_their_sources`, which pins the replay default case's five rows and caption; `test_key_figure_labels_name_the_item_never_a_snippet`'s two measure-only expectations now read "Example Org · …". The spec's §2 gains D40 (and D36 its amendment note) and §7.4 item 2 its one-line amendment, in the same revision. Task 6's re-pinned digests move accordingly (planning `d92891c23a2cfe2e`, `9ac8c34e25224206`, reviewer packet `ba466f328de6eb67`); the suite grows by 2 (B-py + 52). |
+| M1 — the Evidence bullet misdescribed the D+A fingerprints | Corrected: the five values are listed, with A's four re-pins against `73b4d7a6`'s values and the verifier's the only one unchanged. |
+| M2 — the deleted `test_period_resolved_from_*` tests were not explained | Task 6 Step 2 and spec ambiguity 11 now say what they pinned (P3-3's "(counted from the release date, …)" and the "({scope})" suffix), that the period basis and scope leave the reader table, and that the evidence log keeps `period_resolved_from` (`agents/report.py:845-846`). |
+| M3 — `noteCaption` has no caller after Task 10 | Deleted in Task 10 with its `web/test/notes.test.ts` case and the `ReaderNoteRecord` import it alone used (spec ambiguity 12); B-web + 17. |
+| M4 — the move helper trusted its span | `move_outcomes.py` now stops unless the span holds exactly `note_outcome`, `note_steering_outcome`, `_research_outcome` and `_verdict_outcome`, and stops if `class NoteRecord` lies inside it (Task 2 Step 3). |
+| M5 — `web/README.md`'s `capture:visual` line went stale | Task 12 rewrites it: twenty-seven captures (thirteen stages and views at each of 1252 and 390 px, and the report's cards at 1920 px). |
+| M6 (optional) — the fixture's provenance | Kept as is: the fixture's `source` key already names the quality record, whose name is the session id, and its `question` key the question (Open issue O-1); the generator stays in the git-ignored helper folder because it reads a git-ignored file only this checkout has. |

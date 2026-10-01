@@ -98,9 +98,10 @@ D1–D19 were handed to this spec; D20–D38 are the human's rulings on the draf
 | D33 | D | **(O11, default accepted)** A stop during the one-time check shows no pipeline card. |
 | D34 | B | **(O12, default accepted)** Writing's tally counts sentences drafted so far, so its total grows as sections return. |
 | D35 | B | **(O14, default accepted)** The attribution criterion reads "Every claim is credited correctly", not the canvas's "Every claim is cited". (The canvas's actionability wording is moot under D23.) |
-| D36 | C | **(O16, default accepted)** Key figures merges values from one passage (one primary finding) and shows one row per label. |
+| D36 | C | **(O16, default accepted)** Key figures merges values from one passage (one primary finding) and shows one row per label. *Amended by D40: a row with no named item is labelled by its source.* |
 | D37 | C | **(O17, default accepted)** A bottom-line note line whose outcome is not checked carries no mark. |
 | D38 | all | **(Latency workstream, approved by the human)** Branch `perf/latency` narrows the researcher's run-wide tool lock to per-URL single-flight with one shared client and a per-run robots cache (amending EV-D9, `docs/superpowers/specs/2026-09-24-evidence-verifier-pipeline-design.md:47`), raises `agents.verifier_concurrency` to 64, and may drop `agents.verifier_batch_size` to 2. This spec depends on none of these changes and works with each (§3.13, review M13). |
+| D40 | C | **(The human's ruling of 2026-09-30 on Phase C's plan review 1, I2)** When a fact row has no named item (subject is None), the Key figures label falls back to the source that reported it, e.g. "Tripadvisor · Rating, 2024", so figures from different findings keep separate rows; merging still only happens for the same item from the same passage; one row per label and the 10-row cap stay. *Amends D36 and §7.4 items 2–3.* |
 
 **Where the draft's open issues went.** The draft's O1–O17 and the review's O18 (`1f186af0`) are all decided; the review's alternative for O7 (derive ✗ for prioritization and actionability from a low dimension score) is superseded by D23, which drops the two criteria.
 
@@ -889,6 +890,7 @@ A new `key_figures_table(composition) -> ReportTable | None` in `agents/report_t
      3. a row with no planned target keeps `row.measure`.
    - Why: today's `row.measure` is the first target in sorted id order (`agents/verified_facts.py:1375-1378`), so the latte run's Tripadvisor rows, which answer `topic-01-target-01`, `topic-02-target-02` and `topic-02-target-03`, print topic-01's measure. The rule reads the row by the sub-topic it mostly answers, and prefers a target the planner stamped as a quantity; it does not depend on a stamp being present, because the planner stamps `unit_dimension` only as the model chooses (`agents/planner.py:493-496`, `:2367-2369`).
    - Label = "{Item} · {measure}", or "{Measure}" with no item; plus ", {period}" when the row has a period the label does not already contain.
+   - *Amended by D40:* a row with no named item is labelled by the source that reported it, "{Source} · {Measure}" (for example "Tripadvisor · Rating, 2024"), so figures from different findings keep separate rows; items 3–4 (merge, one row per label, the cap) apply unchanged.
    - A row whose measure is "stated figure" and has no item is not eligible.
    - The quoted-snippet label is removed.
 3. **Merge.**
