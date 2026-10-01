@@ -47,6 +47,18 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await shoot(page, `08-evidence${suffix}`);
     });
 
+    // notes-progress-report spec §11.3: the report as section cards, reached through the one-time check
+    // so its evidence line carries the reader's answers (the phone shortens it to "{date} · {n} sources").
+    test(`18-report-cards${suffix}`, async ({ page, request, context }) => {
+      await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
+      const id = await submit(page, "What is the current state of grid-scale battery storage?");
+      await page.locator("#clarifyCard").getByRole("button", { name: "Just start" }).click({ timeout: 10_000 });
+      await waitTerminal(request, id);
+      await expect(page.locator("#rep-bottom-line")).toBeVisible({ timeout: 20_000 });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await shoot(page, `18-report-cards${suffix}`);
+    });
+
     test(`05-failed${suffix}`, async ({ page, request, context }) => {
       await context.setExtraHTTPHeaders({ "X-Replay-Case": "no-such-case" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
@@ -66,7 +78,8 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
     });
 
     // live-briefs spec §6: a note acknowledged at the top of the running Researching row, with the
-    // note line at the card's foot (pick 6A); then the report's "Your notes" above the prose (§4.7).
+    // note line at the card's foot (pick 6A); then the report as cards, with no "Your notes" block
+    // (notes-progress-report spec §7.6): replay never applies a note (api-gaps 3.9).
     test(`11-note-ack${suffix}, 12-report-notes${suffix}`, async ({ page, request, context }) => {
       await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
@@ -81,8 +94,8 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       const second = await request.post(`${API}/research/${id}/notes`, { data: { text: "Only the United States" } });
       expect(second.status()).toBe(202);
       await waitTerminal(request, id);
-      await expect(page.locator("#stage-report .reader-notes")).toBeVisible({ timeout: 20_000 });
-      await expect(page.locator("#stage-report .prose h2").first()).toBeVisible();
+      await expect(page.locator("#rep-bottom-line")).toBeVisible({ timeout: 20_000 });
+      await expect(page.locator("#stage-report .reader-notes")).toHaveCount(0);
       await page.evaluate(() => window.scrollTo(0, 0));
       await shoot(page, `12-report-notes${suffix}`);
     });
@@ -104,3 +117,17 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
     });
   });
 }
+
+// notes-progress-report spec §11.3 (D28): at 1920px the report stage holds the contents rail, the
+// cards and the Review rail side by side.
+test.describe("captures at 1920", () => {
+  test.use({ viewport: { width: 1920, height: 1080 } });
+
+  test("18b-report-cards-1920", async ({ page, request }) => {
+    const id = await submit(page, "What is the current state of grid-scale battery storage?");
+    await waitTerminal(request, id);
+    await expect(page.locator('.rep-layout[data-contents="rail"]')).toBeVisible({ timeout: 20_000 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await shoot(page, "18b-report-cards-1920");
+  });
+});

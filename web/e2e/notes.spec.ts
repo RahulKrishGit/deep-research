@@ -92,18 +92,18 @@ test("once publishing has begun a note is refused and one caption takes the line
   expect((await (await request.get(`${API}/research/${id}/status`)).json()).notes).toEqual([]);
 });
 
-test("the report lists every note above the prose, each with its outcome (AC19)", async ({ page, request }) => {
+test("the report shows no Your notes block, and a note the run never read adds no line to its bottom line (AC19, AC27)", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await note(page, "More on fire-safety standards");
   expect((await request.post(`${API}/research/${id}/notes`, { data: { text: "Only the United States" } })).status()).toBe(202);
   await waitTerminal(request, id);
-  const card = page.locator("#stage-report article.card.stack");
-  await expect(card.locator("> section.reader-notes")).toBeVisible({ timeout: 20_000 });
-  expect(await card.evaluate((el) => [...el.children].map((c) => c.className))).toEqual(["reader-notes", "prose"]);
-  await expect(card.locator(".reader-notes h2")).toHaveText("Your notes");
-  // Replay's engine finished before these notes arrived, so no review judged them.
-  await expect(card.locator(".reader-notes li")).toHaveText(["More on fire-safety standards not checked", "Only the United States not checked"]);
+  // notes-progress-report spec §7.6: a note's line lives in the bottom line, stamped at publication from
+  // the run's own notes. Replay's engine finished before these notes arrived (api-gaps 3.9), so the run
+  // holds none: the bottom line prints no note line, and /status still lists both.
+  await expect(page.locator("#rep-bottom-line")).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#stage-report .reader-notes")).toHaveCount(0);
+  await expect(page.locator("#rep-bottom-line .bl-list .k", { hasText: "Your note" })).toHaveCount(0);
   const status = await (await request.get(`${API}/research/${id}/status`)).json();
   expect(status.notes).toEqual([
     { note_id: "n1", text: "More on fire-safety standards", restatement: "More on fire-safety standards", outcome: "not_checked", steering_outcome: null },
