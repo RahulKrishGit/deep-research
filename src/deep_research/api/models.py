@@ -347,8 +347,9 @@ class ResearchSessionResponse(ApiModel):
 
     stopped_step: str | None = None
     """The step the reader stopped the run at — ``check`` (the one-time check) or a
-    pipeline row, ``planner`` … ``finalize_report`` — when ``status`` is ``stopped``;
-    ``None`` otherwise (notes-progress-report spec §4 item 3, §8.4)."""
+    pipeline row, ``planner`` … ``report_reviewer`` — when ``status`` is ``stopped``;
+    ``None`` otherwise. A stop is refused once the run decides to publish, so it is
+    never ``finalize_report`` (notes-progress-report spec §4 item 3, §8.4)."""
 
 
 class SessionListResponse(ApiModel):
