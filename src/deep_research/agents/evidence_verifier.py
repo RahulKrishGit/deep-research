@@ -85,6 +85,7 @@ from deep_research.providers import (
     ProviderOutputLimitError,
     StructuredOutputError,
 )
+from deep_research.utils.concurrency import gather_or_cancel
 from deep_research.utils.types import (
     ContractModel,
     FigureAttribution,
@@ -1057,7 +1058,12 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
 
     async def _check(self, batch: list[ContextItem], errors: list[ResearchError], *,
                      split: bool) -> dict[str, dict[int, FigureCheckDraft] | None]:
-        """One call; on truncation or an invalid reply, one re-ask in two halves."""
+        """One call; on truncation or an invalid reply, one re-ask in two halves.
+
+        The two halves are asked together (latency audit O10). Each records its
+        errors in a list of its own, and the two lists are joined in half order,
+        so the run's records read as the one-after-another re-ask wrote them.
+        """
         labelled = [replace(item, label=f"F{number:02d}") for number, item in enumerate(batch, 1)]
         try:
             self.fingerprint_call(ContextCheckDraft.__name__)
@@ -1072,8 +1078,14 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         except (ProviderOutputLimitError, StructuredOutputError, ValidationError) as error:
             if split and len(labelled) > 1:
                 half = len(labelled) // 2
-                first = await self._check(labelled[:half], errors, split=False)
-                return {**first, **await self._check(labelled[half:], errors, split=False)}
+                first_errors: list[ResearchError] = []
+                second_errors: list[ResearchError] = []
+                first, second = await gather_or_cancel(
+                    self._check(labelled[:half], first_errors, split=False),
+                    self._check(labelled[half:], second_errors, split=False),
+                )
+                errors.extend([*first_errors, *second_errors])
+                return {**first, **second}
             errors.append(context_check_failed_error(len(labelled), error))
             return {finding_fingerprint(item.finding): None for item in labelled}
         except ProviderConfigurationError:
@@ -1439,7 +1451,11 @@ async def _check_statement_batch(
     *,
     split: bool,
 ) -> dict[str, StatementVerdictDraft | None]:
-    """One call; on truncation or an invalid reply, one re-ask in two halves."""
+    """One call; on truncation or an invalid reply, one re-ask in two halves.
+
+    The two halves are asked together (latency audit O10), each recording its
+    errors in a list of its own, joined in half order afterwards.
+    """
     if fingerprint is not None:
         fingerprint(StatementCheckDraft.__name__)
     try:
@@ -1455,15 +1471,20 @@ async def _check_statement_batch(
     except (ProviderOutputLimitError, StructuredOutputError, ValidationError) as error:
         if split and len(batch) > 1:
             half = len(batch) // 2
-            first = await _check_statement_batch(
-                provider, batch[:half], question, errors, fingerprint, split=False
-            )
-            return {
-                **first,
-                **await _check_statement_batch(
-                    provider, batch[half:], question, errors, fingerprint, split=False
+            first_errors: list[ResearchError] = []
+            second_errors: list[ResearchError] = []
+            first, second = await gather_or_cancel(
+                _check_statement_batch(
+                    provider, batch[:half], question, first_errors, fingerprint,
+                    split=False,
                 ),
-            }
+                _check_statement_batch(
+                    provider, batch[half:], question, second_errors, fingerprint,
+                    split=False,
+                ),
+            )
+            errors.extend([*first_errors, *second_errors])
+            return {**first, **second}
         errors.append(statement_check_failed_error(len(batch), error))
         return {item.label: None for item in batch}
     except ProviderConfigurationError:
