@@ -812,7 +812,11 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
   first section is being drafted…` (no section has returned), then on `The first
   sentences are being checked…` for as long as a drafted sentence is still unsettled
   (neither checked nor failed to check); once every one is settled and none could be
-  checked, it reads `None of the drafted sentences could be checked` (spec E7).
+  checked, it reads `None of the drafted sentences could be checked` (spec E7). A part
+  that returned with every point refused drafted no sentence, so it never reads `being
+  checked`: while some part is still out it stays on `The first section is being
+  drafted…` (sentences may still come), and once every part has returned with none
+  drafted it reads `No sentences were drafted to check` (spec §6.6, P3-4).
 - **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
   `Easy to read`) and the reader's notes: rings that read `reading` under an
@@ -1096,7 +1100,7 @@ own threshold, and the status text beside the meter says which outcome the run h
 
 ## 4. Status mapping
 
-The API's `SessionStatus` is a seven-value literal (`api/models.py:37-45`;
+The API's `SessionStatus` is a seven-value literal (`api/models.py:38-46`;
 `needs_input` joined it with the one-time check, live-briefs 2026-09-29, and `stopped`
 with Stop, notes-progress-report 2026-09-30). The interface shows seven statuses. This
 table is the contract between them, and it is

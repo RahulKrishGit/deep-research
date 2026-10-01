@@ -153,6 +153,8 @@ export const WRITING_PLACEHOLDER = "The first section is being drafted…";
 export const WRITING_CHECKING_PLACEHOLDER = "The first sentences are being checked…";
 /* §6.6, E7: every drafted sentence is settled and none could be checked (each Statement Check failed). */
 export const WRITING_NONE_CHECKED_PLACEHOLDER = "None of the drafted sentences could be checked";
+/* §6.6, P3-4: every part has returned and not one sentence was drafted (each point refused), so none is or will be checked. */
+export const WRITING_NO_SENTENCES_PLACEHOLDER = "No sentences were drafted to check";
 /* §6.3: four skeleton slots before the plan's titles; the count is a placeholder, not a claim. */
 export const SKELETON_WIDTHS: readonly string[] = ["78%", "64%", "72%", "52%"];
 /* §6.7, D23, D35: the five criteria a review can mark not met, in DIMENSION_GUIDANCE order. */
@@ -327,9 +329,13 @@ const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
 });
 /* What the ticker waits on while it has no sample: the first section's draft until a part has returned;
    then the first checked sentences, for as long as a drafted sentence is unsettled (neither checked nor
-   unchecked yet); once every one is settled and none was checked, that none could be (E7). */
+   unchecked yet); once every one is settled and none was checked, that none could be (E7). A part that
+   returned with no sentence drafted is not a sentence to check: while a part is still out the first
+   section's line stands, since sentences may still come; once every part is back, that none was drafted
+   (P3-4). */
 function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): string {
   if (w.partsReturned === 0) return WRITING_PLACEHOLDER;
+  if (w.drafted === 0) return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
   const unsettled = w.checked + w.unchecked < w.drafted;
   const noneChecked = samples.length === 0 && w.checked === 0 && w.unchecked > 0;
   return !unsettled && noneChecked ? WRITING_NONE_CHECKED_PLACEHOLDER : WRITING_CHECKING_PLACEHOLDER;

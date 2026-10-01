@@ -207,6 +207,25 @@ describe("Writing report (spec §6.6)", () => {
     expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 0, sentences_drafted: 0, sentences_checked: 0, unchecked: 0 })])).placeholder)
       .toBe("The first section is being drafted…");
   });
+  it("never says sentences are being checked when none was drafted: the first-section line while a part is still out, 'No sentences were drafted to check' once every part has returned (P3-4)", () => {
+    const counts = { phase: "sections", parts_total: 3, sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 0.3, sample: null };
+    // One part back with every point refused, two still out: sentences may still come.
+    const partOut = writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 1 })]));
+    expect(partOut.placeholder).toBe("The first section is being drafted…");
+    expect(partOut.tally).toBeNull();
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 2 })])).placeholder).toBe("The first section is being drafted…");
+    // Every part back and none drafted a sentence: nothing is or will be checked.
+    const allBack = play([ev("report_writer.progress", { ...counts, parts_returned: 3, fraction: 1 })]);
+    expect(writingBody(allBack).placeholder).toBe("No sentences were drafted to check");
+    expect(writingBody(allBack).samples).toEqual([]);
+    expect(writingBody(allBack).tally).toBeNull();
+    // The bottom line's own phase, with still nothing drafted, says the same.
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, phase: "bottom_line", parts_returned: 3, fraction: 1 })])).placeholder)
+      .toBe("No sentences were drafted to check");
+    // A sentence drafted lifts the rule: it is being checked again.
+    expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 3, sentences_drafted: 2, fraction: 1 })])).placeholder)
+      .toBe("The first sentences are being checked…");
+  });
   it("never says none could be checked once a sentence has been checked and shown", () => {
     const run = play([ev("report_writer.progress", {
       phase: "sections", parts_total: 2, parts_returned: 2, sentences_drafted: 4, sentences_checked: 3, backed: 3, removed: 0, unchecked: 1, fraction: 1,
