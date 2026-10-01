@@ -49,7 +49,8 @@ export interface NoteState {
   id: string; text: string; interpreted: boolean; restatement: string | null;
   replaces: string | null; fallback: boolean; where: NodeId | null;
   /* notes-progress-report spec §5.7: the run's reading of the note's kinds ([] until it is read), and
-     whether its own research thread has started — a researcher.sub_topic.started naming it. */
+     whether its own research thread has started — a researcher.sub_topic.started naming it — in the
+     current researcher run; cleared when an extra pass or a note pass reopens Researching (§5.7). */
   kinds: string[]; threadStarted: boolean;
 }
 /* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from

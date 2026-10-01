@@ -829,11 +829,11 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
     trace says whether a model was asked this pass.
 
     The reader's notes (live-briefs spec §4.6): the node starts from every note
-    received so far, and each active one is in the review input, so each is
-    marked ``reviewed``. Before the route is read the node waits for any note
-    still being interpreted — for ``NOTES_WAIT_S`` at most — and takes
-    in every note that arrived meanwhile, unreviewed, which is what buys a
-    note sent during Reviewing its redraft.
+    received so far, and each active one is marked ``reviewed``, a
+    ``new_angle``-only note too, though the review input leaves it out. Before
+    the route is read the node waits for any note still being interpreted — for
+    ``NOTES_WAIT_S`` at most — and takes in every note that arrived meanwhile,
+    unreviewed, which is what buys a note sent during Reviewing its redraft.
     """
 
     async def node(channel: ResearchGraphState) -> ResearchGraphState:
@@ -1085,9 +1085,9 @@ def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
     note included although the review packet leaves it out
     (``build_report_review_input`` lists ``steering_notes``): the flag is read
     only for a note with a steering kind (``notes_due_a_redraft``), so for a
-    research note it is inert. A note on the board that ``started`` did not hold
-    is added unreviewed (live-briefs spec §4.6). ``{}`` for a run with no notes,
-    so its merge is exactly what it was.
+    ``new_angle``-only note it is inert. A note on the board that ``started``
+    did not hold is added unreviewed (live-briefs spec §4.6). ``{}`` for a run
+    with no notes, so its merge is exactly what it was.
     """
     reviewed = {note.note_id for note in active_reader_notes(started.reader_notes)}
     marked = [

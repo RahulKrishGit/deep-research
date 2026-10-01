@@ -1199,11 +1199,11 @@ class ReaderNote(ContractModel):
 
     The first ten fields are fixed once the note is interpreted; the three
     flags are the run's own bookkeeping, set by the graph: ``reviewed`` is set
-    on every active note once a review has run, a ``new_angle``-only note
-    included although the review packet leaves it out, and is read only for a
-    note with a steering kind (``notes_due_a_redraft``); ``passed`` when its one
-    targeted research pass was bought, ``redrafted`` when its one redraft was
-    (D11).
+    on every note that was active when a review started, a ``new_angle``-only
+    note included although the review packet leaves it out, and is read only
+    for a note with a steering kind (``notes_due_a_redraft``); ``passed`` when
+    its one targeted research pass was bought, ``redrafted`` when its one
+    redraft was (D11).
     ``restatement`` is the interpreter's plain-words reading, or the note's own
     text when the interpretation failed. ``short`` names the note's subject in
     one to three words for a label (notes-progress-report spec §7.2): the
