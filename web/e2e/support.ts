@@ -83,6 +83,8 @@ export async function installMotionRecorder(page: Page): Promise<void> {
       if (el.classList.contains("bullet")) return "bullet";
       if (el.classList.contains("m-live")) return "m-live";
       if (el.classList.contains("m-out")) return "m-out";
+      // notes-progress-report spec §6.3-§6.7: one text of a cross-fading stack (a status line, a fact).
+      if (el.parentElement?.classList.contains("xf")) return "xf";
       if (el.classList.contains("dotc")) return "dot";
       if (el.tagName.toLowerCase() === "path" && el.closest(".mk")) return "check";
       if (el.matches("li[data-stage]")) return "row";

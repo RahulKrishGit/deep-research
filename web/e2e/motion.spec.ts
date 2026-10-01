@@ -30,25 +30,30 @@ test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep
   expect(timings(only(from, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["100/420"]);
   expect(timings(only(from, { part: "m-out", prop: "opacity" }))).toEqual(["260/200"]);
   expect(timings(only(from, { part: "connector", prop: "transform" }))).toEqual(["180/620"]);
-  // Row k+1 (Evaluating sources) as the "to": node fills and height opens at 600ms, its one line rises at 900ms.
+  // Row k+1 (Evaluating sources) as the "to": node fills and height opens at 600ms, its three lines (the
+  // lead, the bar, the split; notes-progress-report spec §6.4) rise from 900ms, 60ms apart.
   const to = only(records, { stage: "source_evaluator", handoff: "to" });
   expect(timings(only(to, { part: "bullet", prop: "background-color" }))).toEqual(["600/420"]);
   expect(timings(only(to, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["600/420"]);
-  expect(timings(only(to, { part: "line", prop: "opacity" }))).toEqual(["900/240"]);
-  expect(timings(only(to, { part: "line", prop: "transform" }))).toEqual(["900/240"]);
+  expect(timings(only(to, { part: "line", prop: "opacity" }))).toEqual(["1020/240", "900/240", "960/240"]);
+  expect(timings(only(to, { part: "line", prop: "transform" }))).toEqual(["1020/240", "900/240", "960/240"]);
 
-  // Reviewing → Publishing. graph.route.decided moves the active row one event before Reviewing's own
-  // completion (150 ms apart in replay); Reviewing stays as it was — active, open — until then, so nothing
-  // on its row moves between its last to-role transition and its first from-role one (it is never painted pending)…
+  // Reviewing's first hand-off is the default case's extra pass (decision D39): graph.route.decided holds
+  // Reviewing as it was — active, open, on its checks and its verdict — for HANDOFF_HOLD_MS, then it takes
+  // the from role. So nothing on its row moves between its last to-role transition (as the review lands) and
+  // its first from-role one, 2 s later (it is never painted pending)…
   const onReviewing = records.filter((r) => r.stage === "report_reviewer");
   const firstFrom = onReviewing.findIndex((r) => r.handoff === "from");
   const lastTo = onReviewing.slice(0, Math.max(firstFrom, 0)).map((r) => r.handoff).lastIndexOf("to");
   expect(firstFrom).toBeGreaterThan(0);
-  expect(onReviewing.slice(lastTo + 1, firstFrom)).toEqual([]);
-  // …and its completion folds it with the from-role timings. The subtitle cross-fade and the connector fill
-  // always run; its lines and height fold only as far as they had opened — Reviewing is active for about
-  // four paced events, less than its own 600/900 ms opening delays — so those are held to their timing,
-  // not their presence.
+  // …but the route decision's verdict, which cross-fades into the status line as the hold begins
+  // (notes-progress-report spec §6.7), an opacity change in place.
+  expect(onReviewing.slice(lastTo + 1, firstFrom).filter((r) => r.part !== "xf")).toEqual([]);
+  // Both of its from-role folds keep the from-role timings: after the hold, as a pending row (its lines and
+  // height only), and at its completion before Publishing, when the subtitle cross-fade and the connector
+  // fill run too. Its lines and height fold only as far as they had opened — before Publishing, Reviewing
+  // is active for about four paced events, less than its own 600/900 ms opening delays — so those are
+  // held to their timing, not their presence.
   const reviewing = onReviewing.filter((r) => r.handoff === "from");
   expect(timings(only(reviewing, { part: "m-out", prop: "opacity" }))).toEqual(["260/200"]);
   expect(timings(only(reviewing, { part: "connector", prop: "transform" }))).toEqual(["180/620"]);
@@ -56,18 +61,23 @@ test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep
   expect(only(reviewing, { part: "line", prop: "transform" })).toEqual([]);
   expect(timings(only(reviewing, { part: "ps-x", prop: "grid-template-rows" })).filter((x) => x !== "100/420")).toEqual([]);
 
-  // A reader's open (1A): height at once over 420ms, then the three titles rise 60ms apart from 280ms.
+  // A reader's open (1A): height at once over 420ms, then the status line and the three slots rise 60ms
+  // apart from 280ms (notes-progress-report spec §6.3; the surplus fourth slot has left the layout).
   const opened = only(records, { stage: "planner", handoff: null, open: "1" });
   expect(timings(only(opened, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["0/420"]);
-  expect(timings(only(opened, { part: "line", prop: "opacity" }))).toEqual(["280/240", "340/240", "400/240"]);
+  expect(timings(only(opened, { part: "line", prop: "opacity" }))).toEqual(["280/240", "340/240", "400/240", "460/240"]);
   // …and close: the lines fade 160ms with no stagger, then the height closes at 160ms.
   const closed = only(records, { stage: "planner", handoff: null, open: "0" });
   expect(timings(only(closed, { part: "line", prop: "opacity" }))).toEqual(["0/160"]);
   expect(timings(only(closed, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["160/420"]);
 
   // A topic done: the ✓ draws over 360ms after 80ms; the dot fades over 200ms.
-  expect(timings(only(records, { part: "check", prop: "stroke-dashoffset" }))).toEqual(["80/360"]);
+  expect(timings(only(records, { stage: "researcher", part: "check", prop: "stroke-dashoffset" }))).toEqual(["80/360"]);
+  expect(timings(only(records, { stage: "planner", part: "check", prop: "stroke-dashoffset" }))).toEqual(["80/360"]);
   expect(timings(only(records, { part: "dot", prop: "opacity" }))).toEqual(["0/200"]);
+  // Reviewing's five checks land 60ms apart (notes-progress-report spec §6.7).
+  expect(timings(only(records, { stage: "report_reviewer", part: "check", prop: "stroke-dashoffset" })))
+    .toEqual(["140/360", "200/360", "260/360", "320/360", "80/360"]);
 });
 
 test.describe("reduced motion", () => {

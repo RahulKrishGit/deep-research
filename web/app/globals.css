@@ -1330,6 +1330,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .mk svg path{transition:none !important}
   .mk .dotc{transform:none !important}
   [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
+  /* notes-progress-report spec §6.9 (D21): no sheen — the skeleton bar stays, still; Reviewing's bar is
+     a static full-width bar at .35; every cross-fade is opacity only, over 160ms; counts jump (useTween). */
+  .spine-lg.briefs .sk::after{content:none !important;animation:none !important}
+  .spine-lg.briefs .pb.ind[data-on="1"] i{animation:none !important;width:100% !important;transform:none !important;opacity:.35 !important}
+  .spine-lg.briefs .ps-brief .xf > *{transform:none !important;transition-property:opacity !important;transition-duration:160ms !important}
 }
 
 /* ═══ 2026-09-29: the one-time check (live-briefs spec §4.5; pick 4B, docs/design/running-stage-picks/Hitl1.dc.html column B) ═══ */
@@ -1509,3 +1514,72 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .rsec .tbl .kf-src{display:block}
 }
 .rsec .tbl .kf-src .cite{font-size:inherit;color:inherit}
+
+/* ═══ 2026-09-30: live progress per step (notes-progress-report spec §6.3-§6.9; Main.dc.html B, Evaluating.dc.html A, Verifying.dc.html C, Writing.dc.html E, Reviewing.dc.html A revised; progress.css) ═══ */
+/* Each step's own brief, scoped to the running spine's briefs. Colour is status only: green for the
+   active step's own progress, amber for a check that did not pass, a dropped finding or a removed
+   sentence (D30). Two loops besides the halo (D21), each only while its step is the active row: the
+   sheen on Planning's skeleton slots and the drift on Reviewing's bar while its call runs. */
+.spine-lg.briefs .b-now{font-size:var(--text-base);color:var(--fg);line-height:1.5}
+.spine-lg.briefs .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
+.spine-lg.briefs .b-facts{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
+.spine-lg.briefs .b-facts b{color:var(--fg);font-weight:500}
+.spine-lg.briefs .b-facts .ok{color:var(--status-ok)}
+.spine-lg.briefs .b-facts .no{color:var(--status-warn)}
+.spine-lg.briefs .b-rule{height:1px;background:var(--border-soft);margin:var(--space-1) 0}
+/* Cross-fades (progress.css:23-24, :34-35; theme.css .xf): a line's texts stacked in one grid cell, the
+   data-on="1" one shown; a .rise stack also lifts 5px as a text fades out, and settles as one fades in. */
+.spine-lg.briefs .ps-brief .xf{display:grid}
+.spine-lg.briefs .ps-brief .xf > *{grid-area:1/1;min-width:0;transition:opacity var(--motion-base) var(--ease-standard)}
+.spine-lg.briefs .ps-brief .xf > [data-on="0"]{opacity:0}
+.spine-lg.briefs .ps-brief .xf.rise > *{transition:opacity var(--motion-base) var(--ease-standard),transform var(--motion-fluid) var(--ease-entrance)}
+.spine-lg.briefs .ps-brief .xf.rise > [data-on="0"]{transform:translateY(5px)}
+/* Planning's slots (§6.3, progress.css:30-33): a quiet bar until a title lands. Its sheen runs only on a
+   skeleton slot of the active row, so it ends when the titles arrive, when Planning finishes and when
+   the run stops. */
+.spine-lg.briefs .ps-slots .sk{display:block;height:9px;border-radius:var(--radius-sm);background:var(--border-soft);position:relative;overflow:hidden;align-self:center}
+.spine-lg.briefs > li[data-state="active"] .ps-slots .sk[data-on="1"]::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,color-mix(in oklch,var(--fg) 7%,transparent),transparent);transform:translateX(-100%);animation:sheen var(--motion-halo) var(--ease-standard) infinite}
+@keyframes sheen{to{transform:translateX(100%)}}
+/* A skeleton the plan's titles leave over fades out, then leaves the layout; a slot that arrives later
+   (a fifth topic, a note's slot) rises in at once, as a note's acknowledgement does. */
+.spine-lg.briefs .ps-slots > [data-gone="1"]{opacity:0;display:none;transition-property:opacity,display;transition-duration:var(--motion-base);transition-timing-function:var(--ease-standard);transition-behavior:allow-discrete}
+.spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ps-slots > [data-rise="1"]{--d-c:0ms}
+@starting-style{.spine-lg.briefs > li[data-open="1"] .ps-slots > [data-rise="1"]{opacity:0;transform:translateY(4px)}}
+/* The amber ✗ (progress.css:82-88): a slot still flagged, a check that did not pass, a note not met. */
+.ps-topics .mk svg.x path{stroke:var(--status-warn)}
+[data-topic="done"] > .mk svg.x path{stroke-dashoffset:14}
+[data-topic="fail"] > .mk svg.x path{stroke-dashoffset:0}
+[data-topic="fail"] > .mk .ring{opacity:0}
+.ps-topics > [data-topic="fail"]{color:var(--fg)}
+.ps-topics > [data-topic="fail"] .tf{color:var(--status-warn)}
+/* The determinate bar (§6.4-§6.6, progress.css:8-10): green, because it is the active step's own
+   progress, filling over --fill-line. */
+.spine-lg.briefs .pb{display:block;height:2px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
+.spine-lg.briefs .pb i{display:block;height:100%;background:var(--status-ok);transform-origin:left;transition:transform var(--fill-line) var(--ease-entrance)}
+/* Reviewing's indeterminate bar (§6.7, progress.css:12-14): a 28% segment drifting while the call runs;
+   it stops, and the segment hides, once the review lands. */
+.spine-lg.briefs .pb.ind i{width:28%}
+.spine-lg.briefs > li[data-state="active"] .pb.ind[data-on="1"] i{animation:drift var(--motion-halo) var(--ease-standard) infinite}
+.spine-lg.briefs .pb.ind[data-on="0"] i{animation:none;opacity:0}
+@keyframes drift{0%{transform:translateX(-110%)}100%{transform:translateX(380%)}}
+/* Evaluating's split (§6.4; theme.css:137-139), wrapping on a phone. */
+.spine-lg.briefs .stats{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-6);padding:var(--space-1) 0}
+.spine-lg.briefs .stat{display:flex;flex-direction:column;gap:2px}
+.spine-lg.briefs .stat .v{font-family:var(--font-mono);font-size:var(--text-lg);color:var(--fg);font-variant-numeric:tabular-nums;line-height:1.3}
+/* Verifying's and Writing's ticker (§6.5-§6.6, progress.css:61-64): the newest sample shows and the one
+   before it fades out under it; a kept verdict is green, a dropped finding or removed sentence amber. */
+.spine-lg.briefs .tickbox{padding:var(--space-3) 0;border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);min-height:112px}
+.spine-lg.briefs .qt{font-size:var(--text-base);color:var(--fg);line-height:1.5;margin:0;overflow-wrap:anywhere}
+.spine-lg.briefs .vd{font-family:var(--font-mono);font-size:var(--text-xs);color:var(--muted);margin-top:4px}
+.spine-lg.briefs .vd b{font-weight:500;color:var(--status-ok)}
+.spine-lg.briefs .vd[data-kept="0"] b{color:var(--status-warn)}
+@starting-style{.spine-lg.briefs .tickbox .xf > [data-on="1"]{opacity:0;transform:translateY(5px)}}
+/* Reviewing's checks (§6.7): rings that read "reading" while the call runs; when the review lands each
+   row's mark and fact change 60ms after the row above it (--r, its place in the reveal). */
+.spine-lg.briefs .rv-list .tf{white-space:normal;text-align:right}
+.spine-lg.briefs .rv-list .mk .ring,.spine-lg.briefs .rv-list .mk .dotc,.spine-lg.briefs .rv-list .tf > *{transition-delay:calc(var(--r,0) * 60ms)}
+.spine-lg.briefs .rv-list .mk svg path{transition-delay:calc(80ms + var(--r,0) * 60ms)}
+.spine-lg.briefs .rv-notes-h{display:flex;flex-direction:column;gap:var(--space-2)}
+@media (max-width:480px){
+  .spine-lg.briefs .rv-list .tf{text-align:left}
+}
