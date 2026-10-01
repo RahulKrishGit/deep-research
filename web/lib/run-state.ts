@@ -5,7 +5,6 @@
 // the outcome lines and the reopen lines — on the same rule; `open` is the one field the reader,
 // not the stream, writes.
 import type { ResearchEvent, SessionStatus } from "./api";
-import { fmtScore } from "./format";
 import { noteRedraftLine, notePassLine } from "./notes";
 
 export type NodeId = "planner" | "researcher" | "source_evaluator" | "evidence_verifier" | "report_writer" | "report_reviewer" | "finalize_report";
@@ -19,7 +18,7 @@ export const STAGES: readonly Stage[] = [
   { id: "source_evaluator", label: "Evaluating sources", meta: "authority · recency · relevance" },
   { id: "evidence_verifier", label: "Verifying evidence", meta: "snippet on page · context check" },
   { id: "report_writer", label: "Writing report", meta: "verified findings only · statement check" },
-  { id: "report_reviewer", label: "Reviewing", meta: "7 dimensions · accept at mean 0.80" },
+  { id: "report_reviewer", label: "Reviewing", meta: "5 checks" },
   { id: "finalize_report", label: "Publishing", meta: "report · evidence log · quality record" },
 ];
 export const AGENT_ORDER: readonly NodeId[] = STAGES.map((s) => s.id);
@@ -58,6 +57,25 @@ export interface NoteState {
 export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
 export interface ClarifyAnswer { questionId: string; value: string; source: "chosen" | "typed" | "best_guess" }
 export interface ClarifyState { questions: ClarifyQuestion[]; deadlineAt: string; answered: { answers: ClarifyAnswer[]; reason: string } | null }
+/* notes-progress-report spec §6.3: one planned topic's slot in Planning's brief, in the state the
+   latest planner.progress (then planner.planning.completed) gives it. */
+export type SlotState = "skeleton" | "drafted" | "checking" | "being_fixed" | "passed" | "fixed" | "flagged" | "not_checked";
+export interface PlanSlot { coverageId: string; title: string; state: SlotState }
+/* A research note's own slot: "pending" while Planning runs, "planned" once planning.completed lists it. */
+export interface NoteSlot { noteId: string; title: string; state: "pending" | "planned" }
+export interface PlanningState { step: "reading" | "drafting" | "checking" | "fixing" | "ready"; round: number; slots: PlanSlot[]; noteSlots: NoteSlot[] }
+/* §6.1: the latest source_evaluator.progress, as sent. */
+export interface EvaluatingState { toRate: number; reused: number; capped: number; rated: number; strong: number; fair: number; weak: number; unrated: number; batches: number; batchesDone: number }
+/* §6.1: one ticker sample; `seq` numbers this pass's samples, so each keeps its own key. */
+export interface VerifierSample { seq: number; text: string; verdict: string; correction: { field: string; value: string | null } | null; dropReason: string | null; role: string | null; host: string | null }
+export interface VerifyingState { total: number; checked: number; verified: number; corrected: number; quoted: number; dropped: number; batches: number; batchesDone: number; samples: VerifierSample[]; sampleCount: number }
+export interface WriterSample { seq: number; text: string; verdict: "backed" | "removed"; findings: number; section: string }
+export interface WritingState { phase: "sections" | "bottom_line"; partsTotal: number; partsReturned: number; drafted: number; checked: number; backed: number; removed: number; unchecked: number; fraction: number; samples: WriterSample[]; sampleCount: number }
+/* §6.1, §6.7: graph.report.reviewed's five criteria and each note's result, then the route decided after it. */
+export interface CriterionState { dimension: string; met: boolean | null; kinds: string[] }
+export interface ReviewHalf { result: string; reason: string }
+export interface ReviewNoteResult extends ReviewHalf { noteId: string; steering: ReviewHalf | null }
+export interface ReviewingState { landed: boolean; reviewedAt: string | null; criteria: CriterionState[] | null; notes: ReviewNoteResult[]; defects: number | null; reason: string | null; missing: number }
 /* notes-progress-report spec §8.2, §8.4: a stopped session's last event — the step it was on (a row's
    node id, or "check"), when (ISO) and how long it had run. A value the event does not carry is null,
    never invented. */
@@ -83,13 +101,27 @@ export interface RunState {
   open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
   clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
   notes: NoteState[];                     /* the reader's notes, in receipt order */
+  startedAt: Partial<Record<NodeId, string>>;  /* each row's latest graph.node.started timestamp (notes-progress-report spec §4 item 4) */
+  durations: Partial<Record<NodeId, number>>;  /* seconds from that start to the row's graph.node.completed */
+  planning: PlanningState;                /* Planning's status and slots (§6.3) */
+  evaluating: EvaluatingState | null;     /* this pass's latest source_evaluator.progress (§6.4) */
+  verifying: VerifyingState | null;       /* this pass's latest evidence_verifier.progress, the last two samples kept (§6.5) */
+  writing: WritingState | null;           /* this draft's latest report_writer.progress, the last two samples kept (§6.6) */
+  reviewing: ReviewingState;              /* this review's graph.report.reviewed and route decision (§6.7) */
+  hardFailures: string[] | null;          /* the latest graph.quality.assessed.hard_failures (§6.7's refusal line) */
   stopped: StoppedRun | null;             /* session.stopped: the reader stopped the run; null otherwise */
 }
-export interface RunEvent { type: string; metadata: Record<string, unknown> }
+/* `timestamp` is the event's own (notes-progress-report spec §4 item 4): optional, because the
+   events tests and fixtures synthesize carry none; every event from the stream has one. */
+export interface RunEvent { type: string; metadata: Record<string, unknown>; timestamp?: string }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Md = Record<string, any>; // the handlers read metadata keys exactly as the prototype does
-export type Handler = (run: RunState, md: Md) => void;
+export type Handler = (run: RunState, md: Md, timestamp: string | null) => void;
 
+export function emptyPlanning(): PlanningState { return { step: "reading", round: 0, slots: [], noteSlots: [] }; }
+export function emptyReviewing(): ReviewingState {
+  return { landed: false, reviewedAt: null, criteria: null, notes: [], defects: null, reason: null, missing: 0 };
+}
 export function emptyCounters(): Counters {
   return { subTopicsDone: null, subTopicsResearched: null, subTopicsTotal: null, toolCalls: null,
     findings: null, sources: null, verified: null, corrected: null, dropped: null,
@@ -103,7 +135,9 @@ export function newRunState(): RunState {
     rearmed: {}, rearmedFirst: null, captions: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
     plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
-    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [], stopped: null,
+    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [],
+    startedAt: {}, durations: {}, planning: emptyPlanning(), evaluating: null, verifying: null, writing: null,
+    reviewing: emptyReviewing(), hardFailures: null, stopped: null,
   };
 }
 function nextRow(node: NodeId): NodeId | null {
@@ -154,17 +188,31 @@ function topicFor(run: RunState, md: Md): Topic {
   run.topics.push(topic);
   return topic;
 }
-/* Reviewing's outcome line, read at the route decision (the review's score arrived just before it). */
+const missingCount = (md: Md): number => (Array.isArray(md.missing_required_target_ids) ? md.missing_required_target_ids.length : 0);
+/* notes-progress-report spec §6.7: why a scored report was not accepted, without a score. */
+export function notAcceptedLine(run: RunState): string {
+  const met = run.reviewing.criteria?.filter((c) => c.met === true).length ?? 0;
+  if (met < 5) return "Not accepted · " + met + " of 5 met";
+  return (run.hardFailures?.length ?? 0) > 0
+    ? "Not accepted · a check the run makes itself failed"
+    : "Not accepted · the reviewer's overall judgement fell short";
+}
+/* Reviewing's outcome line, read at the route decision (notes-progress-report spec §6.7 route
+   table): never a score; the brief adds the row's duration (lib/briefs.ts). */
 function reviewOutcome(run: RunState, md: Md): string {
-  if (md.reason === "note_pass_requested") return "Sent back to research your note";
-  if (md.reason === "note_redraft_requested") return "Sent back to the writer for your note";
-  if (md.destination === "extra_pass") {
-    const k = Array.isArray(md.missing_required_target_ids) ? md.missing_required_target_ids.length : 0;
-    return k > 0 ? "Sent back to fill " + plural(k, "gap", "gaps") : "Sent back for more research";
+  switch (md.reason) {
+    case "note_pass_requested": return "Sent back to research your note";
+    case "note_redraft_requested": return "Sent back to the writer for your note";
+    case "report_accepted": return "Accepted · all 5 met";
+    case "redraft_requested": return plural(run.reviewing.defects ?? 0, "thing", "things") + " to fix · back to the writer";
+    case "extra_pass_requested": {
+      const k = missingCount(md);
+      return k > 0 ? "Sent back to fill " + plural(k, "gap", "gaps") : "Sent back for more research";
+    }
+    case "report_not_accepted": return notAcceptedLine(run);
+    case "extra_passes_exhausted": return "Not accepted · " + plural(missingCount(md), "gap", "gaps") + " still open";
+    default: return "Review unavailable";
   }
-  const score = fmtScore(run.counters.reviewScore);
-  if (md.reason === "report_accepted") return score === null ? "Accepted" : "Accepted · " + score;
-  return score === null ? "Review unavailable" : "Not accepted · " + score;
 }
 export function toggleOpen(run: RunState, id: NodeId): void {
   if (run.open.has(id)) run.open.delete(id); else run.open.add(id);
@@ -182,17 +230,77 @@ function isClarifyAnswer(a: unknown): a is { question_id: string; value: string;
   return !!m && isText(m.question_id) && typeof m.value === "string" && ["chosen", "typed", "best_guess"].includes(m.source);
 }
 
-/* Keyed by event type; each handler reads only `md` (the event's metadata). */
+/* notes-progress-report spec §6.1-§6.7: the progress events' wire shapes. An entry that does not fit
+   is dropped, never invented; an unknown slot state reads as drafted (a ring, no fact). */
+const SLOT_STATES: readonly string[] = ["skeleton", "drafted", "checking", "being_fixed", "passed", "fixed", "flagged", "not_checked"];
+function planSlots(listed: unknown): PlanSlot[] {
+  return (Array.isArray(listed) ? listed : [])
+    .filter((t): t is Md => !!t && isText((t as Md).coverage_id) && typeof (t as Md).title === "string" && !isText((t as Md).note_id))
+    .map((t) => ({ coverageId: t.coverage_id, title: t.title, state: (SLOT_STATES.includes(t.state) ? t.state : "drafted") as SlotState }));
+}
+function stepSeconds(from: string | undefined, to: string | null): number | null {
+  if (!from || !to) return null;
+  const s = (Date.parse(to) - Date.parse(from)) / 1000;
+  return Number.isFinite(s) && s >= 0 ? s : null;
+}
+const textOrNull = (v: unknown): string | null => (isText(v) ? v : null);
+function verifierSample(v: unknown, seq: number): VerifierSample | null {
+  const m = v as Md | null;
+  if (!m || typeof m.text !== "string" || !isText(m.verdict)) return null;
+  const correction = m.correction && isText(m.correction.field) ? { field: m.correction.field as string, value: textOrNull(m.correction.value) } : null;
+  const source = (m.source ?? {}) as Md;
+  return { seq, text: m.text, verdict: m.verdict, correction, dropReason: textOrNull(m.drop_reason), role: textOrNull(source.role), host: textOrNull(source.host) };
+}
+function writerSample(v: unknown, seq: number): WriterSample | null {
+  const m = v as Md | null;
+  if (!m || typeof m.text !== "string" || (m.verdict !== "backed" && m.verdict !== "removed")) return null;
+  return { seq, text: m.text, verdict: m.verdict, findings: count(m.findings), section: typeof m.section === "string" ? m.section : "" };
+}
+function reviewCriteria(listed: unknown): CriterionState[] | null {
+  if (!Array.isArray(listed)) return null;
+  return listed.filter((c): c is Md => !!c && isText((c as Md).dimension))
+    .map((c) => ({ dimension: c.dimension, met: typeof c.met === "boolean" ? c.met : null, kinds: Array.isArray(c.kinds) ? c.kinds.filter(isText) : [] }));
+}
+const reviewHalf = (m: Md): ReviewHalf => ({ result: isText(m.result) ? m.result : "not_checked", reason: isText(m.reason) ? m.reason : "not_judged" });
+function reviewNotes(listed: unknown): ReviewNoteResult[] {
+  return (Array.isArray(listed) ? listed : []).filter((n): n is Md => !!n && isText((n as Md).note_id))
+    .map((n) => ({ noteId: n.note_id, ...reviewHalf(n), steering: n.steering && typeof n.steering === "object" ? reviewHalf(n.steering) : null }));
+}
+/* §6.3: a note read as a research note while Planning is the running row joins the plan as its own
+   slot; a later note that replaces it takes its slot away. */
+function noteSlot(run: RunState, md: Md): void {
+  if (isText(md.replaces)) run.planning.noteSlots = run.planning.noteSlots.filter((s) => s.noteId !== md.replaces);
+  const kinds: unknown[] = Array.isArray(md.kinds) ? md.kinds : [];
+  if (run.active !== "planner" || run.planning.step === "ready" || !kinds.includes("new_angle") || !isText(md.restatement)) return;
+  if (!isText(md.note_id) || run.planning.noteSlots.some((s) => s.noteId === md.note_id)) return;
+  run.planning.noteSlots.push({ noteId: md.note_id, title: "Your note: " + md.restatement, state: "pending" });
+}
+
+/* Keyed by event type; each handler reads only `md` (the event's metadata) and, for the rows' times,
+   the event's own timestamp. */
 export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
-  "graph.node.started": (run, md) => {
+  "graph.node.started": (run, md, timestamp) => {
     run.openNode = md.node;
     /* the pass number is read here and from graph.extra_pass.started only */
     if (typeof md.iteration === "number") run.pass = md.iteration + 1;
+    const node = md.node as NodeId;
+    if (!AGENT_ORDER.includes(node)) return; /* the hops never map to a row */
+    if (timestamp) run.startedAt[node] = timestamp; else delete run.startedAt[node];
+    delete run.durations[node];
+    /* notes-progress-report spec §6.9: each step's block starts clean, so a re-armed row does too;
+       a research note's slot read before the planner started stays. */
+    if (node === "planner") run.planning = { ...emptyPlanning(), noteSlots: run.planning.noteSlots };
+    if (node === "source_evaluator") run.evaluating = null;
+    if (node === "evidence_verifier") run.verifying = null;
+    if (node === "report_writer") run.writing = null;
+    if (node === "report_reviewer") run.reviewing = emptyReviewing();
   },
-  "graph.node.completed": (run, md) => {
+  "graph.node.completed": (run, md, timestamp) => {
     const node: NodeId = md.node;
     if (run.openNode === node) run.openNode = null;
     if ((node as string) === "extra_pass" || (node as string) === "note_pass" || (node as string) === "writer_redraft") return; /* hops never map to a row */
+    const seconds = stepSeconds(run.startedAt[node], timestamp);
+    if (seconds !== null) run.durations[node] = seconds;
     if (node === "report_reviewer" && run.loopPending) { run.loopPending = false; return; }         /* inert after a loop decision */
     run.marks[node] = run.rearmed[node] ? "loop" : "done";
     if (node === "finalize_report") run.outcomes.finalize_report = "Published";
@@ -204,14 +312,20 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     if (run.active === md.node) run.active = null;
   },
   "planner.planning.completed": (run, md) => {
+    const fromNotes = count(md.note_topic_count);
     run.captions.planner = plural(md.sub_topic_count, "sub-topic", "sub-topics");
-    run.outcomes.planner = run.captions.planner;
+    run.outcomes.planner = run.captions.planner + (fromNotes > 0 ? " · " + plural(fromNotes, "from your note", "from your notes") : "");
     const listed: unknown[] = Array.isArray(md.sub_topics) ? md.sub_topics : [];
     run.plan = listed.filter((t): t is { coverage_id: string; title: string } =>
       !!t && typeof (t as Md).coverage_id === "string" && typeof (t as Md).title === "string")
       .map((t) => ({ coverageId: t.coverage_id, title: t.title }));
     run.topics = run.plan.map((p) => ({ coverageId: p.coverageId, title: p.title, state: "waiting", findings: null }));
     run.pagesRead = null; run.findingsSoFar = null;
+    /* notes-progress-report spec §6.3: each slot's final state, and the research notes the plan took in. */
+    run.planning.step = "ready";
+    run.planning.slots = planSlots(listed);
+    run.planning.noteSlots = listed.filter((t): t is Md => !!t && isText((t as Md).note_id) && typeof (t as Md).title === "string")
+      .map((t) => ({ noteId: t.note_id, title: t.title, state: "planned" as const }));
   },
   "researcher.sub_topic.started": (run, md) => {
     topicFor(run, md).state = "running";
@@ -243,7 +357,11 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "source_evaluator.evaluation.completed": (run, md) => {
     run.counters.sources = md.source_count;
-    run.outcomes.source_evaluator = plural(count(md.source_count), "source rated", "sources rated");
+    /* notes-progress-report spec §6.4: "{scored} sources rated · {s} strong · {f} fair · {w} weak". */
+    if (typeof md.strong_count !== "number") { run.outcomes.source_evaluator = plural(count(md.source_count), "source rated", "sources rated"); return; }
+    const unrated = count(md.unscored_cap_count) + count(md.unscored_provider_count) + count(md.unscored_missing_count);
+    run.outcomes.source_evaluator = plural(count(md.scored_count), "source rated", "sources rated") + " · " + count(md.strong_count) + " strong · "
+      + count(md.fair_count) + " fair · " + count(md.weak_count) + " weak" + (unrated > 0 ? " · " + unrated + " not rated" : "");
   },
   "evidence_verifier.verification.completed": (run, md) => {
     const c = run.counters;
@@ -255,13 +373,21 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     c.statements = md.statements; c.refused = md.refused;
     run.outcomes.report_writer = "Report drafted · " + plural(count(md.statements), "sentence", "sentences") + " · " + plural(count(md.citations), "citation", "citations");
   },
-  "graph.report.reviewed": (run, md) => {
+  "graph.report.reviewed": (run, md, timestamp) => {
     const c = run.counters;
     c.reviewSeen = true;
     c.reviewScore = typeof md.mean_score === "number" ? md.mean_score : null;
+    /* notes-progress-report spec §6.7: what Reviewing's checks and notes read -- never the score. */
+    run.reviewing.landed = true;
+    run.reviewing.reviewedAt = timestamp;
+    run.reviewing.criteria = reviewCriteria(md.criteria);
+    run.reviewing.notes = reviewNotes(md.notes);
+    run.reviewing.defects = typeof md.material_defects === "number" ? md.material_defects : null;
   },
   "graph.route.decided": (run, md) => {
     run.loopPending = false;
+    run.reviewing.reason = isText(md.reason) ? md.reason : null;
+    run.reviewing.missing = missingCount(md);
     run.outcomes.report_reviewer = reviewOutcome(run, md);
     if (md.destination === "extra_pass") {
       rearm(run, 1); run.active = "researcher";
@@ -369,6 +495,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     note.replaces = isText(md.replaces) ? md.replaces : null;
     note.fallback = md.fallback === true;
     note.where = run.active;
+    noteSlot(run, md);
   },
   /* notes-progress-report spec §8.4: the reader stopped the run. No row is active and no loop is lit;
      every mark stays as recorded, so the stopped stage can freeze the pipeline where it was. */
@@ -380,10 +507,50 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     };
     run.active = null; run.loop = "off"; run.arc = null;
   },
+  /* notes-progress-report spec §6.1-§6.7: the four live-only progress events, each a cumulative
+     snapshot (the latest wins), and the latest quality verdict's hard failures (§6.7's refusal line). */
+  "planner.progress": (run, md) => {
+    if (md.step !== "drafting" && md.step !== "checking" && md.step !== "fixing") return;
+    run.planning.step = md.step;
+    run.planning.round = count(md.check_round);
+    run.planning.slots = planSlots(md.sub_topics);
+  },
+  "source_evaluator.progress": (run, md) => {
+    run.evaluating = {
+      toRate: count(md.to_rate), reused: count(md.reused), capped: count(md.capped), rated: count(md.rated),
+      strong: count(md.strong), fair: count(md.fair), weak: count(md.weak), unrated: count(md.unrated),
+      batches: count(md.batches), batchesDone: count(md.batches_done),
+    };
+  },
+  "evidence_verifier.progress": (run, md) => {
+    const before = run.verifying;
+    const next = verifierSample(md.sample, (before?.sampleCount ?? 0) + 1);
+    run.verifying = {
+      total: count(md.total), checked: count(md.checked), verified: count(md.verified), corrected: count(md.corrected),
+      quoted: count(md.quoted), dropped: count(md.dropped), batches: count(md.batches), batchesDone: count(md.batches_done),
+      samples: next ? [...(before?.samples ?? []), next].slice(-2) : before?.samples ?? [],
+      sampleCount: (before?.sampleCount ?? 0) + (next ? 1 : 0),
+    };
+  },
+  "report_writer.progress": (run, md) => {
+    const before = run.writing;
+    const next = writerSample(md.sample, (before?.sampleCount ?? 0) + 1);
+    run.writing = {
+      phase: md.phase === "bottom_line" ? "bottom_line" : "sections",
+      partsTotal: count(md.parts_total), partsReturned: count(md.parts_returned), drafted: count(md.sentences_drafted),
+      checked: count(md.sentences_checked), backed: count(md.backed), removed: count(md.removed), unchecked: count(md.unchecked),
+      fraction: Math.min(1, Math.max(before?.fraction ?? 0, typeof md.fraction === "number" ? md.fraction : 0)),
+      samples: next ? [...(before?.samples ?? []), next].slice(-2) : before?.samples ?? [],
+      sampleCount: (before?.sampleCount ?? 0) + (next ? 1 : 0),
+    };
+  },
+  "graph.quality.assessed": (run, md) => {
+    run.hardFailures = Array.isArray(md.hard_failures) ? md.hard_failures.filter(isText) : [];
+  },
 };
 export function applyEvent(run: RunState, ev: RunEvent): void {
   const h = EVENT_HANDLERS[ev.type];
-  if (h) h(run, ev.metadata || {});
+  if (h) h(run, ev.metadata || {}, typeof ev.timestamp === "string" && ev.timestamp ? ev.timestamp : null);
 }
 /* The marks to paint: the recorded states plus the active row, which is derived. */
 export function marksFor(run: RunState, activeId: NodeId | null): Partial<Record<NodeId, PaintedMark>> {
@@ -406,7 +573,7 @@ export const COUNTER_ROWS: readonly CounterRow[] = [
 ];
 
 /* The API's frame carries `event_type`; the prototype's scripts carried `type`. */
-export function toRunEvent(event: ResearchEvent): RunEvent { return { type: event.event_type, metadata: event.metadata }; }
+export function toRunEvent(event: ResearchEvent): RunEvent { return { type: event.event_type, metadata: event.metadata, timestamp: event.timestamp }; }
 export function replayRun(events: readonly ResearchEvent[]): RunState {
   const run = newRunState();
   for (const event of events) applyEvent(run, toRunEvent(event));

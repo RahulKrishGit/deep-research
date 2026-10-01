@@ -143,7 +143,7 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     expect(row(container, "report_reviewer").getAttribute("data-state")).toBe("done");
     expect(row(container, "report_reviewer").getAttribute("data-handoff")).toBe("from");
     expect(row(container, "report_reviewer").getAttribute("data-open")).toBe("0");
-    expect(row(container, "report_reviewer").querySelector(".m-out")!.textContent).toBe("Accepted · 0.90");
+    expect(row(container, "report_reviewer").querySelector(".m-out")!.textContent).toBe("Accepted · all 5 met");
     expect(row(container, "finalize_report").getAttribute("data-handoff")).toBe("to");
     act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
     expect(container.querySelector("[data-handoff]")).toBeNull();

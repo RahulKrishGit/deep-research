@@ -26,17 +26,17 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 };
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the twenty-three handlers", () => {
+  it("has the seven rows and the twenty-eight handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
-      "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
-      "graph.node.started", "graph.note_pass.started", "graph.note_redraft.requested", "graph.report.redraft_requested",
+      "evidence_verifier.progress", "evidence_verifier.verification.completed", "graph.extra_pass.started", "graph.node.completed", "graph.node.skipped",
+      "graph.node.started", "graph.note_pass.started", "graph.note_redraft.requested", "graph.quality.assessed", "graph.report.redraft_requested",
       "graph.report.reviewed", "graph.route.decided", "graph.session.completed",
-      "planner.planning.completed", "report_writer.report.written", "researcher.research.completed",
+      "planner.planning.completed", "planner.progress", "report_writer.progress", "report_writer.report.written", "researcher.research.completed",
       "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
       "session.clarification.answered", "session.clarification.requested", "session.note.interpreted", "session.note.received",
-      "session.stopped", "source_evaluator.evaluation.completed",
+      "session.stopped", "source_evaluator.evaluation.completed", "source_evaluator.progress",
     ]);
   });
 });
@@ -45,9 +45,10 @@ describe("the run state holds only what the page reads (Phase 2 final review R6)
   it("has no pass cap, loop tag or blurbs, exports no BLURB, and graph.session.started changes nothing", () => {
     const run = newRunState();
     expect(Object.keys(run).sort()).toEqual([
-      "active", "arc", "captions", "clarify", "counters", "countersPass", "finalStatus", "findingsSoFar",
-      "loop", "loopPending", "marks", "notes", "open", "openNode", "outcomes", "pagesRead", "pass",
-      "passFindings", "plan", "rearmed", "rearmedFirst", "reopen", "stopped", "topics",
+      "active", "arc", "captions", "clarify", "counters", "countersPass", "durations", "evaluating", "finalStatus", "findingsSoFar",
+      "hardFailures", "loop", "loopPending", "marks", "notes", "open", "openNode", "outcomes", "pagesRead", "pass",
+      "passFindings", "plan", "planning", "rearmed", "rearmedFirst", "reopen", "reviewing", "startedAt", "stopped", "topics",
+      "verifying", "writing",
     ]);
     const before = structuredClone(run);
     applyEvent(run, { type: "graph.session.started", metadata: { max_extra_passes: 1 } });
@@ -294,13 +295,17 @@ describe("(h) every row's outcome line", () => {
       const events = capture.events;
       const run = replayRun(events);
       const last = (type: string) => events.filter((e) => e.event_type === type).at(-1)!;
-      const reviewed = last("graph.report.reviewed");
-      expect(run.outcomes.source_evaluator).toBe(plural(md<number>(last("source_evaluator.evaluation.completed"), "source_count"), "source rated", "sources rated"));
+      const e = last("source_evaluator.evaluation.completed");
+      const unrated = md<number>(e, "unscored_cap_count") + md<number>(e, "unscored_provider_count") + md<number>(e, "unscored_missing_count");
+      // notes-progress-report spec §6.4: the scored sources and their split, never a score.
+      expect(run.outcomes.source_evaluator).toBe(`${plural(md<number>(e, "scored_count"), "source rated", "sources rated")} · ${md<number>(e, "strong_count")} strong · `
+        + `${md<number>(e, "fair_count")} fair · ${md<number>(e, "weak_count")} weak` + (unrated > 0 ? ` · ${unrated} not rated` : ""));
       const v = last("evidence_verifier.verification.completed");
       expect(run.outcomes.evidence_verifier).toBe(`${md<number>(v, "verified")} verified · ${md<number>(v, "verified_corrected")} corrected · ${md<number>(v, "dropped")} dropped`);
       const w = last("report_writer.report.written");
       expect(run.outcomes.report_writer).toBe(`Report drafted · ${md<number>(w, "statements")} sentences · ${md<number>(w, "citations")} citations`);
-      expect(run.outcomes.report_reviewer).toBe(`Accepted · ${md<number>(reviewed, "mean_score").toFixed(2)}`);
+      // §6.7: the accepted review's outcome names its criteria, never its score.
+      expect(run.outcomes.report_reviewer).toBe("Accepted · all 5 met");
       expect(run.outcomes.finalize_report).toBe("Published");
     }
   });
