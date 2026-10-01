@@ -54,6 +54,10 @@ export interface NoteState {
 export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
 export interface ClarifyAnswer { questionId: string; value: string; source: "chosen" | "typed" | "best_guess" }
 export interface ClarifyState { questions: ClarifyQuestion[]; deadlineAt: string; answered: { answers: ClarifyAnswer[]; reason: string } | null }
+/* notes-progress-report spec §8.2, §8.4: a stopped session's last event — the step it was on (a row's
+   node id, or "check"), when (ISO) and how long it had run. A value the event does not carry is null,
+   never invented. */
+export interface StoppedRun { step: string | null; at: string | null; elapsedSeconds: number | null }
 export interface RunState {
   marks: Partial<Record<NodeId, Mark>>;   /* node id → "done" | "loop" | "skipped"; the active row is derived */
   active: NodeId | null;                  /* the "Now" row: the successor of the last graph.node.completed */
@@ -75,6 +79,7 @@ export interface RunState {
   open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
   clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
   notes: NoteState[];                     /* the reader's notes, in receipt order */
+  stopped: StoppedRun | null;             /* session.stopped: the reader stopped the run; null otherwise */
 }
 export interface RunEvent { type: string; metadata: Record<string, unknown> }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -94,7 +99,7 @@ export function newRunState(): RunState {
     rearmed: {}, rearmedFirst: null, captions: {},
     counters: emptyCounters(), countersPass: 1, finalStatus: null,
     plan: [], topics: [], pagesRead: null, findingsSoFar: null, passFindings: null,
-    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [],
+    reopen: {}, outcomes: {}, open: new Set(), clarify: null, notes: [], stopped: null,
   };
 }
 function nextRow(node: NodeId): NodeId | null {
@@ -352,6 +357,16 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     note.replaces = isText(md.replaces) ? md.replaces : null;
     note.fallback = md.fallback === true;
     note.where = run.active;
+  },
+  /* notes-progress-report spec §8.4: the reader stopped the run. No row is active and no loop is lit;
+     every mark stays as recorded, so the stopped stage can freeze the pipeline where it was. */
+  "session.stopped": (run, md) => {
+    run.stopped = {
+      step: isText(md.step) ? md.step : null,
+      at: isText(md.stopped_at) ? md.stopped_at : null,
+      elapsedSeconds: typeof md.elapsed_seconds === "number" && Number.isFinite(md.elapsed_seconds) ? md.elapsed_seconds : null,
+    };
+    run.active = null; run.loop = "off"; run.arc = null;
   },
 };
 export function applyEvent(run: RunState, ev: RunEvent): void {

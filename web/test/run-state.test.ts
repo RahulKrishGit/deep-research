@@ -26,7 +26,7 @@ const at = (events: ResearchEvent[], pred: (e: ResearchEvent) => boolean, from =
 };
 
 describe("the port is the prototype's core", () => {
-  it("has the seven rows and the twenty-two handlers", () => {
+  it("has the seven rows and the twenty-three handlers", () => {
     expect(STAGES.map((s) => s.id)).toEqual(["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]);
     expect(AGENT_ORDER).toEqual(STAGES.map((s) => s.id));
     expect(Object.keys(EVENT_HANDLERS).sort()).toEqual([
@@ -36,7 +36,7 @@ describe("the port is the prototype's core", () => {
       "planner.planning.completed", "report_writer.report.written", "researcher.research.completed",
       "researcher.sub_topic.completed", "researcher.sub_topic.started", "researcher.tool_call",
       "session.clarification.answered", "session.clarification.requested", "session.note.interpreted", "session.note.received",
-      "source_evaluator.evaluation.completed",
+      "session.stopped", "source_evaluator.evaluation.completed",
     ]);
   });
 });
@@ -47,7 +47,7 @@ describe("the run state holds only what the page reads (Phase 2 final review R6)
     expect(Object.keys(run).sort()).toEqual([
       "active", "arc", "captions", "clarify", "counters", "countersPass", "finalStatus", "findingsSoFar",
       "loop", "loopPending", "marks", "notes", "open", "openNode", "outcomes", "pagesRead", "pass",
-      "passFindings", "plan", "rearmed", "rearmedFirst", "reopen", "topics",
+      "passFindings", "plan", "rearmed", "rearmedFirst", "reopen", "stopped", "topics",
     ]);
     const before = structuredClone(run);
     applyEvent(run, { type: "graph.session.started", metadata: { max_extra_passes: 1 } });
@@ -340,5 +340,21 @@ describe("(j) the one-time check (live-briefs spec §4.4-§4.5)", () => {
       .map((e, i) => ({ event_type: e.type, source: "api", message: "m", timestamp: "2026-09-29T10:00:00+00:00", metadata: e.metadata, event_id: `e${i}` }));
     const snaps = snapshots(events);
     events.forEach((_, k) => expect(replayRun(events.slice(0, k + 1))).toEqual(snaps[k]));
+  });
+});
+
+describe("session.stopped (notes-progress-report spec §8.4)", () => {
+  it("records the step, the time and the seconds; leaves no row active and no loop lit; keeps every mark", () => {
+    const events = extraPass.events;
+    const decided = at(events, (e) => e.event_type === "graph.route.decided" && e.metadata.destination === "extra_pass");
+    const run = replayRun(events.slice(0, decided + 1));
+    const before = structuredClone(run);
+    expect(newRunState().stopped).toBeNull();
+    applyEvent(run, { type: "session.stopped", metadata: { step: "researcher", stopped_at: "2026-09-30T20:41:07+00:00", elapsed_seconds: 391 } });
+    expect(run.stopped).toEqual({ step: "researcher", at: "2026-09-30T20:41:07+00:00", elapsedSeconds: 391 });
+    expect([run.active, run.loop, run.arc]).toEqual([null, "off", null]);
+    expect([run.marks, run.rearmed, run.topics]).toEqual([before.marks, before.rearmed, before.topics]);
+    applyEvent(run, { type: "session.stopped", metadata: {} });
+    expect(run.stopped).toEqual({ step: null, at: null, elapsedSeconds: null });
   });
 });

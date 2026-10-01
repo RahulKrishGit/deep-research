@@ -1,6 +1,7 @@
 // Mirrors src/deep_research/api/models.py (+ query, SessionListResponse, the E1 models).
-/* "needs_input": the one-time check is waiting for the reader (live-briefs spec §4.4); not terminal. */
-export type SessionStatus = "running" | "needs_input" | "completed" | "max_iterations" | "incomplete" | "failed";
+/* "needs_input": the one-time check is waiting for the reader (live-briefs spec §4.4); not terminal.
+   "stopped": the reader stopped the run (notes-progress-report spec §8); terminal, nothing published. */
+export type SessionStatus = "running" | "needs_input" | "completed" | "max_iterations" | "incomplete" | "failed" | "stopped";
 export type ApiMode = "live" | "replay";
 
 /* No `max_iterations`: the console never sends one, so the API uses the configured extra-pass
@@ -37,6 +38,10 @@ export interface ResearchSessionResponse {
      it bought and the one-time check it asked. Optional because a response recorded before notes
      existed (the replay captures under test/fixtures) carries none of them. */
   notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
+  /* notes-progress-report spec §8.4: the step the reader stopped the run at — "check" or a pipeline
+     row's node id — on a stopped session, null otherwise. Optional because a response recorded before
+     Stop existed carries none. */
+  stopped_step?: string | null;
 }
 /* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the run
    concluded — "not_addressed" when the report still does not follow it after its one redraft; with
@@ -145,4 +150,10 @@ export async function submitAnswers(sessionId: string, body: ClarificationAnswer
 export async function addNote(sessionId: string, text: string): Promise<ApiResult<NoteAcceptedResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/notes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
   return { data: (await r.json()) as NoteAcceptedResponse, mode: modeOf(r) };
+}
+/* Stop a session, posted once with no body (notes-progress-report spec §8.1): 202 with the stopped
+   session; 409 not_stoppable once it has ended, is publishing or the service is closing. */
+export async function stopResearch(sessionId: string): Promise<ApiResult<ResearchSessionResponse>> {
+  const r = await request(`/api/research/${id(sessionId)}/stop`, { method: "POST" });
+  return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
 }

@@ -50,3 +50,14 @@ describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)"
     expect(listCalls).toBe(before + 1);
   });
 });
+
+describe("Sidebar — a session the reader stopped (notes-progress-report spec §8.4, D29)", () => {
+  it("carries no mark and says it was stopped in its accessible name only", async () => {
+    const now = new Date().toISOString();
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [{ ...session("a", now), status: "stopped", stopped_step: "researcher" }] })));
+    render(<ConsoleProvider><Sidebar /></ConsoleProvider>);
+    await waitFor(() => expect(document.querySelector('[data-session="a"]')).toBeTruthy());
+    const row = document.querySelector('[data-session="a"]')!;
+    expect([row.getAttribute("data-run"), row.getAttribute("aria-label"), row.textContent]).toEqual(["0", "q a — stopped by you", "q a"]);
+  });
+});

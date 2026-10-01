@@ -25,3 +25,11 @@ describe("StatusChip", () => {
     expect(container.querySelector(".dot")!.className).toContain("dot-warn");
   });
 });
+
+describe("StatusChip — a session the reader stopped (notes-progress-report spec §8.4)", () => {
+  it("reads Stopped by you · at {step} on the neutral dot", () => {
+    const { container } = render(<StatusChip view={view({ status: "stopped", step: "Researching" })} />);
+    expect(text(container)).toBe("Stopped by you · at Researching");
+    expect(container.querySelector(".dot")!.className).toBe("dot dot-neutral");
+  });
+});
