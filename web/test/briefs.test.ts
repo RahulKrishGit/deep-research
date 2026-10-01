@@ -180,6 +180,17 @@ describe("the stopped row and the rows after it (notes-progress-report spec §8.
     expect(r.criteria[0]).toMatchObject({ mark: "waiting", before: "stopped", landed: false });
     expect(text(rowBrief(run, "report_reviewer", "stopped", NOW))).toBe("Stopped · reading the draft · 0m 30s");
   });
+  // owner decision O2 (2026-10-01): the stopped Reviewing row keeps the review's own tense: reading while the call
+  // ran when the reader stopped it, "read the draft in {elapsed}" once the review had landed.
+  it("freezes Reviewing's subtitle in the past tense when the review had landed before the stop", () => {
+    const run = play([
+      ev("graph.node.started", { node: "report_reviewer", iteration: 0 }, at(0)),
+      ev("graph.report.reviewed", { review_status: "scored", mean_score: 0.9, material_defects: 0, criteria: [], notes: [] }, at(95)),
+      ev("session.stopped", { step: "report_reviewer", stopped_at: at(125), elapsed_seconds: 125 }),
+    ]);
+    expect(stoppedSubtitle(run, "report_reviewer")).toBe("Stopped · read the draft in 1m 35s");
+    expect(text(rowBrief(run, "report_reviewer", "stopped", NOW))).toBe("Stopped · read the draft in 1m 35s");
+  });
   it("a later row reads 'not run', or 'not run again' once a loop has re-armed it", () => {
     const run = newRunState();
     expect(notRunText(run, "source_evaluator")).toBe("not run");

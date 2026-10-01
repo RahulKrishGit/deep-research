@@ -155,6 +155,10 @@ export const WRITING_CHECKING_PLACEHOLDER = "The first sentences are being check
 export const WRITING_NONE_CHECKED_PLACEHOLDER = "None of the drafted sentences could be checked";
 /* §6.6, P3-4: every part has returned and not one sentence was drafted (each point refused), so none is or will be checked. */
 export const WRITING_NO_SENTENCES_PLACEHOLDER = "No sentences were drafted to check";
+/* §6.6, owner decision O2 (2026-10-01): while the bottom line runs and no section drafted a sentence this pass (a
+   note pass whose own part was fully refused, or a pass with no part to draft), what the ticker waits on is the
+   bottom line, as the subtitle says ("writing the bottom line"). */
+export const WRITING_BOTTOM_LINE_PLACEHOLDER = "Writing the bottom line…";
 /* §6.3: four skeleton slots before the plan's titles; the count is a placeholder, not a claim. */
 export const SKELETON_WIDTHS: readonly string[] = ["78%", "64%", "72%", "52%"];
 /* §6.7, D23, D35: the five criteria a review can mark not met, in DIMENSION_GUIDANCE order. */
@@ -332,10 +336,17 @@ const writerLine = (s: WriterSample, pass: string | undefined): TickerLine => ({
    unchecked yet); once every one is settled and none was checked, that none could be (E7). A part that
    returned with no sentence drafted is not a sentence to check: while a part is still out the first
    section's line stands, since sentences may still come; once every part is back, that none was drafted
-   (P3-4). */
+   (P3-4). Those two lines are about the sections' own phase: in `bottom_line` with no section sentence drafted
+   this pass (no part returned, or every part returned with nothing drafted) the one thing still to come is the
+   bottom line, so the ticker says that (owner decision O2, 2026-10-01). Sentences that were drafted keep their
+   checking words in either phase. */
 function writingPlaceholder(w: WritingState, samples: readonly TickerLine[]): string {
-  if (w.partsReturned === 0) return WRITING_PLACEHOLDER;
-  if (w.drafted === 0) return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
+  const bottomLine = w.phase === "bottom_line";
+  if (w.partsReturned === 0) return bottomLine ? WRITING_BOTTOM_LINE_PLACEHOLDER : WRITING_PLACEHOLDER;
+  if (w.drafted === 0) {
+    if (bottomLine) return WRITING_BOTTOM_LINE_PLACEHOLDER;
+    return w.partsReturned < w.partsTotal ? WRITING_PLACEHOLDER : WRITING_NO_SENTENCES_PLACEHOLDER;
+  }
   const unsettled = w.checked + w.unchecked < w.drafted;
   const noneChecked = samples.length === 0 && w.checked === 0 && w.unchecked > 0;
   return !unsettled && noneChecked ? WRITING_NONE_CHECKED_PLACEHOLDER : WRITING_CHECKING_PLACEHOLDER;
@@ -464,12 +475,24 @@ export function liveSubtitle(run: RunState, id: NodeId, clock: number | null): s
       const w = run.writing;
       if (w === null) return "starting · not yet written";
       if (w.phase === "bottom_line") return "writing the bottom line";
-      return w.partsTotal === 0 ? "no section to rewrite" : w.partsReturned + " of " + w.partsTotal + " sections written";
+      if (w.partsTotal === 0) return "no section to rewrite";
+      /* owner decision O2 (2026-10-01): a part that ended failed counts as returned (it settled), but nothing of it
+         was written: "{written} of {n} sections written", then " · {f} couldn't be written" when any failed. */
+      const failed = Math.max(0, Math.min(w.partsFailed, w.partsReturned));
+      return (w.partsReturned - failed) + " of " + w.partsTotal + " sections written" + (failed > 0 ? " · " + failed + " couldn't be written" : "");
     }
     case "report_reviewer": {
-      // The elapsed time stops when the review lands: what follows is the route decision, not the call.
-      const landed = run.reviewing.landed && run.reviewing.reviewedAt ? Date.parse(run.reviewing.reviewedAt) : NaN;
-      const elapsed = elapsedText(run.startedAt.report_reviewer, Number.isNaN(landed) ? clock : landed);
+      const r = run.reviewing;
+      /* owner decision O2 (2026-10-01): once the review has landed the row reads in the past tense, "read the draft
+         in {elapsed}", frozen at the moment it landed (what follows is the route decision, not the call); a landing
+         time that is not known leaves the time out rather than let one run on. Before it lands, "reading the draft ·
+         {elapsed}" runs with the clock. */
+      if (r.landed) {
+        const landedAt = r.reviewedAt ? Date.parse(r.reviewedAt) : NaN;
+        const took = Number.isNaN(landedAt) ? null : elapsedText(run.startedAt.report_reviewer, landedAt);
+        return took === null ? "read the draft" : "read the draft in " + took;
+      }
+      const elapsed = elapsedText(run.startedAt.report_reviewer, clock);
       return elapsed === null ? "reading the draft" : "reading the draft · " + elapsed;
     }
     default: return null;

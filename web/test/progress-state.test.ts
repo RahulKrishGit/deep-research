@@ -160,6 +160,22 @@ describe("Evaluating, Verifying and Writing (spec §6.4-§6.6)", () => {
     expect(run.writing!.fraction).toBe(0.5);
     expect(run.writing!.samples).toEqual([{ seq: 1, text: "S.", verdict: "backed", findings: 2, section: "Alpha" }]);
   });
+  // owner decision O2 (2026-10-01): report_writer.progress carries parts_failed, the parts that ended failed
+  // (parts_returned still counts them, as settled). A progress event from before the key (a recorded capture)
+  // has none, which reads as no failed part, never as an error.
+  it("keeps the parts whose draft failed, as the latest snapshot says, and reads a missing key as none", () => {
+    const counts = { phase: "sections", parts_total: 3, sentences_drafted: 2, sentences_checked: 1, backed: 1, removed: 0, unchecked: 0, fraction: 0.5, sample: null };
+    const run = play([
+      ev("report_writer.progress", { ...counts, parts_returned: 1, parts_failed: 1 }),
+      ev("report_writer.progress", { ...counts, parts_returned: 2, parts_failed: 1 }),
+    ]);
+    expect([run.writing!.partsReturned, run.writing!.partsFailed]).toEqual([2, 1]);
+    expect(play([ev("report_writer.progress", { ...counts, parts_returned: 2 })]).writing!.partsFailed).toBe(0);
+    expect(play([ev("report_writer.progress", { ...counts, parts_returned: 2, parts_failed: "x" })]).writing!.partsFailed).toBe(0);
+    // A new draft starts clean: the next draft's first progress event carries its own count.
+    applyEvent(run, ev("graph.node.started", { node: "report_writer", iteration: 1 }, at(0)));
+    expect(run.writing).toBeNull();
+  });
 });
 
 describe("Reviewing (spec §6.7)", () => {
@@ -189,6 +205,11 @@ describe("Reviewing (spec §6.7)", () => {
     expect(decide("redraft_requested", { material_defects: null })).toBe("Things to fix · back to the writer");
     expect(decide("extra_pass_requested")).toBe("Sent back to fill 2 gaps");
     expect(decide("review_unavailable")).toBe("Review unavailable");
+    // owner decision O2 (2026-10-01): a halted route reads "Halted", never "Review unavailable"; the backend does
+    // not publish graph.route.decided with this reason today (the reviewer node skips a halted run), so this pins
+    // the word for a stream that ever does. A reason the table does not know keeps the fall-back.
+    expect(decide("halted")).toBe("Halted");
+    expect(decide("a_reason_added_later")).toBe("Review unavailable");
     expect(decide("extra_passes_exhausted")).toBe("Not accepted · 2 gaps still open");
     expect(decide("report_not_accepted", { criteria: criteria({ completeness: ["coverage"], readability: ["presentation"] }) })).toBe("Not accepted · 3 of 5 met");
     expect(decide("report_not_accepted", {}, [ev("graph.quality.assessed", { hard_failures: ["missing_evidence_ledger"] })])).toBe("Not accepted · a check the run makes itself failed");

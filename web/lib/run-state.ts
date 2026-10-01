@@ -70,7 +70,7 @@ export interface EvaluatingState { toRate: number; reused: number; capped: numbe
 export interface VerifierSample { seq: number; text: string; verdict: string; correction: { field: string; value: string | null } | null; dropReason: string | null; role: string | null; host: string | null }
 export interface VerifyingState { total: number; checked: number; verified: number; corrected: number; quoted: number; dropped: number; batches: number; batchesDone: number; samples: VerifierSample[]; sampleCount: number }
 export interface WriterSample { seq: number; text: string; verdict: "backed" | "removed"; findings: number; section: string }
-export interface WritingState { phase: "sections" | "bottom_line"; partsTotal: number; partsReturned: number; drafted: number; checked: number; backed: number; removed: number; unchecked: number; fraction: number; samples: WriterSample[]; sampleCount: number }
+export interface WritingState { phase: "sections" | "bottom_line"; partsTotal: number; partsReturned: number; partsFailed: number; drafted: number; checked: number; backed: number; removed: number; unchecked: number; fraction: number; samples: WriterSample[]; sampleCount: number }
 /* §6.1, §6.7: graph.report.reviewed's five criteria and each note's result, then the route decided after it. */
 export interface CriterionState { dimension: string; met: boolean | null; kinds: string[] }
 export interface ReviewHalf { result: string; reason: string }
@@ -203,7 +203,11 @@ export function thingsToFix(defects: number | null): string {
   return defects === null ? "Things to fix" : plural(defects, "thing", "things") + " to fix";
 }
 /* Reviewing's outcome line, read at the route decision (notes-progress-report spec §6.7 route
-   table): never a score; the brief adds the row's duration (lib/briefs.ts). */
+   table): never a score; the brief adds the row's duration (lib/briefs.ts). `halted` is a route reason
+   the backend defines (graph/state.py GRAPH_ROUTES) and does not publish as a decision today: the
+   reviewer node skips a halted run and the errors its own review adds are never halting ones. It reads
+   "Halted" (owner decision O2, 2026-10-01), never the review-unavailable line; a reason this table does
+   not know falls back to that line, as before. */
 function reviewOutcome(run: RunState, md: Md): string {
   switch (md.reason) {
     case "note_pass_requested": return "Sent back to research your note";
@@ -216,6 +220,8 @@ function reviewOutcome(run: RunState, md: Md): string {
     }
     case "report_not_accepted": return notAcceptedLine(run);
     case "extra_passes_exhausted": return "Not accepted · " + plural(missingCount(md), "gap", "gaps") + " still open";
+    case "halted": return "Halted";
+    case "review_unavailable":
     default: return "Review unavailable";
   }
 }
@@ -544,7 +550,10 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const next = writerSample(md.sample, (before?.sampleCount ?? 0) + 1);
     run.writing = {
       phase: md.phase === "bottom_line" ? "bottom_line" : "sections",
-      partsTotal: count(md.parts_total), partsReturned: count(md.parts_returned), drafted: count(md.sentences_drafted),
+      /* owner decision O2 (2026-10-01): parts_returned counts every settled part; parts_failed is how many of them
+         ended failed (nothing of such a part is written), so the page can say how many sections were written. A
+         progress event from before the key has none, which reads as none failed. */
+      partsTotal: count(md.parts_total), partsReturned: count(md.parts_returned), partsFailed: count(md.parts_failed), drafted: count(md.sentences_drafted),
       checked: count(md.sentences_checked), backed: count(md.backed), removed: count(md.removed), unchecked: count(md.unchecked),
       fraction: Math.min(1, Math.max(before?.fraction ?? 0, typeof md.fraction === "number" ? md.fraction : 0)),
       samples: next ? [...(before?.samples ?? []), next].slice(-2) : before?.samples ?? [],

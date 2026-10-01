@@ -76,6 +76,31 @@ test("Writing: the tally grows as the sections return; the placeholder waits for
   await stop(request, id);
 });
 
+// WCAG 2.2.2 (Pause, Stop, Hide), owner decision O2, 2026-10-01 -- DESIGN.md section 5.6, spec 6.5: a ticker
+// presents the running job's live progress, which 2.2.2 excepts as essential real-time information, so it has no
+// pause control. What keeps it harmless is checked here: it is not a live region, so a screen reader is not
+// interrupted at each sample, and under reduced motion its settle is dropped and its change is a fade.
+test("the ticker is not a live region, and under reduced motion its change is a fade with no travel (WCAG 2.2.2 rationale)", async ({ page, context, request }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await holdAt(context, "evidence_verifier.progress#2");
+  const id = await submit(page, "q");
+  const verifying = row(page, "evidence_verifier");
+  await expect(verifying).toHaveAttribute("data-open", "1", { timeout: 20_000 });
+  await expect(verifying.locator(".tickbox .xf > div[data-on='1'] .qt")).toBeVisible();
+  const live = "[aria-live], [role='status'], [role='alert'], [role='log']";
+  expect(await verifying.locator(".tickbox").evaluate((box, selector) => ({ inside: box.querySelectorAll(selector).length, around: box.closest(selector) !== null }), live))
+    .toEqual({ inside: 0, around: false });
+  const behind = verifying.locator(".tickbox .xf > .b-sub"); // the placeholder, now behind the sample: the unshown line of the stack
+  await expect(behind).toHaveAttribute("data-on", "0");
+  await expect(behind).toHaveCSS("transform", "none");
+  await expect(behind).toHaveCSS("transition-property", "opacity");
+  await expect(behind).toHaveCSS("transition-duration", "0.16s");
+  // The same line settles 5px when motion is allowed, so the three checks above can fail.
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(behind).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 5)");
+  await stop(request, id);
+});
+
 test("Writing: a drafted sentence with its Statement Check verdict and its section (AC17)", async ({ page, context, request }) => {
   await holdAt(context, "report_writer.progress#4");
   const id = await submit(page, "q");
@@ -99,7 +124,9 @@ test("Reviewing: five checks land with no score; the status line waits for the r
   await expect(reviewing.locator(".pb.ind")).toHaveAttribute("data-on", "0");
   await expect(reviewing.locator(".rv-notes-h")).toHaveCount(0);
   await expect(reviewing).not.toContainText(/\d\.\d\d/);
-  await expect(reviewing.locator(".m-live")).toHaveText(/^reading the draft · \dm \d\ds$/);
+  // Held after graph.report.reviewed: the review has landed, so the row reads in the past tense, frozen at the
+  // moment it landed (owner decision O2, 2026-10-01); while the call runs it reads "reading the draft · {elapsed}".
+  await expect(reviewing.locator(".m-live")).toHaveText(/^read the draft in \dm \d\ds$/);
   await stop(request, id);
 });
 
