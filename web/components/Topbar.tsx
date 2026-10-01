@@ -1,5 +1,6 @@
 // Topbar.tsx — index.html:1175-1185 + renderTopbar (:2119-2130): the chip is the only status copy.
 "use client";
+import { useRef } from "react";
 import { useConsole } from "./ConsoleProvider";
 import { ModeChip } from "./ModeChip";
 import { StatusChip } from "./StatusChip";
@@ -7,6 +8,7 @@ import { StopControl } from "./StopControl";
 export function Topbar() {
   const { sidebar, setSidebar, chip, mode, stop } = useConsole();
   const open = sidebar === "expanded";
+  const chipRef = useRef<HTMLSpanElement>(null); // where Stop's focus goes when Stop is withdrawn (owner decision O2)
   return (
     <header className="topbar">
       <div className="topbar-in">
@@ -15,9 +17,9 @@ export function Topbar() {
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="square" aria-hidden="true" style={{ width: 17, height: 17 }}><path d="M4 6h16M4 12h16M4 18h16" /></svg>
         </button>
         <div className="topbar-right" id="topbarStatus">
-          {chip ? <StatusChip view={chip} /> : null}
+          {chip ? <StatusChip view={chip} ref={chipRef} /> : null}
           {/* notes-progress-report spec §8.5: Stop sits after the status chip and before the replay chip. */}
-          {stop ? <StopControl key={stop.sessionId} target={stop} /> : null}
+          {stop ? <StopControl key={stop.sessionId} target={stop} returnFocusTo={chipRef} /> : null}
           {mode === "replay" ? <ModeChip /> : null}
         </div>
       </div>

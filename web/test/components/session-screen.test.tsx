@@ -367,6 +367,63 @@ describe("SessionScreen — Stop (notes-progress-report spec §8.5, D17)", () =>
     await waitFor(() => expect(document.activeElement).toBe(document.getElementById("stoppedLine")));
   });
 
+  // Phase D minor (owner decision O2, 2026-10-01): Stop is withdrawn when the run can no longer be stopped
+  // (Publishing, finished, failed). If Stop or its popover held focus, the page's focus would fall to <body>;
+  // it goes to the status chip, the element that says what the run is doing now. The chip is not a control:
+  // it takes focus by script only (tabIndex -1) and keeps the app's own focus style.
+  describe("when Stop is withdrawn while it holds focus (not a stop by the reader)", () => {
+    async function mountRunning() {
+      let push!: (frames: string) => void;
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/stream")) {
+          const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode(planning)); push = (frames) => controller.enqueue(new TextEncoder().encode(frames)); } });
+          return new Response(body, { status: 200, headers: { "content-type": "text/event-stream", "x-deep-research-mode": "replay" } });
+        }
+        if (url.includes("/status")) return json(200, RUNNING);
+        return json(200, { sessions: [] });
+      }));
+      render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
+      await waitFor(() => expect(document.getElementById("stopBtn")).toBeTruthy());
+      await waitFor(() => expect(push).toBeTypeOf("function"));
+      // Publishing begins: the route decides to finalize, which the API no longer lets a stop interrupt.
+      const publish = async () => { await act(async () => { push(publishing.slice(planning.length)); }); };
+      return { publish };
+    }
+    const chip = () => document.querySelector<HTMLElement>("#topbarStatus .chip")!;
+
+    it("the status chip takes focus when Stop itself held it", async () => {
+      const { publish } = await mountRunning();
+      expect(chip().getAttribute("tabindex")).toBe("-1");
+      document.getElementById("stopBtn")!.focus();
+      expect(document.activeElement).toBe(document.getElementById("stopBtn"));
+      await publish();
+      await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+      expect(document.activeElement).toBe(chip());
+      expect(chip().textContent!.replace(/\s+/g, " ").trim()).toBe("Running · Publishing");
+    });
+
+    it("the status chip takes focus when the confirmation popover held it (Keep going)", async () => {
+      const { publish } = await mountRunning();
+      fireEvent.click(document.getElementById("stopBtn")!);
+      const keep = [...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === "Keep going")!;
+      await waitFor(() => expect(document.activeElement).toBe(keep));
+      await publish();
+      await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+      expect(document.querySelector(".stop-confirm")).toBeNull();
+      expect(document.activeElement).toBe(chip());
+    });
+
+    it("leaves focus where it is when it was somewhere else", async () => {
+      const { publish } = await mountRunning();
+      await waitFor(() => expect(document.getElementById("noteInput")).toBeTruthy());
+      document.getElementById("noteInput")!.focus();
+      await publish();
+      await waitFor(() => expect(document.getElementById("stopBtn")).toBeNull());
+      expect(document.activeElement).toBe(document.getElementById("noteInput"));
+    });
+  });
+
   // The other order a real stop can arrive in: the stream ends after session.stopped and the screen's
   // own /status read finds "stopped" before the POST's 202 is handled. The stopped stage then mounts
   // while the popover is still up and "Stop research" (disabled, waiting) still holds focus; the control

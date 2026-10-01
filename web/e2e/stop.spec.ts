@@ -36,6 +36,22 @@ test("Stop is offered through the run, gone once Publishing starts, and a stop a
   expect((await refused.json()).error).toEqual({ code: "not_stoppable", message: "Research session can no longer be stopped.", reason: "finished", issues: [] });
 });
 
+// Phase D minor (owner decision O2, 2026-10-01): Stop is withdrawn at Publishing, not by the reader. If it held
+// focus, focus goes to the status chip in the top bar (tabIndex -1) rather than falling to <body>.
+test("when Publishing withdraws Stop while it holds focus, focus goes to the status chip, not the page (owner decision O2)", async ({ page, request }) => {
+  const id = await submit(page, QUESTION);
+  await researching(page);
+  await stop(page).focus();
+  await expect(stop(page)).toBeFocused();
+  await expect(chip(page)).toHaveAttribute("tabindex", "-1");
+  await page.locator('#spine li[data-stage="finalize_report"][data-state="active"]').waitFor({ timeout: 30_000 });
+  await expect(stop(page)).toHaveCount(0);
+  await expect(chip(page)).toBeFocused();
+  await waitTerminal(request, id);
+  await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 });
+  await expect(chip(page)).toBeFocused(); // the finished run's chip is the same element: focus stays on it
+});
+
 test("confirm and stop mid-run: the stopped stage, its chip, the frozen pipeline, the sidebar and the API's answers (AC28, AC31-AC33)", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);

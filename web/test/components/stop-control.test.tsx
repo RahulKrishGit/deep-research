@@ -29,6 +29,56 @@ const stopBtn = () => document.getElementById("stopBtn") as HTMLButtonElement;
 const dialog = () => document.querySelector('[role="dialog"]');
 const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === name)!;
 
+// Phase D minor (owner decision O2, 2026-10-01): when the control goes away holding focus, it hands focus to the
+// element it was given (the topbar's status chip) instead of letting it fall to <body>; focus elsewhere stays put.
+describe("StopControl — focus when it is withdrawn (owner decision O2)", () => {
+  function withdrawable() {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    const returnFocusTo = { current: null as HTMLElement | null };
+    const tree = (withStop: boolean) => (
+      <ConsoleProvider>
+        <span id="chip" tabIndex={-1} ref={(el) => { returnFocusTo.current = el; }}>Running</span>
+        <button type="button" id="elsewhere">elsewhere</button>
+        {withStop ? <StopControl target={{ sessionId: "s1", onStopped: vi.fn() }} returnFocusTo={returnFocusTo} /> : null}
+      </ConsoleProvider>
+    );
+    const view = render(tree(true));
+    return { withdraw: () => view.rerender(tree(false)) };
+  }
+  it("hands focus to the chip when Stop held it", () => {
+    const { withdraw } = withdrawable();
+    stopBtn().focus();
+    withdraw();
+    expect(document.getElementById("stopBtn")).toBeNull();
+    expect(document.activeElement).toBe(document.getElementById("chip"));
+  });
+  it("hands focus to the chip when the popover held it", async () => {
+    const { withdraw } = withdrawable();
+    fireEvent.click(stopBtn());
+    await waitFor(() => expect(document.activeElement).toBe(button("Keep going")));
+    withdraw();
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(document.getElementById("chip"));
+  });
+  it("leaves focus alone when it was elsewhere", () => {
+    const { withdraw } = withdrawable();
+    document.getElementById("elsewhere")!.focus();
+    withdraw();
+    expect(document.activeElement).toBe(document.getElementById("elsewhere"));
+  });
+  it("does nothing when there is no chip to take it, and when no target is given", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
+    const empty = { current: null as HTMLElement | null };
+    const view = render(<ConsoleProvider><StopControl target={{ sessionId: "s1", onStopped: vi.fn() }} returnFocusTo={empty} /></ConsoleProvider>);
+    stopBtn().focus();
+    expect(() => view.rerender(<ConsoleProvider>{null}</ConsoleProvider>)).not.toThrow();
+    expect(document.activeElement).toBe(document.body);
+    const bare = render(<ConsoleProvider><StopControl target={{ sessionId: "s2", onStopped: vi.fn() }} /></ConsoleProvider>);
+    stopBtn().focus();
+    expect(() => bare.rerender(<ConsoleProvider>{null}</ConsoleProvider>)).not.toThrow();
+  });
+});
+
 describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
   it("is a small ghost button with a square, closed until pressed", () => {
     mount(() => json(202, STOPPED));

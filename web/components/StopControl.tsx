@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { ApiError, stopResearch } from "@/lib/api";
 import { STOP_BODY, STOP_CLOSE, STOP_CONFIRM, STOP_FAILED, STOP_KEEP, STOP_LABEL, STOP_TITLE, STOP_TOO_LATE } from "@/lib/stop";
 import { useConsole, type StopTarget } from "./ConsoleProvider";
@@ -8,10 +8,13 @@ import { useConsole, type StopTarget } from "./ConsoleProvider";
    status chip — ghost, small, a square in the text colour — and its one confirmation. "Keep going" takes
    focus on open; Escape, a click outside or "Keep going" closes it and gives focus back to Stop. "Stop
    research" posts once: a 202 hands the stopped session to the screen, a 409 means the run is already
-   finishing, and any other failure keeps the question open. Nothing stops until the reader says so. */
+   finishing, and any other failure keeps the question open. Nothing stops until the reader says so.
+   When the screen withdraws the control for another reason (Publishing, finished, failed) while Stop or its
+   popover holds focus, focus goes to `returnFocusTo` (the topbar's status chip) instead of falling to <body>
+   (owner decision O2, 2026-10-01). A stop by the reader has its own hand-over: the stopped stage's first line. */
 type Face = "ask" | "busy" | "late" | "failed";
 
-export function StopControl({ target }: { target: StopTarget }) {
+export function StopControl({ target, returnFocusTo }: { target: StopTarget; returnFocusTo?: RefObject<HTMLElement | null> }) {
   const { noteMode, refreshSessions } = useConsole();
   const [open, setOpen] = useState(false);
   const [face, setFace] = useState<Face>("ask");
@@ -22,6 +25,12 @@ export function StopControl({ target }: { target: StopTarget }) {
   const closeBtn = useRef<HTMLButtonElement>(null);
   const busy = face === "busy";
 
+  // A layout cleanup runs while the control is still in the document, so the focus it holds can be handed on
+  // before the node goes. On a stop by the reader the stopped stage has already taken focus by then.
+  useLayoutEffect(() => {
+    const node = anchor.current;
+    return () => { if (node?.contains(document.activeElement)) returnFocusTo?.current?.focus(); };
+  }, [returnFocusTo]);
   function close() { setOpen(false); setFace("ask"); stopBtn.current?.focus(); }
   // Focus follows the face: Keep going on open, Close after a 409, Stop research after a failure.
   useEffect(() => {
