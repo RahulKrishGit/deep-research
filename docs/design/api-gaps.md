@@ -43,9 +43,9 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 unless the run left both a composition and a quality snapshot,
 `runtime/outcome.py:525`), and the reader's side (live-briefs Phase 3):
 `notes` (each note as written, the run's reading of it and its outcome),
-`notes_remaining`, `note_passes` and `clarification` (the one-time check's
-questions and the answers the run started with, or `null`), and `stopped_step` (the step a
-stopped session was stopped at — `check` or a pipeline row — else `null`), and
+`notes_remaining`, `note_passes`, `clarification` (the one-time check's
+questions and the answers the run started with, or `null`), `stopped_step` (the step a
+stopped session was stopped at — `check` or a pipeline row — else `null`) and
 `report_outline` (the published report's `##` headings in order, each with its kind, its
 contents label and, for a topic, its number and the note it answers; `null` without a
 published report — notes-progress-report spec §7.5). `status` is one of `running`, `needs_input` (the
@@ -53,7 +53,7 @@ one-time check waiting for the reader; not terminal), `completed`,
 `max_iterations`, `incomplete`, `failed`, `stopped` (the reader stopped the run:
 terminal, nothing published). Not on the response:
 `quality_status`, `max_iterations`/`max_extra_passes`, token usage,
-tool-call totals, any report structure.
+tool-call totals, any report structure beyond `report_outline`.
 
 Every response carries `X-Deep-Research-Mode: live|replay`.
 
