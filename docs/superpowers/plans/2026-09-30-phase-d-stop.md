@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status** draft for review: written 2026-09-30 by the spec-plan-author agent for Phase D of the approved spec at `73b4d7a6`, and dry-run as the Evidence paragraph below says; to be reviewed by spec-plan-reviewer until clean · **Date** 2026-09-30 · **Branch** `feat/notes-progress-report-stop` · **Phase order** D → A → C → B (spec §9): this plan is first.
+**Status** reviewed once: written 2026-09-30 by the spec-plan-author agent for Phase D of the approved spec at `73b4d7a6`, and dry-run as the Evidence paragraph below says; spec-plan-reviewer's review 1 (of `1cda4bdd`) approved it with changes, applied and re-run as "Review round 1" at the end records · **Date** 2026-09-30 · **Branch** `feat/notes-progress-report-stop` · **Phase order** D → A → C → B (spec §9): this plan is first.
 
 **Goal:** The reader can stop one running session at once: `POST /research/{id}/stop` cancels the session's task — every provider, search and page request in flight with it — writes no report, and ends the session in a new terminal status `stopped`, which the web app shows with a Stop control beside the running chip, one confirmation, and a stopped stage that keeps what was done.
 
@@ -164,13 +164,14 @@ Every fact a task relies on, with where it is. Engine paths are under `src/deep_
 ## Open issues (for the human)
 
 - **O1 — §8.6 asks D's README to mention `X-Replay-Hold-After`, which Phase B adds.** §6.10 item 2 (Phase B, AC21, `test_replay_restamps_and_holds`) defines the header; §9 lands D first. A README sentence about a header that does not exist would be false, so this plan documents Stop only (Task 9), and the header's README sentence belongs with Phase B's §6.10 work. Phase B's plan, written in parallel, should add it; please make sure it does.
-- **O2 — A shared page fetch in flight (§8.3, D38).** "Whichever of the two lands second adds a shared fetch in flight to `test_stop_cancels_inflight_calls`." `perf/latency` is at `0b5f3515` (the audit only), so no shared fetch exists to test, and this plan cannot give that test's code. If the latency work merges before this plan runs, Task 1 Step 1 stops (it checks that `agents/researcher.py` still holds the run-wide tool lock), and the test needs an addition this plan does not contain.
+- **O2 — A shared page fetch in flight (§8.3, D38).** "Whichever of the two lands second adds a shared fetch in flight to `test_stop_cancels_inflight_calls`." `perf/latency` is at `0b5f3515` (the audit only), so no shared fetch exists to test, and this plan cannot give that test's code. If the latency work merges before this plan runs, Task 1 Step 1 flags it (its tool-lock line prints `0`) and Phase D goes on: Task 5 Step 1 then extends `test_stop_cancels_inflight_calls` with a shared fetch in flight, written against that work's own helpers to the contract stated there (review round 1, M3).
 - **O3 — Phase B must rewrite `web/test/fixtures/active-rows.json` when it re-captures the fixtures.** The file is the page's active row after every event of each capture; progress events move no row but shift every count. Phase B's re-capture step should run `(cd web && WRITE_ACTIVE_ROWS=1 npx vitest run test/active-row.test.ts)`, review the diff (only counts may change), then run both AC32 tests.
 - **O4 — Playwright was not run in planning** (see Evidence). Task 9's specs and the captures are verification steps for the executor; their Expected lines are reasoned, not observed. The likeliest to differ is the phone topbar: at 390 px it now holds the status chip, Stop and `replay mode` on one row that does not wrap (`web/app/globals.css:1159-1160`), where only the chip's note shrinks (`:1083-1085`) and Stop does not (`flex:none`, Task 8). The longest label, `Waiting for you`, may leave Stop too little room [INFERENCE: `e2e/layout.spec.ts`'s phone run, `e2e/stop.spec.ts`'s phone test and Task 9 Step 6's review of `10-clarify-phone` prove or falsify it]. If it does, the executor reports it (Task 9 Step 6) rather than changing the layout unreviewed.
 - **O5 — The live Tavily transport is [INFERENCE] until a live run.** Every test drives fakes; `AsyncTavilyClient` posts through `httpx.AsyncClient` (`.venv/Lib/site-packages/tavily/async_tavily.py:118-122`, `:252`), and R9's 5xx retry is the tool's own rule. The first live run after this phase (outside this plan, under the existing spend rules) settles it: watch for search failures.
 - **O6 — Phases A, C and B must anchor on the text D leaves.** §9 lands D first, and D rewrites text the later phases also edit. A later plan anchored on `73b4d7a6` will miss its anchors in these places, and its own anchor check stops it there:
   - `src/deep_research/api/notes.py`: `NoteOutcome` gains `not_checked`; `note_outcome(note_id, state, *, terminal)`, with a new docstring and three `waiting` exits; `note_records(board, state, *, terminal)` (Task 2). Phase A replaces `note_outcome`'s body (§4 item 2), so it starts from Task 2's text.
   - `tests/test_api/test_notes.py`: `test_each_note_ends_covered_not_found_not_addressed_replaced_or_pending` (`:189`) keeps its name, so a later plan that selects it by name still finds it, but its body asserts both `terminal` values; `test_the_records_list_every_accepted_note_in_order_read_or_not` passes `terminal`; `test_the_note_shapes_trim_bound_and_default_as_the_spec_says` gains a `not_checked` assertion; `web/e2e/notes.spec.ts:109-110` expects `not_checked` (Task 2, ambiguity 19). No function is added between `_finished` and `test_the_note_shapes_trim_bound_and_default_as_the_spec_says`, between `note_outcome` and `__all__` in `api/notes.py`, or after `outcome` in `ReaderNoteResponse`; `session_note_fields` gains one name, `terminal`, between `state` and `check`.
+  - `tests/test_api/test_note_route.py`: its import line (`:27`) becomes `from deep_research.api.sessions import NotesClosed, SessionStore, session_note_fields`, and two tests are appended after `:520`, `test_a_note_nothing_judged_reads_pending_while_the_session_runs_and_not_checked_once_it_ends` and `test_a_session_closed_out_by_a_shutdown_reads_its_notes_not_checked`. `web/test/notes.test.ts:72-75` expects `pending: "not checked yet", not_checked: "not checked"`, and `web/test/components/reader-notes.test.tsx:68`'s third note reads `outcome: "not_checked" as const` (all Task 2).
   - `src/deep_research/api/models.py` (`SessionStatus`, `ReaderNoteResponse`, `ResearchSessionResponse`), `src/deep_research/api/sessions.py` (`TERMINAL_STATUSES`, `ResearchSession`, `publish`, `session_note_fields`, `_run`, `_record_failure`) and `src/deep_research/api/app.py` (`_SAFE_MESSAGES`, `_session_response`, `/report`, `/evidence`), Tasks 2–4.
   - `web/lib/api.ts`, `web/lib/notes.ts`, `web/lib/format.ts`, `web/lib/run-state.ts`, `web/lib/briefs.ts`, `web/components/BriefSpine.tsx`, `web/components/SessionScreen.tsx`, `web/components/ConsoleProvider.tsx`, `web/components/Topbar.tsx`, the end of `web/app/globals.css`, `web/e2e/support.ts`, `web/scripts/capture-replay-events.mjs`, `web/e2e/visual.spec.ts`, `README.md`, `web/README.md`, `docs/design/DESIGN.md` and `docs/design/api-gaps.md` (Tasks 2 and 4–9); and `web/test/fixtures/active-rows.json` (O3).
 
@@ -211,7 +212,7 @@ Every fact a task relies on, with where it is. Engine paths are under `src/deep_
 **Files:** none changed. This task only reads the checkout and this plan.
 
 **Interfaces:**
-- Consumes: the branch `feat/notes-progress-report-stop` at `73b4d7a6` or later, with no code change after `f4282818` (spec header).
+- Consumes: the branch `feat/notes-progress-report-stop` at `73b4d7a6` or later, with no code change after `f4282818` (spec header) other than, possibly, the latency work (Step 1).
 - Produces: the proof that every block of Tasks 2–9 applies in order — each anchor exactly once when its turn comes, each created file absent, each appended file present — and the baselines later tasks add to.
 
 - [ ] **Step 1: Confirm the starting point**
@@ -229,13 +230,13 @@ grep -c "One tool lock for the whole run" src/deep_research/agents/researcher.py
 Expected, line by line:
 - `73b4d7a6 docs(spec): apply Fable review 2 -- unstarted note topics owed their pass, hard-failure refusal wording, five-check meta`
 - `the spec commit is in this branch`
-- nothing (the diff stat is empty: no code, test or web change since `f4282818`)
+- nothing (the diff stat is empty: no code, test or web change since `f4282818`), unless the latency work merged first (the last line)
 - `0` (no modified tracked file; the checkout's many untracked files are not counted)
 - `no Phase D file yet`
 - `src/deep_research/api/notes.py:0` and `web/lib/api.ts:0` (no other phase has landed: Phase A would add `not_checked` too)
-- `1` (the researcher's run-wide tool lock is still there: the latency work, D38, has not merged; Open issue O2)
+- `1` (the researcher's run-wide tool lock is still there: the latency work, D38, has not merged)
 
-If any line differs, stop and report it: this plan starts on `main` plus the spec.
+If the last line prints `0`, the latency work merged first. Do not stop: say so in the task summary, accept its change in the diff stat, and do the shared-fetch addition in Task 5 Step 1 (Open issue O2). If any other line differs, stop and report it: this plan starts on `main` plus the spec, and at most the latency work.
 
 - [ ] **Step 2: Check every block of this plan against the tree, in order**
 
@@ -2667,6 +2668,13 @@ async def test_stop_cancels_inflight_calls() -> None:
 
 `FakePublisher` records every document and memory write the finalizer attempts (`tests/graph_fakes.py:398-495`); publication and memory writes happen only in `finalize_report` (`graph/nodes.py:554-654`, `:683-790`), so zero attempts is "no file and no memory entry".
 
+**Only if Task 1 Step 1's tool-lock line printed `0`** — the latency work (D38) merged first, so a page is fetched once per URL outside the tool lock and the download is shared between loops (`docs/superpowers/audits/2026-09-30-latency-audit.md:112`). Spec §8.3 then makes this phase add "a shared fetch in flight to `test_stop_cancels_inflight_calls`". This plan predates that work and cannot name its helpers, so write the addition against them, to this contract:
+1. `InFlightResearcher.run` also starts two page fetches of one URL through the run's `web_scraper` tool, inside the same `asyncio.gather`, so the two share one download.
+2. That download never answers. Where the latency work hands the scraper its shared `httpx.AsyncClient`, give it `httpx.AsyncClient(transport=httpx.MockTransport(handler))`, whose async `handler` counts its calls, awaits `asyncio.Event().wait()`, and records the time it receives `CancelledError` before re-raising it.
+3. The test waits for the handler's first call as it waits for `researcher.search.started`. After `store.stop("s1")` it also asserts that the handler was called once (one shared download) and that it recorded its `CancelledError` less than 1 s after the stop.
+
+If Step 4 then fails only on these assertions, the shared fetch is not cancelled with the run, which §8.3 requires ("a fetch task it shares must belong to the run and be cancelled with it"). Stop and report it with the failure; do not loosen the test.
+
 - [ ] **Step 2: Run them to make sure they fail**
 
 ```bash
@@ -3693,13 +3701,26 @@ describe("the stopped stage (notes-progress-report spec §8.5; D18)", () => {
     expect(document.querySelector("#stage-user-stopped .card")).toBeNull();
   });
 
-  it("reads the time and the minutes from the response until the stream has said them, and moves focus to that line", async () => {
-    vi.stubGlobal("fetch", serve(STOPPED, ""));
+  it("reads the time and the minutes from the response until the stream has said them, moves focus to that line, and acknowledges no note in the stopped row", async () => {
+    // The 202 (or /status) can land before the stream's session.stopped: Researching is still the
+    // stream's active row then, and a note it acknowledged must not show in the frozen brief.
+    const noted = [
+      frame(1, "graph.node.started", { node: "planner", iteration: 0 }),
+      frame(2, "graph.node.completed", { node: "planner" }),
+      frame(3, "graph.node.started", { node: "researcher", iteration: 0 }),
+      frame(4, "session.note.received", { note_id: "n1", text: "Pastries too" }),
+      frame(5, "session.note.interpreted", { note_id: "n1", restatement: "pastries too", kinds: ["emphasis"], replaces: null, fallback: false }),
+    ].join("");
+    vi.stubGlobal("fetch", serve(STOPPED, noted));
     render(<ConsoleProvider><SessionScreen sessionId="s1" /></ConsoleProvider>);
     await waitFor(() => expect(document.getElementById("stoppedLine")).toBeTruthy());
     expect(text(document.getElementById("stoppedLine"))).toBe("You stopped this research at 20:41, 6 minutes in.");
     // Focus moves in an effect, which runs after the render that first shows the line.
     await waitFor(() => expect(document.activeElement).toBe(document.getElementById("stoppedLine")));
+    await waitFor(() => expect(row("planner").getAttribute("data-state")).toBe("done"));
+    fireEvent.click(row("researcher").querySelector("button.ps-toggle")!);
+    await waitFor(() => expect(row("researcher").getAttribute("data-open")).toBe("1"));
+    expect(document.querySelector("#stage-user-stopped .ack")).toBeNull();
   });
 
   it("Ask again starts a new session with the same question and the default settings, records it and opens it", async () => {
@@ -3747,7 +3768,7 @@ Expected — nine `FAIL` lines, then the counts:
  FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > freezes the pipeline at the stopped row: finished rows openable, the stopped row with its facts, later rows not run
  FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > reads 'not run again' on the rows a loop had re-armed, and 'Stopped' on a Researching row with no topics yet
  FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > shows no pipeline card after a stop during the one-time check, and says the run had not started (D33)
- FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > reads the time and the minutes from the response until the stream has said them, and moves focus to that line
+ FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > reads the time and the minutes from the response until the stream has said them, moves focus to that line, and acknowledges no note in the stopped row
  FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > Ask again starts a new session with the same question and the default settings, records it and opens it
  FAIL  test/components/user-stopped-stage.test.tsx > the stopped stage (notes-progress-report spec §8.5; D18) > a failed Ask again says so and lets the reader try again
  Test Files  2 failed (2)
@@ -4026,7 +4047,9 @@ export function UserStoppedStage({ status, run, strip, settings, onToggleRow }: 
         </div>
         {frozen !== null ? (
           <div className="card stack" style={{ gap: "var(--space-5)" }}>
-            <BriefSpine marks={marksFor(run, null)} run={run} onToggle={onToggleRow} frozen={frozen} />
+            {/* No row is active on a stopped session. Until the stream's session.stopped clears it, the
+                stream's last active row is the stopped one, and its brief would acknowledge notes. */}
+            <BriefSpine marks={marksFor(run, null)} run={{ ...run, active: null }} onToggle={onToggleRow} frozen={frozen} />
           </div>
         ) : null}
       </div>
@@ -4241,7 +4264,7 @@ interface shows six statuses. This table is the contract between them, and it is
 with
 
 ```
-The API's `SessionStatus` is a seven-value literal (`api/models.py:32-45`;
+The API's `SessionStatus` is a seven-value literal (`api/models.py:37-45`;
 `needs_input` joined it with the one-time check, live-briefs 2026-09-29, and `stopped`
 with Stop, notes-progress-report 2026-09-30). The interface shows seven statuses. This
 table is the contract between them, and it is
@@ -4410,7 +4433,9 @@ describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
     expect(dialog()).toBeNull();
     expect(document.activeElement).toBe(stopBtn());
     fireEvent.click(stopBtn());
-    fireEvent.mouseDown(document.getElementById("elsewhere")!);
+    // The press outside is cancelled (`false`): a browser would otherwise move focus to what was
+    // pressed, or to the page itself, after the handler gave it back to Stop (review round 1, I1).
+    expect(fireEvent.mouseDown(document.getElementById("elsewhere")!)).toBe(false);
     expect(dialog()).toBeNull();
     expect(document.activeElement).toBe(stopBtn());
     expect(stops).toEqual([]);
@@ -4681,7 +4706,11 @@ export function StopControl({ target }: { target: StopTarget }) {
   useEffect(() => {
     if (!open || busy) return;
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };
-    const onMouseDown = (event: MouseEvent) => { if (anchor.current && !anchor.current.contains(event.target as Node)) close(); };
+    // A press outside closes it. Its default action would move focus after this handler — to what was
+    // pressed, or to the page when that cannot take focus — so it is cancelled, and focus stays on Stop.
+    const onMouseDown = (event: MouseEvent) => {
+      if (anchor.current && !anchor.current.contains(event.target as Node)) { event.preventDefault(); close(); }
+    };
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("mousedown", onMouseDown);
     return () => { document.removeEventListener("keydown", onKeyDown); document.removeEventListener("mousedown", onMouseDown); };
@@ -5269,4 +5298,31 @@ Spec §11.1's Phase D tests and where each is: `test_stop_route_codes` (Task 4);
 - **Spec coverage.** Every §8 subsection, §4 items 2 and 3, AC28–AC33, the Phase D rows of §11.1–§11.3 and R9 map to a task in the two tables above. Two §8 statements cannot be met by D as written in the order §9 sets, and are Open issues rather than silent changes: the README's `X-Replay-Hold-After` (O1) and the shared fetch in `test_stop_cancels_inflight_calls` (O2). One detail is built differently from §8.4's wording, with the same visible result, and is Open issue O7 for the human: the chip's stopped label rides in `SessionView.step` rather than a new `stoppedStep` field (ambiguity 7). One existing test outside §11.2's Phase D rows breaks with §4 item 2 and is updated in Task 2: `web/e2e/notes.spec.ts:109-110` (ambiguity 19). O6 asks the later phases' plans to anchor on the text D leaves.
 - **Placeholders.** None: every code step carries its code, every command its expected output; the Playwright and capture Expected lines are reasoned and marked as not run in planning (O4).
 - **Type consistency.** `NotStoppable.reason: StopRefusal` (Task 3) is what the route maps (Task 4); `ResearchSession.stopped_step` (Task 3) feeds `_session_response` (Task 4); `stoppedStepLabel` (Task 6) is what `SessionScreen` passes as the chip's `step` (Task 7); `RunState.stopped: StoppedRun | null` (Task 6) is what `UserStoppedStage` reads (Task 7); `StopTarget` (Task 8) is what `SessionScreen` sets and `StopControl` takes; `stoppedSubtitle`, `notRunText` and `RowState`'s `"stopped" | "off"` (Task 7) are what `BriefSpine` uses; `web/test/fixtures/active-rows.json`'s shape (Task 3) is what both AC32 tests read.
+
+## Review round 1 (2026-09-30): findings and how each was resolved
+
+spec-plan-reviewer reviewed `1cda4bdd` and approved the plan with changes: one Important finding and four Minor ones. The coordinator relayed the ruling: apply I1, M1, M3 and M4; keep M2 as it stands. Each is resolved below. The edited steps were re-run on a fresh export of `73b4d7a6` with this document applied block by block. Results:
+- Task 1 Step 2: `anchors: 118 exactly once; creates: 12 absent; appends: 11 onto files present`.
+- Tasks 7 and 8, Steps 2 and the pass steps: the counts given there, unchanged.
+- Task 10 Steps 2 and 3, the web half: `32 passed` files, `251 passed` tests; then `4 passed` files, `21 passed` tests.
+- Eight parallel runs of the five Stop test files: every one passed.
+
+- **I1 (Important) — in a real browser, a click outside left focus on the page, not on Stop.** Fixed in Task 8.
+  - The document `mousedown` handler in `StopControl` now calls `event.preventDefault()` before `close()` when the press lands outside the anchor. A press's default action runs after the handler and moves focus to what was pressed, or to the page body when that cannot take focus. That undid `close()`'s focus on Stop, against §8.5's "returns focus to Stop" and Task 9's `toBeFocused()` after a click on `#running-h`.
+  - `stop-control.test.tsx` now asserts that `fireEvent.mouseDown(...)` on an element outside returns `false`. jsdom never moves focus on a press, so the cancelled event is what a unit test can see; the browser's behaviour is Task 9's to check.
+  - Observed: without the `preventDefault()` call the test fails (`expected true to be false`); with it, `6 passed`.
+- **M1 — O6's inventory missed three test files D changes.** Added to O6:
+  - `tests/test_api/test_note_route.py`: its import line, and the two tests appended after `:520`.
+  - `web/test/notes.test.ts:72-75`.
+  - `web/test/components/reader-notes.test.tsx:68`.
+- **M2 — `SessionView.step` in place of `stoppedStep`.** Kept as it stands, as ruled (Open issue O7).
+- **M3 — Task 1 Step 1 stopped Phase D when the latency work had merged first.** Softened.
+  - A `0` on the tool-lock line is now flagged in the task summary rather than stopping the phase, and the diff-stat line accepts that work's change.
+  - Task 5 Step 1 then adds the shared fetch in flight to `test_stop_cancels_inflight_calls`, written against that work's helpers to a stated contract: two fetches of one URL share one download that never answers, the handler sees one call, and it is cancelled less than 1 s after the stop. If only that fails, it is reported, not loosened.
+  - O2 and Task 1's Interfaces say the same. The step stays conditional because the helpers do not exist yet (`perf/latency` is still the audit only).
+- **M4 — a stopped row could show note acknowledgements before `session.stopped`, and the DESIGN cite was off.** Fixed.
+  - `UserStoppedStage` passes `{ ...run, active: null }` to `BriefSpine` (Task 7 Step 4). The cause: `rowBrief` acknowledges notes only on `run.active` (`web/lib/briefs.ts:59`), which stays the stopped row until the stream's `session.stopped` clears it, and the 202 or `/status` can arrive first.
+  - The existing test, now "reads the time and the minutes from the response until the stream has said them, moves focus to that line, and acknowledges no note in the stopped row", streams a note acknowledged in Researching with no `session.stopped`, opens the stopped row and finds no `.ack`. The file still holds seven tests, so every count stands.
+  - Observed: with `run={run}` the test fails (`expected <p class="ln ack" data-ack="n1" …> to be null`); with the change, `7 passed`.
+  - The DESIGN §4 cite (Task 7 Step 6) now reads `api/models.py:37-45`. Those are the literal's lines once Task 3 has run, observed on the export; its comment is `:32-36`. The review's "~35-46" was an estimate; the observed span is used.
 
