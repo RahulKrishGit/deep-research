@@ -3655,9 +3655,14 @@ async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, t
                                          finding_ids=[finding_fingerprint(f1)], target_ids=["topic-01-target-01"])
     previous_section = ReportSection(title="First", coverage_id="topic-01",
                                      points=[ReportPointFor("10.4 GW in 2024.", previous_statement)])
+    # The note's own part already holds a section, so only the coverage-id rule (not the
+    # no-previous-section rule, P2-1) can make the writer redraft it.
+    previous_note_section = ReportSection(title="Your note: how much was recycled", coverage_id="note-n1",
+                                          points=[])
     from deep_research.utils.types import ReportComposition
-    previous = ReportComposition(question="Q?", session_id="s1", sections=[previous_section], summary=[],
-                                 sub_topics=topics[:2], statement_verdicts={"S001": "corrected"})
+    previous = ReportComposition(question="Q?", session_id="s1",
+                                 sections=[previous_section, previous_note_section], summary=[],
+                                 sub_topics=topics, statement_verdicts={"S001": "corrected"})
     marker = ResearchEvent(event_type="graph.note_pass.started", source="graph", message="Note pass started.",
                            metadata={"iteration": 0, "note_passes": 1, "note_ids": ["n1"],
                                      "targets": ["note-n1-target-01"]})
