@@ -25,9 +25,10 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
     });
 
     test(`02-submitted${suffix}, 03-running${suffix}, 09-running-extra-pass${suffix}`, async ({ page, request, context }) => {
-      // Held after graph.extra_pass.started: at replay pacing the extra pass ends before D39's hold does, so
-      // the run would be past Researching and it would never reopen (as in briefs.spec.ts's arc test).
-      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Hold-After": "graph.extra_pass.started" });
+      // Held after the extra pass's own researcher.sub_topic.started (the 4th: the first pass starts three): at
+      // replay pacing the extra pass ends before D39's hold does, so the run would be past Researching and it
+      // would never reopen (as in briefs.spec.ts's arc test). Held here, the reopened row shows its topic.
+      await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Hold-After": "researcher.sub_topic.started#4" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
@@ -39,6 +40,11 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"]')).toBeVisible();
       // The row is still opening when data-open flips: its lines rise after the height (spec §6.1), so wait for the reason line.
       await expect(page.locator('#spine li[data-stage="researcher"] .b-why')).toHaveCSS("opacity", "1");
+      // The extra pass's one topic, running: the design reference's subject (the reopened row with its topic row).
+      const topic = page.locator('#spine li[data-stage="researcher"] .ps-topics > .ln');
+      await expect(topic).toHaveCount(1);
+      await expect(topic).toHaveAttribute("data-topic", "running");
+      await expect(topic).toHaveCSS("opacity", "1");
       await shoot(page, `09-running-extra-pass${suffix}`);
       expect((await request.post(`${API}/research/${id}/stop`)).status()).toBe(202);
     });
