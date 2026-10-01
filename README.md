@@ -1064,10 +1064,9 @@ telemetry names at the peak — `agents.verifier_concurrency` first, then
 `agents.sub_topic_concurrency` — and lower `agents.verifier_batch_size` only if
 the calls themselves are being truncated.
 
-**Progress is a post-run log, not a live stream.** `run_research_graph` invokes
-the graph to completion and returns one result, so the CLI prints
-`ResearchState.events` once the run is over. Live progress arrives with the
-API's server-sent-events endpoint.
+**Progress streams live.** The CLI hands `run_research` a `ProgressStream` as its
+`event_handler`, so each event prints as the graph produces it; the API sends the
+same events over SSE.
 
 **`--resume` only works inside one process.** `build_checkpointer` returns
 LangGraph's `InMemorySaver`, which does not survive the process that created

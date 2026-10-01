@@ -2762,3 +2762,63 @@ async def test_a_truncated_statement_batchs_halves_are_asked_together() -> None:
     assert errors == []
     assert sorted(results) == ["S01", "S02", "S03"]
     assert all(verdict is not None and verdict.verdict == "consistent" for verdict in results.values())
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_context_check_batch_reports_progress_once_when_its_halves_settle(
+    tracker: Tracker,
+) -> None:
+    """Phase B's ``on_progress`` through the latency re-ask (O10): the two halves are in
+    flight together, yet the batch is one report, made after both settled, with every
+    finding counted once and ``batches_done`` at 1."""
+    read = make_read(_metrics_page(4), url="https://example.test/halves", title="Halves")
+    findings = [_metric_finding(read, i) for i in range(4)]
+    completer = HoldingCompleter(
+        outputs=[_output_limit_error(), _confirm_reply, _confirm_reply],
+        holds=[0.0, 0.2, 0.0],
+    )
+    agent = _evidence_verifier(tracker, completer)
+    seen: list[dict] = []
+
+    await agent.verify(findings, {read.read_id: read}, [], on_progress=seen.append)
+
+    first_half, second_half = completer.windows[1], completer.windows[2]
+    assert second_half[0] < first_half[1]
+    assert [(m["checked"], m["batches_done"]) for m in seen] == [(0, 0), (4, 1)]
+    assert [m["batches"] for m in seen] == [1, 1]
+    assert (seen[-1]["verified"], seen[-1]["dropped"]) == (4, 0)
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_statement_batch_calls_on_batch_once_with_all_its_items() -> None:
+    """Phase B's ``on_batch`` through the latency re-ask (O10): a truncated first batch of
+    five is re-asked as two halves, yet is one report of five items, and each report's
+    labels are exactly its verdicts' keys."""
+    finding = _statement_finding("18.9", "GW")
+    items = [
+        _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(1, 8)
+    ]
+    completer = HoldingCompleter(
+        outputs=[
+            _output_limit_error(),
+            _confirm_statement_reply,
+            _confirm_statement_reply,
+            _confirm_statement_reply,
+        ],
+        holds=[0.0, 0.2, 0.0, 0.0],
+    )
+    reports: list[tuple[list[str], list[str]]] = []
+
+    results, errors = await check_statements(
+        completer, items, question="How much storage?", batch_size=5, concurrency=1,
+        on_batch=lambda batch, verdicts: reports.append(
+            (sorted(item.label for item in batch), sorted(verdicts))
+        ),
+    )
+
+    assert completer.windows[2][0] < completer.windows[1][1]
+    assert errors == []
+    assert [len(labels) for labels, _ in reports] == [5, 2]
+    assert all(labels == keys for labels, keys in reports)
+    assert sorted(label for labels, _ in reports for label in labels) == sorted(results)

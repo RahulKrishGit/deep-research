@@ -72,7 +72,8 @@ from tests.replay_digests import (
 # the 22 rows listed above) and in report_reviewer:ReportReviewDraft in the three rows O9
 # moved: with ``SKIP_FINAL_ANSWER_TURN`` put back to False those three rows reproduce the
 # branch's outside-research requests, research requests (timing aside), events and counts.
-# No event digest moved: neither side changes the events a run records.
+# No event digest moved: the branch changes no event of any replay row; main's three O9
+# moves are already pinned here.
 PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "blocked-html-pdf-fallback": ("007666cb31f5212e", "899aacdb97e7a617", "250262dd58e797c6", 36),
     "broad-constraints": ("a111a2648e94cca4", "33624bd297ab2166", "83527eb9236455ae", 59),

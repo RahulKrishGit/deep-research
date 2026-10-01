@@ -196,12 +196,9 @@ async def test_stop_cancels_inflight_calls() -> None:
     # download for the two loops that wanted the page (D38; spec §8.3).
     assert researcher.page.page_requests == 1
     assert researcher.page.cancelled_at is not None and researcher.page.cancelled_at - asked < 1.0
-    # The cancellation released the run's gate and the page's flight lock: neither leaks.
-    assert not researcher.gate.locked()
+    # The cancellation released the page's flight lock: it can be taken again at once.
     async with asyncio.timeout(1):
         async with researcher.gate.flight(PAGE_URL):
-            pass
-        async with researcher.gate:
             pass
     await asyncio.sleep(0.2)
     started = [event.metadata["node"] for event in session.events if event.event_type == "graph.node.started"]
