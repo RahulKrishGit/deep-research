@@ -32,8 +32,9 @@ Evidence Verifier pipeline (`f27ac7e`); the 2026-09-16 ids are kept in brackets.
 | `POST` | `/research/{id}/notes` | `202` `{note_id, status: "received"}`: one reader note, read in the background (`session.note.received`, then `session.note.interpreted`); `404` unknown session, `409` `notes_closed` (waiting for answers, once `finalize_report` has started — from the run's published decision to publish, live-briefs Phase 3 ambiguity 5 — or finished) or `note_limit_reached` (past the tenth note), `422` empty or over 500 characters (`api/app.py` `add_research_note`, `api/sessions.py` `add_note`) |
 | `POST` | `/research/{id}/stop` | `202` `ResearchSessionResponse` with `status: "stopped"`: the run is cancelled where it stands and writes nothing; `404` unknown session; `409` `not_stoppable` with `reason` `finished` (it has ended, a second stop included), `publishing` (from the run's published decision to publish or end) or `closing` (the service shutting down) (`api/app.py` `stop_research`, `api/sessions.py` `stop`; notes-progress-report spec §8) |
 
-`ResearchSessionResponse` (`api/models.py:114-164`, assembled at
-`api/sessions.py:73-128`), 24 fields: `session_id`, `query`, `status`,
+`ResearchSessionResponse` (`api/models.py:277-352`, assembled by `_session_response`,
+`api/app.py:143-158`, from `outcome_response_fields` and `session_note_fields`,
+`api/sessions.py:184-246` and `:249-293`), 24 fields: `session_id`, `query`, `status`,
 `current_agent`, `iteration`, `started_at`, `finished_at`, `report_path`,
 `trace_url`, `errors`, `evidence_path`, `quality_path`,
 `quality_contract_version`, `semantic_review_status`,
@@ -76,12 +77,20 @@ in state order, skipping any `event_id` already published live
 (`graph/orchestrator.py`, `_stream_graph_result`). Every event is delivered exactly
 once; a live event can arrive ahead of events its node recorded earlier; a node that
 halts after publishing live has delivered those events although its halted state
-keeps none of them. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays
-burst-safe: the state after event *k* depends only on events 1..*k*. The one-time
-check's `session.clarification.requested` and `.answered` are published by the
-session itself (`api/sessions.py`, `_clarify`), before the graph starts. A stopped
-session's last event is `session.stopped` (`{step, stopped_at, elapsed_seconds}`),
-published by the session itself (`api/sessions.py`, `stop`); nothing is published after it.
+keeps none of them. The reviewer node publishes its `graph.node.started` before its one
+review call and its `graph.report.reviewed` the moment the review lands, before it waits
+for notes still being read (`graph/nodes.py`); both also stay in the node's own events, and
+the snapshot skips them by `event_id`. Four progress types are live-only
+(notes-progress-report spec §4 item 1): `planner.progress`, `source_evaluator.progress`,
+`evidence_verifier.progress` and `report_writer.progress`. Each is published through the
+run's sink and never returned in a node's `state_update["events"]`, so it is never in the
+run's state or any snapshot; `ResearchSession.publish` records it, so a late `/stream`
+replays it. Every running-stage rule in DESIGN.md §3.5 and §5.7 stays burst-safe: the
+state after event *k* depends only on events 1..*k*. The one-time check's
+`session.clarification.requested` and `.answered` are published by the session itself
+(`api/sessions.py`, `_clarify`), before the graph starts. A stopped session's last event
+is `session.stopped` (`{step, stopped_at, elapsed_seconds}`), published by the session
+itself (`api/sessions.py`, `stop`); nothing is published after it.
 
 ---
 
@@ -92,7 +101,7 @@ Kept as a record, one line each.
 | Old # | Gap | How it closed |
 |---|---|---|
 | 2.4 | `quality_status` | `completed` ⇔ route `report_accepted` (`graph/state.py:116`, `:322-337`); `semantic_review_status` splits the partial outcomes |
-| 3.2 | quality snapshot | `coverage`, `evidence_counts`, `semantic_review_status`, `semantic_review_score` are on the response (`api/sessions.py:73-128`) |
+| 3.2 | quality snapshot | `coverage`, `evidence_counts`, `semantic_review_status`, `semantic_review_score` are on the response (`api/sessions.py:184-246`) |
 | 3.3 | `evidence_path` | the path is served; the content moves to E1 |
 | 3.5 | claim verdicts and confidence | obsolete: the pipeline has no claims; findings carry a verification status instead (E1) |
 | 2.2 | tool-call counts | partly closed: the verifier, writer and reviewer make no tool calls; `researcher.tool_call` misses the planner's single budgeted call and `finalize_report`'s `write_document` and `save_to_memory` calls (`config.yaml:159`; `agents/planner.py:2999`; `agents/report_writer.py:3286-3293`; `graph/nodes.py:586`); the planner's count is recoverable from `planner.planning.completed.tool_calls`, but `finalize_report`'s calls carry no event-stream count at all — only `ResearchOutcome.tool_calls` (`tools/base.py:107-113`) sees them |
