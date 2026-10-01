@@ -64,8 +64,10 @@ tokens; they differ in what holds the primary column and where evidence lives.
 ### A. Narrative column with a details rail
 
 The centre column is the report as a document, in the server's own order: the
-bottom line, the findings or options table, the parts with their cited points,
-what could not be confirmed, the sources. A details rail beside it carries the
+bottom line (a direct answer, then one line per topic and per reader note), the
+parts with their cited points, the Key figures or Options compared table, what
+could not be confirmed, the sources — each section its own card, with a contents
+list beside or above them (notes-progress-report §7.5–§7.6). A details rail beside it carries the
 review score, coverage, the evidence counts and the session facts, and can swap
 to source scores and figure checks for the passage currently in view.
 
@@ -158,7 +160,7 @@ chosen by the operator.
 | 2 | **Submitted** | `status == "running"` or `"needs_input"`, first beat | The question read back and the four-chip settings strip (`model · thinking · effort · out`) — and nothing else | Held ~2.2s → stage 2a or 3 |
 | 2a | **Check** | `status == "needs_input"`, or the stream's `session.clarification.requested` until the planner's `graph.node.started` | One question at a time in the pipeline card's place, under the eyebrow `Before we start`, the locked question and the settings strip (pick 4B): the answers, the best guess marked, **Other…**, then Back · Skip this one · Just start and the countdown; after the answers, the one summary line `Starting research with: …` | The planner starts → stage 3 |
 | 3 | **Running** | `status == "running"` | **The pipeline, centred**, with the question and its settings above it and the note line at the card's foot | Server status leaves `running` → stage 4 or 5 |
-| 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then — when the reader added notes — **Your notes**, the server's Markdown body and its rail — or the Evidence view | Opening another session, or New research |
+| 4 | **Report** | any terminal status with a report — `completed`, or the three partial outcomes: the extra-pass ceiling spent (`max_iterations`), a review that did not accept or a gate that blocked acceptance (`incomplete`, scored), no review score (`incomplete`, unavailable) | The question, the settings in force, actions, then the server's Markdown as one card per section — the bottom line with a line for each topic and each reader note first — with a contents list (a sticky rail left of the cards from a 1310px report stage, a sticky row of chips above them below that; notes-progress-report §7.6, D28), and its rail — or the Evidence view | Opening another session, or New research |
 | 5 | **Failed** | `failed` | Enumerated error type, why there is no artifact, what survived the halt | New research |
 | 6 | **Stopped by you** | `stopped` | The question, its settings and one short note — when the reader stopped and how far in, that no report was written — with **Ask again**; then the pipeline frozen at the stopped row (no pipeline card after a stop during the check) | Ask again (a new session, the same question), or New research |
 
@@ -252,16 +254,20 @@ disabled with no message and the same placeholder (D11a); once `finalize_report`
 started — from the run's decision to publish — a note is refused and one caption,
 `Notes are closed — the report is being published`, takes the line's place. Any other
 failed send keeps the text and says `Couldn't send — try again` under the field until the
-next edit. The report then states what became of each note: inside the report card and
-above the prose — not a card of its own, and outside `.prose` — `Your notes` lists each
-note as written with its outcome as a caption: `covered`, `couldn't find evidence`,
-`not addressed in the report` (the findings bore on it and the report still does not
-follow it, after its one redraft — never `covered`), `not checked` (nothing in the
-finished run could judge it: no review did, or its own topic never researched it) or
-`replaced by a later note`. A research note's caption comes from its own topic's targets,
-never from the review: `covered` once a verified finding answers one of them. A mixed
-note's caption reads both of its results — `{its topic's result}; the rest of your note:
-{its steering result}` (notes-progress-report §5.6–§5.7, D20, D31).
+next edit. The report then states what became of each note in its bottom line, after the
+topic lines: one line per note, labelled `Your note · {short}` (the note's subject in one to
+three words). A research note's line is its own topic's line, or says `No source we could
+check covers this.` or `Not researched.`; a steering note's line says how the report treated
+it — `Followed:`, `Not followed in this report:`, `No source we could check covers this:` or
+`Not checked:`, then the run's reading of the note. A mark leads the line: ✓ when the note
+was covered, ✗ when it was not found or not followed, none when nothing in the finished run
+could judge it. A mixed note's line is its topic's, then one sentence for the rest of the
+note, with ✗ when either half missed (notes-progress-report §7.2, D20, D37). There is no
+separate notes block. Each note's outcome also stays on the session's `/status`: `covered`,
+`not_found`, `not_addressed` (the findings bore on it and the report still does not follow it,
+after its one redraft — never `covered`), `not_checked` (nothing in the finished run could
+judge it: no review did, or its own topic never researched it) or `replaced`; a research
+note's comes from its own topic's targets, never from the review (§5.6, D31).
 
 **The pipeline owns the running stage.** It was a 280px rail in the previous pass
 and is now the centred column at reading width: seven rows, one per graph node,
@@ -1482,6 +1488,13 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   200ms: at once in a row that is already open, and in its place in the stagger in
   the row a hand-off is opening. **Under reduced motion** it fades in place over
   160ms, like every brief line.
+- **A contents jump scrolls, then lands on the heading** (notes-progress-report §7.6,
+  2026-09-30). Choosing an entry in the report's contents marks it current, scrolls its
+  card to the top — `scroll-margin-top` is the topbar, the chip row's 56px and
+  `--space-4` — smoothly, and moves focus to the card's heading, which shows no ring.
+  **Under reduced motion** the scroll is instant (`behavior: "auto"`); the current entry
+  and the focus move the same way, and the chip row scrolls its current chip into view
+  without animation either way.
 - **One decorative loop, and it is not load-bearing.** `halo` runs at
   `--motion-halo: 2200ms` on the running node, on each running topic's dot and on the header status dot. It stops
   under reduced motion, and §3.4's table is identical either way — no state on this

@@ -20,8 +20,8 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   (three servers: the API on 8010, the app on 3010, an app on 3011 pointed at a closed
   port). Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter
   (`…/deep-research/.venv/Scripts/python.exe`); `npx playwright install chromium` once.
-- `npm run capture:visual` — the twenty-four full-page captures (12 stages/views × 1252 and
-  390 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
+- `npm run capture:visual` — the twenty-seven full-page captures (13 stages/views × 1252 and
+  390 px, and the report's cards at 1920 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
 - `npm run capture:events -- <case-id>` — records a replay session's frames into
   `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
   `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`).
@@ -38,8 +38,13 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   pipeline card posts `POST /research/{id}/notes` (the proxy forwards it); replay mode reads
   each note with a scripted interpreter that keeps it as written. Replay runs the engine
   ahead of its paced stream, so a note added on the replay server is acknowledged but never
-  applied, and the report's "Your notes" reads it `not checked`; `e2e/notes.spec.ts` and the
-  `11-note-ack` and `12-report-notes` captures use it.
+  applied: `/status` reads it `not_checked`, and the report's bottom line has no line for it
+  (notes-progress-report spec §7.2); `e2e/notes.spec.ts` and the `11-note-ack` and
+  `12-report-notes` captures use it.
+- The report (notes-progress-report spec §7.6): one card per section, with a contents list
+  that is a sticky rail left of the cards from a 1310px report stage and a sticky row of
+  chips above them below that; `e2e/report-layout.spec.ts` and the `18-report-cards` and
+  `18b-report-cards-1920` captures use it.
 - Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
   posts `POST /research/{id}/stop` (the proxy forwards it); the session ends `stopped` and its page
   keeps the pipeline frozen where it stopped, with "Ask again". On the replay server the engine runs
