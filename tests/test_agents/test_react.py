@@ -1838,3 +1838,56 @@ async def test_every_use_tool_decision_reports_its_lock_wait_and_run_time(
     assert ran >= 0.02
     assert unknown_ran == 0.0
     assert unknown_waited < 0.02
+
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_final_answer_turn_ends_the_loop_one_turn_early(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O9: with ``skip_final_answer_turn`` the loop never asks the
+    forced tool-free last turn; a loop still running ends as ``finished``."""
+    asked: list[int] = []
+
+    async def decide(
+        iteration: int, steps: Sequence[ReActStep]
+    ) -> tuple[ReActDecision, ...]:
+        del steps
+        asked.append(iteration)
+        return (use_tool(f"Echo {iteration}.", "echo", json.dumps({"value": "a"})),)
+
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([EchoTool(tracker)], allowed=["echo"]),
+            decide=decide,
+            max_iterations=3,
+            tool_budget=5,
+            skip_final_answer_turn=True,
+        )
+
+    assert asked == [1, 2]
+    assert (run.stop_reason, run.iterations, run.tool_calls) == ("finished", 2, 2)
+
+
+@pytest.mark.asyncio
+async def test_skipping_the_final_answer_turn_changes_nothing_for_one_turn(
+    tracker: Tracker,
+) -> None:
+    async with agent_scope(tracker):
+        run = await run_react_loop(
+            agent_name="researcher",
+            tracker=tracker,
+            tools=AgentToolset([EchoTool(tracker)], allowed=["echo"]),
+            decide=_decider([finish("Done.", "The answer.")]),
+            max_iterations=1,
+            tool_budget=5,
+            skip_final_answer_turn=True,
+        )
+
+    assert (run.stop_reason, run.iterations, run.final_answer) == (
+        "finished",
+        1,
+        "The answer.",
+    )

@@ -35,7 +35,13 @@ from tests.test_api.replay_support import EXTRA_PASS_CASE, REDRAFT_CASE, guarded
 # unchanged by Phase 3, because every notes section is added only when there are
 # notes.
 PINNED_RUN_DIGESTS = {
-    EXTRA_PASS_CASE: ("03e113e5584707da", 46),
+    # Latency plan Task 8 (audit O9): this row reaches its forced last turn,
+    # where the replay's script reads a page the prompt tells it not to; with
+    # that turn never asked the page is read on the extra pass. Was
+    # ("03e113e5584707da", 46);
+    # tests/test_e2e_evaluation/test_request_digests.py shows that a model
+    # obeying the instruction loses only the forced turn's own request.
+    EXTRA_PASS_CASE: ("8e5192b96744de3d", 46),
     REDRAFT_CASE: ("875313d15f3325f2", 29),
 }
 AT = "2026-09-29T10:00:00.000+00:00"

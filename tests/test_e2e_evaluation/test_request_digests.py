@@ -17,12 +17,20 @@ and says why in a comment above the entry or the dictionary.
 
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 
 import pytest
 
 from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_MANIFEST
-from tests.replay_digests import event_digest, replay_run, request_digests
+from tests.replay_digests import (
+    event_digest,
+    event_types,
+    replay_run,
+    request_digests,
+    request_lines,
+    timing_free_lines,
+)
 
 PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "blocked-html-pdf-fallback": ("4d1c9aad4edf0024", "db1f65725d21a6ff", "e6da9e506e3611cf", 36),
@@ -34,13 +42,25 @@ PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "empty-but-clean": ("1c1c315f7aa46046", "698388ce5a7c44f7", "6b6d55286aa22e4b", 40),
     "evidence-words-not-on-page-rejected": ("1072afa6902ecc0a", "b6bd4390da7a6726", "cefccba119b6b89a", 33),
     "extra-pass-finds-nothing": ("d59a1d15500b3815", "18ebb999bde7e55c", "f38d7b18ebc53dda", 37),
-    "extra-pass-recovers-missing-target": ("cc4d4c93c0dcd75f", "f263e41636a8452e", "e3cd657e27a7db9a", 48),
-    "extra-pass-redrafts-the-gaining-part": ("472eb4eb9a52e922", "7cb5411d8b2d9a81", "83358bd57ccf2f08", 41),
+    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
+    # forced last turn, which a sub-topic loop no longer asks; the
+    # obeying-model test below shows a model that answers as told loses
+    # only that turn's own requests. Was ("cc4d4c93c0dcd75f", "f263e41636a8452e", "e3cd657e27a7db9a", 48).
+    "extra-pass-recovers-missing-target": ("14f3c7dff2cdd7a6", "55ef472efae92f1f", "3350579877a260f7", 48),
+    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
+    # forced last turn, which a sub-topic loop no longer asks; the
+    # obeying-model test below shows a model that answers as told loses
+    # only that turn's own requests. Was ("472eb4eb9a52e922", "7cb5411d8b2d9a81", "83358bd57ccf2f08", 41).
+    "extra-pass-redrafts-the-gaining-part": ("d55df98b22b1cb5f", "a4ae483223fdbe9a", "46412a78f67230c0", 41),
     "figure-not-on-page-dropped": ("f849b758f25ea7b0", "ce1b5fe9cb957870", "a47f0478ca0589f8", 33),
     "forecast-versus-actual-kept-apart": ("e86d61d118eba332", "c0652aaf18123aba", "e4f8dcaf15866edd", 41),
     "maker-notes-vs-relay": ("7c773b2b6a776b8c", "3e530c1246b93fbf", "e468184a2274cd6a", 20),
     "memory-is-not-read": ("bdcf04685d9af0de", "3fd0f5bee828865f", "d8153bf008a4e5a9", 34),
-    "missing-target-triggers-one-extra-pass": ("271c9e9baa621249", "1f24dc4136dc4d03", "622613a384191f12", 46),
+    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
+    # forced last turn, which a sub-topic loop no longer asks; the
+    # obeying-model test below shows a model that answers as told loses
+    # only that turn's own requests. Was ("271c9e9baa621249", "1f24dc4136dc4d03", "622613a384191f12", 46).
+    "missing-target-triggers-one-extra-pass": ("9de9236318693494", "fed5317482a6c3f7", "0c0026e85f61a62a", 46),
     "non-constraint-answer": ("f8d97bc717d4fc9c", "662309350f5085db", "180551d103074c1e", 33),
     "one-part-question": ("e4ef67c0f0d63d60", "fcb7ce1f08a13ba6", "74a3042d8bb99af5", 16),
     "prose-only-question": ("215be06f95f0b548", "5a84a902de80cd04", "d8c01755432a06a0", 25),
@@ -72,13 +92,25 @@ PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {
     "empty-but-clean": ("4c04aa44cdae0546", 67),
     "evidence-words-not-on-page-rejected": ("4300aed5bf981011", 43),
     "extra-pass-finds-nothing": ("441cde5a6daccc68", 65),
-    "extra-pass-recovers-missing-target": ("9e9e0f6bedf8126d", 73),
-    "extra-pass-redrafts-the-gaining-part": ("cc140d8a6608095f", 68),
+    # Latency plan Task 8 (audit O9): the read this row's script made on
+    # its forced last turn is made in the extra pass instead, so one
+    # researcher.tool_call moves; the count and every other event keep
+    # their place. Was ("9e9e0f6bedf8126d", 73).
+    "extra-pass-recovers-missing-target": ("35b2c5d90b741aae", 73),
+    # Latency plan Task 8 (audit O9): the read this row's script made on
+    # its forced last turn is made in the extra pass instead, so one
+    # researcher.tool_call moves; the count and every other event keep
+    # their place. Was ("cc140d8a6608095f", 68).
+    "extra-pass-redrafts-the-gaining-part": ("8dc9953c25609e20", 68),
     "figure-not-on-page-dropped": ("4300aed5bf981011", 43),
     "forecast-versus-actual-kept-apart": ("441cde5a6daccc68", 65),
     "maker-notes-vs-relay": ("6fb5d6e45c766113", 36),
     "memory-is-not-read": ("2f97159ff35b43a3", 64),
-    "missing-target-triggers-one-extra-pass": ("44a14f886a7379ff", 72),
+    # Latency plan Task 8 (audit O9): the read this row's script made on
+    # its forced last turn is made in the extra pass instead, so one
+    # researcher.tool_call moves; the count and every other event keep
+    # their place. Was ("44a14f886a7379ff", 72).
+    "missing-target-triggers-one-extra-pass": ("694cfaf0bf69d89e", 72),
     "non-constraint-answer": ("4300aed5bf981011", 43),
     "one-part-question": ("3ec645826328d887", 33),
     "prose-only-question": ("74b50a3718c617d5", 40),
@@ -118,3 +150,56 @@ def test_every_request_and_event_of_every_replay_row_is_pinned(
         == PINNED_REQUEST_DIGESTS[case_id]
     )
     assert event_digest(run) == PINNED_EVENT_DIGESTS[case_id]
+
+
+def test_skipping_the_forced_final_turn_drops_only_that_turns_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Latency audit O9, on every row. With a scripted model that obeys the
+    last-turn instruction -- it answers without a tool, as the prompt tells
+    it to -- a row that skips its forced turns asks everything it asked with
+    them, less the forced turns' own requests: every request outside research
+    byte for byte, every research request up to its live acquisition-state
+    snapshot; and it records the same events in the same order. (The replay's
+    own script ignores that instruction and reads on its forced turn in three
+    extra-pass rows; their pins moved in Task 8.)"""
+    import deep_research.agents.researcher as researcher_module
+    from deep_research.e2e_evaluation.replay import ReplayCompleter
+
+    scripted = ReplayCompleter._researcher_turn
+
+    def obeying(self: ReplayCompleter, text: str):  # type: ignore[no-untyped-def]
+        if "This is the last iteration" in text:
+            return self._final("The reads for this topic are complete.")
+        return scripted(self, text)
+
+    monkeypatch.setattr(ReplayCompleter, "_researcher_turn", obeying)
+    reached: list[str] = []
+    for entry in REPLAY_CASE_MANIFEST:
+        monkeypatch.setattr(researcher_module, "SKIP_FINAL_ANSWER_TURN", False)
+        asked_run = replay_run(entry.case_id, tmp_path / entry.case_id / "asked")
+        monkeypatch.setattr(researcher_module, "SKIP_FINAL_ANSWER_TURN", True)
+        skipped_run = replay_run(entry.case_id, tmp_path / entry.case_id / "skipped")
+        asked = list(asked_run.replay.completer.packet_sequence)
+        skipped = list(skipped_run.replay.completer.packet_sequence)
+        forced = [
+            (key, text) for key, text in asked if "This is the last iteration" in text
+        ]
+        if forced:
+            reached.append(entry.case_id)
+        outside = [
+            request_lines([(key, text) for key, text in run if not key.startswith("researcher:")])
+            for run in (asked, skipped)
+        ]
+        assert outside[0] == outside[1], entry.case_id
+        assert Counter(timing_free_lines(asked)) - Counter(timing_free_lines(skipped)) == Counter(
+            timing_free_lines(forced)
+        ), entry.case_id
+        assert not Counter(timing_free_lines(skipped)) - Counter(timing_free_lines(asked)), entry.case_id
+        assert event_types(asked_run) == event_types(skipped_run), entry.case_id
+    # Not vacuous: these rows do reach their forced turn.
+    assert sorted(reached) == [
+        "extra-pass-recovers-missing-target",
+        "extra-pass-redrafts-the-gaining-part",
+        "missing-target-triggers-one-extra-pass",
+    ]

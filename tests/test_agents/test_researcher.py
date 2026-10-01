@@ -4286,8 +4286,11 @@ async def test_the_researcher_respects_its_iteration_bound(
     async with tracker.session_span("session-1", "q"):
         outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
 
-    assert outcome.react.stop_reason == "max_iterations"
-    assert outcome.react.iterations == 2
+    # Latency audit O9: the second turn is the forced tool-free one, which the
+    # loop never asks, so the loop ends after the first turn, as finished.
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.iterations == 1
+    assert len(completer.react_calls) == 1
 
 
 @pytest.mark.asyncio
@@ -8774,3 +8777,36 @@ async def test_a_pages_owed_batches_are_asked_together_and_admitted_in_batch_ord
     assert second_batch[1] < first_batch[1]
     assert len(in_order.result.findings) == MAX_OWED_BATCHES
     assert summary(second_first) == summary(in_order)
+
+
+
+@pytest.mark.asyncio
+async def test_the_loop_never_asks_its_forced_final_answer_turn(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O9: no researcher request ever carries the last-turn
+    instruction, and a loop that uses every other turn ends as finished."""
+    completer = ScriptedCompleter(
+        decisions=[
+            use_tool("Search.", "web_search", '{"query": "qec 2025"}'),
+            use_tool("Search again.", "web_search", '{"query": "qec 2026"}'),
+        ],
+        outputs=[SubTopicFindingsDraft(findings=[])],
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        search=FakeSearchClient([search_response(), search_response()]),
+        config=AgentRuntimeConfig(max_iterations=3, tool_budget=4),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_state(sub_topics=[_sub_topic("Alpha", 1)]))
+
+    assert len(completer.react_calls) == 2
+    assert not any(
+        "This is the last iteration" in call.messages[1].content
+        for call in completer.react_calls
+    )
+    assert outcome.react.stop_reason == "finished"
+    assert outcome.react.iterations == 2

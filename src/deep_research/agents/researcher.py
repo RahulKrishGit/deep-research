@@ -159,6 +159,12 @@ MAX_DISPUTED_STATEMENTS = 8
 MIN_CROSS_TOPIC_SHARED_TOKENS = 2
 MAX_OWED_BATCHES = 2
 DEFAULT_EVIDENCE_CHARS = 4000
+# Latency audit O9: a sub-topic loop never asks its forced last turn, the one
+# told to answer without a tool (``run_react_loop``'s
+# ``skip_final_answer_turn``). That turn's answer only ever reached
+# ``ReActRun.final_answer``, which no stage after research reads. A module
+# value rather than a literal so a test can put the turn back and compare.
+SKIP_FINAL_ANSWER_TURN = True
 
 Clock = Callable[[], datetime]
 
@@ -4587,6 +4593,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 tool_lock=tool_lock,
                 propagate_provider_errors=False,
                 on_tool_timing=note_timing,
+                skip_final_answer_turn=SKIP_FINAL_ANSWER_TURN,
             )
         except BaseException:
             # ``run_react_loop`` re-raises some failures rather than folding

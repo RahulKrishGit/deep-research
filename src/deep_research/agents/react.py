@@ -356,6 +356,7 @@ async def run_react_loop(
     summary_limit: int = DEFAULT_SUMMARY_LIMIT,
     propagate_provider_errors: bool = True,
     on_tool_timing: ToolTimingCallback | None = None,
+    skip_final_answer_turn: bool = False,
 ) -> ReActRun:
     """Run think -> act -> observe until a stop condition fires.
 
@@ -382,6 +383,14 @@ async def run_react_loop(
     ``on_tool_timing`` is told, for every ``use_tool`` decision, how long it
     waited for ``tool_lock`` and how long its tool ran (latency audit O8).
     It only observes: nothing a model reads, and no step, depends on it.
+
+    The last of ``max_iterations`` turns is the one whose prompt tells the
+    model to answer without calling a tool (``render_react_messages``). With
+    ``skip_final_answer_turn`` the loop never asks it: a loop still running
+    after the turn before it ends there, as ``finished``, having made one
+    model call fewer (latency audit O9). Only a caller that reads no final
+    answer may set it; with ``max_iterations`` of 1 it changes nothing, since
+    that one turn is also the first.
     """
     if not agent_name.strip():
         raise ValueError("agent_name must not be blank")
@@ -401,8 +410,13 @@ async def run_react_loop(
     charged_tool_calls = 0
     cache_hits = 0
     iteration = 0
+    turn_limit = (
+        max_iterations - 1
+        if skip_final_answer_turn and max_iterations > 1
+        else max_iterations
+    )
 
-    while iteration < max_iterations and stop_reason is None:
+    while iteration < turn_limit and stop_reason is None:
         iteration += 1
         turn_steps: list[ReActStep] = []
 
@@ -776,7 +790,12 @@ async def run_react_loop(
             stop_reason = "sufficient"
 
     if stop_reason is None:
-        stop_reason = "max_iterations"
+        # A loop that ran out of turns before the one it skipped ends as the
+        # skipped turn would have ended it: with the final answer it was told
+        # to give, which nothing downstream of this caller reads.
+        stop_reason = (
+            "finished" if turn_limit < max_iterations else "max_iterations"
+        )
 
     return ReActRun(
         agent_name=agent_name,
