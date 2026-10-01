@@ -41,9 +41,12 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   pipeline card posts `POST /research/{id}/notes` (the proxy forwards it); replay mode reads
   each note with a scripted interpreter that keeps it as written. Replay runs the engine
   ahead of its paced stream, so a note added on the replay server is acknowledged but never
-  applied: `/status` reads it `not_checked`, and the report's bottom line has no line for it
-  (notes-progress-report spec §7.2); `e2e/notes.spec.ts` and the `11-note-ack` and
-  `12-report-notes` captures use it.
+  applied: `/status` reads it `not_checked`. The report's bottom line prints a line for every
+  note the run has read by the time it publishes (a note read after the reviewer's last merge
+  is taken in as already settled, so it changes no route); a note that arrives after the run
+  has ended gets none, which on the replay server is every note, because the engine finishes
+  first, so its report has no "Your note" row (notes-progress-report spec §7.2);
+  `e2e/notes.spec.ts` and the `11-note-ack` and `12-report-notes` captures use it.
 - The report (notes-progress-report spec §7.6): one card per section, with a contents list
   that is a sticky rail left of the cards from a 1310px report stage and a sticky row of
   chips above them below that; `e2e/report-layout.spec.ts` and the `18-report-cards` and

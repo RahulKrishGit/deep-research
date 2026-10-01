@@ -195,7 +195,10 @@ is written.`, with `Keep going` (quiet, focused on open) and `Stop research`, th
 Keep going closes it and gives focus back to Stop; nothing stops until the reader says so.
 Stopping cancels the run where it stands, with every call it has in flight, writes nothing and
 opens stage 6. Once the run decides to publish the control is gone, because the API refuses a
-stop from that decision (`409 not_stoppable`); a refusal that still reaches an open popover says
+stop from that decision (`409 not_stoppable`); if Stop or its popover held focus when it went,
+focus moves to the status chip in the topbar (focusable by script only, no tab stop, the app's
+own focus style) instead of falling to the page (owner-delegated decision of 2026-10-01); a
+refusal that still reaches an open popover says
 `Too late to stop — the research is finishing.` with a Close button, and any other failure says
 `Couldn't stop — try again` and keeps both buttons. On a phone the popover spans the width
 between the gutters, under the topbar. Under reduced motion it fades in without rising.
@@ -258,8 +261,13 @@ started — from the run's decision to publish — a note is refused and one cap
 `Notes are closed — the report is being published`, takes the line's place. Any other
 failed send keeps the text and says `Couldn't send — try again` under the field until the
 next edit. The report then states what became of each note in its bottom line, after the
-topic lines: one line per note (a replaced note has none), labelled `Your note · {short}` (the
-note's subject in one to three words). A research note's line is its own topic's line or, when
+topic lines: one line per note the run has read by the time it publishes (a replaced note has
+none), labelled `Your note · {short}` (the note's subject in one to three words). A note read
+after the reviewer's last merge is taken in as already settled when the report is published, so
+it changes no route and reads as a note nothing judged; a note that arrives after the run has
+ended has no line, and in replay mode that is every note, because the engine finishes before the
+stream is paced out (notes-progress-report §7.2, owner-delegated decision of 2026-10-01). A
+research note's line is its own topic's line or, when
 the bottom line kept none for it, says `See the section below.`, `No source we could check
 covers this.` or `Not researched.`; a steering note's line says how the report treated it —
 `Followed:`, `Not followed in this report:`, `No source we could check covers this:` or
@@ -789,8 +797,11 @@ opens, save Reviewing's after a loop route (D39, §3.5). While a row runs its su
 is green and live: Planning's elapsed time (`Xm SSs`); Researching's `{done} of {n}
 topics done · {pages} pages read · {findings} findings`, each count only when the run
 has measured it (or `{n} topics · researching` before the first topic is done);
-`{rated} of {n} rated`; `{checked} of {n} checked`; `{k} of {n} sections written`,
-then `writing the bottom line`; `reading the draft · {elapsed}`. Each row's body is its
+`{rated} of {n} rated`; `{checked} of {n} checked`; `{written} of {n} sections written`
+(written is the sections settled less the ones that ended failed), then ` · {f} couldn't be
+written` when any section failed, then `writing the bottom line`; `reading the draft ·
+{elapsed}`, which reads `read the draft in {elapsed}` once the review has landed, frozen at
+that moment (owner-delegated decisions of 2026-10-01, spec §6.6, §6.7). Each row's body is its
 own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
 `Writing.dc.html` E, `Reviewing.dc.html` A revised):
 
@@ -816,13 +827,23 @@ own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
   that returned with every point refused drafted no sentence, so it never reads `being
   checked`: while some part is still out it stays on `The first section is being
   drafted…` (sentences may still come), and once every part has returned with none
-  drafted it reads `No sentences were drafted to check` (spec §6.6, P3-4).
+  drafted it reads `No sentences were drafted to check` (spec §6.6, P3-4). Those two lines
+  belong to the sections' phase: while the bottom line is written, with no sample yet and no
+  section sentence drafted this pass (a note pass whose own part was fully refused, or a pass
+  with no part to draft), it reads `Writing the bottom line…`, as the subtitle does; sentences
+  that were drafted keep their checking words (owner-delegated decision of 2026-10-01, spec
+  §6.6). The tally's `section {k} of {n}` is the settle count, failed sections included; the
+  subtitle is where the sections that could not be written are named.
 - **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
   evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
   `Easy to read`) and the reader's notes: rings that read `reading` under an
   indeterminate bar while the one call runs, then ✓, or an amber ✗ with the issue in
   plain words. Never a score. When the route sends the run back, Reviewing stays open
-  on its checks and its verdict line for 2s before the run goes back (D39, §3.5).
+  on its checks and its verdict line for 2s before the run goes back (D39, §3.5). Its
+  subtitle reads `reading the draft · {elapsed}` while the call runs and `read the draft in
+  {elapsed}` once it has landed, the time frozen at the landing. A route that halted would
+  read `Halted` as its outcome, never `Review unavailable`; the backend publishes no such
+  decision today (owner-delegated decisions of 2026-10-01, spec §6.7).
 - **Publishing** — `Saving the report and evidence log`.
 
 Once done, a row's subtitle is its outcome: `{n} sub-topics · {k} from your note ·
@@ -1581,6 +1602,18 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   its checks change 60ms apart. **Under reduced motion** every cross-fade is opacity
   only over 160ms with no settle, a skeleton leaves at once, the bars jump, the ✓ and
   ✗ appear without drawing and counts jump.
+- **The tickers and WCAG 2.2.2** (notes-progress-report §6.5, owner-delegated decision of
+  2026-10-01). A ticker changes its sample on its own, at most once every 1,200ms, and has no
+  pause. Success criterion 2.2.2 (Pause, Stop, Hide) asks for one for information that updates
+  automatically, unless the updating is essential. It is: the ticker presents the live progress
+  of the running job — which finding or sentence the run is checking now — so a paused ticker
+  would only show a state the job has left. What keeps it harmless: it is not an `aria-live`
+  region (the only live region in the running spine is a note's acknowledgement), so a screen
+  reader is not interrupted at each sample and reads one only when the reader reaches it; its
+  change is a cross-fade, which under reduced motion is opacity only over 160ms with no 5px
+  settle; and no count lives only in the ticker, because the row's subtitle, bar and tally
+  carry every count and a sample is one example of the work, not its only record. The three
+  decorative loops below are a separate matter: they stop under reduced motion.
 - **A loop route holds the verdict** (D39, 2026-09-30). When the route sends the run
   back, Reviewing stays open on its checks and its verdict for `HANDOFF_HOLD_MS`
   (2,000ms) before the hand-off runs (§3.5). The hold is a dwell on a timer, like the
@@ -1856,7 +1889,7 @@ Full detail, with the request shape each gap implies, is in
 | Idle | no effective-settings echo; no `/capabilities`; no `/health` |
 | Submitted | nothing beyond Idle |
 | Check | nothing: `needs_input`, the two `session.clarification.*` events and `POST /research/{id}/answers` serve it (live-briefs Phase 2) |
-| Notes | nothing: `POST /research/{id}/notes`, the two `session.note.*` events and the status's `notes`, `notes_remaining` and `note_passes` serve them (live-briefs Phase 3); on the replay server a note is acknowledged but never applied (api-gaps 3.9) |
+| Notes | nothing: `POST /research/{id}/notes`, the two `session.note.*` events and the status's `notes`, `notes_remaining` and `note_passes` serve them (live-briefs Phase 3); on the replay server a note is acknowledged but never applied, and the report prints no line for it (api-gaps 3.9) |
 | Stopped | nothing: `POST /research/{id}/stop`, the `stopped` status with `stopped_step`, and `session.stopped` serve it (notes-progress-report §8) |
 | Running | no token usage; no terminal frame; no `Last-Event-ID` resume (events carry an `event_id`, but a reconnect replays from event 1); the halting vocabulary is a client copy; shutdown leaves `running` |
 | Report | Markdown only (a JSON projection is a nice-to-have now that the format is stable); no report hash on the response |

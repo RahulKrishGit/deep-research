@@ -831,9 +831,13 @@ The note (1–500 characters, one line) is accepted at once as `session.note.rec
 (`{note_id, text}`), then read by the configured model, thinking disabled, within
 `hitl.note_interpret_timeout_s` (15 s): `session.note.interpreted` carries the run's
 reading (`{note_id, restatement, kinds, replaces, fallback}`). A reading that fails or
-times out keeps the note as written, as an emphasis, with `fallback: true`. Every step
-but evidence verification reads the notes (a later note replaces an earlier one it
-contradicts). A research note (kind `new_angle`) is researched as a topic of its own: it
+times out keeps the note as written, as an emphasis, with `fallback: true`. The planner
+reads every note; the researcher (its searches and its extraction), the source evaluator,
+the report writer and the report reviewer read each note's steering view, which leaves out
+the `new_angle` kind (a note of that kind alone has none, and a note of both kinds is read
+as its steering kinds only). Evidence verification reads no note. A later note replaces an
+earlier one it contradicts, and no step reads a replaced note.
+A research note (kind `new_angle`) is researched as a topic of its own: it
 joins the plan when it is read before the plan is published, gets its own research
 thread at once when it is read while research runs, and otherwise buys one note pass
 afterwards, in which only its part and the bottom line are redrafted. A steering note
@@ -959,7 +963,9 @@ publishes each event stamped with the moment it releases it, so the steps' elaps
 as they would live. A reader note is
 read in replay mode by a scripted interpreter that keeps it as written, as an emphasis;
 replay runs the graph at full speed and paces only the stream, so a note added while the
-running stage plays arrives after the engine has finished and ends `not_checked`. In replay mode the topbar
+running stage plays arrives after the engine has finished and ends `not_checked`, and the
+report's bottom line prints no line for it (a note gets its line only when the run has read it
+by the time it publishes). In replay mode the topbar
 shows a muted `replay mode` chip.
 While a session runs — from the one-time check through Reviewing — the topbar's **Stop**, beside
 the status chip, asks once and then sends `POST /research/{id}/stop`: the run is cancelled where it
