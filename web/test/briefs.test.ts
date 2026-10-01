@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { ResearchEvent } from "../lib/api";
 import {
-  SENTENCES, STATIC_META, notRunText, rowBrief, stoppedSubtitle, subtitleText, topicFact, type BriefBody, type RowBrief,
+  SENTENCES, STATIC_META, notRunText, rowBrief, stoppedSubtitle, subtitleText, topicFact, type BriefBody, type RowBrief, type Subtitle,
 } from "../lib/briefs";
 import { AGENT_ORDER, applyEvent, newRunState, replayRun, toRunEvent, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
 
@@ -52,6 +52,21 @@ describe("the Researching brief (live-briefs spec §4.3, AC5; kept by notes-prog
         for (const t of texts) { expect(t).not.toMatch(/(^|\D)0(\D|$)/); expect(t).not.toContain("—"); }
       }
     }
+  });
+  it("prints only the facts it measured: a null count is left out, a measured 0 reads in words (D19)", () => {
+    const research = (done: number, pages: number | null, findings: number | null): Subtitle => ({ kind: "research", topics: 3, done, pages, findings });
+    // Before the first topic is done the running line is "{n} topics · researching", whatever is measured.
+    expect(subtitleText(research(0, null, null))).toBe("3 topics · researching");
+    expect(subtitleText(research(0, 0, 0))).toBe("3 topics · researching");
+    // Unmeasured counts are left out, never "no pages read" or "0".
+    expect(subtitleText(research(1, null, null))).toBe("1 of 3 topics done");
+    expect(subtitleText(research(2, 7, null))).toBe("2 of 3 topics done · 7 pages read");
+    expect(subtitleText(research(2, null, 1))).toBe("2 of 3 topics done · 1 finding");
+    // Measured zeros still print, in words.
+    expect(subtitleText(research(1, 0, 0))).toBe("1 of 3 topics done · no pages read · no findings");
+    expect(subtitleText(research(1, 0, null))).toBe("1 of 3 topics done · no pages read");
+    expect(subtitleText(research(1, null, 0))).toBe("1 of 3 topics done · no findings");
+    expect(subtitleText(research(3, 41, 212))).toBe("3 of 3 topics done · 41 pages read · 212 findings");
   });
   it("topicFact follows the spec's table", () => {
     expect(topicFact({ coverageId: "a", title: "A", state: "waiting", findings: null })).toBe("not yet");
@@ -123,9 +138,26 @@ describe("the stopped row and the rows after it (notes-progress-report spec §8.
     const run = newRunState();
     expect(stoppedSubtitle(run, "researcher")).toBe("Stopped");
     applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 3, sub_topics: [{ coverage_id: "topic-01", title: "A" }, { coverage_id: "topic-02", title: "B" }, { coverage_id: "topic-03", title: "C" }] }));
-    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · none of 3 topics done · no pages read · no findings");
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · none of 3 topics done");
     applyEvent(run, ev("researcher.sub_topic.completed", { coverage_id: "topic-02", sub_topic: "B", index: 2, successful_reads: 41, findings_retained: 212 }));
     expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · 1 of 3 topics done · 41 pages read · 212 findings");
+  });
+  it("leaves out a count the run has not measured and prints one it measured, a measured 0 in words (D19)", () => {
+    const run = newRunState();
+    applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 3, sub_topics: [{ coverage_id: "topic-01", title: "A" }, { coverage_id: "topic-02", title: "B" }, { coverage_id: "topic-03", title: "C" }] }));
+    expect([run.pagesRead, run.findingsSoFar]).toEqual([null, null]);
+    // Neither count is measured yet: the stopped line holds the topics alone, never "no pages read · no findings".
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · none of 3 topics done");
+    expect(text(rowBrief(run, "researcher", "stopped", NOW))).toBe("Stopped · none of 3 topics done");
+    expect(rowBrief(run, "researcher", "active", NOW).subtitle).toMatchObject({ kind: "research", done: 0, pages: null, findings: null });
+    expect(text(rowBrief(run, "researcher", "active", NOW))).toBe("3 topics · researching");
+    // Only the findings are measured (the pass reported its total): that phrase prints, as "no findings".
+    applyEvent(run, ev("researcher.research.completed", { sub_topics_researched: 0, sub_topics_skipped: 3, findings: 0 }));
+    expect([run.pagesRead, run.findingsSoFar]).toEqual([null, 0]);
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · none of 3 topics done · no findings");
+    // A completed topic measures both: its zeros print in words.
+    applyEvent(run, ev("researcher.sub_topic.completed", { coverage_id: "topic-01", sub_topic: "A", index: 1, successful_reads: 0, findings_retained: 0 }));
+    expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · 1 of 3 topics done · no pages read · no findings");
   });
   it("every other row reads 'Stopped · {its live facts}', frozen at the stop; with none, 'Stopped'", () => {
     const run = play([

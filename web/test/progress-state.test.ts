@@ -159,6 +159,8 @@ describe("Reviewing (spec §6.7)", () => {
       play([...extra, ...review(md), ev("graph.route.decided", { destination: "finalize", reason, missing_required_target_ids: ["a", "b"] })]).outcomes.report_reviewer;
     expect(decide("report_accepted")).toBe("Accepted · all 5 met");
     expect(decide("redraft_requested", { material_defects: 1 })).toBe("1 thing to fix · back to the writer");
+    expect(decide("redraft_requested", { material_defects: 3 })).toBe("3 things to fix · back to the writer");
+    expect(decide("redraft_requested", { material_defects: null })).toBe("Things to fix · back to the writer");
     expect(decide("extra_pass_requested")).toBe("Sent back to fill 2 gaps");
     expect(decide("review_unavailable")).toBe("Review unavailable");
     expect(decide("extra_passes_exhausted")).toBe("Not accepted · 2 gaps still open");

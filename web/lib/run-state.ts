@@ -197,6 +197,11 @@ export function notAcceptedLine(run: RunState): string {
     ? "Not accepted · a check the run makes itself failed"
     : "Not accepted · the reviewer's overall judgement fell short";
 }
+/* §6.7's redraft lines lead with the count of material defects. A review that sent no count leaves it
+   out ("Things to fix · …"), never "0 things": an unknown value does not read as 0 (D19). */
+export function thingsToFix(defects: number | null): string {
+  return defects === null ? "Things to fix" : plural(defects, "thing", "things") + " to fix";
+}
 /* Reviewing's outcome line, read at the route decision (notes-progress-report spec §6.7 route
    table): never a score; the brief adds the row's duration (lib/briefs.ts). */
 function reviewOutcome(run: RunState, md: Md): string {
@@ -204,7 +209,7 @@ function reviewOutcome(run: RunState, md: Md): string {
     case "note_pass_requested": return "Sent back to research your note";
     case "note_redraft_requested": return "Sent back to the writer for your note";
     case "report_accepted": return "Accepted · all 5 met";
-    case "redraft_requested": return plural(run.reviewing.defects ?? 0, "thing", "things") + " to fix · back to the writer";
+    case "redraft_requested": return thingsToFix(run.reviewing.defects) + " · back to the writer";
     case "extra_pass_requested": {
       const k = missingCount(md);
       return k > 0 ? "Sent back to fill " + plural(k, "gap", "gaps") : "Sent back for more research";

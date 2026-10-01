@@ -8,17 +8,18 @@
 import { fmtSeconds } from "./format";
 import { earlierNotesText, visibleAcks, type Ack } from "./notes";
 import {
-  STAGES, countPhrase, notAcceptedLine, plural,
+  STAGES, countPhrase, notAcceptedLine, plural, thingsToFix,
   type NodeId, type NoteState, type PaintedMark, type ReopenLine, type ReviewHalf, type ReviewNoteResult,
   type RunState, type SlotState, type Topic, type TopicState, type VerifierSample, type WriterSample,
 } from "./run-state";
 
 /* "stopped" and "off" occur only on the stopped stage's frozen spine (notes-progress-report spec §8.5). */
 export type RowState = PaintedMark | "pending" | "stopped" | "off";
-/* The subtitle a row shows until it is done: a line of text, or Researching's live facts line. */
+/* The subtitle a row shows until it is done: a line of text, or Researching's live facts line. A
+   count the run has not measured is null: its phrase is left out, never printed as 0 (D19). */
 export type Subtitle =
   | { kind: "text"; text: string }
-  | { kind: "research"; topics: number; done: number; pages: number; findings: number };
+  | { kind: "research"; topics: number; done: number; pages: number | null; findings: number | null };
 export interface TopicLine { key: string; n: number; title: string; state: TopicState; fact: string }
 export interface RowBrief {
   subtitle: Subtitle;              /* pending, active, stopped and off rows; green while active */
@@ -45,8 +46,13 @@ export function subtitleText(subtitle: Subtitle): string {
   const { topics, done, pages, findings } = subtitle;
   if (topics === 0) return STATIC_META.researcher;
   if (done === 0) return plural(topics, "topic", "topics") + " · researching";
-  return done + " of " + topics + " " + (topics === 1 ? "topic" : "topics") + " done · "
-    + countPhrase(pages, "page read", "pages read") + " · " + countPhrase(findings, "finding", "findings");
+  return done + " of " + topics + " " + (topics === 1 ? "topic" : "topics") + " done" + measuredCounts(pages, findings);
+}
+/* " · {pages} · {findings}", each only when measured: a measured 0 reads in words ("no findings"), an
+   unmeasured count is left out (D19: unknown values never read as 0). */
+function measuredCounts(pages: number | null, findings: number | null): string {
+  return (pages === null ? "" : " · " + countPhrase(pages, "page read", "pages read"))
+    + (findings === null ? "" : " · " + countPhrase(findings, "finding", "findings"));
 }
 function subtitleFor(run: RunState, id: NodeId, state: RowState, nowMs: number): Subtitle {
   if (state === "stopped") return { kind: "text", text: stoppedSubtitle(run, id) };
@@ -97,14 +103,15 @@ export function rowBrief(run: RunState, id: NodeId, state: RowState, nowMs: numb
 /* notes-progress-report spec §8.5: the stopped row's subtitle — "Stopped", then the live facts the row
    had when the reader stopped it, frozen at the stop (§6.3-§6.7). Researching's always counts the topics
    done ("none of 3", rather than its running "3 topics · researching", which would contradict
-   "Stopped", and never a bare 0); a row with no live facts reads "Stopped". */
+   "Stopped", and never a bare 0), then the pages and findings the run measured and only those
+   ("Stopped · none of 3 topics done", D19); a row with no live facts reads "Stopped". */
 export function stoppedSubtitle(run: RunState, id: NodeId): string {
   if (id === "researcher") {
     const topics = run.topics.length;
     if (topics === 0) return "Stopped";
     const done = run.topics.filter((t) => t.state === "done").length;
-    return "Stopped · " + (done === 0 ? "none" : String(done)) + " of " + plural(topics, "topic", "topics") + " done · "
-      + countPhrase(run.pagesRead ?? 0, "page read", "pages read") + " · " + countPhrase(run.findingsSoFar ?? 0, "finding", "findings");
+    return "Stopped · " + (done === 0 ? "none" : String(done)) + " of " + plural(topics, "topic", "topics") + " done"
+      + measuredCounts(run.pagesRead, run.findingsSoFar);
   }
   const at = run.stopped?.at ? Date.parse(run.stopped.at) : NaN;
   const live = liveSubtitle(run, id, Number.isNaN(at) ? null : at);
@@ -208,7 +215,7 @@ export function elapsedText(fromIso: string | undefined, toMs: number | null): s
 }
 const researchSubtitle = (run: RunState): Subtitle => ({
   kind: "research", topics: run.topics.length, done: run.topics.filter((t) => t.state === "done").length,
-  pages: run.pagesRead ?? 0, findings: run.findingsSoFar ?? 0,
+  pages: run.pagesRead, findings: run.findingsSoFar,
 });
 
 /* §6.3: the status line. */
@@ -393,7 +400,7 @@ export function reviewVerdict(run: RunState): string | null {
   switch (r.reason) {
     case null: return null;
     case "report_accepted": return "Accepted · all 5 criteria met" + notesClause(met, listed.length);
-    case "redraft_requested": return plural(r.defects ?? 0, "thing", "things") + " to fix · sending the draft back to the writer";
+    case "redraft_requested": return thingsToFix(r.defects) + " · sending the draft back to the writer";
     case "extra_pass_requested": return plural(r.missing, "gap", "gaps") + " to fill · going back to research";
     case "note_pass_requested": return "Going back to research your " + notes;
     case "note_redraft_requested": return "Sending the draft back to the writer for your " + notes;

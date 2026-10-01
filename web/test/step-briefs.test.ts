@@ -256,6 +256,9 @@ describe("Reviewing (spec §6.7)", () => {
     expect(verdict([...n1, start, reviewed({ notes: [{ note_id: "n1", result: "met", reason: "honoured" }] }), decided("report_accepted")])).toBe("Accepted · all 5 criteria met · your note met");
     expect(verdict([...n1, start, reviewed({ notes: [{ note_id: "n1", result: "not_met", reason: "no_evidence" }] }), decided("report_accepted")])).toBe("Accepted · all 5 criteria met · your note not met");
     expect(verdict([start, reviewed({ material_defects: 1 }), decided("redraft_requested")])).toBe("1 thing to fix · sending the draft back to the writer");
+    expect(verdict([start, reviewed({ material_defects: 3 }), decided("redraft_requested")])).toBe("3 things to fix · sending the draft back to the writer");
+    // A review that sent no defect count leaves the count out: an unknown value never reads as "0 things" (D19).
+    expect(verdict([start, reviewed({ material_defects: null }), decided("redraft_requested")])).toBe("Things to fix · sending the draft back to the writer");
     expect(verdict([start, reviewed(), decided("extra_pass_requested", ["a", "b"])])).toBe("2 gaps to fill · going back to research");
     expect(verdict([...n1, start, reviewed(), decided("note_pass_requested")])).toBe("Going back to research your note");
     expect(verdict([...n1, start, reviewed(), decided("note_redraft_requested")])).toBe("Sending the draft back to the writer for your note");

@@ -27,8 +27,10 @@ const lineStyle = (i: number) => ({ ["--i" as string]: String(i) }) as CSSProper
 const finishedState = (st: RowState | undefined) => st === "done" || st === "loop";
 
 function ResearchSubtitle({ subtitle }: { subtitle: Extract<Subtitle, { kind: "research" }> }) {
-  const done = useTween(subtitle.done), pages = useTween(subtitle.pages), findings = useTween(subtitle.findings);
-  return <>{subtitleText({ ...subtitle, done, pages, findings })}</>;
+  /* An unmeasured count (null) tweens as 0 so the hooks stay unconditional, and is passed on as null:
+     its phrase stays out of the line (D19). */
+  const done = useTween(subtitle.done), pages = useTween(subtitle.pages ?? 0), findings = useTween(subtitle.findings ?? 0);
+  return <>{subtitleText({ ...subtitle, done, pages: subtitle.pages === null ? null : pages, findings: subtitle.findings === null ? null : findings })}</>;
 }
 
 /* The running stage's spine (picks 1A, 2C, 3B): each row is li > bullet + (head, brief). The active
