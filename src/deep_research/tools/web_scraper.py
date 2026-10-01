@@ -75,6 +75,13 @@ _CHROME_ROLES = frozenset(
 # shell a complete read.
 _MIN_BODY_TABLE_ROWS = 2
 
+# What a robots.txt fetch settles for a host (latency audit O4): its parsed
+# rules, or ``None`` when the host answered with a client error, which the
+# check has always read as "no rules for us". A timeout, a server error or an
+# unreadable body settles nothing, so the next read of that host asks again,
+# exactly as every read used to.
+_UNSETTLED = object()
+
 
 class AsyncHttpClient(Protocol):
     async def get(self, url: str, **kwargs: Any) -> httpx.Response: ...
@@ -129,7 +136,11 @@ class WebScraperTool(BaseTool):
         max_retries: int = 2,
         user_agent: str = "deep-research/0.1",
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        """``transport`` is the run's shared connection pool (latency audit O4):
+        each call still builds its own client, over it. ``None`` lets each
+        call's client build its own, as before; an injected ``client`` wins."""
         super().__init__(tracker)
         if (
             isinstance(timeout_s, bool)
@@ -153,6 +164,13 @@ class WebScraperTool(BaseTool):
         self._max_retries = max_retries
         self._user_agent = user_agent.strip()
         self._sleep = sleep
+        self._transport = transport
+        # robots.txt, fetched once per host for the life of this tool -- one
+        # run, since the runtime builds its tools per run -- instead of once
+        # per read (latency audit O4). The per-host lock makes two loops
+        # reading one host at once share a single fetch.
+        self._robots: dict[str, RobotFileParser | None] = {}
+        self._robots_fetches: dict[str, asyncio.Lock] = {}
 
     def _observability_inputs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         return {"url": kwargs.get("url")}
@@ -177,6 +195,7 @@ class WebScraperTool(BaseTool):
             headers={"User-Agent": self._user_agent},
             follow_redirects=True,
             timeout=self._timeout_s,
+            transport=self._transport,
         ) as client:
             return await self._execute_with_client(context, url, client)
 
@@ -242,24 +261,47 @@ class WebScraperTool(BaseTool):
         )
 
     async def _check_robots(self, client: AsyncHttpClient, url: str) -> bool:
+        """``True`` when the host's rules allow ``url``; ``False`` when there
+        are no rules to apply; ``robots_disallowed`` when they refuse it.
+
+        The rules are the host's own robots.txt, fetched on the first read of
+        that host in this run and reused by every later one (latency audit
+        O4): the same file decides each read as it did when every read
+        fetched it again.
+        """
         parts = urlsplit(url)
-        robots_url = f"{parts.scheme}://{parts.netloc}/robots.txt"
+        origin = f"{parts.scheme}://{parts.netloc}"
+        async with self._robots_fetches.setdefault(origin, asyncio.Lock()):
+            if origin not in self._robots:
+                settled = await self._fetch_robots(client, f"{origin}/robots.txt")
+                if settled is _UNSETTLED:
+                    return False
+                self._robots[origin] = settled  # type: ignore[assignment]
+            rules = self._robots[origin]
+        if rules is None:
+            return False
+        if not rules.can_fetch(self._user_agent, url):
+            raise ToolExecutionError(
+                "robots policy disallows this URL",
+                error_type="robots_disallowed",
+                recoverable=False,
+            )
+        return True
+
+    async def _fetch_robots(
+        self, client: AsyncHttpClient, robots_url: str
+    ) -> RobotFileParser | None | object:
+        """The host's parsed rules, ``None`` for a client error, else ``_UNSETTLED``."""
         try:
             response = await self._get(client, robots_url)
             response.raise_for_status()
             parser = RobotFileParser()
             parser.parse(response.text.splitlines())
-            if not parser.can_fetch(self._user_agent, url):
-                raise ToolExecutionError(
-                    "robots policy disallows this URL",
-                    error_type="robots_disallowed",
-                    recoverable=False,
-                )
-        except ToolExecutionError:
-            raise
+        except httpx.HTTPStatusError as error:
+            return None if 400 <= error.response.status_code < 500 else _UNSETTLED
         except (asyncio.TimeoutError, httpx.HTTPError, UnicodeError, ValueError):
-            return False
-        return True
+            return _UNSETTLED
+        return parser
 
     async def _get_page(
         self, context: ToolCallContext, client: AsyncHttpClient, url: str

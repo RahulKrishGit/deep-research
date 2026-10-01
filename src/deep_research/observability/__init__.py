@@ -20,6 +20,8 @@ from deep_research.observability.metrics import (
 )
 from deep_research.observability.run_telemetry import (
     RunTelemetryCollector,
+    call_label,
+    current_call_label,
     render_telemetry_advice,
     render_telemetry_line,
 )
@@ -42,6 +44,8 @@ __all__ = [
     "Tracker",
     "bind_trace_context",
     "build_trace_metadata",
+    "call_label",
+    "current_call_label",
     "current_trace_context",
     "load_langsmith_runtime_config",
     "render_telemetry_advice",

@@ -70,7 +70,12 @@ from deep_research.utils.types import (
     SubTopic,
     merge_research_state,
 )
-from tests.agent_fakes import ScriptedCompleter, finish, use_tool
+from tests.agent_fakes import (
+    LabelRecordingCompleter,
+    ScriptedCompleter,
+    finish,
+    use_tool,
+)
 from tests.research_fakes import (
     FakeMemory,
     FakeSearchClient,
@@ -5346,3 +5351,46 @@ def test_planning_completed_caps_each_title_at_160_characters() -> None:
     assert entry["coverage_id"] == "topic-01"
     assert len(entry["title"]) <= 160
     assert entry["title"].endswith("...")
+
+
+@pytest.mark.asyncio
+async def test_every_plan_side_call_is_named_for_the_call_records(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O8: each plan-side request is named in the run's call
+    records -- the draft, the lint repair, the review, the review repair and
+    the confirming review -- so a slow planner call can be attributed."""
+    lint_repair = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_stale_draft(), _sorting_plan(), _review()],
+    )
+    async with tracker.session_span("session-1", "q"):
+        await _planner(tracker, lint_repair).run(
+            _state("What are the current interconnection constraints?")
+        )
+
+    review_repair = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[
+            _sorting_plan(),
+            _review(
+                sound=False,
+                missing_dimensions=["siting and permitting"],
+                repair_instruction="Add a sub-topic for siting and permitting.",
+            ),
+            _sorting_plan(),
+            _review(),
+        ],
+    )
+    async with tracker.session_span("session-1", "q"):
+        await _planner(tracker, review_repair).run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+    assert lint_repair.labels == ["plan_draft", "plan_repair", "plan_review"]
+    assert review_repair.labels == [
+        "plan_draft",
+        "plan_review",
+        "plan_review_repair",
+        "plan_confirming_review",
+    ]

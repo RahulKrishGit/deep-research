@@ -38,6 +38,7 @@ from deep_research.graph.events import (
 )
 from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
 from deep_research.graph.nodes import (
+    BatchReportPublisher,
     GraphNode,
     ReportPublisher,
     ReportReviewerLike,
@@ -135,6 +136,7 @@ __all__ = [
     "SOURCE_EVALUATOR_NODE",
     "GraphConfigurationError",
     "GraphError",
+    "BatchReportPublisher",
     "GraphNode",
     "GraphResumeError",
     "GraphRun",

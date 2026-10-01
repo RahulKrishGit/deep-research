@@ -1979,3 +1979,146 @@ async def test_scraper_keeps_an_abbreviation_in_the_description_leading_clause(t
     result = await _read_served_page(tracker, page)
 
     assert result.data["title"] == "Dr. Example Author, Collected Works."
+
+
+
+@pytest.mark.asyncio
+async def test_each_call_keeps_its_own_client_and_cookies_over_the_runs_pool(
+    tracker,
+) -> None:
+    """Latency audit O4: the scraper sends every call through the pool it was
+    given, and each call is still its own client -- the user agent it always
+    sent, and no cookie another call was given."""
+    seen: list[tuple[str, str | None, str | None]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(
+            (request.url.path, request.headers.get("user-agent"), request.headers.get("cookie"))
+        )
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200,
+                text="User-agent: *\nAllow: /",
+                headers={"set-cookie": "visit=1; Path=/"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>The page text.</p></body></html>",
+            request=request,
+        )
+
+    tool = WebScraperTool(tracker, transport=httpx.MockTransport(handler))
+    async with tracker.session_span("session-1", "question"):
+        first = await tool.execute(url="https://example.test/one")
+        second = await tool.execute(url="https://example.test/two")
+
+    assert first.success and second.success
+    # robots.txt is fetched once per host (Task 14), so the second call asks
+    # for its page only.
+    assert [path for path, _, _ in seen] == ["/robots.txt", "/one", "/two"]
+    assert {agent for _, agent, _ in seen} == {"deep-research/0.1"}
+    # Within one call its own cookie travels on, as before; a later call starts
+    # with none.
+    assert [cookie for _, _, cookie in seen] == [None, "visit=1", None]
+
+
+
+def _robots_client(robots: httpx.Response | Exception, *, robots_hits: list[str]):
+    """Serve one robots.txt answer (or failure) and an HTML page for anything else."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            robots_hits.append(str(request.url))
+            if isinstance(robots, Exception):
+                raise robots
+            return robots
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>The page text.</p></body></html>",
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+@pytest.mark.asyncio
+async def test_a_hosts_robots_rules_are_fetched_once_and_decide_every_read(
+    tracker,
+) -> None:
+    """Latency audit O4: one robots.txt fetch per host, the same verdicts."""
+    hits: list[str] = []
+    rules = httpx.Response(200, text="User-agent: *\nDisallow: /private/\n")
+    tool = WebScraperTool(tracker, client=_robots_client(rules, robots_hits=hits))
+
+    async with tracker.session_span("session-1", "question"):
+        allowed = await tool.execute(url="https://example.test/public/a")
+        refused = await tool.execute(url="https://example.test/private/b")
+        again = await tool.execute(url="https://example.test/public/c")
+        other = await tool.execute(url="https://other.test/public/d")
+
+    assert hits == ["https://example.test/robots.txt", "https://other.test/robots.txt"]
+    assert allowed.success and again.success and other.success
+    assert refused.error is not None and refused.error.type == "robots_disallowed"
+    assert allowed.metadata["robots_checked"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_missing_robots_file_is_settled_once_and_reads_unchecked(tracker) -> None:
+    hits: list[str] = []
+    tool = WebScraperTool(
+        tracker, client=_robots_client(httpx.Response(404), robots_hits=hits)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        first = await tool.execute(url="https://example.test/a")
+        second = await tool.execute(url="https://example.test/b")
+
+    assert hits == ["https://example.test/robots.txt"]
+    assert [first.metadata["robots_checked"], second.metadata["robots_checked"]] == [False, False]
+
+
+@pytest.mark.asyncio
+async def test_a_robots_fetch_that_failed_is_asked_again_on_the_next_read(tracker) -> None:
+    """A timeout or a server error settles nothing, as every read used to ask."""
+    hits: list[str] = []
+    tool = WebScraperTool(
+        tracker, client=_robots_client(httpx.Response(503), robots_hits=hits)
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await tool.execute(url="https://example.test/a")
+        await tool.execute(url="https://example.test/b")
+
+    assert hits == ["https://example.test/robots.txt"] * 2
+
+
+@pytest.mark.asyncio
+async def test_two_reads_of_one_host_at_once_share_one_robots_fetch(tracker) -> None:
+    hits: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            hits.append(str(request.url))
+            await asyncio.sleep(0.05)
+            return httpx.Response(200, text="User-agent: *\nAllow: /\n")
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            text="<html><body><p>The page text.</p></body></html>",
+            request=request,
+        )
+
+    tool = WebScraperTool(
+        tracker, client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    async with tracker.session_span("session-1", "question"):
+        results = await asyncio.gather(
+            tool.execute(url="https://example.test/a"),
+            tool.execute(url="https://example.test/b"),
+        )
+
+    assert hits == ["https://example.test/robots.txt"]
+    assert all(result.success for result in results)

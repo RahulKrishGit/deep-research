@@ -362,6 +362,11 @@ async def run_research(
             monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor_task
+        # The run's shared HTTP pool (latency audit O4) closes with the run.
+        # Read with ``getattr``: a stand-in runtime may predate the field.
+        pool = getattr(runtime, "connection_pool", None)
+        if pool is not None:
+            await pool.close()
 
     # The terminal finalizer takes the collector's reading for a run that
     # reaches publication, and stamps it into the state it publishes from. A

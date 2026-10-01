@@ -14,6 +14,7 @@ from deep_research.tools.base import (
     ToolCallContext,
     ToolExecution,
     ToolExecutionError,
+    ToolResult,
 )
 
 
@@ -21,6 +22,10 @@ class LongTermMemory(Protocol):
     """Storage contract consumed by the long-term-memory tool adapters."""
 
     async def save(self, content: str, metadata: Mapping[str, JsonValue]) -> str: ...
+
+    async def save_many(
+        self, findings: Sequence[tuple[str, Mapping[str, JsonValue]]]
+    ) -> Sequence[str]: ...
 
     async def query(
         self,
@@ -44,7 +49,30 @@ class SaveToMemoryTool(BaseTool):
         super().__init__(tracker)
         self._memory = memory
 
+    async def save_many(
+        self, findings: Sequence[tuple[str, Mapping[str, JsonValue]]]
+    ) -> ToolResult:
+        """Persist several findings in one memory write (latency audit O2).
+
+        One tool span and one ``save_many`` on the backend for the whole set,
+        instead of one of each per finding. Every finding is validated as
+        ``execute(content=..., metadata=...)`` validates one; any invalid
+        finding, or a backend without ``save_many``, fails the whole call as a
+        failed result, and the caller can then write the findings one by one.
+        The ``findings`` argument is not in ``input_schema``: no model is
+        offered it, and this method is the only way to reach it.
+        """
+        return await self.execute(
+            findings=[
+                {"content": content, "metadata": dict(metadata)}
+                for content, metadata in findings
+            ]
+        )
+
     def _observability_inputs(self, kwargs: dict[str, Any]) -> dict[str, JsonValue]:
+        findings = kwargs.get("findings")
+        if isinstance(findings, list):
+            return {"finding_count": len(findings)}
         content = kwargs.get("content")
         return {
             "content_chars": len(content) if isinstance(content, str) else 0,
@@ -57,6 +85,9 @@ class SaveToMemoryTool(BaseTool):
         self, context: ToolCallContext, **kwargs: Any
     ) -> ToolExecution:
         del context
+        findings = kwargs.get("findings")
+        if findings is not None:
+            return await self._save_many(findings)
         content = kwargs.get("content")
         metadata = kwargs.get("metadata", {})
         if not isinstance(content, str) or not content.strip():
@@ -66,6 +97,25 @@ class SaveToMemoryTool(BaseTool):
         return ToolExecution(
             data={"entry_id": entry_id},
             output_summary={"entry_id": entry_id},
+        )
+
+    async def _save_many(self, findings: Any) -> ToolExecution:
+        if not isinstance(findings, list) or not findings:
+            raise _validation_error("findings must be a non-empty list")
+        batch: list[tuple[str, Mapping[str, JsonValue]]] = []
+        for finding in findings:
+            if not isinstance(finding, Mapping):
+                raise _validation_error("each finding must be a JSON object")
+            content = finding.get("content")
+            metadata = finding.get("metadata", {})
+            if not isinstance(content, str) or not content.strip():
+                raise _validation_error("content must be a non-empty string")
+            _validate_json_mapping(metadata, name="metadata")
+            batch.append((content, _as_json_mapping(metadata)))
+        entry_ids = list(await self._memory.save_many(batch))
+        return ToolExecution(
+            data={"entry_ids": entry_ids},
+            output_summary={"entry_count": len(entry_ids)},
         )
 
 

@@ -428,6 +428,22 @@ class ReportPublisher(Protocol):
         raise NotImplementedError
 
 
+@runtime_checkable
+class BatchReportPublisher(ReportPublisher, Protocol):
+    """A publisher that can also save many findings in one write (latency audit O2).
+
+    A separate protocol rather than a third method on ``ReportPublisher``: a
+    publisher without it is still a publisher, and the finalizer then writes
+    one finding at a time exactly as it always did.
+    """
+
+    async def publish_findings(
+        self, *, findings: Sequence[tuple[str, Mapping[str, JsonValue]]]
+    ) -> ToolResult:
+        """Save every cited finding in one long-term memory write."""
+        raise NotImplementedError
+
+
 @dataclass(frozen=True, slots=True)
 class _Publication:
     """What the terminal publication step actually achieved.
@@ -575,7 +591,10 @@ async def _publish(
     filesystem.
 
     Memory is written last and only for ``accepted`` — a partial report is
-    published, never remembered.
+    published, never remembered. A publisher that can batch saves every cited
+    finding in one write (latency audit O2); when that write fails, or the
+    publisher cannot batch, each finding is written on its own as before, so
+    every failure is still recorded against its own finding.
     """
     if publisher is None:
         return _Publication(
@@ -626,10 +645,17 @@ async def _publish(
 
     memory_writes = 0
     if status == QUALITY_STATUS_ACCEPTED:
-        for finding in _cited_findings(state):
-            content, metadata = finding_memory_payload(
-                finding, session_id=state.session_id
-            )
+        payloads = [
+            finding_memory_payload(finding, session_id=state.session_id)
+            for finding in _cited_findings(state)
+        ]
+        batched = False
+        if payloads and isinstance(publisher, BatchReportPublisher):
+            batch = await publisher.publish_findings(findings=payloads)
+            if batch.success:
+                memory_writes = len(payloads)
+                batched = True
+        for content, metadata in [] if batched else payloads:
             result = await publisher.publish_finding(
                 content=content, metadata=metadata
             )

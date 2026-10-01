@@ -10,12 +10,13 @@ import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 from pydantic import BaseModel
 
 from deep_research.agents.steps import ReActDecision
-from deep_research.observability import TokenUsage, Tracker
+from deep_research.observability import TokenUsage, Tracker, current_call_label
 from deep_research.providers import (
     ChatMessage,
     NativeToolCall,
@@ -193,6 +194,78 @@ class ScriptedCompleter:
             # those ids before the request is built.
             return response(list(messages), schema)
         return response
+
+
+class HoldingCompleter(ScriptedCompleter):
+    """A ``ScriptedCompleter`` that holds each structured reply for a set time
+    after choosing it, and records when each structured call started and
+    ended, by call index (latency audit O3, O10: proves two calls were in
+    flight together, and that a later one may answer first)."""
+
+    def __init__(
+        self,
+        *,
+        decisions: Sequence[ReActDecision | BaseException] = (),
+        outputs: Sequence[BaseModel | BaseException] = (),
+        holds: Sequence[float],
+    ) -> None:
+        super().__init__(decisions=decisions, outputs=outputs)
+        self._holds = list(holds)
+        self.windows: dict[int, tuple[float, float]] = {}
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        started = perf_counter()
+        index = len(self.calls)
+        try:
+            return await super().complete_structured(
+                messages,
+                schema,
+                agent_name=agent_name,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
+        finally:
+            await asyncio.sleep(self._holds[index])
+            self.windows[index] = (started, perf_counter())
+
+
+class LabelRecordingCompleter(ScriptedCompleter):
+    """A ``ScriptedCompleter`` that also records, for each structured request,
+    the call label its caller bound around it (latency audit O8)."""
+
+    def __init__(
+        self,
+        decisions: Sequence[ReActDecision | BaseException] = (),
+        outputs: Sequence[BaseModel | BaseException] = (),
+    ) -> None:
+        super().__init__(decisions=decisions, outputs=outputs)
+        self.labels: list[str | None] = []
+
+    async def complete_structured(
+        self,
+        messages: Sequence[ChatMessage],
+        schema: type[Any],
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        self.labels.append(current_call_label())
+        return await super().complete_structured(
+            messages,
+            schema,
+            agent_name=agent_name,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
 
 
 _TARGET_ID_LINE = re.compile(r"^- target_id=(\S+)$", re.MULTILINE)

@@ -56,6 +56,7 @@ from deep_research.request_budget import (
     RequestAttemptLimitError,
     RequestBudgetSnapshot,
 )
+from deep_research.tools.base import ToolError, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
     QUALITY_STATUS_ACCEPTED,
@@ -1531,6 +1532,8 @@ async def test_the_real_writer_publishes_three_artifacts_into_a_real_root(
     assert published.metadata["document_writes"] == 3
     assert published.metadata["memory_writes"] == 1
     assert memory.saved
+    # Latency audit O2: the real writer saved the cited finding in one batch.
+    assert memory.batches == [1]
 
 
 @pytest.mark.asyncio
@@ -1738,3 +1741,57 @@ async def test_a_halted_run_is_never_finalized() -> None:
 def test_a_graph_node_factory_refuses_a_blank_name() -> None:
     with pytest.raises(GraphConfigurationError):
         agent_node(FakeAgent("planner"), node_name="   ")
+
+
+
+class _BatchPublisher(FakePublisher):
+    """A publisher that can save every cited finding in one write."""
+
+    def __init__(self, *, fail_batch: bool = False) -> None:
+        super().__init__()
+        self._fail_batch = fail_batch
+        self.batches: list[list[str]] = []
+
+    async def publish_findings(self, *, findings) -> ToolResult:
+        self.batches.append([content for content, _ in findings])
+        if self._fail_batch:
+            return ToolResult(
+                tool_name="save_to_memory",
+                success=False,
+                error=ToolError(type="RuntimeError", message="The batch was not saved."),
+                latency_ms=0.0,
+            )
+        return ToolResult(
+            tool_name="save_to_memory",
+            success=True,
+            data={"entry_ids": [f"entry-{i}" for i, _ in enumerate(findings)]},
+            latency_ms=0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_report_saves_its_cited_findings_in_one_batch() -> None:
+    """Latency audit O2: a publisher that can batch gets one write for every
+    cited finding, and the published event still counts each one."""
+    publisher = _BatchPublisher()
+
+    result = await finalize_report_node(publisher)(dump_state(_finalized_state()))
+
+    assert publisher.batches == [[SNIPPET]]
+    assert publisher.memory_writes == 0  # no one-by-one write was needed
+    assert load_state(result).events[-2].metadata["memory_writes"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_falls_back_to_one_write_per_finding() -> None:
+    """When the batch fails, each finding is written on its own, exactly as
+    before O2, so each failure is still recorded against its own finding."""
+    publisher = _BatchPublisher(fail_batch=True)
+
+    result = await finalize_report_node(publisher)(dump_state(_finalized_state()))
+    state = load_state(result)
+
+    assert publisher.batches == [[SNIPPET]]
+    assert publisher.saved_findings == [SNIPPET]
+    assert state.events[-2].metadata["memory_writes"] == 1
+    assert state.errors == []

@@ -152,7 +152,11 @@ PINNED_PACKETS = {
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    "report_reviewer:ReportReviewDraft": "824e2b4aa04d2944",
+    # Latency plan Task 8 (audit O9): the last review's packet moved because
+    # the forced last research turn is never asked (see
+    # tests/test_graph/test_reader_notes_replay.py); no answer is involved.
+    # Was "824e2b4aa04d2944".
+    "report_reviewer:ReportReviewDraft": "a173c40737e32644",
 }
 
 

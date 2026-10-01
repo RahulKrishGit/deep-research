@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -948,3 +949,24 @@ async def test_a_run_given_no_reader_answers_starts_with_none(config_file, track
     )
 
     assert outcome.state.reader_answers == []
+
+
+
+@pytest.mark.asyncio
+async def test_the_run_closes_its_runtimes_connection_pool(config_file, tracker) -> None:
+    """Latency audit O4: the pool a run's reads shared is closed when it ends."""
+    closed: list[bool] = []
+
+    class _Pool:
+        async def close(self) -> None:
+            closed.append(True)
+
+    build = fake_builder(tracker)
+
+    async def builder(settings, *, session_id, **kwargs):
+        runtime = await build(settings, session_id=session_id, **kwargs)
+        return replace(runtime, connection_pool=_Pool())
+
+    await run_research(QUESTION, config_path=config_file, runtime_builder=builder)
+
+    assert closed == [True]

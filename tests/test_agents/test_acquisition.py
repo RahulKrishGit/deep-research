@@ -4148,3 +4148,19 @@ def test_a_read_cannot_be_admitted_for_a_deleted_selector() -> None:
             query="grid-scale battery storage capacity additions 2025",
             origin="fact_checker",
         )
+
+
+
+def test_a_read_is_single_flighted_on_its_normalized_url_and_a_search_is_not() -> None:
+    """Latency audit O4: the flight key is the URL the policy's own cache and
+    ledger key a read by, from either reader; a search downloads no page."""
+    policy = _policy()
+
+    assert policy.flight_key("web_scraper", {"url": _STUDY_URL}) == _STUDY_URL
+    assert policy.flight_key("document_reader", {"source": _STUDY_URL}) == _STUDY_URL
+    assert policy.flight_key("web_scraper", {"url": f"  {_STUDY_URL}  "}) == (
+        policy.flight_key("web_scraper", {"url": _STUDY_URL})
+    )
+    assert policy.flight_key("web_search", {"query": "queue delay"}) is None
+    assert policy.flight_key("query_memory", {"query": "queue delay"}) is None
+    assert policy.flight_key("web_scraper", {}) is None

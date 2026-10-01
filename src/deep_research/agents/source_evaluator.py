@@ -67,6 +67,7 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import Tracker
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
+from deep_research.utils.concurrency import gather_or_cancel
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     ContractModel,
@@ -1122,19 +1123,31 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         leaves the seed in place, records one recoverable error for the
         whole pass, and lets scoring continue — the spec's "continue with
         direct scoring" requirement.
+
+        Every source is looked up at once (latency audit O12), and the
+        answers are applied in the sources' own order, so the map is the one
+        the one-by-one lookups built.
         """
         if self._reputation is None or not task.groups:
             return task, [], 0
+        reputation = self._reputation
 
+        async def lookup(url: str) -> SourceReputation | Exception | None:
+            try:
+                return await reputation.get_source_reputation(url)
+            except Exception as error:
+                # Deliberately broad: a memory backend can raise anything,
+                # and no backend failure is worth failing the pass over.
+                return error
+
+        records = await gather_or_cancel(
+            *(lookup(group.url) for group in task.groups)
+        )
         reputations = dict(task.reputations)
         failures = 0
         hits = 0
-        for group in task.groups:
-            try:
-                record = await self._reputation.get_source_reputation(group.url)
-            except Exception:
-                # Deliberately broad: a memory backend can raise anything,
-                # and no backend failure is worth failing the pass over.
+        for group, record in zip(task.groups, records, strict=True):
+            if isinstance(record, Exception):
                 failures += 1
                 continue
             if record is not None:

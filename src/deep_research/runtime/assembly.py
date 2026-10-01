@@ -44,6 +44,10 @@ from deep_research.runtime.errors import configuration_error
 from deep_research.runtime.memory_bridge import LongTermMemoryBridge
 from deep_research.tools.base import BaseTool
 from deep_research.tools.document_reader import DocumentReaderTool
+from deep_research.tools.http_pool import (
+    SharedConnectionPool,
+    shared_connection_pool,
+)
 from deep_research.tools.memory_tools import QueryMemoryTool, SaveToMemoryTool
 from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.tools.web_search import WebSearchTool
@@ -63,6 +67,7 @@ def build_tools(
     search_client: Any | None = None,
     http_client: Any | None = None,
     request_budget: RequestBudget | None = None,
+    http_transport: Any | None = None,
 ) -> list[BaseTool]:
     """Build every tool any agent declares, in one shared registry.
 
@@ -78,6 +83,9 @@ def build_tools(
     impression of a bound that does not exist. The budget is shared, never
     copied: ``RequestBudget`` holds mutable counters, and a copy per tool
     would spend a second set of them.
+
+    ``http_transport`` is the run's shared connection pool (latency audit
+    O4), lent to both readers; ``None`` keeps a client per call.
     """
     return [
         WebSearchTool(
@@ -92,8 +100,8 @@ def build_tools(
             max_results=settings.tavily.max_results,
             request_budget=request_budget,
         ),
-        WebScraperTool(tracker, client=http_client),
-        DocumentReaderTool(tracker, client=http_client),
+        WebScraperTool(tracker, client=http_client, transport=http_transport),
+        DocumentReaderTool(tracker, client=http_client, transport=http_transport),
         QueryMemoryTool(tracker, memory),
         SaveToMemoryTool(tracker, memory),
         WriteDocumentTool(tracker, settings.output.directory),
@@ -325,6 +333,11 @@ class ResearchRuntime:
     runtime still builds, and so "no collector" is a value the runtime can
     carry instead of a case it cannot express.
     """
+    connection_pool: SharedConnectionPool | None = None
+    """The run's shared HTTP connection pool (latency audit O4), which
+    ``run_research`` closes when the run ends; ``None`` for a runtime whose
+    reads build their own clients (an injected ``http_client``, a proxy in
+    the environment, a test double)."""
 
 
 async def build_runtime(
@@ -449,6 +462,9 @@ async def build_runtime(
         ) from error
 
     bridge = LongTermMemoryBridge(long_term, session_id=session_id)
+    # One connection pool for the run's reads (latency audit O4), unless the
+    # caller injected its own client.
+    connection_pool = shared_connection_pool() if http_client is None else None
     tools = build_tools(
         settings,
         tracker=tracker,
@@ -457,6 +473,7 @@ async def build_runtime(
         search_client=search_client,
         http_client=http_client,
         request_budget=request_budget,
+        http_transport=connection_pool,
     )
     agents = build_agents(
         settings,
@@ -491,4 +508,5 @@ async def build_runtime(
         long_term=long_term,
         procedural=procedural,
         run_telemetry=run_telemetry,
+        connection_pool=connection_pool,
     )
