@@ -84,6 +84,19 @@ describe("the proxy", () => {
     expect((await POST(request, ctx("research"))).status).toBe(202);
     expect(seen.headers!["x-replay-clarify"]).toBe("on");
   });
+  it("forwards x-replay-hold-after, so a capture can hold replay's stream at one step (notes-progress-report spec §6.10)", async () => {
+    const seen: { headers?: IncomingMessage["headers"] } = {};
+    process.env.DEEP_RESEARCH_API_URL = await upstream((req, res) => {
+      seen.headers = req.headers;
+      res.writeHead(202, { "content-type": "application/json" });
+      res.end("{}");
+    });
+    const request = new NextRequest("http://localhost:3000/api/research", {
+      method: "POST", body: "{}", headers: { "content-type": "application/json", "x-replay-hold-after": "evidence_verifier.progress#2" },
+    });
+    expect((await POST(request, ctx("research"))).status).toBe(202);
+    expect(seen.headers!["x-replay-hold-after"]).toBe("evidence_verifier.progress#2");
+  });
   it("answers 502 api_unreachable with the target when the connection is refused", async () => {
     const port = await reservePort();
     process.env.DEEP_RESEARCH_API_URL = `http://127.0.0.1:${port}`;

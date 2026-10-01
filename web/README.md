@@ -24,7 +24,9 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   390 px, and the report's cards at 1920 px) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
 - `npm run capture:events -- <case-id>` — records a replay session's frames into
   `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
-  `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`).
+  `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`). After a re-capture, rewrite the
+  page's active-row pin from the new frames: `WRITE_ACTIVE_ROWS=1 npx vitest run
+  test/active-row.test.ts`.
 - `npm run check:css` — `app/globals.css` begins with the prototype's CSS, verbatim.
 
 ## Notes
@@ -45,6 +47,15 @@ API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
   that is a sticky rail left of the cards from a 1310px report stage and a sticky row of
   chips above them below that; `e2e/report-layout.spec.ts` and the `18-report-cards` and
   `18b-report-cards-1920` captures use it.
+- Live progress per step (notes-progress-report spec §6): each running step's brief reads its
+  own live-only progress event — `planner.progress`, `source_evaluator.progress`,
+  `evidence_verifier.progress`, `report_writer.progress` — and Reviewing reads
+  `graph.report.reviewed`, which is now published as the review lands. In replay mode
+  `POST /research` may carry `X-Replay-Hold-After: <event type>[#<n>]` (the proxy forwards it):
+  the stream holds after that event until the session is stopped. `e2e/progress.spec.ts` and the
+  step briefs' captures use it, then `POST /research/{id}/stop`: `npm run capture:visual` adds
+  `13-planning-brief` (with its `-phone` twin), `14-evaluating-brief`, `15-verifying-brief`,
+  `16-writing-brief` and `17-reviewing-brief`.
 - Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
   posts `POST /research/{id}/stop` (the proxy forwards it); the session ends `stopped` and its page
   keeps the pipeline frozen where it stopped, with "Ask again". On the replay server the engine runs

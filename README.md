@@ -951,7 +951,12 @@ running stage can be watched). A `POST /research` may name the case with the hea
 `X-Replay-Case: <case id>` (the ids of `e2e_evaluation/replay_matrix.py`); the session
 records the case's own question. The one-time check asks nothing in replay mode unless the
 `POST /research` also carries `X-Replay-Clarify: on`; then it asks a fixed set of three
-questions (Region, Period, For), so the check can be exercised offline. A reader note is
+questions (Region, Period, For), so the check can be exercised offline. A `POST /research` may
+also carry `X-Replay-Hold-After: <event type>[#<n>]`: the stream then stops after the n-th event
+of that type (the first when `#<n>` is left out) and holds until the session is stopped or the
+server exits; the step briefs' captures use it (notes-progress-report spec §6.10). Replay
+publishes each event stamped with the moment it releases it, so the steps' elapsed times read
+as they would live. A reader note is
 read in replay mode by a scripted interpreter that keeps it as written, as an emphasis;
 replay runs the graph at full speed and paces only the stream, so a note added while the
 running stage plays arrives after the engine has finished and ends `not_checked`. In replay mode the topbar

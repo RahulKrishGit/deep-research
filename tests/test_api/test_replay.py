@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from deep_research.api.app import create_app
-from deep_research.api.replay import ReplayCaseMiddleware, ReplayRunner
+from deep_research.api.replay import ReplayCaseMiddleware, ReplayRunner, parse_hold
 from deep_research.api.sessions import SessionStore
 from deep_research.e2e_evaluation.replay import production_config_path
 from deep_research.e2e_evaluation.replay_matrix import REPLAY_CASE_IDS, scenario_by_id
@@ -212,3 +212,142 @@ def test_topic_findings_sum_matches_research_total(case_id: str, tmp_path: Path)
             passes += 1
     if passes == 0:
         pytest.skip(f"{case_id} completes no research pass, so it has no total to compare")
+
+
+
+# --- notes-progress-report spec §4 item 1, §6.1, §6.10 ------------------------------
+
+
+def _strings(value: object):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
+@pytest.mark.asyncio
+async def test_progress_events_live_only(tmp_path: Path) -> None:
+    """AC13 on the real graph: each of the four progress types is published, none is in
+    the run's state, no node's ``event_count`` counts one, and no string they carry is a
+    URL."""
+    received: list[ResearchEvent] = []
+    with guarded():
+        scenario = scenario_by_id(EXTRA_PASS_CASE)
+        runner = ReplayRunner(default_case=EXTRA_PASS_CASE, delay=0.0, root=tmp_path)
+        outcome = await runner(
+            question=scenario.question, session_id="s1", max_extra_passes=None,
+            output_format="markdown", config_overrides={},
+            config_path=str(production_config_path()), event_handler=received.append,
+        )
+
+    assert {event.event_type for event in received} >= PROGRESS_TYPES
+    assert not {event.event_type for event in outcome.state.events} & PROGRESS_TYPES
+    node: str | None = None
+    own = 0
+    for event in received:
+        if event.event_type == "graph.node.started":
+            node, own = event.metadata["node"], 0
+        elif event.source == f"agent.{node}" and event.event_type not in PROGRESS_TYPES:
+            own += 1
+        elif event.event_type == "graph.node.completed" and event.source.startswith("graph.") and node in {
+            "planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer",
+        }:
+            assert event.metadata["event_count"] == own, node
+    for event in received:
+        if event.event_type in PROGRESS_TYPES:
+            assert all("://" not in text for text in _strings(event.metadata)), event.metadata
+
+
+def test_parse_hold() -> None:
+    """§6.10: ``<event_type>[#<n>]``, n at least 1; anything else holds nothing."""
+    assert parse_hold("planner.progress") == ("planner.progress", 1)
+    assert parse_hold(" evidence_verifier.progress#2 ") == ("evidence_verifier.progress", 2)
+    for bad in ("", "#2", "planner.progress#0", "planner.progress#x", "planner progress", "a#-1"):
+        assert parse_hold(bad) is None, bad
+
+
+def _event(event_type: str, n: int) -> ResearchEvent:
+    return ResearchEvent(
+        event_type=event_type, source="graph", message=f"m{n}",
+        timestamp="2026-01-01T00:00:00+00:00", event_id=f"e{n}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_restamps_and_holds(tmp_path: Path) -> None:
+    """AC21: each event is published with its release time (its id unchanged), and a
+    hold releases events through the n-th of its type, then waits until cancelled."""
+    runner = ReplayRunner(default_case=EXTRA_PASS_CASE, delay=0.01, root=tmp_path)
+    queue: asyncio.Queue = asyncio.Queue()
+    for n, event_type in enumerate(["a", "b", "c", "b", "d"]):
+        queue.put_nowait(_event(event_type, n))
+    queue.put_nowait(None)
+    published: list[ResearchEvent] = []
+
+    drain = asyncio.create_task(runner._drain(queue, published.append, ("b", 2)))
+    await asyncio.sleep(0.3)
+
+    assert [event.event_id for event in published] == ["e0", "e1", "e2", "e3"]
+    assert all(event.timestamp != "2026-01-01T00:00:00+00:00" for event in published)
+    assert [event.timestamp for event in published] == sorted(event.timestamp for event in published)
+    assert not drain.done()
+    drain.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await drain
+    assert len(published) == 4
+
+
+@pytest.mark.asyncio
+async def test_published_timestamps_are_the_release_times(tmp_path: Path) -> None:
+    """AC21 through the runner: the paced copies span the pacing, while the engine's own
+    state keeps the times it ran at."""
+    delay = 0.02
+    received: list[ResearchEvent] = []
+    with guarded():
+        scenario = scenario_by_id(EXTRA_PASS_CASE)
+        runner = ReplayRunner(default_case=EXTRA_PASS_CASE, delay=delay, root=tmp_path)
+        outcome = await runner(
+            question=scenario.question, session_id="s1", max_extra_passes=None,
+            output_format="markdown", config_overrides={},
+            config_path=str(production_config_path()), event_handler=received.append,
+        )
+
+    from datetime import datetime
+
+    span = lambda events: (  # noqa: E731
+        datetime.fromisoformat(events[-1].timestamp) - datetime.fromisoformat(events[0].timestamp)
+    ).total_seconds()
+    assert span(received) >= 0.8 * (len(received) - 1) * delay
+    assert span(received) > span(outcome.state.events)
+
+
+def test_hold_after_holds_the_stream_until_the_session_is_stopped(tmp_path: Path) -> None:
+    """AC21 through the API (notes-progress-report spec §6.10 item 2): with
+    ``X-Replay-Hold-After: graph.report.reviewed`` the stream releases events through the
+    first review and nothing after it; the session stays running, on Reviewing, while held;
+    ``POST /stop`` (Phase D) ends it there, and ``session.stopped`` is the stream's last frame."""
+    with guarded(), TestClient(replay_app(tmp_path, delay=0.01)) as client:
+        posted = client.post(
+            "/research", json={"query": "q"}, headers={"X-Replay-Hold-After": "graph.report.reviewed"},
+        )
+        assert posted.status_code == 202
+        session_id = posted.json()["session_id"]
+        deadline = time.monotonic() + 30
+        while client.get(f"/research/{session_id}/status").json()["current_agent"] != "report_reviewer":
+            assert time.monotonic() < deadline, "the run never reached Reviewing"
+            time.sleep(0.02)
+        time.sleep(0.5)  # fifty of the pacer's 10 ms beats: an event released past the hold would show
+        held = client.get(f"/research/{session_id}/status").json()
+        assert (held["status"], held["current_agent"]) == ("running", "report_reviewer")
+
+        stopped = client.post(f"/research/{session_id}/stop")
+        assert stopped.status_code == 202
+        assert (stopped.json()["status"], stopped.json()["stopped_step"]) == ("stopped", "report_reviewer")
+        names = frames(client.get(f"/research/{session_id}/stream").text)
+
+    assert names.count("graph.report.reviewed") == 1
+    assert names[-2:] == ["graph.report.reviewed", "session.stopped"]
