@@ -311,3 +311,39 @@ describe("BriefSpine — a loop route holds Reviewing on its checks and verdict 
     expect(container.querySelector("[data-handoff]")).toBeNull();
   });
 });
+
+// WCAG 2.2.2 rationale (owner decision O2, 2026-10-01; DESIGN.md section 5.6, spec 6.5): a ticker presents the
+// running job's live progress, so it has no pause; it must not be announced at each sample, so it is not a live
+// region. The only live region in the running spine is a note's acknowledgement.
+describe("BriefSpine — what is announced (WCAG 2.2.2 rationale, owner decision O2)", () => {
+  const LIVE = "[aria-live], [role='status'], [role='alert'], [role='log']";
+  const sample = (verdict: string) => ({ text: "A finding.", verdict, correction: null, drop_reason: null, source: { role: "original_report", host: "eia.gov" } });
+  function playing(events: Parameters<typeof applyEvent>[1][]): RunState {
+    const run = newRunState();
+    for (const e of [{ type: "graph.node.started", metadata: { node: "planner", iteration: 0 } }, { type: "graph.node.completed", metadata: { node: "planner" } }, ...events]) applyEvent(run, e);
+    return run;
+  }
+  it("Verifying's ticker, with a sample showing and a note acknowledged in the same row, is not a live region; the acknowledgement is", () => {
+    const run = playing([
+      { type: "graph.node.started", metadata: { node: "evidence_verifier", iteration: 0 } },
+      { type: "evidence_verifier.progress", metadata: { total: 4, checked: 1, verified: 1, corrected: 0, quoted: 0, dropped: 0, batches: 1, batches_done: 0, sample: sample("verified") } },
+      { type: "session.note.received", metadata: { note_id: "n1", text: "More on safety" } },
+      { type: "session.note.interpreted", metadata: { note_id: "n1", restatement: "More on safety", kinds: ["emphasis"], replaces: null, fallback: false } },
+    ]);
+    const { container } = show(run);
+    const ticker = row(container, "evidence_verifier").querySelector(".tickbox")!;
+    expect(ticker.querySelector("[data-on='1'] .qt")!.textContent).toBe("A finding.");
+    expect(ticker.querySelectorAll(LIVE)).toHaveLength(0);
+    expect(ticker.closest(LIVE)).toBeNull();
+    expect([...container.querySelectorAll(LIVE)].map((el) => [el.className, el.getAttribute("aria-live")])).toEqual([["ln ack", "polite"]]);
+  });
+  it("Writing's ticker, and every other row's body, announce nothing", () => {
+    const run = playing([
+      { type: "graph.node.started", metadata: { node: "report_writer", iteration: 0 } },
+      { type: "report_writer.progress", metadata: { phase: "sections", parts_total: 2, parts_returned: 1, parts_failed: 0, sentences_drafted: 2, sentences_checked: 1, backed: 1, removed: 0, unchecked: 0, fraction: 0.3, sample: { text: "S.", verdict: "backed", findings: 1, section: "Where" } } },
+    ]);
+    const { container } = show(run);
+    expect(row(container, "report_writer").querySelector(".tickbox [data-on='1'] .qt")!.textContent).toBe("S.");
+    expect(container.querySelectorAll(LIVE)).toHaveLength(0);
+  });
+});
