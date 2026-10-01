@@ -324,10 +324,12 @@ def test_research_request_rejects_invalid_payloads(payload) -> None:
 def test_session_response_accepts_every_status() -> None:
     for status in (
         "running",
+        "needs_input",
         "completed",
         "max_iterations",
         "incomplete",
         "failed",
+        "stopped",
     ):
         response = ResearchSessionResponse(
             session_id="session-1",

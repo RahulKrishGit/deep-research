@@ -32,6 +32,8 @@ from deep_research.utils.types import (
 # ``needs_input`` is the one waiting status (live-briefs spec §4.4): the one-time
 # check is waiting for the reader's answers. It is not terminal, and it returns to
 # ``running`` when the answers arrive, the reader skips, or the wait times out.
+# ``stopped`` is terminal: the reader stopped the run, which published nothing
+# (notes-progress-report spec §8).
 SessionStatus = Literal[
     "running",
     "needs_input",
@@ -39,6 +41,7 @@ SessionStatus = Literal[
     "max_iterations",
     "incomplete",
     "failed",
+    "stopped",
 ]
 
 
@@ -309,6 +312,11 @@ class ResearchSessionResponse(ApiModel):
 
     clarification: ClarificationRecordResponse | None = None
     """The one-time check the session asked, or ``None`` when it asked nothing."""
+
+    stopped_step: str | None = None
+    """The step the reader stopped the run at — ``check`` (the one-time check) or a
+    pipeline row, ``planner`` … ``finalize_report`` — when ``status`` is ``stopped``;
+    ``None`` otherwise (notes-progress-report spec §4 item 3, §8.4)."""
 
 
 class SessionListResponse(ApiModel):
