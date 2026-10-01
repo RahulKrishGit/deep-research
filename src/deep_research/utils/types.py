@@ -1204,8 +1204,9 @@ class ReaderNote(ContractModel):
     for a note with a steering kind (``notes_due_a_redraft``); ``passed`` when
     its one targeted research pass was bought, ``redrafted`` when its one
     redraft was (D11). ``finalize_report`` takes in a note read after the run
-    decided to publish with all three set: nothing is owed it any more, so it
-    cannot reopen the decision (``graph.nodes._closed_notes_update``).
+    decided to publish with all three set and ``replaces`` cleared: nothing is
+    owed it any more, so it cannot reopen the decision, and it retires no note
+    the report already followed (``graph.nodes._closed_notes_update``).
     ``restatement`` is the interpreter's plain-words reading, or the note's own
     text when the interpretation failed. ``short`` names the note's subject in
     one to three words for a label (notes-progress-report spec §7.2): the

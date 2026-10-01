@@ -17,7 +17,7 @@ from deep_research.agents.report import render_written_report
 from deep_research.agents.report_reviewer import composition_semantic_fingerprint
 from deep_research.api.notes import note_records
 from deep_research.graph import orchestrator
-from deep_research.graph.nodes import _terminal_artifacts
+from deep_research.graph.nodes import _closed_notes_update, _terminal_artifacts
 from deep_research.graph.note_outcomes import report_note_lines
 from deep_research.graph.orchestrator import compile_research_graph, run_research_graph
 from deep_research.graph.state import graph_route
@@ -37,6 +37,7 @@ from deep_research.utils.types import (
     ReportStatement,
     ResearchState,
     SubTopic,
+    merge_research_state,
 )
 from tests.evidence_fakes import make_finding, make_read
 from tests.graph_fakes import (
@@ -390,12 +391,12 @@ async def test_a_note_the_run_never_read_adds_no_line_to_the_report(
 
 
 @pytest.mark.asyncio
-async def test_a_late_note_that_replaces_an_earlier_one_leaves_status_and_report_agreeing(
+async def test_a_late_note_that_names_an_earlier_one_replaces_nothing(
     monkeypatch: pytest.MonkeyPatch, tracker: Tracker
 ) -> None:
-    """O1: the late note is in the state the finalizer kept, so /status and the report read the
-    same notes: the earlier note is replaced in both -- no line in the report, ``replaced`` in
-    /status -- and the late one is not checked in both."""
+    """O1 fix round 2 (P3-1): a note read after the run decided to publish retires no note. The
+    report was drafted and reviewed with the earlier note still active, so the earlier note keeps
+    its line and its outcome, the late one reads "Not checked", and /status says the same."""
     first = fake_reader_note("n1", kinds=["emphasis"], restatement="only downtown", short="downtown")
     late = fake_reader_note("n2", kinds=["scope"], restatement="only San Jose", short="San Jose", replaces="n1")
     board, _, run = await _published_run(
@@ -403,10 +404,47 @@ async def test_a_late_note_that_replaces_an_earlier_one_leaves_status_and_report
     )
 
     state = run.state
-    assert [(note.note_id, note.reviewed) for note in state.reader_notes] == [("n1", True), ("n2", True)]
-    assert [(line.note_id, line.outcome) for line in state.composition.reader_note_lines] == [("n2", "not_checked")]
-    assert _bottom_line(state.report).splitlines()[-1] == "- **Your note \u00b7 San Jose:** Not checked: only San Jose"
-    assert "downtown" not in state.report
+    assert [(note.note_id, note.reviewed, note.replaces) for note in state.reader_notes] == [
+        ("n1", True, None), ("n2", True, None),
+    ]
+    assert [(line.note_id, line.outcome) for line in state.composition.reader_note_lines] == [
+        ("n1", "not_checked"), ("n2", "not_checked"),
+    ]
+    assert _bottom_line(state.report).splitlines()[-2:] == [
+        "- **Your note \u00b7 downtown:** Not checked: only downtown",
+        "- **Your note \u00b7 San Jose:** Not checked: only San Jose",
+    ]
     assert [(record.received.note_id, record.outcome) for record in note_records(board, state, terminal=True)] == [
-        ("n1", "replaced"), ("n2", "not_checked"),
+        ("n1", "not_checked"), ("n2", "not_checked"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_late_note_does_not_retire_a_note_that_owns_a_kept_topic_line() -> None:
+    """O1 fix round 2 (P3-1): n1 owns ``note-n1`` and its kept topic line; a late n2 names it in
+    ``replaces``. Taken in at finalize, n2 retires nothing: n1 keeps its one "✓" row (not an
+    unmarked row for a replaced note), n2 reads "Not checked", and /status agrees."""
+    late = fake_reader_note("n2", kinds=["scope"], restatement="only San Jose", short="San Jose", replaces="n1")
+    state = _state(PASTRIES)
+    board = NoteBoard()
+    for note in (PASTRIES, late):
+        board.receive(note.text, received_at=AT, received_during="planner")
+        board.add(note)
+
+    with bind_note_board(board):
+        merged = merge_research_state(state, _closed_notes_update(state))
+
+    assert [(note.note_id, note.replaces) for note in merged.reader_notes] == [("n1", None), ("n2", None)]
+    reader, _, _, finalized = _terminal_artifacts(merged, "accepted")
+    assert [(line.note_id, line.outcome, line.statement_id) for line in finalized.reader_note_lines] == [
+        ("n1", "covered", "S003"), ("n2", "not_checked", None),
+    ]
+    assert _bottom_line(reader) == (
+        "Agency One reports the answer [1].\n\n"
+        "- **Part one:** Agency One reports part one [1].\n"
+        "- **Your note \u00b7 pastries:** \u2713 Agency Three reports pastries [2].\n"
+        "- **Your note \u00b7 San Jose:** Not checked: only San Jose"
+    )
+    assert [(record.received.note_id, record.outcome) for record in note_records(board, merged, terminal=True)] == [
+        ("n1", "covered"), ("n2", "not_checked"),
     ]

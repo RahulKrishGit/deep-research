@@ -228,6 +228,12 @@ def _closed_notes_update(state: ResearchState) -> ResearchStateUpdate:
     finalizer, the outcome and the quality record all read from that one
     decision -- would turn ``incomplete`` and ``partial`` on a report the route
     had just accepted: a note route is never a run's last decision.
+
+    It replaces nothing either (``replaces`` is cleared): the report was drafted
+    and reviewed with the earlier note it names still active, so retiring that
+    note now would print its kept topic line as an unmarked row for a replaced
+    note, or drop its acknowledgement. The earlier note keeps its line and its
+    outcome, and the late note reads as a note nothing took up.
     """
     update = _board_notes_update(state)
     if not update:
@@ -238,7 +244,12 @@ def _closed_notes_update(state: ResearchState) -> ResearchStateUpdate:
             note
             if note.note_id in held
             else note.model_copy(
-                update={"reviewed": True, "passed": True, "redrafted": True}
+                update={
+                    "reviewed": True,
+                    "passed": True,
+                    "redrafted": True,
+                    "replaces": None,
+                }
             )
             for note in update["reader_notes"]
         ]
