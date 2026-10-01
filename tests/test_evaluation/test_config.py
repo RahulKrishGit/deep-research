@@ -1402,7 +1402,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # notes-progress-report Phase C (spec §7.1-§7.3): one line per topic, the
     # bottom line's layout and the fallback in the same shape. Moved
     # `7ed80d440f0a` -> `f11d61b869d9`.
-    "report_writer": "f11d61b869d9",
+    # Phase B (notes-progress-report spec §6.2, §6.6, 2026-09-30): live
+    # report_writer.progress as the parts and the bottom line are drafted and
+    # checked, through a per-composition ContextVar. No request text changed.
+    # Moved `f11d61b869d9` -> `c4082e94159e`.
+    "report_writer": "c4082e94159e",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

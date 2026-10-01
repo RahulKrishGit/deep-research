@@ -22,10 +22,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from deep_research.agents.base import (
     OUTPUT_LIMIT_RETRY_EFFORT,
@@ -994,6 +995,164 @@ class PartJob:
     directly (a unit test) still gets this part's own weight as the
     denominator: the whole budget, exactly as if no other part existed to
     share it with."""
+
+
+# --- notes-progress-report spec §6.1, §6.2, §6.6: Writing's live progress -----
+
+#: The scope the bottom line's sentences are counted under; a part's is its coverage id.
+_BOTTOM_LINE_SCOPE = "bottom_line"
+_BOTTOM_LINE_SECTION = "Bottom line"
+
+
+def _drafts_this_pass(job: PartJob) -> bool:
+    """Whether ``_run_part`` makes a section call for this job (spec §6.2's ``P``).
+
+    A job with no findings is empty, and one with ``redraft`` false and a
+    previous section is carried over with no call (§6.9); every other job,
+    one with no previous section included (P2-1), is drafted.
+    """
+    return bool(job.findings or job.context_findings) and (
+        job.redraft or job.previous is None
+    )
+
+
+def writing_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
+    """One ``report_writer.progress`` event (spec §4 item 1, §6.1): live-only."""
+    return agent_event(
+        agent_name=REPORT_WRITER_NAME,
+        event_type="report_writer.progress",
+        message="Writing progress.",
+        metadata=metadata,
+    )
+
+
+class _WritingProgress:
+    """One composition's running counts (spec §6.1, §6.2), published live.
+
+    ``drafted`` maps each drafted part's coverage id -- and the bottom line's
+    scope -- to the candidate keys handed to its Statement Check. A key is
+    counted once, the first time a batch reports it (``backed``, ``removed``,
+    or ``unchecked`` when its batch failed), so no total depends on how many
+    events arrive or how sentences were batched (review M13). ``fraction``
+    weighs each drafted part and the bottom line ``1/(P+1)``; a scope
+    contributes its settled share once drafted, a part that returned nothing
+    to check contributes in full, and the value never decreases.
+    """
+
+    def __init__(self, parts_total: int) -> None:
+        self.parts_total = parts_total
+        self.phase = "sections"
+        self.returned: set[str] = set()
+        self.drafted: dict[str, frozenset[str]] = {}
+        self.backed: set[str] = set()
+        self.removed: set[str] = set()
+        self.unchecked: set[str] = set()
+        self.fraction = 0.0
+
+    def publish(self, sample: dict[str, JsonValue] | None = None) -> None:
+        settled = self.backed | self.removed | self.unchecked
+        shares = [
+            len(keys & settled) / len(keys) if keys else 1.0
+            for keys in self.drafted.values()
+        ]
+        self.fraction = max(
+            self.fraction, min(1.0, round(sum(shares) / (self.parts_total + 1), 3))
+        )
+        publish_live(writing_progress_event({
+            "phase": self.phase,
+            "parts_total": self.parts_total,
+            "parts_returned": len(self.returned),
+            "sentences_drafted": sum(len(keys) for keys in self.drafted.values()),
+            "sentences_checked": len(self.backed) + len(self.removed),
+            "backed": len(self.backed),
+            "removed": len(self.removed),
+            "unchecked": len(self.unchecked),
+            "fraction": self.fraction,
+            "sample": sample,
+        }))
+
+    def part_returned(self, coverage_id: str, keys: Sequence[str]) -> None:
+        """A part's draft returned with these candidate keys (none when it failed)."""
+        self.returned.add(coverage_id)
+        self.drafted[coverage_id] = frozenset(keys)
+        self.publish()
+
+    def bottom_line_started(self) -> None:
+        """A bottom-line call is about to start: the first attempt or the re-ask."""
+        self.phase = "bottom_line"
+        self.publish()
+
+    def bottom_line_drafted(self, keys: Sequence[str]) -> None:
+        """The bottom line's candidates about to be checked; a re-ask adds its own."""
+        self.drafted[_BOTTOM_LINE_SCOPE] = (
+            self.drafted.get(_BOTTOM_LINE_SCOPE, frozenset()) | frozenset(keys)
+        )
+
+    def count(
+        self, section: str, items: Sequence[object], verdicts: Mapping[str, object]
+    ) -> dict[str, JsonValue] | None:
+        """Count the keys these items report for the first time; return the sample.
+
+        The sample is the first newly counted sentence with a verdict, in batch
+        order: its text (the corrected text for a ``corrected`` verdict, at most
+        200 characters), ``backed`` or ``removed``, its cited findings' count and
+        ``section``; ``None`` when no item had a verdict.
+        """
+        sample: dict[str, JsonValue] | None = None
+        for item in items:
+            label: str = getattr(item, "label")
+            if label in self.backed or label in self.removed or label in self.unchecked:
+                continue
+            verdict = verdicts.get(label)
+            if verdict is None:
+                self.unchecked.add(label)
+                continue
+            kept = getattr(verdict, "verdict") in ("consistent", "corrected")
+            (self.backed if kept else self.removed).add(label)
+            if sample is None:
+                corrected = getattr(verdict, "corrected_text", "") or ""
+                text = (
+                    corrected
+                    if getattr(verdict, "verdict") == "corrected" and corrected.strip()
+                    else getattr(item, "text")
+                )
+                sample = {
+                    "text": summarize_text(text, limit=200),
+                    "verdict": "backed" if kept else "removed",
+                    "findings": len(getattr(item, "labels")),
+                    "section": summarize_text(section, limit=160),
+                }
+        return sample
+
+    def reporter(
+        self, section: str
+    ) -> Callable[[Sequence[object], Mapping[str, object]], None]:
+        """The Statement Check's ``on_batch`` for one part's (or the bottom line's) check."""
+
+        def on_batch(items: Sequence[object], verdicts: Mapping[str, object]) -> None:
+            self.publish(self.count(section, items, verdicts))
+
+        return on_batch
+
+    def settle(
+        self, section: str, items: Sequence[object], verdicts: Mapping[str, object]
+    ) -> None:
+        """Count, once the check returned, any key no batch reported; publish if one was."""
+        before = len(self.backed) + len(self.removed) + len(self.unchecked)
+        sample = self.count(section, items, verdicts)
+        if len(self.backed) + len(self.removed) + len(self.unchecked) != before:
+            self.publish(sample)
+
+
+#: The composition in progress (spec §6.2). ``compose_written_report`` sets it
+#: before its part tasks start, so every part task, ``_check`` and each
+#: bottom-line call of that composition read the same counts without a
+#: parameter through the bottom-line helpers. Its value stays set for the rest
+#: of the task that composed: nothing else in that task calls ``_check`` or the
+#: bottom-line call, and the next composition sets its own.
+_WRITING_PROGRESS: ContextVar[_WritingProgress | None] = ContextVar(
+    "deep_research_writing_progress", default=None
+)
 
 
 def _answer_form_line(task: ReportWriterTask) -> str:
@@ -2219,11 +2378,23 @@ async def _check(
     provider: AgentCompleter, candidates: Sequence[_Candidate], *, question: str,
     gate: asyncio.Semaphore, batch_size: int, fingerprint: Callable[[str], object] | None,
     passages: Mapping[str, str], source_lines: Mapping[str, str],
+    part: tuple[str, str] | None = None,
 ) -> tuple[Mapping[str, _Verdict | None], list[ResearchError]]:
     """Run the Statement Check over one part's (or the bottom line's)
-    candidates, through the shared gate (spec §6.5, D8, PD-12)."""
+    candidates, through the shared gate (spec §6.5, D8, PD-12).
+
+    Inside a composition (notes-progress-report spec §6.2), each settled batch
+    is counted and published live, under ``part`` -- ``(coverage_id, section
+    title)`` -- or, when ``part`` is ``None``, under the bottom line. Once the
+    check returns, a key no batch reported is counted from the verdicts
+    returned, so a substituted checker is counted too.
+    """
     if not candidates:
         return {}, []
+    progress = _WRITING_PROGRESS.get()
+    section = _BOTTOM_LINE_SECTION if part is None else part[1]
+    if progress is not None and part is None:
+        progress.bottom_line_drafted([candidate.key for candidate in candidates])
     # Imported at call time, not at module scope: the unit tests and the
     # offline audit harness both substitute the checker by assigning
     # ``evidence_verifier.check_statements``, and a module-level ``from``
@@ -2237,19 +2408,23 @@ async def _check(
         for c in candidates
     ]
     try:
-        return await check_statements(
+        verdicts, errors = await check_statements(
             provider, items, question=question, fingerprint=fingerprint,
             batch_size=batch_size, gate=gate,
+            on_batch=None if progress is None else progress.reporter(section),
         )
     except ProviderConfigurationError:
         raise
     except (ProviderError, StructuredOutputError, ValidationError) as error:
-        return {}, [agent_error(
+        verdicts, errors = {}, [agent_error(
             agent_name=REPORT_WRITER_NAME,
             error_type="report_writer_statement_check_failed",
             message="The report writer's statement check failed; every drafted point was kept unchanged.",
             details={"exception_type": type(error).__name__},
         )]
+    if progress is not None:
+        progress.settle(section, items, verdicts)
+    return verdicts, errors
 
 
 # --- the section and bottom-line draft calls (F10's retry ladder) ----------
@@ -2298,6 +2473,9 @@ async def _attempt_bottom_line_draft(
     provider: AgentCompleter, messages: list[ChatMessage], *, agent_name: str,
     fingerprint: Callable[[str], object] | None,
 ) -> tuple[BottomLineDraft | None, list[ResearchError]]:
+    progress = _WRITING_PROGRESS.get()
+    if progress is not None:
+        progress.bottom_line_started()
     errors: list[ResearchError] = []
     for attempt, effort in enumerate(_WRITER_ATTEMPT_EFFORTS, start=1):
         if fingerprint is not None:
@@ -2401,6 +2579,9 @@ async def _run_part(
             coverage_id=job.coverage_id,
         )
     if draft is None:
+        progress = _WRITING_PROGRESS.get()
+        if progress is not None:
+            progress.part_returned(job.coverage_id, ())
         return _PartOutcome(job=job, section=None, status="failed", errors=draft_errors, verdicts={})
 
     placed_ids = {finding_fingerprint(f) for f in [*job.findings, *job.context_findings]}
@@ -2420,10 +2601,14 @@ async def _run_part(
             numbers=numbers, rejected=rejected, key_prefix=f"P{job.order + 1:02d}.",
         ))
 
+    progress = _WRITING_PROGRESS.get()
+    if progress is not None:
+        progress.part_returned(job.coverage_id, [candidate.key for candidate in candidates])
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
         batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
         source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
+        part=(job.coverage_id, _section_title(draft.title, job.sub_topic_title)),
     )
 
     stated_rows: set[str] = set()
@@ -3289,6 +3474,12 @@ async def compose_written_report(
             previous=previous_section, defects=defects_here, redraft=redraft_this,
             part_weight_sum=part_weight_sum,
         ))
+
+    # notes-progress-report spec §6.2: Writing's counts, published live from here
+    # on; the part tasks below copy this context, so each of them reads them too.
+    progress = _WritingProgress(sum(1 for job in jobs if _drafts_this_pass(job)))
+    _WRITING_PROGRESS.set(progress)
+    progress.publish()
 
     section_gate = asyncio.Semaphore(max(1, section_concurrency))
     check_gate = asyncio.Semaphore(max(1, resolved_concurrency))

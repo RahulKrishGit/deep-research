@@ -1130,8 +1130,8 @@ class _FakeChecker:
         of ``consistent``."""
 
     async def __call__(self, provider, items, *, question, fingerprint=None,
-                       batch_size=None, concurrency=None, gate=None):
-        del provider, question, fingerprint, batch_size, concurrency
+                       batch_size=None, concurrency=None, gate=None, on_batch=None):
+        del provider, question, fingerprint, batch_size, concurrency, on_batch
         self.gates.append(gate)
         batch = list(items)
         self.calls.append(batch)
@@ -2682,7 +2682,7 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
     from deep_research.agents.evidence_verifier import StatementCheckItem
     import deep_research.agents.evidence_verifier as ev
 
-    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None):
+    async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
         return {item.label: _verdict("consistent") for item in items}, []
 
     original = ev.check_statements
@@ -3273,7 +3273,7 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
 
     calls = {"n": 0}
 
-    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None):
+    async def flaky_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
         calls["n"] += 1
         if calls["n"] == 2:
             # Attempt 1's own bottom-line check: refuse it to buy a re-ask.
@@ -3632,7 +3632,10 @@ async def test_the_report_written_event_is_published_live(
 
     [written] = run.state_update["events"]
     assert written.event_type == "report_writer.report.written"
-    assert [event.event_id for event in received] == [written.event_id]
+    # notes-progress-report spec §4 item 1: the progress events are live-only.
+    progress = [event.metadata for event in received if event.event_type == "report_writer.progress"]
+    assert [event.event_id for event in received if event.event_type != "report_writer.progress"] == [written.event_id]
+    assert [(m["parts_total"], m["parts_returned"], m["fraction"]) for m in progress] == [(1, 0, 0.0), (1, 1, 0.5)]
 
 
 @pytest.mark.asyncio
@@ -3709,3 +3712,138 @@ async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, t
     assert composition.statement_verdicts[carried.points[0].statement.statement_id] == "corrected"
     from deep_research.graph.nodes import _arrived_via_redraft_hop
     assert _arrived_via_redraft_hop([marker]) is False  # the review after a note pass is a full one
+
+
+# --- notes-progress-report spec §6.1, §6.2, §6.6: Writing's live progress ----------
+
+SECRET_VERDICT = "SECRET-VERDICT-REASON"
+
+
+def _two_part_state() -> ResearchState:
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                  target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                  target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    topics = [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2])]
+    return ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                         verified_findings=[f1, f2])
+
+
+def _two_part_route(messages, schema):
+    """Sections, the bottom line, and the real Statement Check's replies: a sentence
+    about growth is refused, the 2025 one corrected, every other one consistent."""
+    import re
+
+    from deep_research.agents.evidence_verifier import (
+        StatementCheckDraft,
+        StatementVerdictDraft,
+    )
+
+    body = messages[-1].content
+    if schema.__name__ == "StatementCheckDraft":
+        verdicts = []
+        for label, text in re.findall(r"^## (\S+)\nsentence: (.*)$", body, re.M):
+            if "grew" in text:
+                verdicts.append(StatementVerdictDraft(label=label, verdict="inconsistent", reason=SECRET_VERDICT))
+            elif "2025" in text:
+                verdicts.append(StatementVerdictDraft(
+                    label=label, verdict="corrected", reason=SECRET_VERDICT,
+                    corrected_text="According to the source, 5 GW is forecast for 2025."))
+            else:
+                verdicts.append(StatementVerdictDraft(label=label, verdict="consistent", reason=SECRET_VERDICT))
+        return StatementCheckDraft(statements=verdicts)
+    if schema.__name__ == "BottomLineDraft":
+        return BottomLineDraft(sentences=[WriterPointDraft(
+            text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"])])
+    if "First" in body.split("# This part of the question")[1][:40]:
+        return SectionDraft(title="First", points=[
+            WriterPointDraft(text="According to the source, 10.4 GW in 2024.", finding_labels=["F01"]),
+            WriterPointDraft(text="According to the source, storage grew in 2024.", finding_labels=["F01"]),
+        ])
+    return SectionDraft(title="Second", points=[
+        WriterPointDraft(text="According to the source, 5 GW in 2025.", finding_labels=["F02"]),
+    ])
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_fraction_monotonic(tracker: Tracker, tmp_path: Path) -> None:
+    """AC17: one event when the jobs are built, one per returned part, one per Statement
+    Check batch and one when the bottom line starts; samples are real drafted sentences
+    with their check's verdict (the corrected text when corrected); ``fraction`` never
+    decreases and reaches 1; never the check's reason text."""
+    import json
+
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_two_part_route] * 8),
+            batch_size=1, section_concurrency=7,
+        )
+
+    progress = [e.metadata for e in received if e.event_type == "report_writer.progress"]
+    assert progress[0] == {
+        "phase": "sections", "parts_total": 2, "parts_returned": 0, "sentences_drafted": 0,
+        "sentences_checked": 0, "backed": 0, "removed": 0, "unchecked": 0, "fraction": 0.0,
+        "sample": None,
+    }
+    fractions = [m["fraction"] for m in progress]
+    assert fractions == sorted(fractions) and fractions[-1] == 1.0
+    phases = [m["phase"] for m in progress]
+    assert phases.index("bottom_line") == len(phases) - 2
+    assert {k: progress[-1][k] for k in ("parts_returned", "sentences_drafted", "sentences_checked",
+                                         "backed", "removed", "unchecked")} == {
+        "parts_returned": 2, "sentences_drafted": 4, "sentences_checked": 4,
+        "backed": 3, "removed": 1, "unchecked": 0,
+    }
+    samples = [m["sample"] for m in progress if m["sample"] is not None]
+    assert {(s["text"], s["verdict"], s["findings"], s["section"]) for s in samples} == {
+        ("According to the source, 10.4 GW in 2024.", "backed", 1, "First"),
+        ("According to the source, storage grew in 2024.", "removed", 1, "First"),
+        ("According to the source, 5 GW is forecast for 2025.", "backed", 1, "Second"),
+        ("According to the source, 10.4 GW in 2024.", "backed", 1, "Bottom line"),
+    }
+    assert all(SECRET_VERDICT not in json.dumps(m) for m in progress)
+
+
+@pytest.mark.asyncio
+async def test_writer_progress_counts_what_a_substituted_checker_returns(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """A checker that never reports a batch (the tests' own substitutes) is counted once
+    it returns: the last event still reads every sentence checked."""
+    agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
+    task = agent.build_task(_two_part_state())
+    received: list[ResearchEvent] = []
+
+    with bind_live_sink(received.append):
+        await compose_written_report(
+            task, provider=ScriptedCompleter(outputs=[_two_part_route] * 4), section_concurrency=7,
+        )
+
+    last = [e.metadata for e in received if e.event_type == "report_writer.progress"][-1]
+    assert (last["sentences_drafted"], last["sentences_checked"], last["backed"], last["fraction"]) == (4, 4, 4, 1.0)
+
+
+def test_writing_progress_counts_a_sentence_once() -> None:
+    """Review M13: a batch reported as two halves, then whole, counts each label once."""
+    from deep_research.agents.report_writer import _WritingProgress
+
+    progress = _WritingProgress(parts_total=1)
+    progress.part_returned("topic-01", ["P01.01", "P01.02"])
+    a = _FakeStatementCheckItem(label="P01.01", text="A.", labels=["F01"])
+    b = _FakeStatementCheckItem(label="P01.02", text="B.", labels=["F01", "F02"])
+    verdicts = {"P01.01": _verdict("consistent"), "P01.02": _verdict("inconsistent")}
+
+    first = progress.count("First", [a], verdicts)
+    second = progress.count("First", [b], verdicts)
+    again = progress.count("First", [a, b], verdicts)
+
+    assert first == {"text": "A.", "verdict": "backed", "findings": 1, "section": "First"}
+    assert second == {"text": "B.", "verdict": "removed", "findings": 2, "section": "First"}
+    assert again is None
+    assert (len(progress.backed), len(progress.removed), len(progress.unchecked)) == (1, 1, 0)
