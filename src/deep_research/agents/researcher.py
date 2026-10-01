@@ -81,6 +81,7 @@ from deep_research.providers import (
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.tools.passage_selection import _tokens
+from deep_research.utils.concurrency import gather_or_cancel
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
     _ENERGY_UNIT,
@@ -3565,6 +3566,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         ``label`` names these calls in the run's call records (latency audit
         O8): ``owed_extraction``, ``cross_topic_extraction`` or
         ``dissent_extraction``.
+
+        Latency audit O3: a page's batches are asked together, not one after
+        another. Each batch's request is built from its own passages alone,
+        and a reply is admitted only after every batch has answered, in batch
+        order, so the page's findings, rejections and admitted keys are the
+        ones the one-after-another order gave, whichever reply arrived first.
+        A provider failure still costs its own batch only; any other failure
+        cancels the page's other batches before it propagates.
         """
         findings: list[Finding] = []
         rejected: list[str] = []
@@ -3572,9 +3581,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []
         dropped_figures: list[str] = []
-        asked_ids: list[str] = []
-        for batch in batches:
-            asked_ids.extend(unit.evidence_id for unit in batch)
+        asked_ids: list[str] = [
+            unit.evidence_id for batch in batches for unit in batch
+        ]
+
+        async def _ask(
+            batch: Sequence[EvidenceUnit],
+        ) -> SubTopicFindingsDraft | ProviderError:
+            """One batch's call; a provider failure comes back as the value."""
 
             async def _call() -> SubTopicFindingsDraft:
                 return await self.provider.complete_structured(
@@ -3614,12 +3628,17 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 with call_label(label):
                     if gate is not None:
                         async with gate:
-                            retry_draft = await _call()
-                    else:
-                        retry_draft = await _call()
+                            return await _call()
+                    return await _call()
             except ProviderError as error:
-                errors.append(owed_extraction_provider_error(run, error))
+                return error
+
+        replies = await gather_or_cancel(*(_ask(batch) for batch in batches))
+        for batch, reply in zip(batches, replies, strict=True):
+            if isinstance(reply, ProviderError):
+                errors.append(owed_extraction_provider_error(run, reply))
                 continue
+            retry_draft = reply
             retry_findings, retry_rejected = build_findings(
                 retry_draft,
                 sub_topic=task.sub_topic,

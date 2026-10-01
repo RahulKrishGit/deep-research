@@ -1171,7 +1171,10 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # run's call records (page_extraction, owed_extraction,
     # cross_topic_extraction, dissent_extraction, extraction). Module code
     # only; no request changed. Moved `916dcb5f8a48` -> `65eac8e0e2d5`.
-    "researcher": "65eac8e0e2d5",
+    # Latency plan Task 7 (audit O3): one page's owed batches are asked
+    # together and admitted in batch order afterwards. Module code only; every
+    # request is the one the one-after-another order sent. Moved `65eac8e0e2d5` -> `8beb0c1b45c5`.
+    "researcher": "8beb0c1b45c5",
     # Lift the research-content limits (user decision 2026-09-25):
     # ``DEFAULT_EXCERPT_CHARS`` 600 -> 2000 and ``_RATIONALE_CHARS`` 400 ->
     # 1000, so the scoring pass sees enough of each page's excerpt and can

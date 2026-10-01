@@ -90,6 +90,7 @@ from deep_research.utils.types import (
     merge_research_state,
 )
 from tests.agent_fakes import (
+    HoldingCompleter,
     LabelRecordingCompleter,
     ScriptedCompleter,
     TargetKeyedCompleter,
@@ -8706,3 +8707,70 @@ async def test_each_extraction_call_is_named_for_the_call_records(
         "page_extraction",
         *["owed_extraction"] * MAX_OWED_BATCHES,
     ]
+
+
+def _owed_batch_reply(
+    messages: list[ChatMessage], schema: type[SubTopicFindingsDraft]
+) -> SubTopicFindingsDraft:
+    """One finding from the packet's first weak passage, and one that names a
+    read the run never admitted, so each batch admits one and rejects one."""
+    del schema
+    read_id, locator, _ = _packet_passage_for(_OWED_WEAK, messages[1].content)
+    kept = FindingDraft(
+        # The locator keeps the two batches' findings distinct, so the
+        # per-sub-topic fold cannot merge them into one.
+        content=f"A registrant files an annual return (passage {locator}).",
+        source_url=_OWED_URL,
+        source_title=_OWED_TITLE,
+        confidence=0.8,
+        read_id=read_id,
+        locator=locator,
+        snippet=_OWED_WEAK,
+        target_ids=[PLANNED_TARGET_ID],
+    )
+    return SubTopicFindingsDraft(
+        findings=[kept, kept.model_copy(update={"read_id": "read-never-admitted"})]
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pages_owed_batches_are_asked_together_and_admitted_in_batch_order(
+    tracker: Tracker,
+) -> None:
+    """Latency audit O3: one page's owed batches are in flight together, and
+    the page's findings, rejections and dispositions are the ones in-order
+    replies give, even when the second batch answers first."""
+
+    async def run(holds: list[float]) -> tuple[HoldingCompleter, AgentRun[ResearchFindings]]:
+        completer = HoldingCompleter(
+            decisions=_owed_decisions(),
+            outputs=[
+                SubTopicFindingsDraft(findings=[]),
+                _owed_batch_reply,
+                _owed_batch_reply,
+            ],
+            holds=holds,
+        )
+        outcome = await _run_owed_topic(
+            tracker,
+            completer,
+            body=_owed_bulk_body(),
+            selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+        )
+        return completer, outcome
+
+    def summary(outcome: AgentRun[ResearchFindings]) -> tuple[object, ...]:
+        return (
+            [finding.model_dump() for finding in outcome.result.findings],
+            [(error.error_type, error.details) for error in outcome.errors],
+            outcome.state_update["evidence_dispositions"],
+        )
+
+    _, in_order = await run([0.0, 0.0, 0.0])
+    held, second_first = await run([0.0, 0.2, 0.0])
+
+    first_batch, second_batch = held.windows[1], held.windows[2]
+    assert second_batch[0] < first_batch[1]
+    assert second_batch[1] < first_batch[1]
+    assert len(in_order.result.findings) == MAX_OWED_BATCHES
+    assert summary(second_first) == summary(in_order)
