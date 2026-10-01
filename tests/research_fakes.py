@@ -82,6 +82,7 @@ class FakeMemory:
         self.matches = None if matches is None else [dict(match) for match in matches]
         self.error = error
         self.saved: list[tuple[str, dict[str, Any]]] = []
+        self.batches: list[int] = []
         self.queried: list[str] = []
 
     async def save(self, content: str, metadata: Mapping[str, Any]) -> str:
@@ -89,6 +90,15 @@ class FakeMemory:
             raise self.error
         self.saved.append((content, dict(metadata)))
         return self.entry_id
+
+    async def save_many(
+        self, findings: Sequence[tuple[str, Mapping[str, Any]]]
+    ) -> list[str]:
+        if self.error is not None:
+            raise self.error
+        self.batches.append(len(findings))
+        self.saved.extend((content, dict(metadata)) for content, metadata in findings)
+        return [self.entry_id for _ in findings]
 
     async def query(
         self,

@@ -346,3 +346,52 @@ def test_local_embedding_provider_never_builds_the_real_model_when_injected(
     provider = LocalEmbeddingProvider(embedding_function=FakeEmbeddingFunction())
 
     assert provider.embed_query("alpha") == [0.5, 0.25]
+
+
+
+class _CountingModel:
+    """Stands in for chromadb's ONNX model; counts how often it is built."""
+
+    built = 0
+
+    def __init__(self) -> None:
+        type(self).built += 1
+
+    def __call__(self, input):  # noqa: A002 - chromadb's parameter name
+        return [[0.5, 0.25] for _ in input]
+
+
+def test_the_local_model_is_built_once_and_reused(monkeypatch) -> None:
+    """Latency audit O2: one ONNX model per provider, however many calls."""
+    import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as onnx_module
+
+    from deep_research.providers import LocalEmbeddingProvider
+
+    _CountingModel.built = 0
+    monkeypatch.setattr(onnx_module, "ONNXMiniLM_L6_V2", _CountingModel)
+    provider = LocalEmbeddingProvider()
+
+    provider.embed_documents(["alpha", "beta"])
+    provider.embed_query("gamma")
+    provider.embed_documents(["delta"])
+
+    assert _CountingModel.built == 1
+
+
+def test_the_kept_model_is_the_one_chromadbs_default_function_builds(
+    monkeypatch,
+) -> None:
+    """The vectors cannot change: chromadb's ``DefaultEmbeddingFunction`` --
+    what this provider used before O2 -- builds this same model class on every
+    call, so keeping one instance changes only how often it is built."""
+    import chromadb.utils.embedding_functions as chroma_embedding_functions
+    import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as onnx_module
+
+    _CountingModel.built = 0
+    monkeypatch.setattr(onnx_module, "ONNXMiniLM_L6_V2", _CountingModel)
+    default = chroma_embedding_functions.DefaultEmbeddingFunction()
+
+    default(["alpha"])
+    default(["beta"])
+
+    assert _CountingModel.built == 2

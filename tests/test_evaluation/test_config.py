@@ -1375,7 +1375,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # of the section and bottom-line requests, and drafts afresh after a note
     # pass or a note redraft. Without notes every request is byte-identical;
     # agents.prompts was untouched. Moved `0dcd4a41a378` -> `6e1aedc2888e`.
-    "report_writer": "6e1aedc2888e",
+    # Latency plan Task 6 (audit O2, 2026-09-30): the writer, as the terminal
+    # publisher, saves every cited finding in one memory write
+    # (publish_findings over SaveToMemoryTool.save_many). Module code only; no
+    # request changed and agents.prompts was untouched. Moved `6e1aedc2888e` -> `879b0e4e2530`.
+    "report_writer": "879b0e4e2530",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
