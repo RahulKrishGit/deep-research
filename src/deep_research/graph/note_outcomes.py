@@ -15,8 +15,11 @@ from deep_research.agents.reader_notes import has_steering_kind, is_research_not
 from deep_research.utils.types import (
     NOTE_COVERAGE_PREFIX,
     ReaderNote,
+    ReportComposition,
+    ReportNoteLine,
     ResearchState,
     active_reader_notes,
+    note_label,
 )
 
 NoteOutcome: TypeAlias = Literal[
@@ -126,8 +129,66 @@ def _verdict_outcome(
     return waiting if verdict is None else _VERDICT_OUTCOMES[verdict]
 
 
+#: A steering note's line (spec §7.2, (I)), by its terminal outcome.
+STEERING_NOTE_TEXT: dict[str, str] = {
+    "covered": "Followed: {restatement}",
+    "not_addressed": "Not followed in this report: {restatement}",
+    "not_found": "No source we could check covers this: {restatement}",
+    "not_checked": "Not checked: {restatement}",
+}
+#: A research note's line when its topic kept no line (spec §7.2, (I)). A research
+#: note's terminal outcome is covered, not_found or not_checked (spec §5.6).
+RESEARCH_NOTE_TEXT: dict[str, str] = {
+    "covered": "See the section below.",
+    "not_found": "No source we could check covers this.",
+    "not_checked": "Not researched.",
+}
+#: The sentence a mixed note's steering half adds (spec §7.2, D20, (I)).
+STEERING_HALF_TEXT: dict[str, str] = {
+    "covered": "The rest of your note was followed.",
+    "not_addressed": "The rest of your note was not followed in this report.",
+    "not_found": "No source we could check bears on the rest of your note.",
+    "not_checked": "The rest of your note was not checked.",
+}
+
+
+def report_note_lines(state: ResearchState, composition: ReportComposition) -> list[ReportNoteLine]:
+    """Notes-progress-report spec §7.2: one line per active reader note, in
+    receipt order, with its terminal outcome (and a mixed note's steering
+    half's). A research note whose topic kept a bottom-line line points at it;
+    one without names its outcome in words; a steering note's line is its
+    outcome and its restatement; a mixed note adds one sentence for its
+    steering half. A replaced note has no line."""
+    kept = (
+        {line.coverage_id: line.statement_id for line in composition.bottom_line.topic_lines}
+        if composition.bottom_line is not None else {}
+    )
+    lines: list[ReportNoteLine] = []
+    for note in active_reader_notes(state.reader_notes):
+        outcome = note_outcome(note.note_id, state, terminal=True)
+        steering = note_steering_outcome(note.note_id, state, terminal=True)
+        if is_research_note(note):
+            statement_id = kept.get(f"{NOTE_COVERAGE_PREFIX}{note.note_id}")
+            parts = [] if statement_id else [RESEARCH_NOTE_TEXT.get(outcome, RESEARCH_NOTE_TEXT["not_checked"])]
+            if steering is not None:
+                parts.append(STEERING_HALF_TEXT[steering])
+            text = " ".join(parts)
+        else:
+            statement_id = None
+            text = STEERING_NOTE_TEXT[outcome].format(restatement=note.restatement)
+        lines.append(ReportNoteLine(
+            note_id=note.note_id, label=note_label(note), outcome=outcome,
+            steering_outcome=steering, statement_id=statement_id, text=text,
+        ))
+    return lines
+
+
 __all__ = [
+    "RESEARCH_NOTE_TEXT",
+    "STEERING_HALF_TEXT",
+    "STEERING_NOTE_TEXT",
     "NoteOutcome",
     "note_outcome",
     "note_steering_outcome",
+    "report_note_lines",
 ]

@@ -38,9 +38,13 @@ from deep_research.graph.events import (
 )
 from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
 from deep_research.graph.note_outcomes import (
+    RESEARCH_NOTE_TEXT,
+    STEERING_HALF_TEXT,
+    STEERING_NOTE_TEXT,
     NoteOutcome,
     note_outcome,
     note_steering_outcome,
+    report_note_lines,
 )
 from deep_research.graph.nodes import (
     GraphNode,
@@ -133,12 +137,15 @@ __all__ = [
     "REPORT_REVIEWER_NODE",
     "REPORT_WRITER_NODE",
     "RESEARCHER_NODE",
+    "RESEARCH_NOTE_TEXT",
     "ROUTE_END",
     "ROUTE_EXTRA_PASS",
     "ROUTE_FINALIZE",
     "ROUTE_NOTE_PASS",
     "ROUTE_REDRAFT",
     "SOURCE_EVALUATOR_NODE",
+    "STEERING_HALF_TEXT",
+    "STEERING_NOTE_TEXT",
     "GraphConfigurationError",
     "GraphError",
     "GraphNode",
@@ -195,6 +202,7 @@ __all__ = [
     "publication_write_error",
     "publish_live",
     "quality_assessed_event",
+    "report_note_lines",
     "report_published_event",
     "report_review_completed_event",
     "report_review_unavailable_error",

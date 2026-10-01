@@ -73,6 +73,7 @@ from deep_research.utils.types import (
     ReadRecord,
     RejectedDraftPoint,
     ReportComposition,
+    ReportNoteLine,
     ReportOutlineEntry,
     ReportPart,
     ReportPoint,
@@ -1237,24 +1238,60 @@ _ASSEMBLED_BOTTOM_LINE = (
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
     """Notes-progress-report spec §7.5 items 3-4: the ``## Bottom line`` body -- the
     answer paragraph (or, for an assembled bottom line, the line that says so),
-    then one ``- **{label}:** {line}`` per topic line. A composition without a
-    layout prints one paragraph (``_plain_bottom_line``)."""
+    then one ``- **{label}:** {line}`` per topic line, then one line per reader
+    note once publication has stamped them (spec §7.2); a note's own topic line
+    prints only as its note's line. A composition without a layout prints one
+    paragraph (``_plain_bottom_line``), then the note lines."""
+    by_id = {point.statement_id: point for point in composition.summary if point.statement is not None}
     layout = composition.bottom_line
     if layout is None:
-        return _plain_bottom_line(composition, index)
-    by_id = {point.statement_id: point for point in composition.summary if point.statement is not None}
-    if layout.assembled:
-        paragraph = _ASSEMBLED_BOTTOM_LINE
+        paragraph, items = _plain_bottom_line(composition, index), []
     else:
-        paragraph = " ".join(
-            _rendered_point(by_id[statement_id], composition, index)
-            for statement_id in layout.answer_ids if statement_id in by_id
-        )
-    items = [
-        f"- **{line.label}:** {_rendered_point(by_id[line.statement_id], composition, index)}"
-        for line in layout.topic_lines if line.statement_id in by_id
-    ]
+        printed_by_notes = {line.statement_id for line in composition.reader_note_lines if line.statement_id}
+        if layout.assembled:
+            paragraph = _ASSEMBLED_BOTTOM_LINE
+        else:
+            paragraph = " ".join(
+                _rendered_point(by_id[statement_id], composition, index)
+                for statement_id in layout.answer_ids if statement_id in by_id
+            )
+        items = [
+            f"- **{line.label}:** {_rendered_point(by_id[line.statement_id], composition, index)}"
+            for line in layout.topic_lines
+            if line.statement_id in by_id and line.statement_id not in printed_by_notes
+        ]
+    items += [_note_line_item(line, by_id, composition, index) for line in composition.reader_note_lines]
     return "\n\n".join(block for block in (paragraph, "\n".join(items)) if block)
+
+
+#: Spec §7.2's marks: a note half not found or not followed.
+_NOTE_MISSED = frozenset({"not_found", "not_addressed"})
+
+
+def _note_mark(line: ReportNoteLine) -> str:
+    """Spec §7.2 (D20, D37): ``✗`` when any half of the note was not found or not
+    followed, ``✓`` when every half is covered, no mark otherwise."""
+    outcomes = [line.outcome] + ([line.steering_outcome] if line.steering_outcome else [])
+    if any(outcome in _NOTE_MISSED for outcome in outcomes):
+        return "✗"
+    if all(outcome == "covered" for outcome in outcomes):
+        return "✓"
+    return ""
+
+
+def _note_line_item(
+    line: ReportNoteLine, by_id: Mapping[str, ReportPoint], composition: ReportComposition,
+    index: Sequence[Citation],
+) -> str:
+    """Spec §7.5 item 4: ``- **{note label}:** {✓ |✗ }{line}``, the line being the
+    note's kept topic line, its code-written text, or the one then the other."""
+    stated = (
+        _rendered_point(by_id[line.statement_id], composition, index)
+        if line.statement_id and line.statement_id in by_id else ""
+    )
+    mark = _note_mark(line)
+    body = " ".join(part for part in (stated, line.text) if part)
+    return f"- **{line.label}:** {mark + ' ' if mark else ''}{body}"
 
 
 def _plain_bottom_line(composition: ReportComposition, index: Sequence[Citation]) -> str:

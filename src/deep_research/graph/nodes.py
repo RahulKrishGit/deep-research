@@ -86,6 +86,7 @@ from deep_research.graph.events import (
     route_decided_event,
 )
 from deep_research.graph.live import publish_live
+from deep_research.graph.note_outcomes import report_note_lines
 from deep_research.graph.state import (
     EXTRA_PASS_NODE,
     FINALIZE_NODE,
@@ -501,6 +502,9 @@ def _terminal_artifacts(
         update={
             "quality_status": status,
             "errors": list(state.errors),
+            # Notes-progress-report spec §7.2: each reader note's line, from its
+            # terminal outcome -- like ``errors``, outside the review's fingerprint.
+            "reader_note_lines": report_note_lines(state, composition),
         }
     )
     reader = render_written_report(finalized).strip()

@@ -1798,6 +1798,23 @@ class BottomLineTopic(ContractModel):
     statement_id: str = Field(min_length=1)
 
 
+NoteLineOutcome: TypeAlias = Literal["covered", "not_found", "not_addressed", "not_checked"]
+
+
+class ReportNoteLine(ContractModel):
+    """One reader note's line in the bottom line, stamped when the report is
+    published (notes-progress-report spec §7.2): the note's terminal outcome, a
+    mixed note's steering half, and either the note's kept topic line
+    (``statement_id``) or code-written ``text``, or both."""
+
+    note_id: str = Field(min_length=1)
+    label: str = Field(min_length=1)
+    outcome: NoteLineOutcome
+    steering_outcome: NoteLineOutcome | None = None
+    statement_id: str | None = None
+    text: str = ""
+
+
 class BottomLineLayout(ContractModel):
     """Which of a composition's ``summary`` statements are the direct answer and
     which are topic lines, in the order the report prints them (spec §7.2)."""
@@ -1944,6 +1961,10 @@ class ReportComposition(ContractModel):
     reader_answers: list[str] = Field(default_factory=list)
     """The values of the reader's answers to the one-time check, in question
     order, printed on the evidence line (spec §7.5); ``[]`` when it asked nothing."""
+    reader_note_lines: list[ReportNoteLine] = Field(default_factory=list)
+    """One line per active reader note, in receipt order, stamped at publication
+    (spec §7.2); ``[]`` in the writer's own composition, which prints a note's
+    topic line as a plain topic line."""
 
     @model_validator(mode="after")
     def canonicalize_evidence(self) -> ReportComposition:
