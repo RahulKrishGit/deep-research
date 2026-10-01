@@ -406,3 +406,18 @@ def test_nothing_printed_to_the_stream_contains_a_secret(
     _, output = run(["agent", "researcher", "--verbose"], runner=leaking_runner)
 
     assert "sk-abcdefghijklmnop" not in output
+
+
+def test_the_target_thinking_mode_reaches_the_runner(recording_runner) -> None:
+    """Latency plan Task 19: ``--target-thinking-mode`` is the agent command's."""
+    run(["agent", "researcher", "--target-thinking-mode", "disabled"], runner=recording_runner)
+    run(["agent", "researcher"], runner=recording_runner)
+
+    assert recording_runner.calls[0]["target_thinking_mode"] == "disabled"
+    assert recording_runner.calls[1]["target_thinking_mode"] is None
+
+
+def test_the_suite_command_has_no_target_thinking_mode() -> None:
+    code, _ = run(["suite", "--target-thinking-mode", "disabled"])
+
+    assert code == EXIT_USAGE

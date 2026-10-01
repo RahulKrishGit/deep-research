@@ -1290,7 +1290,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # Check batch asks its two halves together, joining their error records in
     # half order. Module code only; every request is the one the
     # one-after-another re-ask sent. Moved `5c0f7e93e925` -> `34e275cf57f9`.
-    "evidence_verifier": "34e275cf57f9",
+    # Latency plan Task 16 (stage replay, X1): check_statements hands its
+    # question and items to capture_statement_check, which writes nothing
+    # unless an experiment bound a capture. Module code only; no request
+    # changed and agents.prompts was untouched. Moved `34e275cf57f9` -> `31bcab803a6a`.
+    "evidence_verifier": "31bcab803a6a",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
@@ -2454,3 +2458,28 @@ def test_known_secret_values_still_redacts_a_present_openai_key() -> None:
 
     assert known_secret_values(environ) == ("sk-abcdefghijklmnop",)
 
+
+
+def test_a_target_thinking_mode_reaches_the_target_and_never_the_judge() -> None:
+    """Latency plan Task 19 (audit O6): one invocation can run its target with
+    thinking disabled; the judge keeps thinking, and the run is an experiment."""
+    settings = ConfigSettings()
+
+    runtime = build(settings=settings, target_thinking_mode="disabled")
+
+    assert runtime.target_thinking_mode == "disabled"
+    assert runtime.thinking_mode == "enabled"
+    assert target_llm_config(runtime, settings.llm).thinking_mode == "disabled"
+    assert judge_llm_config(runtime, settings.llm).thinking_mode == "enabled"
+    assert runtime.experiment_only is True
+    assert runtime.configuration_fingerprint != build(settings=settings).configuration_fingerprint
+
+
+def test_without_the_toggle_a_runtime_and_its_fingerprint_are_unchanged() -> None:
+    settings = ConfigSettings()
+
+    default = build(settings=settings)
+    explicit = build(settings=settings, target_thinking_mode="enabled")
+
+    assert default.target_thinking_mode == "enabled"
+    assert explicit == default

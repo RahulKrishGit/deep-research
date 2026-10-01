@@ -49,6 +49,7 @@ from deep_research.observability import (
     LangSmithRuntimeConfig,
     RunTelemetryCollector,
     Tracker,
+    bind_stage_capture,
 )
 from deep_research.providers import ProviderConfigurationError
 from deep_research.request_budget import (
@@ -1795,3 +1796,18 @@ async def test_a_failed_batch_falls_back_to_one_write_per_finding() -> None:
     assert publisher.saved_findings == [SNIPPET]
     assert state.events[-2].metadata["memory_writes"] == 1
     assert state.errors == []
+
+
+@pytest.mark.asyncio
+async def test_a_bound_capture_writes_the_state_its_agent_starts_from(
+    tmp_path: Path,
+) -> None:
+    """Latency plan Task 16: the stage replay's input is exactly what the
+    agent was handed, its own node-started event included."""
+    agent = FakeAgent("evidence_verifier")
+
+    with bind_stage_capture(tmp_path, nodes=["evidence_verifier"]):
+        await agent_node(agent)(dump_state(fake_research_state()))
+
+    payload = json.loads((tmp_path / "evidence_verifier-01.json").read_text("utf-8"))
+    assert ResearchState.model_validate(payload["state"]) == agent.calls[0]
