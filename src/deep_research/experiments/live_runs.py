@@ -176,6 +176,48 @@ def _merged(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]
 Research = Callable[..., Awaitable[Any]]
 
 
+def _write_crashed_run(
+    directory: Path,
+    *,
+    question_id: str,
+    arm: str,
+    repetition: int,
+    overrides: Mapping[str, Any],
+    error: Exception,
+) -> None:
+    """Timing-only ``run.json`` for a run whose research raised (Task 17 review).
+
+    It carries no quality record and no duration, so ``compare`` counts it as a
+    failed treatment and never as a control: a crash fails closed instead of
+    dropping its question from the verdict. The stage times are whatever
+    ``events.jsonl`` recorded before the crash.
+    """
+    try:
+        lines = (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        stages = stage_seconds([json.loads(line) for line in lines if line.strip()])
+    except (OSError, ValueError, KeyError, TypeError):
+        stages = {}
+    crashed = {
+        "question_id": question_id,
+        "question": QUESTIONS[question_id],
+        "arm": arm,
+        "repetition": repetition,
+        "overrides": dict(overrides),
+        "session_id": None,
+        "status": "failed",
+        "report_path": None,
+        "quality_path": None,
+        "error": f"{type(error).__name__}: {error}",
+        "metrics": {"seconds": None, "stage_seconds": stages},
+    }
+    try:
+        (directory / "run.json").write_text(
+            json.dumps(crashed, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+    except OSError as write_error:  # never mask the research error being re-raised
+        print(f"could not record the crashed run: {write_error}", file=sys.stderr)
+
+
 async def run_one(
     *,
     question_id: str,
@@ -216,11 +258,24 @@ async def run_one(
             event_handler=record,
         )
 
-    if capture:
-        with bind_stage_capture(directory / "capture", nodes=["evidence_verifier"]):
+    try:
+        if capture:
+            with bind_stage_capture(directory / "capture", nodes=["evidence_verifier"]):
+                outcome = await go()
+        else:
             outcome = await go()
-    else:
-        outcome = await go()
+    except Exception as error:
+        # A crashed paid run must stay visible: without a run.json it would
+        # silently drop out of ``compare``. The original error is re-raised.
+        _write_crashed_run(
+            directory,
+            question_id=question_id,
+            arm=arm,
+            repetition=repetition,
+            overrides=overrides,
+            error=error,
+        )
+        raise
 
     events = [event.model_dump(mode="json") for event in outcome.state.events]
     metrics: dict[str, Any] = {

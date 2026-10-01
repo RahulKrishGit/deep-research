@@ -13,6 +13,7 @@ import pytest
 from deep_research.experiments.live_runs import (
     QUESTIONS,
     compare,
+    load_runs,
     lock_waits,
     main,
     output_speeds,
@@ -376,3 +377,58 @@ def test_a_run_that_published_nothing_fails_as_a_treatment_and_is_no_control() -
     assert verdict["questions"]["rome-1"]["checks"]["completed"] is True
     assert verdict["questions"]["latte-2"] == {"checks": {"completed": False}}
     assert verdict["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_crashed_run_still_writes_run_json_so_compare_fails_closed(tmp_path: Path) -> None:
+    """Task 17 review: a paid run whose ``research`` raises used to leave no
+    ``run.json``, so ``load_runs`` never saw it and its question silently
+    dropped out of ``compare``, which could then pass on the other questions."""
+    out = tmp_path / "live"
+    events = [
+        ResearchEvent(event_type="graph.node.started", source="graph.planner", message="m",
+                      timestamp="2026-10-01T12:00:00+00:00", metadata={"node": "planner"}),
+        ResearchEvent(event_type="graph.node.completed", source="graph.planner", message="m",
+                      timestamp="2026-10-01T12:01:00+00:00", metadata={"node": "planner"}),
+        ResearchEvent(event_type="graph.node.started", source="graph.researcher", message="m",
+                      timestamp="2026-10-01T12:01:00+00:00", metadata={"node": "researcher"}),
+    ]
+
+    async def research(question: str, **kwargs: Any) -> Any:
+        for event in events:
+            kwargs["event_handler"](event)
+        raise RuntimeError("provider went away")
+
+    with pytest.raises(RuntimeError, match="provider went away"):
+        await run_one(question_id="latte", arm="x2", repetition=1, overrides={"a": 1},
+                      out=out, capture=False, research=research)
+
+    crashed = json.loads((out / "latte-x2-1" / "run.json").read_text(encoding="utf-8"))
+    assert crashed["status"] == "failed"
+    assert crashed["error"] == "RuntimeError: provider went away"
+    assert crashed["question_id"] == "latte"
+    assert crashed["arm"] == "x2"
+    assert crashed["repetition"] == 1
+    assert crashed["overrides"] == {"a": 1}
+    # The timing recorded before the crash survives; a node that never finished adds none.
+    assert crashed["metrics"] == {"seconds": None, "stage_seconds": {"planner": 60.0}}
+    assert load_runs(out) == [crashed]
+
+    faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
+    runs = [
+        run for run in _runs({"tamil": faster, "latte": faster, "rome": faster})
+        if not (run["question_id"] == "latte" and run["arm"] == "x2")
+    ] + load_runs(out)
+
+    # The other two questions are faster and accurate, yet the crashed one fails the verdict.
+    verdict = compare(runs, treatment="x2", stage="researcher")
+    assert verdict["questions"]["latte-1"] == {"checks": {"completed": False}}
+    assert verdict["accuracy_passed"] is False
+    assert verdict["passed"] is False
+
+    # And alone it does not pass the time verdict on "1 of 1 question" either.
+    alone = compare(
+        [run for run in runs if run["question_id"] == "latte"], treatment="x2", stage="researcher"
+    )
+    assert alone["stage_faster_on"] == 0
+    assert alone["passed"] is False
