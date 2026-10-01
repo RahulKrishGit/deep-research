@@ -163,6 +163,27 @@ describe("the contents list (spec §7.6 Contents, Current section; D28)", () => 
     expect([...container.querySelectorAll('.rep-contents a[aria-current="true"]')].map((a) => a.getAttribute("href"))).toEqual(["#rep-key-figures"]);
   });
 
+  it("keeps the jumped-to heading focused when the parent re-renders with a new onOpenEvidence", () => {
+    stackCards();
+    Element.prototype.scrollIntoView = vi.fn();
+    const { container, rerender } = show();
+    fireEvent.click(container.querySelector('.rep-contents a[href="#rep-key-figures"]')!);
+    const heading = container.querySelector("#rep-key-figures-h")!;
+    expect(document.activeElement).toBe(heading);
+    // ReportStage passes a new inline arrow on every render (a sessions refetch, a sidebar toggle).
+    rerender(<section id="stage-report"><ReportBody markdown={MARKDOWN} outline={OUTLINE} evidenceLoaded onOpenEvidence={() => {}} /></section>);
+    expect(container.querySelector("#rep-key-figures-h")).toBe(heading);
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("renders no contents list for a report with no section", () => {
+    stackCards();
+    const { container } = show(null, "# Q\n\nNo source could be checked.\n");
+    expect(container.querySelector(".rep-contents")).toBeNull();
+    expect(container.querySelectorAll(".rsec")).toHaveLength(0);
+    expect(container.querySelector("#reportEvidence")!.textContent).toBe("No source could be checked.");
+  });
+
   it("jumps without smooth scrolling under reduced motion", () => {
     stackCards();
     vi.spyOn(window, "matchMedia").mockImplementation((query: string) => ({
@@ -287,5 +308,15 @@ describe("citations, tables and the evidence line across cards", () => {
     const loading = render(<ReportBody markdown={MARKDOWN} outline={OUTLINE} evidenceLoaded={false} onOpenEvidence={() => {}} />);
     expect(loading.container.querySelector("#repEvidenceLink button")).toBeNull();
     expect(loading.container.querySelector("#repEvidenceLink")!.textContent).toBe("How this was researched: evidence log");
+  });
+
+  it("opens the evidence log through the latest onOpenEvidence after a re-render", () => {
+    stackCards();
+    const first = vi.fn();
+    const latest = vi.fn();
+    const { container, rerender } = show(OUTLINE, MARKDOWN, first);
+    rerender(<section id="stage-report"><ReportBody markdown={MARKDOWN} outline={OUTLINE} evidenceLoaded onOpenEvidence={latest} /></section>);
+    fireEvent.click(container.querySelector("#repEvidenceLink button.link")!);
+    expect([first.mock.calls.length, latest.mock.calls.length]).toEqual([0, 1]);
   });
 });

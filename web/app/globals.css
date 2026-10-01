@@ -1454,6 +1454,8 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 #stage-report{container:report / inline-size}
 .report-col,.rep-layout,.rep-cards{display:flex;flex-direction:column;gap:var(--space-4);min-width:0}
 .rep-cards > .rsec.card{display:flex;flex-direction:column;gap:var(--space-4);padding:var(--space-6);scroll-margin-top:calc(var(--topbar) + 56px + var(--space-4))}
+/* A citation's target clears the topbar and, below the rail width, the sticky chip row, as a card does. */
+#rep-sources li[id^="src-"]{scroll-margin-top:calc(var(--topbar) + 56px + var(--space-4))}
 .rsec .prose > :first-child{margin-top:0}
 .rsec .prose > :last-child{margin-bottom:0}
 .rsec .rsec-eb{margin:0}
@@ -1472,10 +1474,12 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .rsec[data-kind="bottom_line"] .bl-list .k .no{margin-right:4px;color:var(--status-warn)}
 /* Key figures: the copy of a row's Source under its What cell shows only on a phone (D32). */
 .rsec .tbl .kf-src{display:none;margin-top:2px;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
-/* The contents list as chips: one horizontally scrolling row, sticky under the topbar. */
+/* The contents list as chips: one horizontally scrolling row, sticky under the topbar. Its overflow
+   clips a focus ring at the row's edge, so the row keeps --space-1 of inline padding (the 2px ring and
+   its 2px offset) and the same negative margin, which leaves the chips aligned with the cards. */
 .rep-contents{display:flex;gap:6px;min-width:0}
 .rep-contents a{display:inline-flex;align-items:center;font-size:var(--text-sm);color:var(--muted);text-decoration:none}
-.rep-layout[data-contents="chips"] .rep-contents{position:sticky;top:var(--topbar);z-index:2;overflow-x:auto;scrollbar-width:none;padding:var(--space-3) 0;background:var(--bg);border-bottom:1px solid var(--border)}
+.rep-layout[data-contents="chips"] .rep-contents{position:sticky;top:var(--topbar);z-index:2;overflow-x:auto;scrollbar-width:none;padding:var(--space-3) var(--space-1);margin-inline:calc(-1 * var(--space-1));background:var(--bg);border-bottom:1px solid var(--border)}
 .rep-layout[data-contents="chips"] .rep-contents::-webkit-scrollbar{display:none}
 .rep-layout[data-contents="chips"] .rep-contents a{flex:none;min-height:32px;padding:0 var(--space-3);border:1px solid var(--border);border-radius:var(--radius-md);white-space:nowrap}
 .rep-layout[data-contents="chips"] .rep-contents a[aria-current="true"]{color:var(--fg);border-color:var(--muted);background:var(--border-soft)}

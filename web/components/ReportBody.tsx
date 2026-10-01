@@ -1,5 +1,5 @@
 "use client";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 // M9: `mdast` types only, never a runtime import — they arrive transitively through
@@ -238,6 +238,12 @@ export function ReportBody({ markdown, outline, evidenceLoaded, onOpenEvidence }
   const [current, setCurrent] = useState<string | null>(cards[0]?.id ?? null);
   const pinned = useRef(false);
   const unpin = useRef<(() => void) | null>(null);
+  // ReportStage hands over a new inline function on every render. The cards get one stable callback that
+  // calls the latest, so a parent re-render (a sessions refetch, a sidebar toggle) neither breaks the
+  // cards' memo nor remounts the heading a contents jump has just focused.
+  const openRef = useRef(onOpenEvidence);
+  useEffect(() => { openRef.current = onOpenEvidence; }, [onOpenEvidence]);
+  const openEvidence = useCallback(() => openRef.current(), []);
 
   // D28: measured on the report stage (the viewport less the sidebar and gutters); the CSS rail
   // rules sit under the matching @container query, so both read the same width.
@@ -300,16 +306,18 @@ export function ReportBody({ markdown, outline, evidenceLoaded, onOpenEvidence }
     <div className="report-col" ref={rootRef}>
       {evidenceLine !== null ? <EvidenceLine line={evidenceLine} /> : null}
       <div className="rep-layout" data-contents={contents}>
-        <nav className="rep-contents" aria-label="Report contents" ref={navRef}>
-          {contents === "rail" ? <span className="eyebrow rc-h">Contents</span> : null}
-          {cards.map((card) => (
-            <a key={card.id} href={`#${card.id}`} aria-current={current === card.id ? "true" : undefined} onClick={(event) => jump(event, card.id)}>
-              <span className="tn">{card.number ?? ""}</span><span className="rc-l">{card.label}</span>
-            </a>
-          ))}
-        </nav>
+        {cards.length > 0 ? (
+          <nav className="rep-contents" aria-label="Report contents" ref={navRef}>
+            {contents === "rail" ? <span className="eyebrow rc-h">Contents</span> : null}
+            {cards.map((card) => (
+              <a key={card.id} href={`#${card.id}`} aria-current={current === card.id ? "true" : undefined} onClick={(event) => jump(event, card.id)}>
+                <span className="tn">{card.number ?? ""}</span><span className="rc-l">{card.label}</span>
+              </a>
+            ))}
+          </nav>
+        ) : null}
         <div className="rep-cards">
-          {cards.map((card) => <SectionCard key={card.id} card={card} sourceIds={sourceIds} evidenceLoaded={evidenceLoaded} onOpenEvidence={onOpenEvidence} />)}
+          {cards.map((card) => <SectionCard key={card.id} card={card} sourceIds={sourceIds} evidenceLoaded={evidenceLoaded} onOpenEvidence={openEvidence} />)}
         </div>
       </div>
     </div>
