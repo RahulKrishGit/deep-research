@@ -1313,7 +1313,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    lines rise at 900ms + i × 60ms — so the next row opens while the line is still filling. The
    running node's halo waits the same 600ms, so it starts once the node has filled. */
 .spine-lg.briefs > li[data-handoff="from"]{--d-h:100ms;--d-out:260ms;--d-tint:260ms;--d-line:180ms}
-.spine-lg.briefs > li[data-handoff="from"] .ln{transform:none;--dur-c:180ms;--d-c:0ms}
+/* A from-row's lines only fade (never travel): a row that was closed before it took the role (a loop route's
+   hold ended after the run had passed it) snaps to rest instead of lifting 4px under its fade. */
+.spine-lg.briefs > li[data-handoff="from"] .ln{transform:none;transition-property:opacity;--dur-c:180ms;--d-c:0ms}
 .spine-lg.briefs > li[data-handoff="to"]{--d-node:600ms;--d-tint:600ms;--d-h:600ms}
 .spine-lg.briefs > li[data-handoff="to"] .ln{--d-c:calc(900ms + var(--i,0) * 60ms)}
 .spine-lg.briefs > li[data-state="active"] .bullet{animation-delay:600ms}

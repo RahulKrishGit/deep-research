@@ -8,12 +8,21 @@ const only = (records: MotionRecord[], where: Partial<MotionRecord>) =>
   records.filter((r) => Object.entries(where).every(([k, v]) => r[k as keyof MotionRecord] === v));
 const timings = (records: MotionRecord[]) => [...new Set(records.map((r) => `${r.delay}/${r.duration}`))].sort();
 
-test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep the spec's timings", async ({ page, request }) => {
+test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep the spec's timings", async ({ page, context, request }) => {
   await installMotionRecorder(page);
+  // The one-time check holds the run at needs_input until the page answers, so the page is on the session
+  // before Planning runs: Planning completes 1.1 s into the replay, and without the wait a page that loads
+  // later (about 1.8 s here) first paints Planning done and never sees its checks draw.
+  await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   const id = await submit(page, "q");
+  await expect(page.locator("#clarifyCard")).toBeVisible({ timeout: 10_000 });
+  await page.locator("#clarifyCard").getByRole("button", { name: "Just start" }).click();
   const planning = page.locator('#spine li[data-stage="planner"]');
   await expect(planning).toHaveAttribute("data-state", "done", { timeout: 10_000 });
   await page.waitForTimeout(2_100); // any hand-off roles from the first render's neighbours have cleared
+  // Planning's own live transitions (the surplus skeleton's fade-out, 520/200, among them) come before the
+  // reader's click; the open and close assertions below read what the click started.
+  const beforeClick = (await motion(page)).length;
   await planning.locator("button.ps-toggle").click();
   await expect(planning).toHaveAttribute("data-open", "1");
   await page.waitForTimeout(700);
@@ -63,11 +72,12 @@ test("the hand-off (3B), a reader's open and close (1A) and the drawn check keep
 
   // A reader's open (1A): height at once over 420ms, then the status line and the three slots rise 60ms
   // apart from 280ms (notes-progress-report spec §6.3; the surplus fourth slot has left the layout).
-  const opened = only(records, { stage: "planner", handoff: null, open: "1" });
+  const readers = records.slice(beforeClick);
+  const opened = only(readers, { stage: "planner", handoff: null, open: "1" });
   expect(timings(only(opened, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["0/420"]);
   expect(timings(only(opened, { part: "line", prop: "opacity" }))).toEqual(["280/240", "340/240", "400/240", "460/240"]);
   // …and close: the lines fade 160ms with no stagger, then the height closes at 160ms.
-  const closed = only(records, { stage: "planner", handoff: null, open: "0" });
+  const closed = only(readers, { stage: "planner", handoff: null, open: "0" });
   expect(timings(only(closed, { part: "line", prop: "opacity" }))).toEqual(["0/160"]);
   expect(timings(only(closed, { part: "ps-x", prop: "grid-template-rows" }))).toEqual(["160/420"]);
 
