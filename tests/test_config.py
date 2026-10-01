@@ -1402,7 +1402,9 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert settings.agents.sub_topic_concurrency == 10
     assert settings.agents.source_scoring_concurrency == 6
     assert settings.agents.verifier_batch_size == 5
-    assert settings.agents.verifier_concurrency == 16
+    # Latency audit O1 (2026-09-30): raised from 16 so every Context Check
+    # batch of a run starts at once.
+    assert settings.agents.verifier_concurrency == 64
     assert settings.agents.extraction_concurrency == 16
     # Spec §6.10/§17 Q6: the parallel writer's own concurrency bound; a
     # controller ruling for this build raised the shipped default from 7 to
