@@ -768,24 +768,49 @@ borders and the next node's offset). The fill scales from the top
 stays on the lower row. The Failed and service-stopped stages keep the compact rows and the
 midpoint rule; stage 6 keeps this spine, frozen at the row the reader stopped.
 
-**What an open row says** (picks 1A, 2C). The active row is always open; a done or
-loop row is closed on its outcome line and reopens from its head (a
-`button[aria-expanded]` over the head); a pending row never opens. While a row runs
-its subtitle is green: its static meta, except Researching's live facts line,
-`{done} of {n} topics done · {pages} pages read · {findings} findings` (or
-`{n} topics · researching` before the first topic is done). Its body is one plain
-sentence — `Breaking your question into sub-topics…`, `Rating sources for
-trustworthiness and relevance`, `Checking {findings} findings against their pages`,
-`Writing the report from verified findings only`, `Reviewing the draft on 7
-dimensions`, `Saving the report and evidence log` — except Researching's, a
-checklist of the pass's topics: ○ `not yet`, ● `reading` (green, with the halo),
-✓ `{n} findings`. Topics run concurrently, so several can be reading at once. Once
-done, a row's subtitle is its outcome: `{n} sub-topics`; `{n} topics · {pages}
-pages read · {findings} findings`; `{n} sources rated`; `{v} verified · {c}
-corrected · {d} dropped`; `Report drafted · {s} sentences · {c} citations`;
-`Accepted · {score}` or `Not accepted · {score}`; `Published`. A reopened Planning
-row lists the sub-topic titles; a reopened Researching row, its final checklist. In
-Researching's texts a measured zero reads in words (`no findings`).
+**What an open row says** (picks 1A, 2C; notes-progress-report §6, 2026-09-30). The
+active row is always open; a done or loop row is closed on its outcome line and
+reopens from its head (a `button[aria-expanded]` over the head); a pending row never
+opens, save Reviewing's after a loop route (D39, §3.5). While a row runs its subtitle is green and live: Planning's elapsed time
+(`Xm SSs`); Researching's `{done} of {n} topics done · {pages} pages read ·
+{findings} findings` (or `{n} topics · researching` before the first topic is done);
+`{rated} of {n} rated`; `{checked} of {n} checked`; `{k} of {n} sections written`,
+then `writing the bottom line`; `reading the draft · {elapsed}`. Each row's body is its
+own (picks `Main.dc.html` B, `Evaluating.dc.html` A, `Verifying.dc.html` C,
+`Writing.dc.html` E, `Reviewing.dc.html` A revised):
+
+- **Planning** — a status line that cross-fades `Reading your question…` → `Drafting
+  a plan for your question…` → `Checking the plan covers everything you asked…` →
+  `Fixing {k} topics the check flagged…` → `Plan ready · research starts now`, over
+  four skeleton slots that fill with the plan's titles and tick as the check passes
+  (`being fixed`, `fixed`, an amber ✗ `still flagged`); a research note read during
+  Planning has its own slot, `joins the plan`, then `from your note`.
+- **Researching** — the pass's topics: ○ `not yet`, ● `reading` (green, with the
+  halo), ✓ `{n} findings`. Topics run concurrently, so several can be reading at once.
+- **Evaluating sources** — `Rating {n} sources for trustworthiness and relevance`, a
+  determinate bar, and Rated / Strong / Fair / Weak, each `not yet` until the first
+  batch lands.
+- **Verifying evidence** and **Writing report** — a ticker (`Just checked`, `Just
+  written`) showing one real finding or drafted sentence at a time with its verdict
+  in words — a kept one green, a dropped finding or a removed sentence amber — over a
+  determinate bar and a tally.
+- **Reviewing** — five criteria (`Covers your whole question`, `Rests on strong
+  evidence`, `Every claim is credited correctly`, `Honest about what is uncertain`,
+  `Easy to read`) and the reader's notes: rings that read `reading` under an
+  indeterminate bar while the one call runs, then ✓, or an amber ✗ with the issue in
+  plain words. Never a score. When the route sends the run back, Reviewing stays open
+  on its checks and its verdict line for 2s before the run goes back (D39, §3.5).
+- **Publishing** — `Saving the report and evidence log`.
+
+Once done, a row's subtitle is its outcome: `{n} sub-topics · {k} from your note ·
+{duration}`; `{n} topics · {pages} pages read · {findings} findings`; `{n} sources
+rated · {s} strong · {f} fair · {w} weak`; `{v} verified · {c} corrected · {d}
+dropped`; `Report drafted · {s} sentences · {c} citations`; Reviewing's route in
+words with its duration (`Accepted · all 5 met · {duration}`, `{d} things to fix ·
+back to the writer`, `Not accepted · {m} of 5 met`); `Published`. Reviewing's static
+meta is `5 checks`, and `5 checks · your notes` while the run holds a note. A reopened
+row shows its final body. A measured zero reads in words (`no findings`), never a
+bare 0.
 
 | Step state | Number node | Connector below | Row surface | Meaning |
 |---|---|---|---|---|
@@ -803,19 +828,26 @@ before the state is legible, which is the opposite of what a progress indicator 
 for. A steady differentiated state reads instantly; motion is then free to do a
 different job.
 
-**One loop, and it is a ring.** The running node's halo eases between a 4px and a
-7px radius at 13–20% over `2.2s`; the header status dot and each running topic's
-dot in the Researching brief use the same `halo`. That is the whole looping budget
-for this screen: a row opening or closing, the hand-off between steps, a topic's
-drawn ✓ and a count's tween each run once (§5.6).
+**Three loops, each a ring or a line, each only while its step runs** (D21,
+2026-09-30). The running node's halo eases between a 4px and a 7px radius at 13–20%
+over `2.2s`; the header status dot and each running topic's or slot's dot use the same
+`halo`. Planning's skeleton slots carry a sheen — a `--fg` gradient at 7% sweeping
+the bar over `--motion-halo` — only while Planning is the running row and its titles
+have not arrived. Reviewing's bar carries a drift — a 28% segment crossing a hairline
+over `--motion-halo` — only while its one call runs; it stops when the review lands.
+Everything else runs once: a row opening or closing, the hand-off between steps, a
+drawn ✓ or ✗, a status line's cross-fade, a ticker's sample, a count's tween (§5.6).
+Under reduced motion neither the sheen nor the drift runs: the skeleton bar is still,
+and Reviewing's bar is a static full-width line at 35%.
 
-A second loop — a soft radial blob that travelled down the running row — was built
-and then removed. It failed on craft rather than on principle: a blurred
+An earlier second loop — a soft radial blob that travelled down the running row — was
+built and then removed. It failed on craft rather than on principle: a blurred
 `radial-gradient` moving across the row has no clean edge, so it read as a smear
 drifting over the hairline connectors rather than as progress, and it drew the eye
 to the space *between* steps instead of to the step that was running. The lesson
 recorded here is that on this surface a shape has to be a ring or a line to sit
-cleanly next to a 1px connector; anything without an edge reads as dirt.
+cleanly next to a 1px connector; anything without an edge reads as dirt — which is
+why the two later loops are a line's sheen and a line's drift.
 
 | Rule | Why |
 |---|---|
@@ -857,8 +889,8 @@ a budget-exhausted run.
 
 **The active row is derived, and it is derived from completions.** A node's
 `graph.node.started` now arrives live when the node starts (§5.7), but a reconnect
-replays the whole log as one burst and the reviewer's own start arrives with its
-snapshot, so completions stay the rule and read the same either way. The active row is the **successor of the last
+replays the whole log as one burst (the reviewer's own start is live too, notes-progress-report
+§6.1), so completions stay the rule and read the same either way. The active row is the **successor of the last
 `graph.node.completed`**: Planning until the planner completes, then
 Researching, and so on. The exceptions are keyed on the reviewer's route
 decision, which it emits before its own completion (`graph/nodes.py:819-841`):
@@ -913,6 +945,19 @@ Three things make the loop legible, and **none of them is a sentence**:
 
 3. **A step re-armed by a loop carries a `↺` mark**, not a label: on Researching
    for an extra pass or a note pass, on Writing for a redraft, once the row has completed again.
+
+**A loop route holds its verdict for 2s** (D39, the human's ruling of 2026-09-30 on
+notes-progress-report §6.7). The active row moves on the route decision as the table
+says, but the painting waits: Reviewing stays painted as the row that ran — open on its
+checks, its notes and the verdict line (`1 thing to fix · sending the draft back to the
+writer`, `1 gap to fill · going back to research`, a note route's line) — for
+`HANDOFF_HOLD_MS` (2,000ms), while the row the run returns to waits, closed and pending.
+Then the ordinary hand-off runs: Reviewing folds with the from-role timings and that row
+opens with the to-role's (§5.6). The hold paints and never marks: Reviewing stays
+hollow, as item 2's reset left it, and its own completion stays inert. Afterwards the
+hollow Reviewing row keeps a toggle on its head that reopens it on that review — the
+hollow node and `5 checks` stay — until Reviewing runs again. A Stop during the hold
+ends it.
 
 **A reopened row says why it reopened** (live-briefs D14, 2026-09-28). On
 `graph.extra_pass.started` Researching's brief opens on `Going back to research {k}
@@ -1496,11 +1541,28 @@ ones, because it is watched for minutes rather than glanced at. Four rules:
   **Under reduced motion** the scroll is instant (`behavior: "auto"`); the current entry
   and the focus move the same way, and the chip row scrolls its current chip into view
   without animation either way.
-- **One decorative loop, and it is not load-bearing.** `halo` runs at
-  `--motion-halo: 2200ms` on the running node, on each running topic's dot and on the header status dot. It stops
-  under reduced motion, and §3.4's table is identical either way — no state on this
-  screen depends on an animation being mid-cycle. A second loop was tried and
-  removed; §3.4 records why.
+- **Each step's own brief changes in place** (notes-progress-report §6, 2026-09-30).
+  A status line, a slot's title and a check's fact cross-fade: opacity over
+  `--motion-base` and a 5px settle over `--motion-fluid`. A slot or a note's slot that
+  arrives later rises in as an acknowledgement does; a surplus skeleton fades out,
+  then leaves the layout. A determinate bar fills over `--fill-line`. A ticker's sample
+  changes at most once every 1,200ms (`TICKER_HOLD_MS`, a dwell like the hand-off's
+  hold, not an animation), and a burst ends on its newest sample. When a review lands
+  its checks change 60ms apart. **Under reduced motion** every cross-fade is opacity
+  only over 160ms with no settle, a skeleton leaves at once, the bars jump, the ✓ and
+  ✗ appear without drawing and counts jump.
+- **A loop route holds the verdict** (D39, 2026-09-30). When the route sends the run
+  back, Reviewing stays open on its checks and its verdict for `HANDOFF_HOLD_MS`
+  (2,000ms) before the hand-off runs (§3.5). The hold is a dwell on a timer, like the
+  hand-off's own hold, not an animation, so it is kept under reduced motion; the fold
+  and the open that follow are the hand-off's, opacity only under reduced motion.
+- **Three decorative loops, none load-bearing** (D21). `halo` runs at
+  `--motion-halo: 2200ms` on the running node, on each running topic's and slot's dot
+  and on the header status dot; Planning's skeleton sheen and Reviewing's drift run
+  at the same duration, each only while its step runs (§3.4). All three stop under
+  reduced motion, and §3.4's table is identical either way — no state on this screen
+  depends on an animation being mid-cycle. A blob that travelled down the running row
+  was tried and removed; §3.4 records why.
 
 No content is ever withheld behind an animation, with one deliberate exception
 recorded below: during a handoff the arriving page is laid out with its body held
@@ -1681,15 +1743,28 @@ line from the completed topics' `successful_reads` and `findings_retained` until
 `report_writer.report.written`, `graph.report.reviewed` with `graph.route.decided`,
 and Publishing's own `graph.node.completed`; the chip's step from the active row;
 the failed stage's skipped rows from `graph.node.skipped` and its Publishing row
-from `graph.session.completed`.
+from `graph.session.completed`. Each step's own brief (§3.4) reads its progress event —
+`planner.progress` (Planning's status line and slots, then `planner.planning.completed`'s
+final slot states and note slots), `source_evaluator.progress` (the bar and the split),
+`evidence_verifier.progress` and `report_writer.progress` (the ticker, the bar and the
+tally) — each a cumulative snapshot whose latest wins; Reviewing reads
+`graph.report.reviewed`'s `criteria` and `notes`, its verdict from `graph.route.decided`
+(with the latest `graph.quality.assessed` for a refusal), and every row's elapsed time
+and duration from its `graph.node.started` and `graph.node.completed` timestamps.
 
 **Delivery is live.** Each event reaches the stream as it happens: `graph.node.started`
-is published live when an agent node starts (the reviewer, Publishing and the two hop
+is published live when an agent node or the reviewer starts (Publishing and the hop
 nodes keep snapshot publication); each agent's progress events are published as the
 agent builds them — the researcher's `researcher.sub_topic.started`,
 `researcher.tool_call` (built when its step's observation is recorded) and
-`researcher.sub_topic.completed` while its topics run, concurrently. Events that are not
-published live — the graph's route, review, hop and completion events, and
+`researcher.sub_topic.completed` while its topics run, concurrently; the four step
+progress events (`planner.progress`, `source_evaluator.progress`,
+`evidence_verifier.progress`, `report_writer.progress`) as each unit of work starts or
+settles; and the reviewer's `graph.report.reviewed` the moment its review returns. The
+step progress events are live-only: they are never in the run's state, so a checkpoint,
+the quality record and `graph.node.completed.event_count` never hold them, and a
+reconnect replays them from the session's own log. Events that are not published
+live — the graph's route, hop and completion events, and
 `researcher.research.completed` — arrive with their node's snapshot, and an id already
 published live is never published twice (`graph/live.py`, `graph/orchestrator.py`;
 api-gaps 3.7, closed). The screen therefore moves within a node: the Researching
