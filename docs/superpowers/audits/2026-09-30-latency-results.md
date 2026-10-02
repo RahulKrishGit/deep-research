@@ -128,9 +128,62 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
 
 ## X1-B: batches bounded by figure count (Task 22)
 
+**Code (Steps 1-7, free).** `08b231ac` `feat(verifier): optional figure-bounded Context Check batches (latency X1-B)`, the plan's blocks applied exactly. Every anchor occurred exactly once.
+- Red: `ImportError: cannot import name 'context_check_batches'`. Green: `tests/test_agents/test_evidence_verifier.py` 136 passed. The plan says 122; the 14 extra tests came in with the notes merge.
+- Pin: `evidence_verifier: 3df423028612 -> 16bd62b73e1b`. The plan quotes `31bcab803a6a -> e7009e529434`; the notes merge had re-pinned the old value first. `tests/test_evaluation/test_config.py` gave 80 passed.
+- Step 6, with the bound unset: the guard gave 79 passed (the plan says 77; the difference is the notes merge). The replay matrix gave `Suite: accepted (3 repetitions per case, 35/35 rows)` and `Network: zero (socket layer denied; 0 attempts recorded)`.
+- Full suite after the commit: `5320 passed, 1 deselected`.
+- Review: APPROVE, no findings. The diff matches the plan character for character apart from the pin value. A 20,000-case randomized check of `context_check_batches` showed no item lost or duplicated, order kept, and every multi-item batch within 12 figures. The override path from `stage_replay --override` to `verify` was traced. The Statement Check is untouched.
+- Pushed at about 03:09 UTC.
+
+**Replays (Step 9, PAID).** The plan's loop was started detached (`output/latency-experiments/replay-x1b.sh`) at 03:09:18 UTC under the holiday ruling. Its first line was the `OFF-PEAK DATES (owner ruling): 2026-10-01, ..., 2026-10-07` line.
+- 2026-10-02 03:53:21 UTC: the loop ended with exit 0. All twelve result files exist (each checked before summarising).
+
+**Verdicts (`stage_replay summarize`, from the code; the full JSON is in `output/latency-experiments/replay-x1b/{tamil,latte}-summary.json`).**
+
+| | Tamil | Latte |
+|---|---|---|
+| exit | **1** (`"passed": false`) | **1** (`"passed": false`) |
+| Context Check agreement: control floor / treatment | 0.6121 / 0.568 | 0.8563 / 0.8352 |
+| Context Check seconds, median: control / treatment | 123.778 / 139.109 | 97.325 / 136.57 |
+| Statement Check agreement: control floor / treatment | 0.9608 / 0.9782 | 0.88 / 0.9311 |
+| Statement Check seconds, median: control / treatment | 48.76 / 55.678 | 90.654 / 41.797 |
+| Context Check figures dropped, per repetition: control / treatment | 14, 0, 0 / 0, 0, 0 | 3, 1, 2 / 0, 0, 22 |
+| Statement Check inconsistent, per repetition: control / treatment | 0, 0, 0 / 1, 0, 0 | 0, 0, 0 / 0, 0, 0 |
+| `context_check.agreement` | **false** | **false** |
+| `context_check.figures_dropped` | true | **false** |
+| `context_check.findings_kept` | true | **false** |
+| `context_check.figures_unchecked` | true | true |
+| `context_check.faster` | **false** | **false** |
+| `statement_check.agreement` | true | true |
+| `statement_check.inconsistent` | **false** | true |
+| `statement_check.unjudged` | true | **false** |
+
+- The figure bound made the Context Check slower on both captures: Tamil's median rose from 123.778 s to 139.109 s, and Latte's from 97.325 s to 136.57 s.
+- Agreement fell below each control floor.
+- One Latte treatment repetition dropped 22 figures.
+
+**Decision (Step 10): X1-B is rejected.** The code commit was reverted with `git revert --no-edit 08b231ac`, giving `890d1ac4`, pushed at about 03:54 UTC. `git diff --stat 08b231ac~1 HEAD -- src tests` is empty, so the code and the pins are exactly as before X1-B. No config was changed. Steps 11-12 are skipped.
+- X1 overall: neither X1-A nor X1-B is kept. The X2 and X3 arm overrides therefore use the "none kept" row (P14).
+- The X1 controls' own variance was large: Tamil's control Context Check agreement floor was 0.5948 in X1-A and 0.6121 in X1-B.
+- Full suite after the revert: `5317 passed, 1 deselected`, the reference count from before X1-B.
+
 ## X2: researcher with thinking disabled (Task 23)
 
+**Tier 3, both arms (Step 2, PAID).** Both arms started detached at 03:54:05 UTC: `lat-x2-control` (as configured) and `lat-x2-treatment` (`--target-thinking-mode disabled`).
+- Each was preceded by the OFF-PEAK CHECK. The plan's every-day check printed `REFUSE Fri 03:54Z`; the owner's holiday ruling printed `OK Fri 03:54Z with 2026-10-01..2026-10-07`.
+- Deviation (time, owner's "time is of the essence"): the two arms run at the same time, not one after the other. Their gate, `compare-suite`, judges only quality averages and the harness verdict, never time, so concurrency cannot move it. Cost if wrong: none to the verdict.
+- Experiments: `lat-x2-control-researcher-controlled-20261002T035407Z-890d1ac-dd844497` and `lat-x2-treatment-researcher-controlled-20261002T035407Z-890d1ac-6820f773`.
+
 ## X3: planner at high (Task 24)
+
+**Tier 3, both arms (Step 2, PAID), run early.** Both arms started detached at 03:55:00 UTC: `lat-x3-control` (`--reasoning-effort max`) and `lat-x3-treatment` (`--reasoning-effort high`). The checks printed `REFUSE Fri 03:55Z` (plan, every day) and `OK Fri 03:55Z with 2026-10-01..2026-10-07` (owner's holiday ruling).
+- Deviation from H3's order (X3 last), taken for time under the owner's standing approval:
+  - The planner's suite gate runs alongside X2's suite gate, before any X2 paired run.
+  - The gate compares the planner at `max` with `high` and judges quality only. It depends on neither X1's nor X2's decision, and no timed run overlaps it.
+  - X3's paired runs and its keep decision still come after X2's decision, with X2's pin in the override (P14).
+  - Cost if wrong: none to any verdict.
+- Experiments: `lat-x3-control-planner-controlled-20261002T035502Z-890d1ac-92166f01` and `lat-x3-treatment-planner-controlled-20261002T035502Z-890d1ac-7f5615c1`.
 
 ## Decisions
 
