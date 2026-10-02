@@ -174,6 +174,30 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
 - Each was preceded by the OFF-PEAK CHECK. The plan's every-day check printed `REFUSE Fri 03:54Z`; the owner's holiday ruling printed `OK Fri 03:54Z with 2026-10-01..2026-10-07`.
 - Deviation (time, owner's "time is of the essence"): the two arms run at the same time, not one after the other. Their gate, `compare-suite`, judges only quality averages and the harness verdict, never time, so concurrency cannot move it. Cost if wrong: none to the verdict.
 - Experiments: `lat-x2-control-researcher-controlled-20261002T035407Z-890d1ac-dd844497` and `lat-x2-treatment-researcher-controlled-20261002T035407Z-890d1ac-6820f773`.
+- Both arms ended at 04:01:47 UTC with harness exit 1:
+  - control: `Cases: 0/4 passed`, `Mean score: 0.49`, `Status: FAILED`, `Results: output/evaluations/researcher/lat-x2-control-researcher-controlled-20261002T035407Z-890d1ac/results.json`;
+  - treatment: `Cases: 0/4 passed`, `Mean score: 0.55`, `Status: FAILED`, `Results: output/evaluations/researcher/lat-x2-treatment-researcher-controlled-20261002T035407Z-890d1ac/results.json`.
+
+**The tier-3 gate (Step 3, `live_runs compare-suite`, from the code): exit 1.**
+
+| Case | Control average | Treatment average | Margin | Within margin | Treatment passed |
+|---|---|---|---|---|---|
+| multi-source-coverage | 0.4965 | 0.3045 | 0.342 | true | false |
+| conflicting-evidence | 0.3108 | 0.6178 | 0.3835 | true | false |
+| partial-search-failure | 0.5497 | 0.4085 | 0.4055 | true | false |
+| read-bearing-acquisition | 0.5571 | 0.7012 | 0.434 | true | false |
+
+`harness_passed: false`, `within_control: true`, `passed: false`.
+
+**Why both arms fail.** The control, which is production's own researcher, fails the harness just as the treatment does. Every case fails the `no_prohibited_calls` gate:
+- The researcher asked to read URLs the controlled cases do not script (for example `http.get https://sciencedirect.com/cold-climate-trial-results`, `https://nber.org/four-day-self-selection`, `https://eia.gov/us-battery-storage-capacity-2025`).
+- The controlled tier's scripted client records any unscripted URL as prohibited (`src/deep_research/evaluation/dependencies.py:603-638`). These are not real network calls.
+- This is not new. Every earlier controlled researcher result on this machine fails the same way: `cross-agent-planner-fix-parity-{baseline,confirmation,repaired-baseline,repaired-confirmation}` (2026-09-09/10) are each `FAILED 0 / 3` with 17-48 prohibited calls.
+- So the researcher suite has not passed since before the latency work, and X2's tier-3 gate, which requires the harness's own verdict to pass, cannot pass on this codebase for any treatment.
+
+**Decision (Step 3/6): X2 is rejected, by the pre-registered verdict.** Nothing was changed, and the paired runs (Step 4) were not made.
+- The criterion was not changed after seeing the data (P10). The record notes that the gate carried no information about the treatment: every case is within the controls' very wide margins (0.34-0.43), and the treatment's mean score (0.55) is above the control's (0.49).
+- Re-examining X2 needs a working researcher suite first (its scripted URLs, or the prohibited-call rule), then the owner's decision on the gate. That is outside this plan.
 
 ## X3: planner at high (Task 24)
 
