@@ -208,6 +208,23 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
   - X3's paired runs and its keep decision still come after X2's decision, with X2's pin in the override (P14).
   - Cost if wrong: none to any verdict.
 - Experiments: `lat-x3-control-planner-controlled-20261002T035502Z-890d1ac-92166f01` and `lat-x3-treatment-planner-controlled-20261002T035502Z-890d1ac-7f5615c1`.
+- Both arms ended with these results:
+  - control (`max`): 05:12:07 UTC, `Cases: 3/4 passed`, `Mean score: 0.87`, `Status: FAILED`, `Results: output/evaluations/planner/lat-x3-control-planner-controlled-20261002T035502Z-890d1ac/results.json`;
+  - treatment (`high`): 04:37:45 UTC, `Cases: 4/4 passed`, `Mean score: 0.89`, `Status: REVIEW REQUIRED`, `Results: output/evaluations/planner/lat-x3-treatment-planner-controlled-20261002T035502Z-890d1ac/results.json`.
+- The control arm took 77 minutes and the treatment 43, running at the same time.
+
+**The tier-3 gate (Step 3, `live_runs compare-suite`, from the code): exit 0.**
+
+| Case | Control average | Treatment average | Margin | Within margin | Treatment passed |
+|---|---|---|---|---|---|
+| focused-decomposition | 0.9139 | 0.9171 | 0.05 | true | true |
+| ambiguous-scope | 0.7635 | 0.9 | 0.05 | true | true |
+| planning-tool-failure | 0.9065 | 0.9025 | 0.05 | true | true |
+| scoped-evidence-targets | 0.875 | 0.8662 | 0.0615 | true | true |
+
+`harness_passed: true`, `within_control: true`, `passed: true`.
+
+**Tier 4, three paired runs (Step 4, PAID).** Override (no earlier experiment kept): `{"llm": {"model_overrides": {"planner": {"reasoning_effort": "high", "timeout": 1800.0}}}}`, with `--capture` (Checkpoint A choice (a)). The chain (`output/latency-experiments/x3-runs.sh`) started `tamil-x3-1` at 05:12:26 UTC, followed by `latte-x3-1` and `rome-x3-1`, each after the off-peak check (`REFUSE Fri 05:12Z` by the plan's every-day check, `OK` by the holiday ruling).
 
 ## Decisions
 
