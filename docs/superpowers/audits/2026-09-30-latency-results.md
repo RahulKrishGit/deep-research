@@ -8,9 +8,9 @@
 |---|---|
 | A (baseline) | "1", then, asked to make it explicit: "Yes, 4 runs" (Checkpoint A, 4 baseline runs; OI-4's two extra runs not approved) and "(a) Capture on treatments too" (the X2 and X3 treatment runs also pass `--capture`, so both arms carry the capture's overhead). 2026-10-01 19:58 UTC. Secrets: the owner asked on 2026-10-01 that the env file be used for the live runs' keys, so the orchestrator copied the main checkout's `.env` to the worktree root without reading or printing it (OI-7). |
 | X1 | "you can run it now. We still ahve some time", 2026-10-02 about 00:18 UTC, in reply to the Checkpoint X1 message. The owner did not answer the Latte-capture choice, so the plan's own `latte-baseline-1` capture is used. |
-| X1-B | |
-| X2 | |
-| X3 | |
+| X1-B | "Yes, run X1-B", 2026-10-02 about 02:25 UTC, in reply to the filled Checkpoint X1-B message (X1-A's failed checks, the 12 replays on `tamil-baseline-1` and `latte-baseline-1`, `verifier_batch_figures: 12` and the live case if they pass, and that a rejection reverts the config and the code). |
+| X2 | "Yes, run X2 after X1-B", 2026-10-02 about 02:25 UTC, in reply to the filled Checkpoint X2 message (both suite arms, then 3 paired runs with `--capture` per Checkpoint A's choice (a) if the suite gate passes). |
+| X3 | Standing approval, 2026-10-02 about 02:30 UTC: "dont wait for my approval. Continue till you execute the entire plan". This covers Checkpoint X3 and any replacement run the plan would otherwise ask about. The final PR still waits for the owner's word (their instruction at the start of this session: "open the final PR only when I say so"). |
 
 ## Baseline (Task 20)
 
