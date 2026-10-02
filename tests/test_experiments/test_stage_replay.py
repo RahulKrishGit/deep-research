@@ -294,3 +294,59 @@ def test_a_replay_refuses_to_start_inside_deepseeks_peak_hours(tmp_path: Path) -
 
     assert code == 2
     assert not (tmp_path / "out").exists()
+
+
+def test_a_replay_starts_inside_peak_hours_on_an_owner_declared_off_peak_date(
+    tmp_path: Path,
+    tracker: Tracker,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The offline wiring of the run-command test above: no request leaves the machine."""
+    import deep_research.experiments.stage_replay as stage_replay
+    import deep_research.providers as providers
+    from deep_research.experiments.live_runs import OFF_PEAK_DATES_ENV
+    from deep_research.observability import Tracker as TrackerClass
+    from deep_research.utils.config import load_config
+
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-01..2026-10-07")
+    monkeypatch.setattr(
+        stage_replay, "_settings",
+        lambda config, override: load_config(config, overrides=json.loads(override)),
+    )
+    monkeypatch.setattr(
+        providers, "build_chat_provider", lambda *args, **kwargs: _ConfirmingCompleter()
+    )
+    monkeypatch.setattr(TrackerClass, "from_config", classmethod(lambda cls, config: tracker))
+    _capture(tmp_path / "capture")
+
+    code = stage_replay.main(
+        ["run", "--capture", str(tmp_path / "capture"), "--arm", "control",
+         "--repetition", "1", "--override", "{}", "--out", str(tmp_path / "out")],
+        now=lambda: datetime(2026, 10, 3, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert code == 0
+    assert (tmp_path / "out" / "control-1.json").exists()
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "OFF-PEAK DATES (owner ruling): 2026-10-01, 2026-10-02, 2026-10-03, 2026-10-04, "
+        "2026-10-05, 2026-10-06, 2026-10-07"
+    )
+
+
+def test_a_malformed_off_peak_list_stops_a_replay_before_anything_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deep_research.experiments.live_runs import OFF_PEAK_DATES_ENV
+    from deep_research.experiments.stage_replay import main
+
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-07..2026-10-01")
+
+    with pytest.raises(ValueError, match="2026-10-07..2026-10-01"):
+        main(
+            ["run", "--capture", str(tmp_path), "--arm", "control", "--repetition", "1",
+             "--override", "{}", "--out", str(tmp_path / "out")],
+            now=lambda: datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert not (tmp_path / "out").exists()

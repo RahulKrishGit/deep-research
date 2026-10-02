@@ -28,7 +28,12 @@ treatment arm against the baseline arm: accuracy first, then time.
         --control CONTROL/results.json --treatment TREATMENT/results.json
 
 Every run is paid. ``run`` refuses to start when any minute of the next 50
-falls inside DeepSeek's peak hours, 01:00-04:00 or 06:00-10:00 UTC.
+falls inside DeepSeek's peak hours, 01:00-04:00 or 06:00-10:00 UTC. DeepSeek
+prices Chinese public holidays as off-peak in full, so the owner may declare
+such UTC dates in ``DEEP_RESEARCH_OFFPEAK_DATES`` (comma-separated dates or
+inclusive ``start..end`` ranges, e.g. ``2026-10-01..2026-10-07``). No peak
+minute on a declared date counts, and ``run`` prints the dates in force. A value
+that does not parse stops the command before anything is spent.
 """
 
 from __future__ import annotations
@@ -37,10 +42,12 @@ import argparse
 import asyncio
 import json
 import math
+import os
+import re
 import statistics
 import sys
-from collections.abc import Awaitable, Callable, Mapping, Sequence
-from datetime import datetime, timedelta, timezone
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +63,10 @@ QUESTIONS: dict[str, str] = {
 PEAK_HOURS_UTC: tuple[tuple[int, int], ...] = ((1, 4), (6, 10))
 PEAK_LOOKAHEAD_MINUTES = 50
 
+# The owner's opt-in exemption from the refusal above (see the module docstring).
+OFF_PEAK_DATES_ENV = "DEEP_RESEARCH_OFFPEAK_DATES"
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
 # Pre-registered tolerances (latency plan Task 17, "Pass criteria"). A
 # question's control spread is used when it has two or more control runs;
 # these floors stand in for it otherwise, and bound it from below.
@@ -67,12 +78,62 @@ DROPPED_RATE_MARGIN = 0.05
 SUITE_CASE_MARGIN_FLOOR = 0.05
 
 
-def peak_ahead(now: datetime, minutes: int = PEAK_LOOKAHEAD_MINUTES) -> bool:
-    """Whether any minute from ``now`` to ``now + minutes`` is a peak minute."""
+def _iso_date(text: str) -> date:
+    if _ISO_DATE.fullmatch(text) is None:
+        raise ValueError(text)
+    return date.fromisoformat(text)
+
+
+def off_peak_dates(value: str | None) -> frozenset[date]:
+    """The UTC dates in a ``DEEP_RESEARCH_OFFPEAK_DATES`` value.
+
+    Items are comma-separated, each ``YYYY-MM-DD`` or an inclusive
+    ``YYYY-MM-DD..YYYY-MM-DD`` range, with whitespace allowed around an item.
+    An unset or blank value is no dates. An item that is not a date or a range,
+    or a range that ends before it starts, raises ``ValueError`` naming it.
+    """
+    if value is None or not value.strip():
+        return frozenset()
+    dates: set[date] = set()
+    for raw in value.split(","):
+        item = raw.strip()
+        first, separator, last = item.partition("..")
+        try:
+            start = _iso_date(first)
+            end = _iso_date(last) if separator else start
+        except ValueError:
+            raise ValueError(f"{OFF_PEAK_DATES_ENV}: malformed item {item!r}") from None
+        if end < start:
+            raise ValueError(f"{OFF_PEAK_DATES_ENV}: item {item!r} ends before it starts")
+        dates.update(start + timedelta(days=offset) for offset in range((end - start).days + 1))
+    return frozenset(dates)
+
+
+def announce_off_peak_dates() -> None:
+    """Print the declared off-peak dates, so the run's record shows them in force."""
+    dates = off_peak_dates(os.environ.get(OFF_PEAK_DATES_ENV))
+    if dates:
+        print("OFF-PEAK DATES (owner ruling): " + ", ".join(day.isoformat() for day in sorted(dates)))
+
+
+def peak_ahead(
+    now: datetime,
+    minutes: int = PEAK_LOOKAHEAD_MINUTES,
+    off_peak: Collection[date] | None = None,
+) -> bool:
+    """Whether any minute from ``now`` to ``now + minutes`` is a peak minute.
+
+    A minute is peak when its UTC hour is in ``PEAK_HOURS_UTC``, on every day,
+    unless its UTC date is in ``off_peak``; ``None`` reads the dates from
+    ``DEEP_RESEARCH_OFFPEAK_DATES``.
+    """
+    if off_peak is None:
+        off_peak = off_peak_dates(os.environ.get(OFF_PEAK_DATES_ENV))
     moment = now.astimezone(timezone.utc)
+    ahead = (moment + timedelta(minutes=offset) for offset in range(minutes + 1))
     return any(
-        start <= (moment + timedelta(minutes=offset)).hour < end
-        for offset in range(minutes + 1)
+        minute.date() not in off_peak and start <= minute.hour < end
+        for minute in ahead
         for start, end in PEAK_HOURS_UTC
     )
 
@@ -681,6 +742,7 @@ def main(
             config_path=arguments.config,
             settings_loader=settings_loader,
         )
+    announce_off_peak_dates()
     if peak_ahead(now()):
         print("REFUSE: DeepSeek peak hours start within 50 minutes; nothing was run.")
         return 2

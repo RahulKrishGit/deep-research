@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,11 +12,13 @@ from typing import Any
 import pytest
 
 from deep_research.experiments.live_runs import (
+    OFF_PEAK_DATES_ENV,
     QUESTIONS,
     compare,
     load_runs,
     lock_waits,
     main,
+    off_peak_dates,
     output_speeds,
     peak_ahead,
     quality_metrics,
@@ -47,6 +49,87 @@ def test_peak_hours_are_looked_for_fifty_minutes_ahead_every_day(
 ) -> None:
     # 2026-10-01 is a Thursday and 2026-10-03 a Saturday.
     assert peak_ahead(datetime(2026, 10, day, hour, minute, tzinfo=timezone.utc)) is peak
+
+
+def _national_day() -> frozenset[date]:
+    """China's National Day holiday, 1-7 October 2026, as UTC dates."""
+    return frozenset(date(2026, 10, day) for day in range(1, 8))
+
+
+def test_an_owner_declared_off_peak_date_is_not_peak() -> None:
+    holiday = datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc)
+
+    assert peak_ahead(holiday) is True
+    assert peak_ahead(holiday, off_peak=frozenset({date(2026, 10, 2)})) is False
+
+
+def test_the_lookahead_into_the_first_day_after_the_holiday_is_peak() -> None:
+    # 00:20 on the 8th reaches 01:00 on the 8th, which is not exempt.
+    assert peak_ahead(datetime(2026, 10, 8, 0, 20, tzinfo=timezone.utc), off_peak=_national_day())
+
+
+def test_the_lookahead_out_of_the_last_holiday_day_is_not_peak() -> None:
+    # 23:30 on the 7th looks ahead only to 00:20 on the 8th.
+    assert not peak_ahead(
+        datetime(2026, 10, 7, 23, 30, tzinfo=timezone.utc), off_peak=_national_day()
+    )
+
+
+def test_the_exempt_dates_are_read_from_the_environment_when_none_are_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    holiday = datetime(2026, 10, 2, 0, 30, tzinfo=timezone.utc)
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-02")
+
+    assert peak_ahead(holiday) is False
+    assert peak_ahead(holiday, off_peak=frozenset()) is True
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, set()),
+        ("", set()),
+        ("   ", set()),
+        ("2026-10-02", {date(2026, 10, 2)}),
+        ("2026-10-01..2026-10-03", {date(2026, 10, day) for day in (1, 2, 3)}),
+        ("2026-10-02..2026-10-02", {date(2026, 10, 2)}),
+        (
+            " 2026-10-01 , 2026-10-03..2026-10-04 ,2026-10-09 ",
+            {date(2026, 10, day) for day in (1, 3, 4, 9)},
+        ),
+    ],
+)
+def test_off_peak_dates_are_dates_and_inclusive_ranges_separated_by_commas(
+    value: str | None, expected: set[date]
+) -> None:
+    assert off_peak_dates(value) == frozenset(expected)
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        "tomorrow",
+        "2026-13-01",
+        "2026-02-30",
+        "20261002",
+        "2026-10-2",
+        "2026-10-01..",
+        "..2026-10-01",
+        "2026-10-01..2026-10-02..2026-10-03",
+        "2026-10-07..2026-10-01",
+    ],
+)
+def test_a_malformed_or_reversed_item_is_rejected_by_name(item: str) -> None:
+    with pytest.raises(ValueError) as error:
+        off_peak_dates(f"2026-10-01, {item} ,2026-10-09")
+
+    assert item in str(error.value)
+
+
+def test_an_empty_item_in_a_list_is_rejected() -> None:
+    with pytest.raises(ValueError, match="malformed"):
+        off_peak_dates("2026-10-01,,2026-10-09")
 
 
 def _quality(**quality: Any) -> dict[str, Any]:
@@ -792,6 +875,83 @@ def test_a_configuration_error_spends_nothing_and_leaves_no_run_directory(
              "--out", str(tmp_path / "live")],
             research=research,
             settings_loader=settings_loader,
+            now=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+        )
+
+    assert not (tmp_path / "live").exists()
+
+
+def test_the_run_command_starts_inside_peak_hours_on_an_owner_declared_off_peak_date(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _publish_quality(tmp_path / "output")
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-01..2026-10-07")
+
+    code = main(
+        ["run", "--question", "rome", "--arm", "x3", "--repetition", "1",
+         "--out", str(tmp_path / "live")],
+        research=_published(QUALITY_FILE),
+        settings_loader=_settings_loader(tmp_path / "output", []),
+        now=lambda: datetime(2026, 10, 3, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert code == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "OFF-PEAK DATES (owner ruling): 2026-10-01, 2026-10-02, 2026-10-03, 2026-10-04, "
+        "2026-10-05, 2026-10-06, 2026-10-07"
+    )
+    assert (tmp_path / "live" / "rome-x3-1" / "run.json").exists()
+
+
+def test_the_run_command_still_refuses_peak_minutes_on_a_date_outside_the_declared_ones(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def research(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no run may start inside peak hours")
+
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-01..2026-10-07")
+
+    code = main(
+        ["run", "--question", "tamil", "--arm", "baseline", "--repetition", "1",
+         "--out", str(tmp_path)],
+        research=research,
+        now=lambda: datetime(2026, 10, 8, 0, 30, tzinfo=timezone.utc),
+    )
+
+    assert code == 2
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_run_command_prints_no_off_peak_line_when_no_dates_are_declared(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _publish_quality(tmp_path / "output")
+
+    code = main(
+        ["run", "--question", "rome", "--arm", "x3", "--repetition", "1",
+         "--out", str(tmp_path / "live")],
+        research=_published(QUALITY_FILE),
+        settings_loader=_settings_loader(tmp_path / "output", []),
+        now=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert code == 0
+    assert "OFF-PEAK" not in capsys.readouterr().out
+
+
+def test_a_malformed_off_peak_list_stops_the_run_command_before_anything_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def research(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no run may start on a list that does not parse")
+
+    monkeypatch.setenv(OFF_PEAK_DATES_ENV, "2026-10-07..2026-10-01")
+
+    with pytest.raises(ValueError, match="2026-10-07..2026-10-01"):
+        main(
+            ["run", "--question", "rome", "--arm", "baseline", "--repetition", "1",
+             "--out", str(tmp_path / "live")],
+            research=research,
             now=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc),
         )
 

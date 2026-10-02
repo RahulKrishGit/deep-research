@@ -37,7 +37,7 @@ from deep_research.agents.evidence_verifier import (
     check_statements,
 )
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.experiments.live_runs import peak_ahead
+from deep_research.experiments.live_runs import announce_off_peak_dates, peak_ahead
 from deep_research.utils.types import Finding, ResearchError, ResearchState
 
 CONTEXT_CHECK = "context_check"
@@ -374,6 +374,7 @@ def main(
     summary.add_argument("--out", required=True)
     arguments = parser.parse_args(argv)
     if arguments.command == "run":
+        announce_off_peak_dates()
         if peak_ahead(now()):
             print("REFUSE: DeepSeek peak hours start within 50 minutes; nothing was run.")
             return 2
