@@ -150,7 +150,6 @@ from deep_research.agents.evidence_verifier import (
     statement_check_failed_error,
     statement_check_omitted_error,
     check_statements,
-    context_check_batches,
 )
 from deep_research.agents.figures import (
     Quantity,
@@ -691,7 +690,6 @@ __all__ = [
     "statement_check_failed_error",
     "statement_check_omitted_error",
     "check_statements",
-    "context_check_batches",
     "Quantity",
     "figure_in_text",
     "is_a_date",

@@ -320,11 +320,6 @@ class AgentRuntimeConfig(BaseModel):
     sub_topic_concurrency: int = Field(default=5, ge=1)
     source_scoring_concurrency: int = Field(default=6, ge=1)
     verifier_batch_size: int = Field(default=5, ge=1)
-    verifier_batch_figures: int | None = Field(default=None, ge=1)
-    """Latency plan X1-B (audit O5): when set, a Context Check batch also
-    holds at most this many figures, and a finding with more is asked alone.
-    ``None`` cuts batches by ``verifier_batch_size`` alone. The Statement Check
-    judges sentences, not figures, and never reads it."""
     verifier_concurrency: int = Field(default=16, ge=1)
     extraction_concurrency: int = Field(default=16, ge=1)
     """S6: how many of one sub-topic's per-page extraction calls run at once.

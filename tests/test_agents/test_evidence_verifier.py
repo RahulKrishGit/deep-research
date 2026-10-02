@@ -27,7 +27,6 @@ from deep_research.agents.evidence_verifier import (
     StatementVerdictDraft,
     VerifiedFindings,
     check_statements,
-    context_check_batches,
     context_check_messages,
     context_passage,
     evaluated_issuer,
@@ -2763,59 +2762,6 @@ async def test_a_truncated_statement_batchs_halves_are_asked_together() -> None:
     assert errors == []
     assert sorted(results) == ["S01", "S02", "S03"]
     assert all(verdict is not None and verdict.verdict == "consistent" for verdict in results.values())
-
-
-# ---------------------------------------------------------------------------
-# Latency plan X1-B (audit O5): batches bounded by figure count
-# ---------------------------------------------------------------------------
-
-
-def _weighted_items(*weights: int) -> list[ContextItem]:
-    sentences = [f"Site {index:03d} reported its capacity figures." for index in range(len(weights))]
-    read = make_read(" ".join(sentences), url="https://example.test/weights", title="Weights")
-    return [
-        _item(read, make_finding(
-            read, sentence,
-            figures=[figure(str(10 + n), "GW", "2025", "actual") for n in range(weight)],
-            content=f"Site {index:03d} finding",
-        ))
-        for index, (sentence, weight) in enumerate(zip(sentences, weights))
-    ]
-
-
-def _weights(batches: list[list[ContextItem]]) -> list[list[int]]:
-    return [[len(item.finding.figures) for item in batch] for batch in batches]
-
-
-def test_without_a_figure_bound_batches_are_cut_by_count_alone() -> None:
-    items = _weighted_items(1, 1, 1, 1, 1, 16, 1)
-
-    assert _weights(context_check_batches(items, 5)) == [[1, 1, 1, 1, 1], [16, 1]]
-
-
-def test_a_figure_bound_closes_a_batch_and_asks_a_heavy_finding_alone() -> None:
-    items = _weighted_items(1, 16, 2, 2, 1, 9, 1, 1, 1, 1, 1)
-
-    assert _weights(context_check_batches(items, 5, 12)) == [
-        [1], [16], [2, 2, 1], [9, 1, 1, 1], [1, 1],
-    ]
-
-
-@pytest.mark.asyncio
-async def test_the_configured_figure_bound_reaches_the_context_check(tracker: Tracker) -> None:
-    read = make_read(_metrics_page(4), url="https://example.test/batch", title="Batch metrics")
-    findings = [_metric_finding(read, i) for i in range(4)]
-    completer = ScriptedCompleter(outputs=[_confirm_reply] * 2)
-    agent = _evidence_verifier(
-        tracker, completer,
-        config=AgentRuntimeConfig(verifier_batch_size=5, verifier_batch_figures=2),
-    )
-    state = _state(raw_findings=findings, read_records={read.read_id: read})
-
-    async with tracker.session_span("session-1", "question"):
-        await agent.run(state)
-
-    assert [call[0] for call in completer.calls] == ["ContextCheckDraft"] * 2
 
 
 @pytest.mark.asyncio
