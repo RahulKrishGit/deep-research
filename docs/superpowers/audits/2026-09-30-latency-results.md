@@ -1,6 +1,10 @@
 # Latency experiments: results
 
-**Status** in progress. The protocol and the pass rules are `docs/superpowers/plans/2026-09-30-latency.md` Tasks 17-24; nothing here changes them.
+**Status** complete. The protocol and the pass rules are `docs/superpowers/plans/2026-09-30-latency.md` Tasks 17-24; nothing here changes them. The deviations, each recorded where it happened:
+- the owner's holiday off-peak ruling;
+- the parallel suite arms;
+- X3's suite gate run before X2's decision;
+- the runner's quality-path fix.
 
 ## Checkpoints
 
@@ -263,7 +267,31 @@ Every other check is true on all three questions: completed, no hard failures, n
 - What failed: Latte's treatment refused 3 sentences in the Statement Check. Its only usable control, `latte-baseline-2`, refused 0, so the allowed maximum is max(2, ⌈25% × 0⌉) = 2.
 - `latte-baseline-1` refused 1 sentence, but it is not a control under H10 (incomplete, from the 0.80 rounding defect). With it, the allowed maximum would have been 3 and the check would have passed. The rule was applied as fixed.
 - Time: the planner stage was faster on all three questions, by 50-114 s, and the mean end-to-end ratio was 0.9378.
+
 ## Decisions
 
 | Experiment | Decision | Commit |
 |---|---|---|
+| X1-A: `verifier_batch_size` 5 -> 2 | rejected (stage replay: Tamil and Latte both exit 1) | none |
+| X1-B: Context Check batches bounded at 12 figures | rejected (stage replay: Tamil and Latte both exit 1); its code `08b231ac` reverted by `890d1ac4` | none |
+| X2: researcher thinking disabled | rejected (tier-3 gate exit 1; the researcher suite fails the control too, see X2) | none |
+| X3: planner `reasoning_effort` high | rejected (paired runs exit 1: Latte `refused_sentences` 3 > 2; time passed) | none |
+
+**What the plan delivered on latency.**
+- No experiment was kept, so the shipped configuration is Part 1's: steps 0-4 of the audit.
+- The baseline's mean Tamil time is **1,436.5 s (23.9 min)**, from `tamil-baseline-1` (1,403 s) and `tamil-baseline-2` (1,470 s), against the audit's pre-Part-1 1,504.7 s graph time.
+- The audit projected 22-23 min for steps 0-4 alone, and 18-20 min with X1 and X2, or 16-19 min with X3 as well. Neither later band applies: no experiment was kept, so there is no measured stage saving.
+- Within the rejected X3, the planner stage ran 50-114 s faster per question.
+
+**Follow-ups for the owner, outside this plan.**
+1. **The 0.80 rounding defect in the review gate** (`semantic_review_passes`, `src/deep_research/agents/report_reviewer.py:463-468`). An exact 0.80 mean computes as 0.7999999999999999 and fails `>= 0.80`. The owner ruled it a separate branch and PR after the experiments. It also decided X3's verdict indirectly, because it took `latte-baseline-1` out of the controls.
+2. **The researcher's controlled suite fails 0/N on `no_prohibited_calls`** in every recorded run since 2026-09-09: the researcher asks for URLs the cases do not script. Until it is repaired, no researcher experiment (X2 included) can pass a tier-3 gate.
+3. **X3 was rejected on a single Latte control with 0 refusals** (OI-4's second control per question was not approved at Checkpoint A). If the owner wants X3 re-examined, more Latte controls would give that check a measured spread. That needs a new approval.
+
+**Final configuration check (Task 25 Step 2, 2026-10-02 about 06:30 UTC, at `1f25651a` plus this record).**
+- Full suite: `5317 passed, 1 deselected`.
+  - That is Step 0's 5096 on the pre-merge branch, plus the notes merge (5283), the runner's quality-path fix (+7: 5290) and the holiday exemption (+27: 5317).
+  - X1-B's three tests were reverted with it.
+- Replay matrix: `Suite: accepted (3 repetitions per case, 35/35 rows)` and `Network: zero (socket layer denied; 0 attempts recorded)`.
+
+**Secrets.** The orchestrator copied the main checkout's `.env` to this worktree's root on the owner's instruction. The owner should delete that copy (OI-7).
