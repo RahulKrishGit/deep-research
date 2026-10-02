@@ -225,7 +225,44 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
 `harness_passed: true`, `within_control: true`, `passed: true`.
 
 **Tier 4, three paired runs (Step 4, PAID).** Override (no earlier experiment kept): `{"llm": {"model_overrides": {"planner": {"reasoning_effort": "high", "timeout": 1800.0}}}}`, with `--capture` (Checkpoint A choice (a)). The chain (`output/latency-experiments/x3-runs.sh`) started `tamil-x3-1` at 05:12:26 UTC, followed by `latte-x3-1` and `rome-x3-1`, each after the off-peak check (`REFUSE Fri 05:12Z` by the plan's every-day check, `OK` by the holiday ruling).
+- While `tamil-x3-1` ran, the conditional keep edit (Step 6) was prepared in a separate worktree (`.worktrees/x3-keep`, branch `prep/x3-keep`, not merged). Its full suite and replay matrix ran on this machine for about 6 minutes.
+  - That adds local CPU load during one treatment run and none during the baselines. It can only make the treatment slower, so it biases the time verdict against keeping X3, the conservative direction. Recorded as a known deviation.
+  - The edit is merged only if Step 5's verdict says keep.
 
+- The runs:
+  - `tamil-x3-1`: 05:12:26-05:39:17 UTC, exit 0;
+  - `latte-x3-1`: 05:39:17-06:01:45 UTC, exit 0;
+  - `rome-x3-1`: 06:01:45-06:23:49 UTC, exit 0.
+  - Each `run.json` records the override under `"overrides"`.
+
+| Run | Status | Quality | Seconds | Planner s | Review | Required coverage | Verified + corrected | Cited sources / publishers | Refused |
+|---|---|---|---|---|---|---|---|---|---|
+| tamil-x3-1 | completed | accepted | 1604 | 201 | 0.8286 | 1.0 | 183 | 34 / 16 | 0 |
+| latte-x3-1 | completed | accepted | 1342 | 126 | 0.8714 | 1.0 | 110 | 31 / 19 | 3 |
+| rome-x3-1 | completed | accepted | 1319 | 75 | 0.8714 | 1.0 | 54 | 28 / 20 | 1 |
+
+**The verdict (Step 5, `live_runs compare --treatment x3 --stage planner`, from the code): exit 1.** The full JSON is in `output/latency-experiments/x3-verdict.json`.
+- `review_margin` 0.0429, `kept_margin` 0.5583.
+- `accuracy_passed: false`, `time_passed: true`, `passed: false`.
+- `stage_faster_on: 3`, `mean_seconds_ratio: 0.9378`, `unpaired: []`.
+- `controls_used`:
+  - latte: repetition 1 (`session_status` null, used false), repetition 2 (`completed`, used true);
+  - rome: repetition 1 (`completed`, used);
+  - tamil: repetitions 1 and 2 (`completed`, both used).
+
+| Question | Planner s: treatment / control mean | `seconds_ratio` | Failed checks |
+|---|---|---|---|
+| tamil-1 | 201.363 / 251.894 | 1.1161 | none |
+| latte-1 | 126.313 / 239.118 | 0.8013 | **`refused_sentences`** |
+| rome-1 | 75.21 / 170.272 | 0.896 | none |
+
+Every other check is true on all three questions: completed, no hard failures, no unjudged sentences, no unresolved citations, review scored, accepted if controls were, review score, material defects, required coverage, not found, verified plus corrected, cited sources, publishers, dropped rate.
+
+**Decision (Step 6): X3 is rejected, by the pre-registered verdict.** Nothing was changed.
+- The prepared keep commits on `prep/x3-keep` (`72a240d4`, plus `d2a10ff0`, which fixed two comments its review found still saying `max`) were never merged. The branch and its worktree were deleted. `config.yaml`, `src`, `tests` and `scripts` are as at `f99b283e`.
+- What failed: Latte's treatment refused 3 sentences in the Statement Check. Its only usable control, `latte-baseline-2`, refused 0, so the allowed maximum is max(2, ⌈25% × 0⌉) = 2.
+- `latte-baseline-1` refused 1 sentence, but it is not a control under H10 (incomplete, from the 0.80 rounding defect). With it, the allowed maximum would have been 3 and the check would have passed. The rule was applied as fixed.
+- Time: the planner stage was faster on all three questions, by 50-114 s, and the mean end-to-end ratio was 0.9378.
 ## Decisions
 
 | Experiment | Decision | Commit |
