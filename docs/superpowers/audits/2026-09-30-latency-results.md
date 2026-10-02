@@ -87,6 +87,18 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
 
 - 2026-10-02 00:19:15 UTC: Step 2's loop was started detached (`output/latency-experiments/replay-x1a.sh`, the plan's block verbatim). The first `stage_replay run` refused by itself (`REFUSE: DeepSeek peak hours start within 50 minutes; nothing was run.`, exit 2). The OFF-PEAK CHECK printed `REFUSE Fri 00:19:15Z`. Nothing was spent, and no replay file or directory was written. The last allowed start before Friday's 01:00 window was 00:09 UTC.
 
+**Owner ruling: Chinese public holidays are off-peak (2026-10-02, about 00:25 UTC).** "yes since it is national holiday, override it and run the experiments".
+- DeepSeek's pricing page (`api-docs.deepseek.com/quick_start/pricing`, read 2026-10-02) says: "Peak hours are 01:00 - 04:00 and 06:00 - 10:00 UTC, Monday through Friday, excluding Chinese public holidays. All other hours are off-peak, including weekends and Chinese public holidays in full."
+- China's National Day holiday runs 1-7 October 2026, Thursday to Wednesday (china-briefing.com's 2026 holiday schedule, timeanddate.com, trip.com).
+- This amends OI-14 for those dates only. The runners' peak refusal gains an opt-in list of exempt UTC dates (`DEEP_RESEARCH_OFFPEAK_DATES`), with every other rule unchanged, and the change goes through implementation and review before any paid command uses it.
+- The 04:00 UTC scheduler started earlier was stopped (no replay process left).
+- The exemption is `3d351442` (`fix(experiments): honour owner-declared off-peak dates (Chinese public holidays) in the peak refusal`), implemented test-first.
+  - The full suite gave `5317 passed, 1 deselected` (5290 plus 27 new tests), the new reference count for Task 25.
+  - The review returned APPROVE with no findings. It confirmed that `PEAK_HOURS_UTC`, `PEAK_LOOKAHEAD_MINUTES`, every threshold, every verdict function and the REFUSE text are unchanged, that the check stays per minute in UTC, and that an unset variable changes nothing.
+  - It was pushed at about 01:26 UTC.
+- Paid commands now run with `DEEP_RESEARCH_OFFPEAK_DATES=2026-10-01..2026-10-07`. Each prints `OFF-PEAK DATES (owner ruling): 2026-10-01, ..., 2026-10-07`.
+- 2026-10-02 01:26:20 UTC: Step 2's loop was restarted under the ruling. Its first line was the `OFF-PEAK DATES` line, and the replays began.
+
 ## X1-B: batches bounded by figure count (Task 22)
 
 ## X2: researcher with thinking disabled (Task 23)
