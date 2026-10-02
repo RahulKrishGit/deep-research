@@ -98,6 +98,33 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
   - It was pushed at about 01:26 UTC.
 - Paid commands now run with `DEEP_RESEARCH_OFFPEAK_DATES=2026-10-01..2026-10-07`. Each prints `OFF-PEAK DATES (owner ruling): 2026-10-01, ..., 2026-10-07`.
 - 2026-10-02 01:26:20 UTC: Step 2's loop was restarted under the ruling. Its first line was the `OFF-PEAK DATES` line, and the replays began.
+- 2026-10-02 02:18:24 UTC: the loop ended with exit 0. All twelve result files exist (`replay-x1a/{tamil,latte}/{control,treatment}-{1,2,3}.json`, each checked before summarising).
+
+**Verdicts (Step 3; `stage_replay summarize`, pasted from the code).**
+
+| | Tamil | Latte |
+|---|---|---|
+| exit | **1** (`"passed": false`) | **1** (`"passed": false`) |
+| Context Check agreement: control floor / treatment | 0.5948 / 0.659 | 0.8793 / 0.8793 |
+| Context Check seconds, median: control / treatment | 253.068 / 193.937 | 169.658 / 180.951 |
+| Statement Check agreement: control floor / treatment | 0.9804 / 0.9412 | 0.9 / 0.8978 |
+| Statement Check seconds, median: control / treatment | 65.242 / 47.21 | 101.095 / 92.168 |
+| `context_check.agreement` | true | true |
+| `context_check.figures_dropped` | true | true |
+| `context_check.findings_kept` | true | true |
+| `context_check.figures_unchecked` | true | true |
+| `context_check.faster` | true | **false** |
+| `statement_check.agreement` | **false** | **false** |
+| `statement_check.inconsistent` | **false** | true |
+| `statement_check.unjudged` | true | true |
+
+- The Statement Check fails on both captures.
+  - Tamil: 1, 0 and 0 inconsistent sentences of 51 in the control repetitions, against 3, 1 and 2 in the treatment, which also corrected 2 in one repetition. Treatment agreement is 0.9412, below the control floor of 0.9804.
+  - Latte: treatment agreement is 0.8978, below the floor of 0.9.
+- Latte's Context Check was also slower at batch size 2 (median 180.951 s against 169.658 s).
+- The Context Check's accuracy checks all pass on both captures.
+
+**Decision (Step 4): X1-A is rejected.** Nothing was changed: no config edit, no commit of `verifier_batch_size`. Steps 5-8 are skipped and the experiment goes to Task 22 (X1-B).
 
 ## X1-B: batches bounded by figure count (Task 22)
 
