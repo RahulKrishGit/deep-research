@@ -145,6 +145,32 @@ CONTEXT_CHECK_BATCH_SIZE = 5
 CONTEXT_CHECK_CONCURRENCY = 8
 CONTEXT_PASSAGE_CHARS = 6000
 
+
+def context_check_batches(
+    items: Sequence["ContextItem"], size: int, figures: int | None = None
+) -> list[list["ContextItem"]]:
+    """The Context Check's batches, in the items' own order.
+
+    At most ``size`` items each; with ``figures`` (latency plan X1-B), also at
+    most that many figures each, a finding with more of them in a batch of its
+    own. Without it, exactly the count-only cut the verifier always made.
+    """
+    if figures is None:
+        return [list(items[i : i + size]) for i in range(0, len(items), size)]
+    batches: list[list[ContextItem]] = []
+    current: list[ContextItem] = []
+    carried = 0
+    for item in items:
+        weight = len(item.finding.figures)
+        if current and (len(current) == size or carried + weight > figures):
+            batches.append(current)
+            current, carried = [], 0
+        current.append(item)
+        carried += weight
+    if current:
+        batches.append(current)
+    return batches
+
 CONTEXT_CHECK_SYSTEM_PROMPT = (
     "You check the context of figures that a research system copied from web "
     "pages. For each figure the block prints the page's own title and owner, the "
@@ -1193,8 +1219,9 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                                          passage=context_passage(read, finding.locator, finding.snippet),
                                          match=match, issuer=evaluated_issuer(sources, read),
                                          page_date=evaluated_page_date(sources, read)))
-        batches = [items[i : i + self.config.verifier_batch_size]
-                   for i in range(0, len(items), self.config.verifier_batch_size)]
+        batches = context_check_batches(
+            items, self.config.verifier_batch_size, self.config.verifier_batch_figures
+        )
         gate = asyncio.Semaphore(self.config.verifier_concurrency)
         progress = _VerifyProgress(findings, batches=len(batches), sources=sources)
         if on_progress is not None:

@@ -1350,7 +1350,11 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     # untouched by either, so the value is re-pinned on the merged source, from
     # the pin test's reported value. Moved `2c360ecb7315` (branch) / `31bcab803a6a` (main)
     # -> `3df423028612`.
-    "evidence_verifier": "3df423028612",
+    # Latency plan Task 22 (X1-B, audit O5): the Context Check's batches are
+    # cut by context_check_batches, which adds an optional figure bound
+    # (agents.verifier_batch_figures, unset by default). Module code only;
+    # with the bound unset every request is the one the count-only cut sent. Moved `3df423028612` -> `16bd62b73e1b`.
+    "evidence_verifier": "16bd62b73e1b",
     # FF2 run-6 (RevRun2Wave's F3, the run-2 wave review): a piece cut after a
     # ';' is now printed with the point's own introduction in front of it, so a
     # list's later items no longer stand without their subject and conditions;
