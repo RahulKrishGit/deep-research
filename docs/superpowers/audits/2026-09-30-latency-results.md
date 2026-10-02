@@ -7,7 +7,7 @@
 | Checkpoint | Approved by the human (their words, date, time UTC) |
 |---|---|
 | A (baseline) | "1", then, asked to make it explicit: "Yes, 4 runs" (Checkpoint A, 4 baseline runs; OI-4's two extra runs not approved) and "(a) Capture on treatments too" (the X2 and X3 treatment runs also pass `--capture`, so both arms carry the capture's overhead). 2026-10-01 19:58 UTC. Secrets: the owner asked on 2026-10-01 that the env file be used for the live runs' keys, so the orchestrator copied the main checkout's `.env` to the worktree root without reading or printing it (OI-7). |
-| X1 | |
+| X1 | "you can run it now. We still ahve some time", 2026-10-02 about 00:18 UTC, in reply to the Checkpoint X1 message. The owner did not answer the Latte-capture choice, so the plan's own `latte-baseline-1` capture is used. |
 | X1-B | |
 | X2 | |
 | X3 | |
@@ -84,6 +84,8 @@ Neither has a `run.json`. All four aborted attempts together cost at most four p
   - on the floating-point bug: "Yes, separate branch/PR after the experiments". So it is not fixed here, and the code stays identical across all arms.
 
 ## X1-A: verifier batch size 5 -> 2 (Task 21)
+
+- 2026-10-02 00:19:15 UTC: Step 2's loop was started detached (`output/latency-experiments/replay-x1a.sh`, the plan's block verbatim). The first `stage_replay run` refused by itself (`REFUSE: DeepSeek peak hours start within 50 minutes; nothing was run.`, exit 2). The OFF-PEAK CHECK printed `REFUSE Fri 00:19:15Z`. Nothing was spent, and no replay file or directory was written. The last allowed start before Friday's 01:00 window was 00:09 UTC.
 
 ## X1-B: batches bounded by figure count (Task 22)
 
