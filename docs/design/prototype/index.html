@@ -1045,7 +1045,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg .loops[hidden]{display:none}
 /* ═══ 2026-09-26: two arcs and the loop tag ═══ */
 /* The arc's stroke is the loop's kind: amber `--warn` for an extra pass, grey `--meta` for a
-   redraft (spec §4.1). `--meta` is a stroke here and never text. */
+   redraft. `--meta` is a stroke here and never text. */
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-base,
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-flow{stroke:var(--warn)}
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-head{fill:var(--warn)}
@@ -1366,7 +1366,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         <div class="with-rail report-main">
           <div class="stack" style="gap:var(--space-6)">
             <!-- The server's Markdown, rendered as-is: the server owns wording, order, numbering
-                 and the table (spec 2026-09-25 §3). Presentation-only adaptations (spec §4.4): the
+                 and the table. Presentation-only adaptations: the
                  title is not repeated, [n] markers become anchors, the sources list carries ids,
                  the table sits in a horizontally scrolling frame, the evidence-log link is muted text
                  until the service serves the log (api-gaps E1). One battery-storage report is reused
@@ -1527,7 +1527,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         <div class="with-rail">
           <div class="stack" style="gap:var(--space-5)">
             <div class="note bad" data-od-id="failed-panel">
-              <!-- The headline is the halting type in plain words (spec §4.2); the enumerated
+              <!-- The headline is the halting type in plain words; the enumerated
                    error_type stays in the facts list and the API's own message is the sentence. -->
               <div class="note-head"><span class="mk">halt</span><span id="failedType">—</span></div>
               <p id="failedMessage">The run stopped on a non-recoverable error.</p>
@@ -1630,7 +1630,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                          source_urls:17, findings:18, assessed_sources:14, cited_assessed_sources:12,
                          verified_findings:12, corrected_findings:2, quoted_findings:1, dropped_findings:3,
                          context_unchecked_findings:1, cited_findings:11 };
-  /* what a run submitted from the composer ends on: one pass, accepted at 0.86 (spec §4.3) */
+  /* what a run submitted from the composer ends on: one pass, accepted at 0.86 */
   var COMPOSER_FINAL = {
     review:{ status:"scored", score:0.86 },
     coverage:{ required_targets:4, answered_targets:4, missing_required_target_ids:[], not_found_target_ids:[] },
@@ -1687,7 +1687,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       trace:"https://smith.langchain.com/o/example/r/9ea4c220", group:"Yesterday",
       review:{ status:"provider_failed", score:null },
       coverage:{ required_targets:2, answered_targets:2, missing_required_target_ids:[], not_found_target_ids:[] },
-      /* 4 of 5 = 0.80: paints yellow on purpose (spec §4.4, DESIGN.md §3.6) */
+      /* 4 of 5 = 0.80: paints yellow on purpose (DESIGN.md §3.6) */
       evidenceCounts:Object.assign({}, BATTERY_COUNTS, { assessed_sources:5, cited_assessed_sources:4 }),
       errors:[] },
     { id:"2ad900b1", q:"Compare EU and UK grid connection reform outcomes.",
@@ -1730,13 +1730,13 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   function fmtScore(v){
     return (typeof v === "number" && isFinite(v)) ? v.toFixed(2) : null;
   }
-  /* coverage.not_found_target_ids → " · 1 target not found" / " · n targets not found" / "" (spec §4.2) */
+  /* coverage.not_found_target_ids → " · 1 target not found" / " · n targets not found" / "" */
   function notFoundClause(s){
     var ids = (s && s.coverage && s.coverage.not_found_target_ids) || [];
     if(!ids.length) return "";
     return " · " + ids.length + (ids.length === 1 ? " target not found" : " targets not found");
   }
-  /* The chip's second clause, one rule per API status (spec §4.2):
+  /* The chip's second clause, one rule per API status:
        running         pass p of P                       (from the stream while live)
        completed       review accepted · {score}         + not-found clause   (completed ⇔ report_accepted)
        max_iterations  extra passes used                 + not-found clause
@@ -2267,7 +2267,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     syncPills();
     syncExtraUI();
   }
-  /* The request body, exactly as POST /research would receive it (spec §4.3). No
+  /* The request body, exactly as POST /research would receive it. No
      reasoning_effort: a global value is shadowed by every role's own (utils/config.py:85-107).
      `max_iterations` is always present — 0 is a budget, not an absence. */
   function buildRequest(q){
@@ -2676,7 +2676,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   }
 
   /* ═══ scripted stream ═══
-     Event names and metadata keys are the engine's (graph/events.py; agents/*.py — spec §3.3),
+     Event names and metadata keys are the engine's (graph/events.py; agents/*.py),
      in the order the graph records them per pass: planner → researcher (per topic: started,
      tool calls, completed; then research.completed) → source_evaluator → evidence_verifier →
      report_writer (report.written, node.completed, then graph.quality.assessed from the node
@@ -2921,14 +2921,14 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 
   /* Keyed by event type; each handler reads only `md` (the event's metadata). The offline key
      check reads `md.<key>` out of each body and checks it against a replayed run, so read keys
-     only through `md.` and only the keys spec §3.3 lists for that event. */
+     only through `md.` and only the keys the engine publishes for that event. */
   var EVENT_HANDLERS = {
     "graph.session.started": function(run, md){
       if(typeof md.max_extra_passes === "number") run.maxPasses = 1 + md.max_extra_passes;
     },
     "graph.node.started": function(run, md){
       run.openNode = md.node;
-      /* the pass number is read here and from graph.extra_pass.started only (spec §3.2 rule 1) */
+      /* the pass number is read here and from graph.extra_pass.started only */
       if(typeof md.iteration === "number") run.pass = md.iteration + 1;
     },
     "graph.node.completed": function(run, md){
@@ -2998,7 +2998,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       run.tag = { kind:"extra_pass", label:"extra pass", text: plural(n, "required target had no verified finding", "required targets had no verified finding") };
       run.captions.researcher = plural(n, "missing target only", "missing targets only");
       run.blurbs.researcher = "Researching the " + plural(n, "target", "targets") + " still missing a verified finding.";
-      /* this-pass rows reset; whole-run and current-draft rows keep their values (spec §4.1) */
+      /* this-pass rows reset; whole-run and current-draft rows keep their values */
       var c = run.counters;
       c.subTopicsDone = null; c.subTopicsResearched = null; c.subTopicsTotal = null; c.findings = null;
       c.verified = null; c.corrected = null; c.dropped = null;
@@ -3303,7 +3303,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     host.textContent = "";
     if(!ec){ host.hidden = true; none.hidden = false; return; }
     host.hidden = false; none.hidden = true;
-    /* eleven values in ten rows (spec §4.4 rail card 3) */
+    /* eleven values in ten rows */
     [["findings", ec.findings], ["verified", ec.verified_findings], ["corrected", ec.corrected_findings],
      ["quoted", ec.quoted_findings], ["dropped", ec.dropped_findings], ["context unchecked", ec.context_unchecked_findings],
      ["cited", ec.cited_findings], ["reads", ec.network_reads + " network · " + ec.cache_reads + " cache"],
@@ -3404,7 +3404,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     setView("report");
   }
   /* ═══ the Evidence view (Q4) ═══
-     One fixture in E1's shape (spec §4.5), for the one battery-storage report every finished
+     One fixture in E1's shape, for the one battery-storage report every finished
      session reuses: at least one finding per status, one not-found target (T04) and one refused
      sentence. F03's source scores 0.80 overall, which paints yellow on purpose (DESIGN.md §3.6). */
   var EVIDENCE = {
@@ -3736,7 +3736,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
        the last graph.node.started with no graph.node.completed; every graph.node.skipped row is
        `skipped`; Publishing is `skipped` by the client rule status == "failed" — never
        has_report, which can be true after a first-pass writer (report_writer.py:3262) — because
-       the graph never runs finalize_report after a halt and no event exists for it (spec §3.1).
+       the graph never runs finalize_report after a halt and no event exists for it.
        An API-level failure (sessions.py:262-276,297-315) never emits `graph.session.completed`
        at all, leaving `run.finalStatus` null; falling back to the session's own `status` marks
        Publishing skipped there too, instead of leaving the row looking merely unreached. */
@@ -3866,7 +3866,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
       motion: function(){ return reducedMotion() ? "reduced" : "full"; },
       submit: function(q){ document.getElementById("prompt").value = q; submitResearch(); },
       finish: function(){ var s = activeSession(); if(s) finishPlayback(s); },
-      /* 2026-09-26 additions (spec §4.6), including arc() and loop() */
+      /* 2026-09-26 additions, including arc() and loop() */
       advanceTo: advanceTo,
       arc: function(){
         var wrap = document.getElementById("spineWrap");
