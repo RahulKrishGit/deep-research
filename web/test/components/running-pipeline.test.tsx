@@ -5,7 +5,7 @@ import { applyEvent, newRunState } from "../../lib/run-state";
 
 afterEach(() => { vi.useRealTimers(); });
 
-describe("RunningPipeline — the removals (live-briefs spec §4.2, AC3)", () => {
+describe("RunningPipeline — the removals", () => {
   it("has no Now header, no counters block and no pass text; the card holds the spine", () => {
     const run = newRunState();
     run.active = "researcher";
@@ -18,7 +18,7 @@ describe("RunningPipeline — the removals (live-briefs spec §4.2, AC3)", () =>
   });
 });
 
-describe("RunningPipeline — the steps' clock (notes-progress-report spec §6.9)", () => {
+describe("RunningPipeline — the steps' clock", () => {
   it("ticks the active step's elapsed time with the page's one-second clock", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-30T12:00:05Z"));

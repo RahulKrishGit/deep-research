@@ -7,7 +7,7 @@ const slot = (over: Partial<SlotLine>): SlotLine => ({ key: "slot-1", n: 1, titl
 const check = (over: Partial<CheckLine>): CheckLine => ({ key: "completeness", text: "Covers your whole question", mark: "waiting", before: "reading", fact: "", landed: false, ...over });
 const tick = (over: Partial<TickerLine>): TickerLine => ({ key: "v1", text: "Revenue rose 4%", quoted: false, verdict: "verified", kept: true, where: "an original report", ...over });
 
-describe("StepBodies (notes-progress-report spec §6.3-§6.7)", () => {
+describe("StepBodies", () => {
   it("StatusLine stacks every text in one cell and shows the `on`th", () => {
     const { container } = render(<StatusLine stack={{ texts: ["A", "B", "C"], on: 1 }} i={2} />);
     const line = container.querySelector(".ln.b-now.xf")!;

@@ -1,16 +1,13 @@
-// C1: the banner used to hold a single { target, retry } pair, shared across every component that
-// could raise it — whichever component noted it *last* silently owned the slot, any success
-// cleared it for everyone, and SessionScreen had no automatic ladder before its first successful
-// `/status`. A page loaded while the API was down could sit on "loading session" forever, or clear
-// to a false "not reachable" banner that never actually recovered. These specs reproduce the outage
-// with `page.route` 502 stubs — no real process kill needed — and prove the fixed, keyed registry:
+// Outage recovery: the unreachable-API banner is a keyed registry shared by every component that
+// can raise it. A page loaded while the API was down must not sit on "loading session" forever,
+// or clear to a false "not reachable" banner that never actually recovered. These specs reproduce
+// the outage with `page.route` 502 stubs — no real process kill needed — and prove the registry:
 // the banner is up while any owner's key is registered, Retry re-runs every registered retry, and
-// (C1 residual) any owner's own success cascades one retry to every other owner still registered —
-// spec §4.3:522 says the banner disappears on the first success, not just the first success of
-// every owner independently.
+// any owner's own success cascades one retry to every other owner still registered, so the banner
+// disappears on the first success, not only once every owner has succeeded independently.
 //
-// NB2 (re-review): a real outage fails the sidebar's list read too, not only the session's own
-// read — (a) and (d) below stub both. (c)'s two ordering variants now synchronise on each route
+// A real outage fails the sidebar's list read too, not only the session's own
+// read — (a) and (d) below stub both. (c)'s two ordering variants synchronise on each route
 // handler's own fulfilment (not a guessed wall-clock wait) before ever touching Retry, and hold
 // the banner-hidden assertion for a further 2 s to catch a late re-registration the click raced.
 import { expect, test, type Page, type Route } from "@playwright/test";
@@ -28,7 +25,7 @@ function delay(ms: number): Promise<void> {
   return promise;
 }
 
-test.describe("outage recovery (C1)", () => {
+test.describe("outage recovery", () => {
   test("(a) a session page loaded while /status AND the list read are both down recovers on its own, with no click", async ({ page, request }) => {
     const id = await submit(page, "q");
     await waitTerminal(request, id); // terminal before we ever navigate: the outage is only in the reads, not the run itself
@@ -42,7 +39,7 @@ test.describe("outage recovery (C1)", () => {
     await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 }); // the ladder's own retry gets there
     await expect(page.locator("#stage-loading")).toBeHidden();
     // The session key's own ladder success must cascade to the sidebar's key, which has no
-    // automatic retry of its own (C1 residual) — the count has to load without a click too.
+    // automatic retry of its own — the count has to load without a click too.
     await expect(page.locator("#sbCount")).toHaveText(/^\d+$/);
     await expect(banner(page)).toBeHidden();
   });
@@ -62,7 +59,7 @@ test.describe("outage recovery (C1)", () => {
     await expect(banner(page)).toBeHidden();
   });
 
-  test("(e) a running session recovers as soon as the stream resumes, banner included (S4)", async ({ page, context }) => {
+  test("(e) a running session recovers as soon as the stream resumes, banner included", async ({ page, context }) => {
     await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" }); // paced: still running when we reload into the outage
     const id = await submit(page, "q");
     await expect(page.locator("#stage-running")).toBeVisible({ timeout: 5_000 });
@@ -155,7 +152,7 @@ test.describe("outage recovery (C1)", () => {
     await page.goto("/research/outage-spec-unknown");
     await expect(banner(page)).toBeVisible();
     await expect(page.getByText("This session isn't in the service's memory — sessions are lost when the API restarts.")).toBeVisible({ timeout: 15_000 });
-    // The 404 clears the session's own key, and (C1 residual) cascades a retry to the sidebar's
+    // The 404 clears the session's own key, and cascades a retry to the sidebar's
     // key too — the banner must not linger just because the sidebar's own read has no ladder.
     await expect(page.locator("#sbCount")).toHaveText(/^\d+$/);
     await expect(banner(page)).toBeHidden();

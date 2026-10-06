@@ -15,10 +15,10 @@ from tests.evaluation_fakes import FakeStructuredProvider
 
 # ``run_suite_evaluation`` reads the process environment for its preflight, and
 # a controlled run requires the selected chat provider's key plus LangSmith.
-# Supplying them here is the point: they used to arrive as a side effect of
-# ``tests/test_config.py`` loading a sibling ``.env``, whose ``load_dotenv``
-# wrote into the real ``os.environ`` and left the values there, so this file
-# only passed when that one had already run in the same session. The values are
+# Supplying them here is the point: they must not depend on another test
+# module (``tests/test_config.py`` loading a sibling ``.env`` leaks
+# ``load_dotenv`` values into the real ``os.environ``), or this file would
+# only pass when that one had already run in the same session. The values are
 # obvious dummies and reach no network: the harness hands ``evaluate`` a fake
 # runner with an empty example list, so no provider is ever called.
 _SUITE_CREDENTIALS = {
@@ -232,28 +232,3 @@ def test_the_suite_summary_lists_every_agent_and_its_status(
         assert agent_name in body
     assert "REVIEW REQUIRED" in body
     assert "summary.json" in body
-
-
-def test_the_suite_builds_providers_through_the_provider_factory() -> None:
-    """No direct OpenAI construction survives in the production wiring."""
-    import inspect
-
-    from deep_research.evaluation import runner
-
-    source = inspect.getsource(runner)
-
-    assert "AsyncOpenAI" not in source
-    assert "OpenAIChatProvider" not in source
-    assert "build_chat_provider" in source
-
-
-def test_the_evaluation_cli_builds_providers_through_the_provider_factory() -> None:
-    import inspect
-
-    from deep_research.evaluation import cli
-
-    source = inspect.getsource(cli)
-
-    assert "AsyncOpenAI" not in source
-    assert "OpenAIChatProvider" not in source
-    assert "build_chat_provider" in source

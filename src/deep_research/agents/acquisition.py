@@ -40,18 +40,17 @@ from deep_research.tools.passage_selection import (
 )
 from deep_research.utils.types import (
     AcquisitionState,
-    Finding,
     CandidateRecord,
     EvidenceDisposition,
     EvidenceUnit,
+    Finding,
     ReadRecord,
     _canonical_acquisition_url,
 )
 
 AcquisitionAction = Literal["search", "read", "extract", "finish"]
-# The agents that select evidence. Only the researcher does: the Fact Checker
-# that used to verify claims is deleted, so an admission for another selector
-# would name an agent this branch cannot run.
+# The agents that select evidence. Only the researcher does, so an admission
+# for another selector would name an agent this build cannot run.
 OriginName = Literal["researcher"]
 
 # The single line a packet falls back to when even the continuation list cannot
@@ -201,7 +200,7 @@ UNMINED_QUANTITY_REASON = "unmined_quantity"
 UNMINED_TARGET_REASON = "unmined_target"
 
 # The disposition for a unit whose own page's extraction call itself failed
-# this pass (S6, RevSelectionR3 P1): the provider never actually mined this
+# this pass: the provider never actually mined this
 # passage, so ``irrelevant`` -- a judgement the extraction never got the
 # chance to make -- would misstate what happened. This reason is what the
 # ledger shows instead. The read id is excluded from *this call's own*
@@ -456,7 +455,7 @@ def _payload_read_parts(
         ]
         reader = "web_scraper"
         title = _text(data.get("title")) or resolved
-        # D14: the scraper's own dates, threaded straight from its payload
+        # The scraper's own dates, threaded straight from its payload
         # -- never re-derived here, so the extraction lives in one place
         # (``tools.web_scraper``).
         page_published = _text(data.get("page_published")) or None
@@ -515,7 +514,7 @@ def _payload_read_parts(
             return None
         reader = "document_reader"
         title = _text(data.get("title")) or resolved
-        # A document has no page carrying the HTML metadata D14 reads; never
+        # A document has no page carrying the HTML date metadata; never
         # inventing one is the honest default.
         page_published = None
         page_updated = None
@@ -689,7 +688,7 @@ def select_passages_with_lede(
     """The relevance-selected passages, led by the read's own opening passage.
 
     Selection scores a page's passages by the query alone and admits them by
-    a character budget (D1), not a fixed count: a page's chunks vary sharply
+    a character budget, not a fixed count: a page's chunks vary sharply
     in length, and a fixed count either starves a page of many short,
     on-topic chunks or wastes the whole allowance on a few long ones. A
     release's opening passage is its header — the title and lede the
@@ -700,10 +699,9 @@ def select_passages_with_lede(
     already full, because the opening passage is the one part of a page
     selection may not leave behind entirely.
 
-    That guarantee holds only for a genuine header. The audited headphone
-    run's reads routinely opened on the site's own navigation bar, not a
-    headline, and the old unconditional rule forced that navigation into
-    every packet regardless of relevance (D1). A lede :func:`is_link_dense`
+    That guarantee holds only for a genuine header. A read can open on the
+    site's own navigation bar, not a headline, and forcing that navigation into
+    every packet would ignore relevance. A lede :func:`is_link_dense`
     is never *forced to the front*; it still takes its normal position in
     the whole-page fill below, exactly like any other passage the ranking
     left unmatched -- ``is_link_dense`` decides only the front-of-packet
@@ -751,7 +749,7 @@ def _within_budget(
     """``order`` taken in sequence up to ``budget`` characters, at least one.
 
     A batch whose locators do not lexically match the query is still handed
-    over, in reader order (D1): a selection miss is not "there is no
+    over, in reader order: a selection miss is not "there is no
     evidence". The first locator is always kept, even when it alone is the
     whole budget, so the fallback never hands over nothing.
     """
@@ -1160,7 +1158,7 @@ class AcquisitionPolicy:
     cache: MutableMapping[str, ReadRecord] | None = None
     network_read_ids: set[str] | None = None
     on_read_admitted: Callable[[str], None] | None = None
-    """S6: called with a read's id the moment it is admitted (cache or
+    """Called with a read's id the moment it is admitted (cache or
     network, but only once per read), so a caller can start that page's own
     extraction call in the background while the ReAct loop keeps running.
     Never called for a failed/refused read attempt, and never twice for one
@@ -1256,11 +1254,11 @@ class AcquisitionPolicy:
         and they are consumed *because the extraction succeeded*: a handoff
         that produced no result is deferred instead (``defer_extraction``).
 
-        ``except_read_ids`` (S6, RevSelectionR3 P1): a page whose own
+        ``except_read_ids``: a page whose own
         extraction call failed keeps its read id in
         ``pending_extraction_ids`` -- its passages were never actually
-        mined, so the batch stays owed for that read alone, exactly like a
-        whole-topic ``defer_extraction`` did before per-page calls existed,
+        mined, so the batch stays owed for that read alone, as a whole-topic
+        ``defer_extraction`` would leave it,
         while every read whose own call succeeded is still consumed here.
         """
         self.extract_passage_batch()
@@ -1323,13 +1321,13 @@ class AcquisitionPolicy:
         again over that passage, and only a packet that carried it can say so.
 
         A unit ``build_acquisition_context`` itself packed out of the
-        extraction call's own packet (``self._packet_overflow_evidence_ids``,
-        RevSelectionR3 P2) is disposed of as ``deferred_capacity``, never
+        extraction call's own packet (``self._packet_overflow_evidence_ids``)
+        is disposed of as ``deferred_capacity``, never
         ``irrelevant``: the extraction never saw it at all, so it cannot have
         judged it beside the point. Capacity, not relevance, is why it is
         unaccounted for.
 
-        ``failed_read_ids`` (S6, RevSelectionR3 P1): every unit of a page
+        ``failed_read_ids``: every unit of a page
         whose own extraction call failed this pass is disposed of as
         :data:`EXTRACTION_FAILED_REASON`, checked before every other reason —
         a call that never returned cannot have walked past a figure or an
@@ -1481,9 +1479,8 @@ class AcquisitionPolicy:
         )
         self.boundary_audits[audit.audit_id] = audit
         # The reads whose batch was handed over are recorded as owed until the
-        # extraction that consumes them succeeds. Clearing the list here (as
-        # this used to do by never filling it) meant a failed extraction became
-        # indistinguishable from a completed one.
+        # extraction that consumes them succeeds, so a failed extraction stays
+        # distinguishable from a completed one.
         self.state = self.state.model_copy(
             update={
                 "pending_passage_ids": list(dict.fromkeys(carried)),
@@ -1727,7 +1724,7 @@ class AcquisitionPolicy:
         A read's URL, normalized exactly as the policy's own cache and ledger
         key it (``_url_from_input``), so two loops asking for one page -- by
         either reader -- take turns on it, and the second finds the first's
-        admission in the cache (D9 as amended by latency audit O4). A search
+        admission in the cache. A search
         or a memory lookup has no key: it downloads no page.
         """
         if tool_name not in {"web_scraper", "document_reader"}:
@@ -1866,7 +1863,7 @@ class AcquisitionPolicy:
                 update={
                     "status": status,
                     "read_id": read_id or existing.read_id,
-                    # I2: a candidate's denial reason tracks its current
+                    # A candidate's denial reason tracks its current
                     # status -- ``None`` once it is read, so a URL denied on
                     # one attempt and read on a later one never keeps a stale
                     # refusal beside a successful read.
@@ -1915,7 +1912,7 @@ class AcquisitionPolicy:
         return f"{base}#{earlier + 1}"
 
     def _notify_read_admitted(self, read_id: str) -> None:
-        """S6: tell ``on_read_admitted`` about ``read_id``, once only.
+        """Tell ``on_read_admitted`` about ``read_id``, once only.
 
         A read the run already held under this policy -- a cache reuse of a
         body an earlier admission already notified about, or two candidate
@@ -2156,8 +2153,8 @@ class AcquisitionPolicy:
                 # web_scraper reports every exhausted HTTP status failure
                 # under this one exception name; the status code, not the
                 # exception type, says whether the page was refused, missing,
-                # or failed some other way (RevDatesR3 P2) -- collapsing all
-                # three into "access_denied" described a missing page as a
+                # or failed some other way -- collapsing all
+                # three into "access_denied" would describe a missing page as a
                 # refusal.
                 status_code = error.details.get("status_code")
                 if status_code in {401, 402, 403, 451}:
@@ -2325,22 +2322,22 @@ class AcquisitionPolicy:
         )
         if for_decision:
             # A decision turn's own packet never determines extraction
-            # overflow at all (RevSelectionR3 P3): every decision turn calls
+            # overflow at all: every decision turn calls
             # this with ``read_ids=None``, and treating that the same as the
-            # legacy whole-sub-topic extraction packet's own ``read_ids is
-            # None`` wiped whatever per-page overflow an earlier page
+            # whole-sub-topic extraction packet's own ``read_ids is
+            # None`` would wipe whatever per-page overflow an earlier page
             # extraction call in this same policy's lifetime had already
             # recorded. Left untouched here, whatever the last extraction
             # call recorded stands until the next one.
             pass
         elif read_ids is None:
-            # The single whole-sub-topic packet (the pre-S6 one-call
+            # The single whole-sub-topic packet (the one-call
             # extraction path): this call's own overflow is the whole story,
             # so it replaces whatever an earlier call in this same policy's
             # lifetime recorded.
             self._packet_overflow_evidence_ids = set(omitted)
         else:
-            # S6: one page's own extraction packet. Several pages of one
+            # One page's own extraction packet. Several pages of one
             # sub-topic build their own packet independently, so each call's
             # overflow is folded in rather than erasing an earlier page's --
             # a single slot here would report only the last page extracted.
@@ -2386,8 +2383,8 @@ def _ranked_locators(passages: Mapping[str, str], query: str) -> list[str]:
     """Every locator of ``passages``, ranked against ``query``, all included.
 
     :func:`select_relevant_passages` drops a locator that shares no term with
-    the query; a packet dump must still show it (D2 renders every passage of
-    a selected read), so the passages the query ranked are followed by
+    the query; a packet dump must still show it (every passage of a selected
+    read is rendered), so the passages the query ranked are followed by
     whatever it left out, in their own original order.
     """
     ranked = select_relevant_passages(passages, query, len(passages))
@@ -2423,7 +2420,7 @@ def build_acquisition_context(
     ``focus_ids`` names the units an *owed re-extraction* packet is about.
     Such a packet renders only the state rows, the focused units' own rows
     (evidence, passage, read header), and nothing else: with whole-page
-    admission (D1 fix-round 2) a read's own admitted set can be hundreds of
+    admission a read's own admitted set can be hundreds of
     units, and an owed call that also re-sent the whole rest of the packet
     would resend a page the first extraction call already saw in full.
     ``dispositions`` are never rendered here at all -- they stay in
@@ -2431,13 +2428,13 @@ def build_acquisition_context(
     text that scales with the unit count.
 
     ``query`` orders each read's own passage dump, and its own unit rows, by
-    rank against it (D2), spending the packet's budget on the passages that
+    rank against it, spending the packet's budget on the passages that
     answer the query first, instead of the read's raw document order that
     put a page's own navigation ahead of the mid-page chunk that actually
     answered it. ``None`` (a caller with no query of its own) keeps the dump
-    in document order, exactly as before. A locator with its own unit row is
+    in document order. A locator with its own unit row is
     never *also* dumped: doubling every admitted passage is exactly what
-    made whole-page admission blow the packet's budget on its own duplicate.
+    would make whole-page admission blow the packet's budget on its own duplicate.
 
     ``for_decision=True`` gives a ReAct decision turn's own packet a
     different row plan from an extraction packet's: candidates and recorded
@@ -2446,24 +2443,24 @@ def build_acquisition_context(
     single read's units alone can exceed the whole decision budget, and a
     routing choice needs a candidate's title, target ids and status far
     more than it needs the page text an extraction call already has; the
-    extraction packet (``for_decision=False``, the default) keeps today's
+    extraction packet (``for_decision=False``, the default) keeps the normal
     order and full excerpts unchanged.
 
-    ``omitted_evidence_ids`` is an out-parameter (RevSelectionR3 P2): when a
+    ``omitted_evidence_ids`` is an out-parameter: when a
     caller passes a list, every evidence unit that did not fit this packet's
     own budget has its evidence id appended to it, in packing order. A unit
     the extraction call never saw is a capacity fact, not a relevance one --
     a caller that records a disposition for it must not call it
     ``irrelevant`` when the model was never shown it to judge at all.
 
-    ``read_ids`` scopes the whole packet to those reads alone (S6): a
+    ``read_ids`` scopes the whole packet to those reads alone: a
     per-page extraction call's own packet, in the normal row plan (reads,
     then evidence with full excerpts, then recorded findings, candidates,
     and the deduplicated passage dump) rather than the ``focus_ids`` shape,
     which doubles a unit's text as both an evidence row and a passage row --
     affordable for owed re-extraction's handful of passages, not for a whole
     page's worth of units. ``None`` renders every read the other filters
-    admit, exactly as before.
+    admit.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2580,7 +2577,7 @@ def build_acquisition_context(
         # A ReAct decision turn's own row plan: candidates and recorded
         # findings ahead of reads, and units as one-line stubs with no
         # excerpt. Whole-page admission means one read's units alone can
-        # exceed the whole decision budget (D1 fix-round 2), so the
+        # exceed the whole decision budget, so the
         # candidate rows a routing choice actually needs must never sit
         # behind them in the greedy pack.
         for candidate in state.candidate_records.values():
@@ -2619,9 +2616,8 @@ def build_acquisition_context(
     # ahead of that evidence, because ``build_findings`` requires every
     # finding to copy its read's own resolved_url and title verbatim: a
     # bounded packet that shows the evidence without the read record it
-    # cites cannot become an admissible finding at all. The audited run's
-    # topic-01 packet dropped every read row behind a reorder that put
-    # evidence first, and every tracker finding the model drafted was
+    # cites cannot become an admissible finding at all: with every read row
+    # packed out behind the evidence, every finding the model drafted is
     # rejected for a source url or title that matched no admitted read.
     for read_id, read in selected_reads.items():
         if f"read:{read_id}" not in focused_ids:

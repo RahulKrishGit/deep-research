@@ -1,4 +1,4 @@
-"""Tests for the run's shared HTTP connection pool (latency plan, Task 13)."""
+"""Tests for the run's shared HTTP connection pool."""
 
 from __future__ import annotations
 

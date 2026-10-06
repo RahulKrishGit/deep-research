@@ -17,7 +17,7 @@ test("submit → Submitted beat → Running; the sidebar shows the case's questi
   expect(firstRender?.find((s) => s.stage === "planner")?.state).toBe("done");
   const active = await page.locator("li[data-stage][data-state='active']").getAttribute("data-stage");
   expect(["researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]).toContain(active);
-  // live-briefs spec §4.2 (AC3): the chip names the step; the running stage has no Now header,
+  // The chip names the step; the running stage has no Now header,
   // no counters block and no pass text.
   await expect(page.locator("#topbarStatus .chip")).toHaveText(/^Running · (Planning|Researching|Evaluating sources|Verifying evidence|Writing report|Reviewing|Publishing)$/);
   for (const gone of [".pipe-now", "#runNow", "#runPasses", "#runLoopTag", "#runCounters"]) await expect(page.locator(`#stage-running ${gone}`)).toHaveCount(0);

@@ -38,7 +38,6 @@ from deep_research.e2e_evaluation.replay_matrix import (
     REPLAY_CASE_IDS,
     REPLAY_CASE_MANIFEST,
     REPLAY_CASE_MANIFEST_VERSION,
-    ReplayCaseEntry,
     manifest_entry,
     scenario_by_id,
 )
@@ -111,8 +110,8 @@ def _stable_report(report: str) -> str:
     sentences - not the numbering a session assigned. A citation set that
     gained, lost or moved a source still differs here.
 
-    The link line -- ``How this was researched: [evidence log](...)`` (spec
-    §3.1 rule 8) -- embeds the evidence log's own filename, which carries the
+    The link line -- ``How this was researched: [evidence log](...)`` --
+    embeds the evidence log's own filename, which carries the
     *session* id, not anything the reader read: two repetitions of one
     fixture run under two different sessions by design, so keeping the link
     line whole would make every repetition of one scenario its own
@@ -225,7 +224,7 @@ def test_every_checker_is_asserted_by_a_case() -> None:
 def test_mirror_checker_reads_the_fact_rows_its_composition_recorded() -> None:
     """One body served twice is one fact row, however many hosts serve it.
 
-    PD-9 merges figures by field key, so the checker reads the composition's
+    The checker merges figures by field key and reads the composition's
     own fact rows rather than the reads themselves: a badge that cites both
     the running copy and its mirror is a mirror counted twice, and a badge
     that cites the mirrored pair once and a genuine second account once is
@@ -544,8 +543,7 @@ class _StubRun:
 def test_a_clean_exit_with_nothing_answered_cannot_pass_a_positive_case() -> None:
     """A clean exit that answered no required target is a failed case.
 
-    There is no separate "useful claim" count any more (D2: no corroboration
-    step, so nothing pools claims for adjudication): a positive case's own
+    There is no separate "useful claim" count; a positive case's own
     ``required_target_ids`` is what a vacuous abstention fails.
     """
     expectation = CaseExpectation(
@@ -685,11 +683,11 @@ def _repetitions_under_the_mutation(
 
 
 def _memory_recall_admitted_as_read(real):
-    """The pre-fix ``query_memory``-as-read shape, as an ``AcquisitionPolicy`` hook.
+    """The ``query_memory``-as-read shape, as an ``AcquisitionPolicy`` hook.
 
     A recall is a lead: the policy queues the remembered URL as a candidate and
     owes an original-source read before anything may rest on it. The mutation
-    restores the behaviour Task 1 removed - a matched entry's ``source_url``
+    restores the discarded behaviour - a matched entry's ``source_url``
     counted as content this session had *read* - by handing each match's own
     text to the real read-admission path, so the read record it produces is the
     product's own and not a fixture's.
@@ -729,12 +727,12 @@ def _memory_recall_admitted_as_read(real):
 
 
 def _manifest_from_the_public_summary(real):
-    """The pre-fix prefix-only decision context, as a ``build_acquisition_context``.
+    """A prefix-only decision context, as a ``build_acquisition_context``.
 
-    Before Task 3 the next-decision packet carried no acquisition context at
-    all: the model saw the public observation summary - every search and read
-    payload clamped to ``observation_summary_chars`` - and the decision was made
-    from that prefix. The mutation restores that shape for the candidate
+    Without acquisition context, the next-decision packet carries only the
+    public observation summary - every search and read payload clamped to
+    ``observation_summary_chars`` - and the decision is made from that
+    prefix. This mutation restores that shape for the candidate
     manifest the row is about: the queued candidates are re-derived from the
     prefix of their own serialization the public summary length allows, so a
     candidate that fell past the clamp is a candidate no later request names.

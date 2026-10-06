@@ -1,4 +1,4 @@
-"""Stop (notes-progress-report spec §8; D17, D26, D33): one session ends at once.
+"""Stop: one session ends at once.
 
 The store tests drive ``SessionStore`` with scripted runners and checkers; the rule tests
 read the captured replays the web app's own tests read; the replay test runs a scripted
@@ -69,15 +69,15 @@ def _types(events: list[ResearchEvent]) -> list[str]:
     return [event.event_type for event in events]
 
 
-# --- the store (spec §8.2) -------------------------------------------------------------
+# --- The store ---
 
 
 @pytest.mark.asyncio
 async def test_a_running_session_stops_at_once_and_says_where() -> None:
-    """AC28's store half: the step read from what the session published, ``session.stopped``
-    as its last event, the terminal status, ``finished_at`` and the cancelled task — all
-    before ``stop`` returns control; a subscriber's stream closes after ``session.stopped``;
-    a second stop is refused as ``finished``."""
+    """A running session stops at once with the step from what it published,
+    ``session.stopped`` as its last event, the terminal status, ``finished_at`` and the cancelled task —
+    all before ``stop`` returns control; a subscriber's stream closes after ``session.stopped``;
+    a second stop is refused."""
     runner = GateRunner()
     store = SessionStore(runner=runner)
     _start(store)
@@ -120,10 +120,10 @@ async def test_a_running_session_stops_at_once_and_says_where() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_during_needs_input() -> None:
-    """A stop while the one-time check waits for the reader (D33): step ``check``, the check's
-    pending answers cancelled, the runner never called, and the run's close-out keeps both the
-    status and the time of the stop; answers and notes are refused afterwards (AC31's store
-    half); the check it asked is kept for the status."""
+    """A stop while the one-time check waits for the reader stops at the check step,
+    with the check's pending answers cancelled, the runner never called, and the run's close-out
+    preserving both the status and the time of the stop; answers and notes are refused afterwards;
+    the check it asked is kept for the status."""
     runner = ScriptedRunner()
     store = SessionStore(runner=runner, clarity_checker=Checker())
     _start(store, ask=True)
@@ -153,7 +153,7 @@ async def test_stop_during_needs_input() -> None:
 
 @pytest.mark.asyncio
 async def test_publish_after_stop_dropped() -> None:
-    """§8.2: a stopped session takes no more events, so ``session.stopped`` stays last whatever a
+    """A stopped session takes no more events, so ``session.stopped`` stays last whatever a
     task finishing its own cancellation still hands over — a replay's pacer, say — and nothing
     it drops can close the notes or wake a subscriber."""
     runner = GateRunner()
@@ -175,9 +175,9 @@ async def test_publish_after_stop_dropped() -> None:
 
 @pytest.mark.asyncio
 async def test_a_stop_is_refused_once_the_session_has_ended_is_publishing_or_the_service_is_closing() -> None:
-    """§8.1's 409 reasons, in this plan's order: ``finished`` (completed, failed), ``publishing``
-    (the route decided to publish), ``closing`` (the store is shutting down), and ``KeyError``
-    for an unknown id (AC30's store half). A refused stop changes nothing."""
+    """A stop is refused once the session has ended (``finished``), once the route decided
+    to publish (``publishing``), or while the service is closing (``closing``), and an
+    unknown id raises ``KeyError``. A refused stop changes nothing."""
     done = SessionStore(runner=ScriptedRunner())
     _start(done)
     failed = SessionStore(runner=ScriptedRunner(error=RuntimeError("boom")))
@@ -233,7 +233,7 @@ async def test_a_stop_is_refused_once_the_session_has_ended_is_publishing_or_the
 
 @pytest.mark.asyncio
 async def test_a_stopped_sessions_notes_read_not_checked_and_a_reading_in_flight_is_dropped() -> None:
-    """§8.4: a stopped session keeps the notes it took, each ``not_checked`` (§4 item 2); a note
+    """A stopped session keeps the notes it took, each ``not_checked``; a note
     still being read is cancelled with the run, so nothing waits on the board; no note is taken
     afterwards."""
 
@@ -280,7 +280,7 @@ async def test_a_stopped_sessions_notes_read_not_checked_and_a_reading_in_flight
 async def test_a_run_that_swallows_its_cancellation_keeps_the_stop() -> None:
     """A runner that catches the stop's cancellation and returns an outcome anyway, or fails while
     it unwinds, cannot turn a stopped session into a finished or failed one: no outcome, no error,
-    ``session.stopped`` last (spec ambiguity 6)."""
+    ``session.stopped`` last."""
 
     class Stubborn(GateRunner):
         def __init__(self, *, fail: bool) -> None:
@@ -309,7 +309,7 @@ async def test_a_run_that_swallows_its_cancellation_keeps_the_stop() -> None:
         assert _types(session.events)[-1] == "session.stopped"
 
 
-# --- the step a stop records (spec §8.2 step 2, §4 item 3; AC32) -------------------------
+# --- The step a stop records ---
 
 
 def test_active_row_follows_the_consoles_rule() -> None:
@@ -339,10 +339,10 @@ def test_active_row_follows_the_consoles_rule() -> None:
 
 
 def test_active_row_matches_web_rule() -> None:
-    """AC32: after every prefix of every captured replay, ``active_row`` names the row the page
-    shows as active. ``web/test/fixtures/active-rows.json`` is the page's own rule run over the
-    same captures — ``web/test/active-row.test.ts`` recomputes it on every Vitest run — so the
-    API and the page cannot disagree about the step a stop records."""
+    """After every prefix of every captured replay, ``active_row`` names the row the page
+    shows as active. The page's own rule (in ``web/test/fixtures/active-rows.json``) is recomputed
+    on every Vitest run over the same captures, so the API and the page cannot disagree about
+    the step a stop records."""
     golden = json.loads((WEB_FIXTURES / "active-rows.json").read_text(encoding="utf-8"))
     captured = sorted(path.stem for path in (WEB_FIXTURES / "events").glob("*.json"))
     assert sorted(golden) == captured
@@ -355,7 +355,7 @@ def test_active_row_matches_web_rule() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_stop_mid_stream(tmp_path: Path) -> None:
-    """AC32 on the replay runner: replay runs the engine ahead of its paced stream, and a stop
+    """On the replay runner: replay runs the engine ahead of its paced stream, and a stop
     records the row the page shows at that moment — read from what the session has published,
     not from the engine — and the pacer publishes nothing after ``session.stopped``."""
     with guarded():
@@ -381,7 +381,7 @@ async def test_replay_stop_mid_stream(tmp_path: Path) -> None:
     assert (session.status, session.outcome) == ("stopped", None)
 
 
-# --- the route (spec §8.1, §8.4) -------------------------------------------------------
+# --- The route ---
 
 
 def _status(client: TestClient, session_id: str) -> dict[str, Any]:
@@ -404,11 +404,11 @@ def _error(response: Any) -> tuple[int, str, str | None]:
 
 
 def test_stop_route_codes() -> None:
-    """AC28, AC30, AC31 through the route: a running session stops with 202 and the stopped
-    session; its stream ends with ``session.stopped``; /status, /trace and the list name it;
-    its note reads ``not_checked``; /report and /evidence (both formats) answer 409 as a halted
-    run does, a note 409 ``notes_closed``, answers 409 ``not_waiting_for_input``; a second stop
-    is 409 ``not_stoppable`` ``finished``; an unknown id is 404."""
+    """A running session stops with 202 and the stopped session; its stream ends with
+    ``session.stopped``; /status, /trace and the list name it; its note reads ``not_checked``;
+    /report and /evidence (both formats) answer 409 as a halted run does, a note 409 ``notes_closed``,
+    answers 409 ``not_waiting_for_input``; a second stop is 409 ``not_stoppable`` ``finished``;
+    an unknown id is 404."""
     runner = GateRunner()
     app = create_app(runner=runner, preflight=valid_preflight)
     with TestClient(app) as client:
@@ -456,8 +456,8 @@ def test_stop_route_codes() -> None:
 
 
 def test_the_stop_route_says_why_it_refuses() -> None:
-    """AC30: 409 ``not_stoppable`` with ``finished`` once a run has completed or failed,
-    ``publishing`` once the route decided to publish, ``closing`` while the store shuts down."""
+    """A 409 ``not_stoppable`` is returned once a run has completed or failed,
+    once the route decided to publish, or while the store shuts down."""
     with TestClient(create_app(runner=ScriptedRunner(), preflight=valid_preflight)) as client:
         completed_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
         wait_until_terminal(client, completed_id)
@@ -494,8 +494,9 @@ def test_the_stop_route_says_why_it_refuses() -> None:
 
 
 def test_a_stop_while_the_check_waits_answers_202_and_refuses_the_answers() -> None:
-    """AC28 for a session in ``needs_input`` (D33's step ``check``) and AC31's answers half; the
-    check's questions stay on the status, answered by nobody."""
+    """For a session in ``needs_input`` waiting for the one-time check: a stop returns 202
+    with the stop at step ``check``; the check's questions stay on the status, answered by nobody;
+    answers are refused afterwards."""
     app = create_app(runner=GateRunner(), preflight=valid_preflight, clarity_checker=Checker())
     with TestClient(app) as client:
         session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]

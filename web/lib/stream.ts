@@ -1,4 +1,4 @@
-// The SSE reader: fetch + ReadableStream, not EventSource (spec §4.3 — EventSource reconnects on
+// The SSE reader: fetch + ReadableStream, not EventSource (EventSource reconnects on
 // its own schedule after every close, including a finished session's clean close, and hides the
 // response headers the mode chip needs).
 import type { ApiMode, ResearchEvent } from "./api";
@@ -68,7 +68,7 @@ export async function readStream(url: string, callbacks: StreamCallbacks, signal
   return { kind: "ended" };
 }
 
-/* 1, 2, 4, 8, 16 s, then 30 s forever (spec §4.4). */
+/* 1, 2, 4, 8, 16 s, then 30 s forever. */
 export function* backoffDelaysMs(): Generator<number> {
   for (const d of [1000, 2000, 4000, 8000, 16000]) yield d;
   for (;;) yield 30000;

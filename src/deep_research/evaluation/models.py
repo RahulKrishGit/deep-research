@@ -576,15 +576,15 @@ class TargetOutput(ContractModel):
     target_model_returned: str | None = None
     target_reasoning_effort: ReasoningEffort
     thinking_mode: ThinkingMode = "enabled"
-    """The target's thinking mode (latency plan Task 19)."""
+    """The target's thinking mode."""
 
     @property
     def has_evaluable_output(self) -> bool:
         """True when the judge must run.
 
         A run that produced a typed result is evaluable even when a hard
-        gate failed: the spec runs the judge on every repetition that
-        produced evaluable output.
+        gate failed: the judge runs on every repetition that produced
+        evaluable output.
         """
         return self.result is not None
 

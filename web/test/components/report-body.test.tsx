@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReportBody } from "../../components/ReportBody";
 import type { ReportOutlineEntry } from "../../lib/api";
 
-// notes-progress-report spec §7.5-§7.6: the published report, rendered as one card per "## " section.
+// The published report, rendered as one card per "## " section.
 const MARKDOWN = `# Where are the best lattes in San Jose?
 
 Evidence as of 2026-09-30 · 4 sources · San Jose plus nearby South Bay · a place to go now
@@ -74,7 +74,7 @@ afterEach(() => {
   delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
 });
 
-describe("ReportBody: one card per section (spec §7.6 Structure, Cards)", () => {
+describe("ReportBody: one card per section", () => {
   it("pairs each chunk with its outline entry, keeps one h2 per card inside its .prose, and shows no Your notes block", () => {
     stackCards();
     const { container } = show();
@@ -121,7 +121,7 @@ describe("ReportBody: one card per section (spec §7.6 Structure, Cards)", () =>
   });
 });
 
-describe("the contents list (spec §7.6 Contents, Current section; D28)", () => {
+describe("the contents list", () => {
   it("lists every card, Sources included, as chips below a 1310 px stage, the first card current", () => {
     stackCards();
     const { container } = show();
@@ -198,7 +198,7 @@ describe("the contents list (spec §7.6 Contents, Current section; D28)", () => 
   });
 });
 
-describe("the bottom line card (spec §7.5 items 3-4, §7.6 Cards)", () => {
+describe("the bottom line card", () => {
   it("prints the answer as a lead, then one row per topic line and note line with its mark in the key", () => {
     stackCards();
     const { container } = show();

@@ -6,27 +6,27 @@ import { AGENT_ORDER, failedMarks, type RunState } from "@/lib/run-state";
 import { Counters } from "./Counters";
 import { Spine } from "./Spine";
 
-/* Controller ruling, fix round 1 (Important, plan-mandated): graph/state.py:137-150 — agents
-   record non-recoverable provider failures a research pass is expected to survive, so the first
+/* Agents record non-recoverable provider failures that a research pass is expected to survive
+   (graph/state.py's HALTING_ERROR_TYPES), so the first
    non-recoverable error in `errors` is not necessarily the halt that ended the run. Select, in
    order: (1) the first record whose error_type is a recognised halting type (a HALT_HEADLINES
    key); (2) failing that, the first non-recoverable record; (3) failing that, no record — never
-   an invented api.research.failed/api/false stand-in (minor, fix round 1). */
+   an invented api.research.failed/api/false stand-in. */
 export function FailedStage({ status, run, strip }: { status: ResearchSessionResponse; run: RunState; strip: ReactNode }) {
   const hard: ResearchError | null =
     status.errors.find((e) => e.error_type in HALT_HEADLINES)
     ?? status.errors.find((e) => !e.recoverable)
     ?? null;
-  // Fix round 1 #2: an unrecognised type still headlines in plain words, never its raw enum value
+  // An unrecognised type still headlines in plain words, never its raw enum value
   // — the raw error_type stays visible in the facts row below.
   const headline = hard ? (HALT_HEADLINES[hard.error_type] ?? "Research run failed") : "Research run failed";
   const reason = hard && typeof hard.details.reason === "string" ? hard.details.reason : null;
   const exceptionType = hard && typeof hard.details.exception_type === "string" ? hard.details.exception_type : null;
-  // M1: `_record_failure` (sessions.py) never sets `session.outcome`, so an API-level failure
+  // `_record_failure` (sessions.py) never sets `session.outcome`, so an API-level failure
   // (source "api" — a configuration error or an unhandled exception before the graph ever ran)
   // answers `GET /report` with 409 session_not_complete, the same code a still-running session
   // gets — not report_unavailable, which is reserved for a graph halt that reached an outcome
-  // with no report. A record-less halt defaults to the graph wording (K19: nothing invented).
+  // with no report. A record-less halt defaults to the graph wording (nothing invented).
   const apiFailure = hard?.source === "api";
   const reportCode = apiFailure ? "session_not_complete" : "report_unavailable";
   const haltIndex = run.openNode ? AGENT_ORDER.indexOf(run.openNode) : -1;
@@ -35,9 +35,9 @@ export function FailedStage({ status, run, strip }: { status: ResearchSessionRes
       <div className="report-head">
         <div style={{ minWidth: 0 }}>
           <p className="cap" id="failedMeta">session {status.session_id} · finished {fmtClock(status.finished_at) ?? "not recorded"}</p>
-          {/* Controller ruling 1: same q-center pattern as #report-h (Task 17) — the prototype's
-              #failed-h markup (index.html:1517) and its matching CSS (.report-q.q-center, :372)
-              both key off the base class report-q, not ask-q/ask-locked. */}
+          {/* A short question sits centred in the frame via the .q-center class (qFitClass), as on
+              #report-h: the base class is report-q, not ask-q/ask-locked, matching the prototype's
+              #failed-h markup and its .report-q.q-center CSS. */}
           <h1 className={"report-q" + qFitClass(status.query)} id="failed-h">{status.query}</h1>
           {strip}
         </div>
@@ -57,7 +57,7 @@ export function FailedStage({ status, run, strip }: { status: ResearchSessionRes
             <p className="sm">A halted run skips publication: no report, evidence log or quality record was written.</p>
             <dl className="kv">
               {hard ? <><dt>error_type</dt><dd id="failFactType">{hard.error_type}</dd></> : null}
-              {/* K19: no invented values — the source row is omitted rather than showing a made-up "graph". */}
+              {/* No invented values — the source row is omitted rather than showing a made-up "graph". */}
               {hard?.source ? <><dt>source</dt><dd id="failFactSource">{hard.source}</dd></> : null}
               {hard ? <><dt>recoverable</dt><dd id="failFactRecoverable">{String(Boolean(hard.recoverable))}</dd></> : null}
               {reason ? <><dt>reason</dt><dd id="failFactReason">{reason}</dd></> : null}

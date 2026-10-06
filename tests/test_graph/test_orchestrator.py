@@ -9,15 +9,15 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.errors import PlanningError
-from deep_research.agents.report_writer import (
-    REPORT_WRITER_NAME,
-    ReportWriterAgent,
-)
 from deep_research.agents.evidence_verifier import (
     EVIDENCE_VERIFIER_NAME,
     EvidenceVerifierAgent,
     StatementCheckDraft,
     StatementVerdictDraft,
+)
+from deep_research.agents.report_writer import (
+    REPORT_WRITER_NAME,
+    ReportWriterAgent,
 )
 from deep_research.graph.nodes import ReportPublisher
 from deep_research.graph.orchestrator import (
@@ -122,7 +122,7 @@ def _statement_check_reply(messages: list, schema: type) -> StatementCheckDraft:
 
     Reads the batch's own labels back out of the request body, so it answers
     correctly whichever batch the real Statement Check hands it -- a part's
-    ``P{part:02d}.{n}`` flight keys or the bottom line's ``B{n}`` (spec §6.7),
+    ``P{part:02d}.{n}`` flight keys or the bottom line's ``B{n}``,
     before either is renumbered ``S001…``.
     """
     del schema
@@ -141,10 +141,9 @@ def _writer_replies(count: int = 1) -> list[object]:
 
     Each pass drafts its one part's section, checks it, drafts the bottom
     line, then checks that -- the sequence ``compose_written_report`` runs
-    for a single-part task (spec §6.5-§6.7). ``F01`` is the label
-    ``finding_registry`` stamps on the one verified finding these fixtures
-    carry, so a draft written here is exactly what the writer's own registry
-    offers the model.
+    for a single-part task. ``F01`` is the label ``finding_registry`` stamps
+    on the one verified finding these fixtures carry, so a draft written here
+    is exactly what the writer's own registry offers the model.
     """
     replies: list[object] = []
     for _ in range(count):
@@ -223,19 +222,17 @@ def _writer_agents(
 async def test_run_publishes_when_the_context_check_fails(
     tracker: Tracker, tmp_path: Path
 ) -> None:
-    """Review Focus 2: a failed Context Check batch never stops a run.
+    """A failed Context Check batch never stops a run.
 
     The verifier's only batch raises ``ProviderError`` inside the real
     ``EvidenceVerifierAgent``, and the report is written by the real
     ``ReportWriterAgent`` — drafting through a scripted completer and having
-    its drafted sentence checked. D8's keep rule then decides each figure on
+    its drafted sentence checked. The keep rule then decides each figure on
     the finding's own snippet: a figure its snippet states is kept as
     *unchecked context* — its fact row carries that flag and the ledger
-    names it in the finding's own record (the reader no longer has a key
-    facts table to flag it in) — and the run publishes. An outage is never a
-    graph failure, and never an acceptance of anything the check did not
-    judge.
-    """
+    names it in the finding's own record — and the run publishes. An outage
+    is never a graph failure, and never an acceptance of anything the check
+    did not judge."""
     one = verified_pass()
     publisher = FakePublisher()
     verifier = EvidenceVerifierAgent(
@@ -292,11 +289,9 @@ async def test_run_publishes_when_the_context_check_fails(
     assert state.composition.fact_rows[0].context_unchecked is True
     assert "context unchecked" in ledger
     # What these two assertions check: the sentence the drafted point carried
-    # reached the reader unchanged (its citation marker lands before the
-    # final stop, spec §3.1 rule 3, so the check strips it) — a sentence the
-    # Statement Check refused would drop SNIPPET from the report — and every
-    # sentence the report prints carries the consistent verdict that check
-    # returned.
+    # reached the reader unchanged — a sentence the Statement Check refused
+    # would drop SNIPPET from the report — and every sentence the report
+    # prints carries the consistent verdict that check returned.
     assert SNIPPET.rstrip(".") in reader
     assert set(state.composition.statement_verdicts.values()) == {"consistent"}
     assert quality
@@ -309,18 +304,16 @@ async def test_run_publishes_when_the_context_check_fails(
 async def test_extra_pass_that_finds_nothing_publishes_with_not_found(
     tracker: Tracker, tmp_path: Path
 ) -> None:
-    """Review Focus 3: one extra pass, then the target under What we couldn't confirm.
+    """One extra pass, then the target under What we couldn't confirm.
 
     A required target no finding answers: the reviewer node stamps it missing,
     the graph buys exactly one extra pass confined to that target, the second
     pass finds nothing, the second review still names it, and no gate fails —
     the target is listed in the composition's ``not_found`` and printed under
-    the reader report's "What we couldn't confirm" section (spec §3.1, §10).
-    So the run finalizes once, accepted (PD-23), and the researcher was
-    called exactly twice. Both passes' reports are composed by the real
-    ``ReportWriterAgent``, which is what makes that section a real writer's
-    output rather than a fixture's.
-    """
+    the reader report's "What we couldn't confirm" section. The run finalizes
+    once, accepted, and the researcher was called exactly twice. Both passes'
+    reports are composed by the real ``ReportWriterAgent``, which is what
+    makes that section a real writer's output rather than a fixture's."""
     one = verified_pass()
     publisher = FakePublisher()
     researcher = FakeAgent(

@@ -1,7 +1,7 @@
 """Live publication: the run-scoped sink agents and nodes publish events to as they happen.
 
 ``_stream_graph_result`` binds a sink for the duration of one streamed run
-(live-briefs spec E2); ``publish_live`` hands an event to it and is a no-op when
+(the run's streaming loop); ``publish_live`` hands an event to it and is a no-op when
 nothing is bound — a run without an event handler, or a unit test calling an agent
 directly. The event published live is the same object the node later returns in its
 state update, so the orchestrator's snapshot loop recognises it by ``event_id`` and

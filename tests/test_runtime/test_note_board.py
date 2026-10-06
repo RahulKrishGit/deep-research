@@ -1,4 +1,4 @@
-"""The run's note board (live-briefs spec §4.6, D11a): receive, interpret, settle, bind."""
+"""The run's note board: receive, interpret, settle, bind."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ async def test_the_board_is_bound_for_a_block_and_reaches_tasks_started_inside_i
 
 @pytest.mark.asyncio
 async def test_the_board_counts_every_add_and_drop_and_wakes_a_waiter() -> None:
-    """notes-progress-report spec §5.3: the researcher reads ``version`` before it scans the
+    """The researcher reads ``version`` before it scans the
     board and then waits for the next add or drop, so no change between the two is lost.
     Receiving a note is not a change: nothing can act on a note before it is read."""
     board = NoteBoard()

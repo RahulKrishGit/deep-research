@@ -2,67 +2,20 @@
 
 The design for the Deep Research console: a React/Next front end for the
 existing FastAPI interface, for one local operator, with no authentication.
+The Next.js app in [`web/`](../../web/README.md) implements it; this package is
+the reference it is built against.
 
-## Provenance
-
-Exported from the **Open Design** desktop app, project
-`ce1a3b11-67b8-4877-a1f8-ed3ab7ca52b9`. The author froze the design on
-2026-09-16 (last source edit 19:14:37 local). `open-design/` below is a
-complete copy of that project; nothing from it is omitted.
-
-*Updated 2026-09-26 to the Evidence Verifier pipeline (f27ac7e); the 2026-09-16
-design is otherwise unchanged.* `open-design/` is the 2026-09-16 history and is
-now older than the prototype: where it disagrees with the authoritative
-artifacts, they win.
-
-## Authoritative artifacts
-
-These are the current, correct versions. Read these.
+## Contents
 
 | Path | What it is |
 |---|---|
-| `DESIGN.md` | Screen inventory, status mapping, motion spec, and the decisions the design system does not answer |
-| `api-gaps.md` | What each stage needs that the FastAPI surface does not serve |
-| `prototype/index.html` | The reference prototype. Self-contained: 3,888 lines, one `<style>` block, one `<script>` block, zero external references. The only literal colour values live in the `:root` token block (lines 11–55), which is where the Perplexity AI design system is captured |
-| `prototype/states.html` | Static fixture of the edge states |
-| `reference/*.png` | Reference renders, regenerated from the 2026-09-16 prototype and asserted against the stage they claim to show |
+| [`DESIGN.md`](DESIGN.md) | Screen inventory, status mapping, motion spec, and the decisions the design system does not answer |
+| [`api-gaps.md`](api-gaps.md) | What each stage needs that the FastAPI surface does not serve |
+| `prototype/index.html` | The reference prototype. Self-contained: one `<style>` block, one `<script>` block, no external stylesheets, scripts or fonts. The only literal colour values live in the `:root` token block at the top of the style block, which is where the Perplexity AI design system is captured |
+| `prototype/states.html` | Static fixture of the edge states, with the status-mapping table rendered as live chips |
 
 The design was built against a **1252 × 853** viewport (`DESIGN.md` §7).
 
-## `open-design/` — the complete original project
-
-Everything here is a faithful copy for provenance: the 2026-09-16 design as it
-was exported, now older than the prototype. Where it disagrees with the table
-above, the table wins.
-
-| Path | What it is | Status |
-|---|---|---|
-| `artifacts/*.artifact.json` | Open Design's export manifests for the two prototypes | Original metadata |
-| `captures/*.png` | 13 captures made in the app (8 `screenshot-*`, 5 `drawing-*`) | **Superseded** — see below |
-| `skills/web-prototype-022bee5593/` | The Open Design skill, templates and layout references that produced the prototype | Original scaffolding |
-| `version-history/*.html` | 68 autosave snapshots plus `manifest.json` | **History only** |
-
-**Why `captures/` is superseded.** All 13 are 1252×853 renders of the same
-prototype — including the five named `drawing-*`, which are app captures
-rather than hand-drawn artwork. Every one is older than the final edit to
-`prototype/index.html` (newest capture 18:41, prototype last edited 19:14),
-so none of them show the current design. They are kept because they record
-the design's evolution and may cover states `reference/` does not.
-
-**Why `version-history/` is history only.** It is Open Design's own autosave
-trail. Snapshot `0068` is byte-identical in size to the 2026-09-16
-`prototype/index.html` (174,839 B), confirming the copied prototype was the
-newest version at export. Git now supersedes this trail.
-
-## Regenerating the reference renders
-
-`reference/` is generated, not hand-made. To rebuild it:
-
-```
-node scripts/render_design_reference.mjs docs/design/prototype docs/design/reference
-```
-
-It drives the prototype over the Chrome DevTools Protocol using the page's own
-`window.drConsole` review hook, and asserts the stage each capture landed on
-before saving — so a render cannot silently depict the wrong screen. No npm
-dependencies; it needs Google Chrome and Node 18+.
+The backend behaviour the design depends on is described in
+[`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) and the FastAPI interface in the
+[root README](../../README.md#fastapi-interface).

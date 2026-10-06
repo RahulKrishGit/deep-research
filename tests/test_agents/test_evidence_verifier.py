@@ -1,4 +1,4 @@
-"""The Evidence Verifier (spec §5)."""
+"""The Evidence Verifier."""
 
 from __future__ import annotations
 
@@ -8,12 +8,8 @@ import re
 
 import pytest
 
-from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.evidence_verifier import (
     _CONTEXT_CHECK_REPLY_EXAMPLES,
-    _checked,
-    _owns_page,
-    _page_date_basis,
     CONTEXT_CHECK_BATCH_SIZE,
     CONTEXT_CHECK_CONCURRENCY,
     CONTEXT_CHECK_INSTRUCTION,
@@ -26,12 +22,14 @@ from deep_research.agents.evidence_verifier import (
     StatementCheckItem,
     StatementVerdictDraft,
     VerifiedFindings,
+    _checked,
+    _owns_page,
+    _page_date_basis,
     check_statements,
     context_check_messages,
     context_passage,
     evaluated_issuer,
     evaluated_page_date,
-    evidence_verified_event,
     figure_match,
     page_owner,
     resolve_attribution,
@@ -40,6 +38,7 @@ from deep_research.agents.evidence_verifier import (
     verification_sample,
     verify_finding,
 )
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.prompts import STRUCTURED_REQUEST_END
 from deep_research.agents.steps import ReActRun
 from deep_research.graph.live import bind_live_sink
@@ -104,13 +103,12 @@ def test_the_snippet_check_is_cosmetic() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the Context Check's enforcement (spec §5.2)
+# the Context Check's enforcement
 # ---------------------------------------------------------------------------
 
 
 def test_the_reply_examples_correction_appears_in_its_own_evidence_words() -> None:
     """The example shown to the model must obey the same rule code enforces
-    (§5.2): a correction is kept only when it appears in evidence_words
     itself, not merely somewhere else in the passage."""
     _, payload = _CONTEXT_CHECK_REPLY_EXAMPLES[0]
     reply_figure = json.loads(payload)["figures"][0]
@@ -190,11 +188,11 @@ def test_context_passage_contains_a_snippet_spanning_three_passages() -> None:
 
 
 def test_context_passage_extends_through_a_trailing_contrastive_connective() -> None:
-    """D5: a passage must not end just before its own qualifier.
+    """A passage must not end just before its own qualifier.
 
-    The audited shape: a passage cut right after 'However,' drops the
-    page's own rejection of the claim the passage states; the window must
-    grow to carry that sentence whole.
+    When a passage is cut right after 'However,' it drops the page's own
+    rejection of the claim the passage states; the window must grow to
+    carry that sentence whole.
     """
     passage_a = (
         "According to Appian, the agrarian reforms of Tiberius Gracchus "
@@ -223,8 +221,8 @@ def test_context_passage_extends_through_a_trailing_contrastive_connective() -> 
 
 
 def test_context_passage_cuts_a_truncated_window_at_a_sentence_end() -> None:
-    """D5: when the window must be cut for length, the cut lands at a
-    sentence end rather than mid-sentence, wherever one is available.
+    """When the window must be cut for length, the cut lands at a sentence
+    end rather than mid-sentence, wherever one is available.
 
     The trailing filler after the snippet's own sentence carries no period
     at all until long past the 6000-character bound, so a raw character cut
@@ -248,8 +246,8 @@ def test_context_passage_cuts_a_truncated_window_at_a_sentence_end() -> None:
 
 
 def test_context_passage_extends_when_the_next_passage_opens_with_a_connective() -> None:
-    """D5 P1: the extension must also fire when the snippet's own passage
-    ends cleanly (a full stop) and the qualifier is the whole of the next
+    """The extension must also fire when the snippet's own passage ends
+    cleanly (a full stop) and the qualifier is the whole of the next
     passage, not just when the connective word is already dangling at the
     first passage's own tail."""
     passage_a = (
@@ -270,9 +268,9 @@ def test_context_passage_extends_when_the_next_passage_opens_with_a_connective()
 
 
 def test_context_passage_keeps_the_snippet_after_a_sentence_end_cut() -> None:
-    """D5 P2: the sentence-end cut must never drop the snippet itself out of
-    the window. A run of text with no further full stop after the snippet
-    keeps its raw character-bounded window instead of cutting back past it.
+    """The sentence-end cut must never drop the snippet itself out of the
+    window. A run of text with no further full stop after the snippet keeps
+    its raw character-bounded window instead of cutting back past it.
     """
     intro = "Filler sentence about an unrelated matter entirely. " * 200
     rows = " ".join(f"row {i} value {i * 3} units" for i in range(400))
@@ -370,12 +368,12 @@ def test_a_missing_reply_leaves_a_matched_figure_unchecked() -> None:
 
 
 def test_a_reply_that_omits_a_figure_drops_it_when_the_snippet_lacks_it() -> None:
-    """P1-2: a reply that answers its batch but leaves a figure out is no
-    evidence about that figure -- the model may have left it out exactly
-    because it cannot find it stated. Deterministic code keeps an unjudged
-    figure only when the snippet itself states it (``figure_in_text``):
-    the omitted 52% is not in the snippet, so it is dropped with
-    ``context_unavailable``, while the confirmed 18.9 GW stays checked.
+    """A reply that answers its batch but leaves a figure out is no evidence
+    about that figure, as the model may have left it out exactly because it
+    cannot find it stated. Deterministic code keeps an unjudged figure only
+    when the snippet itself states it (``figure_in_text``): the omitted 52%
+    is not in the snippet, so it is dropped with ``context_unavailable``,
+    while the confirmed 18.9 GW stays checked.
     """
     read, finding = _woodmac_finding()
     finding = finding.model_copy(update={"figures": [
@@ -411,11 +409,10 @@ def test_an_admitted_attribution_makes_a_relay() -> None:
 
 
 def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None:
-    # PD-25: a .com page with no copyright line is Wood Mackenzie's own when the
-    # Source Evaluator validated that issuer for the read; without it the verdict
-    # still names the page's own owner, which is the own-page reading (N3 widens
-    # F2's host guard to the identity: "Wood Mackenzie" on woodmac.com is that
-    # host's owner, and only a body the page is not goes unattributed).
+    # A .com page with the evaluated issuer keeps that owner when Source
+    # Evaluator validated that issuer for the read. Without it, the verdict
+    # still names the page's own owner: "Wood Mackenzie" on woodmac.com is
+    # that host's owner, and only a body the page is not goes unattributed.
     read = make_read("The U.S. storage market will install 15 GW in 2025, a record year.",
                      url="https://www.woodmac.com/press-releases/q1-2025", title="US storage outlook")
     finding = make_finding(read, "The U.S. storage market will install 15 GW in 2025, a record year.")
@@ -434,8 +431,8 @@ def test_the_source_evaluators_issuer_names_the_pages_own_organisation() -> None
 
 
 # ---------------------------------------------------------------------------
-# the Figure Match consumers Task 1.2's review flagged for this task, plus
-# PD-26: a context_unchecked finding keeps its Figure Match status and flag.
+# Figure Match consumers:
+# A context_unchecked finding keeps its Figure Match status and flag.
 # ---------------------------------------------------------------------------
 
 
@@ -603,8 +600,8 @@ async def test_failed_batch_marks_findings_context_unchecked(tracker: Tracker) -
 async def test_a_figure_the_snippet_lacks_is_dropped_when_the_batch_fails(
     tracker: Tracker,
 ) -> None:
-    """P1-2: a failed batch keeps a figure only when the snippet itself
-    states it. 19.6 GW is on the page but not in this finding's snippet, so
+    """A failed batch keeps a figure only when the snippet itself states
+    it. 19.6 GW is on the page but not in this finding's snippet, so
     deterministic code cannot confirm it: the figure is dropped with
     ``context_unavailable`` and the finding with it.
     """
@@ -713,13 +710,12 @@ async def test_a_snippet_not_on_the_page_drops_the_finding_at_the_agent_level(
 
 @pytest.mark.asyncio
 async def test_a_no_figure_finding_is_labelled_quoted_not_verified(tracker: Tracker) -> None:
-    """D21: only a figure ever reaches the Context Check's relevance and
-    attribution judgement (a finding with none "has nothing to judge"), and
-    the Statement Check judges drafted report sentences, not raw findings.
-    A no-figure finding is therefore never judged for relevance or
-    attribution by either check: its snippet being on the page marks it
-    ``quoted``, not ``verified`` -- the evidence log must not overstate what
-    was checked.
+    """Only a figure ever reaches the Context Check's relevance and
+    attribution judgement, as a finding with none has nothing to judge. The
+    Statement Check judges drafted report sentences, not raw findings, so a
+    no-figure finding is never judged for relevance or attribution by either
+    check. Its snippet being on the page marks it ``quoted``, not
+    ``verified``, and the evidence log must not overstate what was checked.
     """
     read = make_read()
     finding = make_finding(read, SNIPPET)
@@ -737,9 +733,9 @@ async def test_a_no_figure_finding_is_labelled_quoted_not_verified(tracker: Trac
 
 @pytest.mark.asyncio
 async def test_the_verification_completed_event_counts_quoted_findings(tracker: Tracker) -> None:
-    """D21: the run's own event must count a quoted finding somewhere, or the
-    published buckets (verified/verified_corrected/dropped) would no longer
-    add up to every finding the pass judged."""
+    """The run's own event must count a quoted finding, or the published
+    buckets (verified/verified_corrected/dropped) would no longer add up to
+    every finding the pass judged."""
     read = make_read()
     finding = make_finding(read, SNIPPET)
     completer = ScriptedCompleter()
@@ -813,11 +809,11 @@ class _ConcurrencyProbe:
 
 @pytest.mark.asyncio
 async def test_the_concurrency_cap_is_respected(tracker: Tracker) -> None:
-    """§5.2/D8: batches run concurrently, at most the configured cap at
-    once. More batches than the cap, all racing for the same semaphore,
-    prove the cap holds rather than merely happening to fit -- against
-    whatever ``agents.verifier_concurrency`` is configured to, not a
-    number pinned in the test."""
+    """Batches run concurrently, at most the configured cap at once. More
+    batches than the cap, all racing for the same semaphore, prove the cap
+    holds rather than merely happening to fit, against whatever
+    ``agents.verifier_concurrency`` is configured to.
+    """
     config = AgentRuntimeConfig()
     cap = config.verifier_concurrency
     batch_count = cap + 2
@@ -840,7 +836,7 @@ async def test_the_concurrency_cap_is_respected(tracker: Tracker) -> None:
 
 
 def test_a_relayed_organisation_that_owns_the_page_resolves_to_own() -> None:
-    """PD-8 row 1: when the Context Check proposes 'relayed' for the
+    """When the Context Check proposes 'relayed' for the
     organisation whose own page this actually is, code overrides it to
     'own' rather than mislabelling an issuer's own figure as a relay of
     itself."""
@@ -858,7 +854,7 @@ def test_a_relayed_organisation_that_owns_the_page_resolves_to_own() -> None:
 
 
 def test_a_cover_credited_organisation_resolves_to_relayed_far_from_the_figure() -> None:
-    """Task 3.6's audit-2 shape (spec §5, PD-8 row 2): a mirrored PDF credits
+    """A mirrored PDF credits
     its originator only on its cover/masthead, many passages before the
     figure itself, with no attribution cue anywhere near the figure's own
     locator. The document's opening still identifies the whole document's
@@ -955,10 +951,10 @@ def test_page_owner_never_credits_a_merely_similar_name_on_a_gov_host() -> None:
 
 
 def test_page_owner_reads_the_publisher_from_a_kept_headline_publisher_title() -> None:
-    """RevW5Titles P1-a/P3#2: a 'Headline - Publisher' ``<title>`` is kept
-    over ``og:title`` by the scraper's own title precedence, so page_owner
-    still reads the publisher from its own segment rather than falling back
-    to the bare host label."""
+    """A 'Headline - Publisher' ``<title>`` is kept over ``og:title`` by the
+    scraper's own title precedence, so page_owner still reads the publisher
+    from its own segment rather than falling back to the bare host label.
+    """
     html = (
         "<html><head>"
         "<title>Battery storage capacity grew in 2024 - "
@@ -983,9 +979,9 @@ def test_page_owner_reads_the_publisher_from_a_kept_headline_publisher_title() -
 
 
 def test_page_owner_stops_a_cued_run_at_the_sentence_end() -> None:
-    """P1-1: a footer's own full stop ends the name it states -- "Utility
-    Dive. All rights reserved" credits Utility Dive, never "Utility Dive.
-    All"."""
+    """A footer's own full stop ends the name it states: "Utility Dive. All
+    rights reserved" credits Utility Dive, never "Utility Dive. All".
+    """
     read = make_read(
         "(c) 2025 Utility Dive. All rights reserved.",
         url="https://www.utilitydive.com/news/storage-update",
@@ -995,9 +991,10 @@ def test_page_owner_stops_a_cued_run_at_the_sentence_end() -> None:
 
 
 def test_page_owner_returns_the_shortest_name_prefix_the_host_matches() -> None:
-    """P1-1: a colon headline is not a title-credit separator, so the whole
+    """A colon headline is not a title-credit separator, so the whole
     headline is one candidate; the name is the shortest word prefix that
-    ``same_organisation`` confirms against the host, not the headline."""
+    ``same_organisation`` confirms against the host, not the headline.
+    """
     read = make_read(
         "The US energy storage market hit a record in 2025.",
         url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
@@ -1007,9 +1004,10 @@ def test_page_owner_returns_the_shortest_name_prefix_the_host_matches() -> None:
 
 
 def test_page_owner_trims_a_cued_name_to_the_organisation_the_host_matches() -> None:
-    """P1-1: a cue can introduce a longer run than the name ("Published by X
-    Research Team"); the shortest matching prefix is what the page states as
-    the organisation."""
+    """A cue can introduce a longer run than the name ("Published by X
+    Research Team"), but the shortest matching prefix is what the page
+    states as the organisation.
+    """
     read = make_read(
         "Published by Wood Mackenzie Research Team. Storage capacity hit a record.",
         url="https://www.woodmac.com/press-releases/2025-us-energy-storage",
@@ -1019,11 +1017,11 @@ def test_page_owner_trims_a_cued_name_to_the_organisation_the_host_matches() -> 
 
 
 def test_page_owner_never_shortens_a_name_to_the_bare_host_label() -> None:
-    """P1-1's prefix search must not turn a page's own word into a name:
-    "Energy" is one word of the Department of Energy's name, not a
-    stand-in for it (the same reading ``_single_token`` records), so an
-    energy.gov page whose headline starts with it keeps the host label it
-    is served under."""
+    """A prefix search must not turn a page's own word into a name: "Energy"
+    is one word of the Department of Energy's name, not a stand-in for it,
+    so an energy.gov page whose headline starts with it keeps the host label
+    it is served under.
+    """
     read = make_read(
         "Reports on storage.",
         url="https://www.energy.gov/topics/energy-storage",
@@ -1033,7 +1031,7 @@ def test_page_owner_never_shortens_a_name_to_the_bare_host_label() -> None:
 
 
 # ---------------------------------------------------------------------------
-# check_statements (spec §6.2, D8): the Report Writer's sibling check
+# check_statements: the Report Writer's sibling check
 # ---------------------------------------------------------------------------
 
 
@@ -1203,9 +1201,8 @@ def _forecast_finding_with_release(release_date: str) -> Finding:
 
 
 def test_the_statement_check_shows_a_forecasts_release_on_its_figure_line() -> None:
-    """High (Fable's final prompt review): a forecast's release never reached
-    the block, so a sentence correctly stating it could be judged
-    inconsistent, or a correction could drop it."""
+    """The block shows a forecast's release, so a sentence correctly stating it
+    is not judged inconsistent and a correction does not drop it."""
     finding = _forecast_finding_with_release("2025-06-10")
     body = statement_check_messages(
         [StatementCheckItem(label="S001",
@@ -1219,10 +1216,9 @@ def test_the_statement_check_shows_a_forecasts_release_on_its_figure_line() -> N
 
 @pytest.mark.asyncio
 async def test_a_sentence_stating_a_forecasts_release_is_kept_consistent() -> None:
-    """High (Fable's final prompt review): with the release now on the
-    block, a scripted 'consistent' verdict for a sentence stating it
-    survives unchanged -- nothing in code second-guesses a release the
-    block itself shows."""
+    """With the release on the block, a scripted 'consistent' verdict for a
+    sentence stating it survives unchanged -- nothing in code second-guesses a
+    release the block itself shows."""
     finding = _forecast_finding_with_release("2025-06-10")
     text = ("Example Institute projects 64.9 units by 2026, in its report "
             "released 2025-06-10.")
@@ -1292,7 +1288,7 @@ async def test_a_missing_label_in_the_reply_gives_none_and_records_an_error() ->
 
 
 # ---------------------------------------------------------------------------
-# The two bounds are config, not module constants (PD-12, PD-27, D9)
+# Configuration: batch size and concurrency parameters
 # ---------------------------------------------------------------------------
 
 
@@ -1300,7 +1296,8 @@ async def test_a_missing_label_in_the_reply_gives_none_and_records_an_error() ->
 async def test_a_configured_batch_size_splits_five_statements_into_three_calls() -> None:
     """`check_statements` takes the batch size from its caller, so the Report
     Writer's own `agents.verifier_batch_size` bounds the Statement Check the
-    same way it bounds the Context Check (§5.4)."""
+    same way it bounds the Context Check.
+    """
     finding = _statement_finding("18.9", "GW")
     items = [
         _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
@@ -1348,7 +1345,7 @@ async def test_a_configured_concurrency_bounds_the_statement_check() -> None:
 async def test_the_context_check_bounds_come_from_the_agent_config(
     tracker: Tracker,
 ) -> None:
-    """PD-12: the batch size and the concurrency the Context Check runs under are
+    """The batch size and the concurrency the Context Check runs under are
     `agents.verifier_batch_size` and `agents.verifier_concurrency`, read from
     the verifier's own `AgentRuntimeConfig` — the module constants stay only
     as the defaults."""
@@ -1378,7 +1375,8 @@ async def test_the_context_check_bounds_come_from_the_agent_config(
 
 
 def test_the_statement_check_shows_each_cited_findings_snippet_and_attribution() -> None:
-    """D10 gap 3: a finding with no figure is judged against its verified words."""
+    """A finding with no figure is judged against its verified words.
+    """
     text = "Rising rents pushed households out of the centre, according to the Example Institute."
     finding = make_finding(
         make_read(text), text,
@@ -1396,8 +1394,9 @@ def test_the_statement_check_shows_each_cited_findings_snippet_and_attribution()
 
 
 def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
-    """D10, relabelled by the re-review (C1): with no admitted issuer the checker
-    still sees where a snippet was read -- as the site, never as its author."""
+    """With no admitted issuer the checker still sees where a snippet was
+    read, as the site, never as its author.
+    """
     text = "Of the five kettles we tested, Model B was the quietest."
     finding = make_finding(
         make_read(text, url="https://lab.example.test/kettles", title="Kettles"), text,
@@ -1413,12 +1412,11 @@ def test_an_own_page_finding_is_attributed_to_its_publisher() -> None:
 
 
 def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
-    """Fix round 1: a figure line and a second line must not credit different bodies.
-
-    The figure line carries the Context Check's own verdict (``relayed
-    (Example Institute)``); a separate ``attributed to:`` line built from the
-    extraction-time issuer, which is empty here, would credit the relay site
-    instead and contradict it.
+    """A figure line and a second line must not credit different bodies. The
+    figure line carries the Context Check's own verdict (``relayed
+    (Example Institute)``), while a separate ``attributed to:`` line built
+    from the extraction-time issuer would credit the relay site instead and
+    contradict it.
     """
     text = "Rents rose 7 percent in 2025, the Example Institute said."
     wanted = figure("7", "percent", "2025", "actual")
@@ -1451,8 +1449,7 @@ def test_a_kept_figure_states_its_attribution_on_its_own_line_only() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# D11/D12: the figure subject, and relative periods resolved from the page date
+# Figure subject, and relative periods resolved from the page date
 #
 # ``_figure_item`` is named apart from ``_item(read, finding)`` above because
 # this one takes the page's own text and the figure under it -- the shape the
@@ -1477,7 +1474,8 @@ def _check(item, **reply):
 
 
 def test_a_relative_period_is_resolved_from_the_page_date() -> None:
-    """Spec §5.2, D11 (Gate G4 finding (a)): 'this year' on a page dated 2026-02-20."""
+    """'This year' on a page dated 2026-02-20 resolves correctly.
+    """
     text = "Operators installed 4 GW this year."
     kept = _check(_figure_item(text, figure("4", "GW"), page_date="2026-02-20"),
                   period="2026", kind="forecast", verdict="correct")
@@ -1488,10 +1486,9 @@ def test_a_relative_period_is_resolved_from_the_page_date() -> None:
 
 
 def test_a_subject_is_adopted_only_as_the_page_names_it() -> None:
-    """Ruling N2: an off-page subject never drops a figure unless it disputes a recorded one.
-
-    A real dispute needs neither subject on the page (fix round 1); that case
-    has its own test below.
+    """An off-page subject never drops a figure unless it disputes a recorded one.
+    A real dispute needs neither subject on the page; that case has its own
+    test below.
     """
     text = "Model B scored 4.5 out of 5 for noise."
     named = _check(_figure_item(text, figure("4.5", "out of 5")), subject="Model B")
@@ -1520,7 +1517,8 @@ def test_the_context_check_block_shows_the_page_date_and_the_recorded_subject() 
 
 
 def test_a_block_with_no_page_date_says_so() -> None:
-    """§8.7-D12: every block states its resolution basis, and says when it has none."""
+    """Every block states its resolution basis, and says when it has none.
+    """
     body = context_check_messages(
         [_figure_item("Operators installed 4 GW in 2024.", figure("4", "GW", "2024", "actual"))]
     )[1].content
@@ -1535,7 +1533,8 @@ def _dated_source(read, publication_date: str | None) -> ScoredSource:
 
 
 def test_the_page_date_comes_from_the_evaluated_source() -> None:
-    """D11: the one date a relative period may resolve against is the read's validated one."""
+    """The one date a relative period may resolve against is the read's validated one.
+    """
     read = make_read()
     assert evaluated_page_date([_dated_source(read, "2026-02-20")], read) == "2026-02-20"
     assert evaluated_page_date([_dated_source(read, None)], read) is None
@@ -1566,7 +1565,8 @@ def _relative_period_reply(messages: list, schema: type) -> ContextCheckDraft:
 
 @pytest.mark.asyncio
 async def test_a_relative_period_resolves_against_the_evaluated_page_date(tracker: Tracker) -> None:
-    """D11/D12 wire-up: the verifier carries the Source Evaluator's date to the figure's check."""
+    """The verifier carries the Source Evaluator's date to the figure's check.
+    """
     text = "Operators installed 4 GW this year."
     read = make_read(text, url="https://operators.example.test/report", title="Operators")
     finding = make_finding(read, text, figures=[figure("4", "GW")])
@@ -1585,7 +1585,8 @@ async def test_a_relative_period_resolves_against_the_evaluated_page_date(tracke
 
 
 def test_a_statement_check_figure_line_names_its_subject() -> None:
-    """D11: a sentence about one subject is judged against the subject its figure is about."""
+    """A sentence about one subject is judged against the subject its figure is about.
+    """
     text = "Model B scored 4.5 out of 5 for noise."
     wanted = figure("4.5", "out of 5")
     finding = make_finding(
@@ -1613,10 +1614,8 @@ def test_a_statement_check_figure_line_names_its_subject() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Fix round 1: explicit periods beat relative ones, a restated or page-backed
+# Explicit periods beat relative ones, a restated or page-backed
 # subject is kept, and the block shows the date the check resolves against.
-# ---------------------------------------------------------------------------
 
 
 def test_an_explicitly_dated_figure_is_never_given_a_relative_period() -> None:
@@ -1701,18 +1700,17 @@ def test_a_recorded_subject_must_be_in_the_figures_own_evidence_words() -> None:
     assert miscredited.dropped_reason == "correction_not_on_page"
 
 
-# ---------------------------------------------------------------------------
-# Task FF1 (final review, slice 1): the relay a multi-source finding states,
-# the null proposal, the off-page statement date, the grown binding, the
-# BaseAgent hook's own answer, and a configuration fault.
-# ---------------------------------------------------------------------------
+# The relay a multi-source finding states, the null proposal, the off-page
+# statement date, the grown binding, the BaseAgent hook's own answer, and a
+# configuration fault.
 
 
 def test_a_relayed_figure_is_credited_to_the_body_the_page_credits() -> None:
-    """Task FF1 (review C1): one finding states two bodies' figures and the
-    extraction admitted one issuer for the whole finding; the Context Check's
-    relay of the *other* body must survive, or the report prints a figure the
-    admitted body never issued as its relay."""
+    """One finding states two bodies' figures and the extraction admitted one
+    issuer for the whole finding; the Context Check's relay of the other
+    body must survive, or the report prints a figure the admitted body never
+    issued as its relay.
+    """
     text = ("According to the EIA, developers plan to add 18.2 GW in 2025, while "
             "Wood Mackenzie projects 15 GW in 2025.")
     read = make_read(text, url="https://www.utilitydive.com/news/x", title="Storage outlook")
@@ -1728,9 +1726,10 @@ def test_a_relayed_figure_is_credited_to_the_body_the_page_credits() -> None:
 
 
 def test_a_relay_the_page_does_not_credit_is_never_the_findings_other_issuer() -> None:
-    """Task FF1 (review C1): with no cue beside the proposed body, the finding's
-    admitted issuer is not the answer -- the figure is unattributed to the site
-    that carried it rather than credited to a body that did not issue it."""
+    """With no cue beside the proposed body, the finding's admitted issuer is
+    not the answer: the figure is unattributed to the site that carried it
+    rather than credited to a body that did not issue it.
+    """
     text = ("U.S. developers plan to add 18.2 GW in 2025. A second body, "
             "Wood Mackenzie, is named here with no attribution at all.")
     read = make_read(text, url="https://www.utilitydive.com/news/x", title="Storage outlook")
@@ -1746,9 +1745,10 @@ def test_a_relay_the_page_does_not_credit_is_never_the_findings_other_issuer() -
 
 
 def test_a_null_period_proposal_clears_a_period_the_page_does_not_state() -> None:
-    """Task FF1 (review I1): the extraction recorded a period the page never
-    dates; the Context Check answers null, as its prompt instructs, and the
-    recorded value must not stand as a verified period."""
+    """The extraction recorded a period the page never dates. The Context
+    Check answers null, as its prompt instructs, and the recorded value must
+    not stand as a verified period.
+    """
     text = ("Our testers rated the kettle highly, and the review says nothing about "
             "when they did.")
     kept = _check(_figure_item(text, figure("4.5", "out of 5", "2026", "actual")),
@@ -1768,7 +1768,8 @@ def test_a_period_the_words_state_survives_a_null_proposal() -> None:
 
 
 def test_a_null_subject_proposal_clears_a_subject_the_words_do_not_state() -> None:
-    """Task FF1 (review I1): the same rule for the recorded subject."""
+    """The same rule applies for the recorded subject.
+    """
     text = "The X200 scored 4.5 out of 5."
     recorded = figure("4.5", "out of 5").model_copy(update={"subject": "Acme X300"})
     kept = _check(_figure_item(text, recorded), verdict="correct")
@@ -1777,9 +1778,10 @@ def test_a_null_subject_proposal_clears_a_subject_the_words_do_not_state() -> No
 
 
 def test_an_explicit_period_in_the_words_beats_a_relative_reading() -> None:
-    """Task FF1 (review P2-2): fix round 1 guarded the *recorded* period only;
-    with nothing recorded, the words' own explicit year still beats a relative
-    reading, so a 2024 figure is never kept under 2026."""
+    """Explicit periods beat relative readings. With nothing recorded, the
+    words' own explicit year still beats a relative reading, so a 2024 figure
+    is never kept under 2026.
+    """
     text = "Firms added 4 GW in 2024; this year they plan more."
     item = _figure_item(text, figure("4", "GW", None, "forecast"), page_date="2026-02-20")
     dropped = _check(item, period="2026", kind="forecast", verdict="correct")
@@ -1788,9 +1790,9 @@ def test_an_explicit_period_in_the_words_beats_a_relative_reading() -> None:
 
 
 def test_a_statement_date_the_page_does_not_state_is_no_basis() -> None:
-    """Task FF1 (review I7): the finding's statement date is admitted the way
-    its quote is, so a relative period is never resolved against a date the
-    page cannot support."""
+    """The finding's statement date is admitted the way its quote is, so a
+    relative period is never resolved against a date the page cannot support.
+    """
     text = "Operators plan to add 4 GW this year, the firm said."
     item = _figure_item(text, figure("4", "GW", None, "forecast"), statement_date="2031-05-01")
 
@@ -1801,10 +1803,11 @@ def test_a_statement_date_the_page_does_not_state_is_no_basis() -> None:
 
 
 def test_context_check_kind_anchor_reaches_the_rendered_batch() -> None:
-    """D4 (RevW4Extract P0): ``kind`` is content-anchored, not date-anchored --
-    a same-period or undated outlook stays forecast whatever the run's date;
-    only a plan, proposal, law or provision's own term is actual -- and the
-    rule renders into the request the model reads."""
+    """The ``kind`` is content-anchored, not date-anchored. A same-period or
+    undated outlook stays forecast whatever the run's date; only a plan,
+    proposal, law or provision's own term is actual, and the rule renders into
+    the request the model reads.
+    """
     item = _figure_item(
         "A 2019 regulation set a proposed limit of 40 units.",
         figure("40", "units"),
@@ -1823,12 +1826,11 @@ def test_context_check_kind_anchor_reaches_the_rendered_batch() -> None:
 
 
 def test_a_same_period_outlook_kept_as_forecast_is_not_relabelled_actual() -> None:
-    """RevW4Extract P0: the honesty rule 'forecasts keep issuer and release'
-    depends on a same-period, undated outlook the Context Check correctly
-    calls forecast reaching the verified figure unchanged, never relabelled
-    actual by a date-based code path. Mirrors the evaluation suite's
-    canonical undated-outlook fixture (an outlook stated in the same year as
-    the page, expected kind forecast)."""
+    """The honesty rule 'forecasts keep issuer and release' depends on a
+    same-period, undated outlook the Context Check correctly calls forecast
+    reaching the verified figure unchanged, never relabelled actual by a
+    date-based code path.
+    """
     text = (
         "Growth could set a record this year as operators report plans to "
         "add 19.6 units of new capacity."
@@ -1848,7 +1850,7 @@ _CONTEXT_CHECK_FORBIDDEN_WORDS = (
 
 
 def test_context_check_instruction_names_no_domain_word() -> None:
-    """D10/D11: the kind rule is general text, never a probe subject."""
+    """The kind rule is general text, never tied to one domain."""
     lowered = CONTEXT_CHECK_INSTRUCTION.lower()
     for word in _CONTEXT_CHECK_FORBIDDEN_WORDS:
         assert word not in lowered, word
@@ -1858,9 +1860,10 @@ def test_context_check_instruction_names_no_domain_word() -> None:
 async def test_a_finding_already_verified_is_judged_again_when_its_targets_grew(
     tracker: Tracker,
 ) -> None:
-    """Task FF1 (review P2-4): a re-extraction of the same content that binds a
-    target the verified record lacked is judged again, so the obligation it now
-    answers is read from a verified record instead of staying Not found."""
+    """A re-extraction of the same content that binds a target the verified
+    record lacked is judged again, so the obligation it now answers is read
+    from a verified record instead of staying Not found.
+    """
     read = make_read()
     finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")],
                            target_ids=["topic-01-target-01"])
@@ -1906,7 +1909,7 @@ async def test_a_finding_already_verified_with_the_same_bindings_is_not_judged_a
 
 
 def test_the_state_update_hook_reports_errors_only(tracker: Tracker) -> None:
-    """Task FF1 (review P3-1): ``run`` builds the snapshot PD-4 accumulates, so
+    """``run`` builds the snapshot it accumulates, so
     the documented ``BaseAgent`` hook must not answer with one pass's findings
     in its place -- a caller relying on it would drop every earlier finding."""
     agent = _evidence_verifier(tracker, ScriptedCompleter(outputs=[]))
@@ -1922,9 +1925,9 @@ def test_the_state_update_hook_reports_errors_only(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_a_provider_configuration_error_halts_the_context_check(tracker: Tracker) -> None:
-    """Task FF1 (review P3-5): a rejected model or effort is a configuration
-    fault the run halts on, not a batch that silently publishes every figure as
-    unchecked context."""
+    """A rejected model or effort is a configuration fault the run halts on,
+    not a batch that silently publishes every figure as unchecked context.
+    """
     read = make_read()
     finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
     completer = ScriptedCompleter(
@@ -1941,7 +1944,7 @@ def test_an_organisation_merely_mentioned_does_not_own_the_page() -> None:
     """Slice-3 review: ``_owns_page`` asks whether the page *is* the
     organisation's, not whether the organisation appears on it.
 
-    The Source Evaluator's validated issuer (PD-25) is a judgement about the
+    The Source Evaluator's validated issuer is a judgement about the
     read, so an identity-words match with it counts only beside the page's own
     credit of itself: a news page quoting "the Example Statistical Agency" is
     not the agency's own page, and the agency's own .gov page is.
@@ -1964,32 +1967,32 @@ def test_the_pages_own_masthead_still_evidences_the_validated_issuer() -> None:
     assert _owns_page(read, "Example Lab", "Example Lab")
 
 
-# ---------------------------------------------------------------------------
-# The live pre-flight's Defect A (review-01) end to end: the Context Check left
-# the relay unresolved and the label contradicted the page's own sentence.
-# ---------------------------------------------------------------------------
+# A relay the Context Check leaves unresolved is read from its own words.
+# When both the Context Check and the label contradict the page's sentence,
+# code resolves the relay correctly.
 
-PREFLIGHT_WORDS = (
+RELAYED_CREDIT_WORDS = (
     "U.S. developers and power plant owners plan to significantly increase utility-scale "
     "battery storage over the next three years, reaching 30 GW by the end of 2025, based on "
     "the latest reporting from the U.S. Energy Information Administration (EIA)."
 )
-PREFLIGHT_URL = ("https://www.power-eng.com/energy-storage/batteries/"
+RELAYED_CREDIT_URL = ("https://www.power-eng.com/energy-storage/batteries/"
                  "eia-utility-scale-battery-storage-capacity-to-reach-30-gw-by-2026")
 
 
 def test_a_relay_the_context_check_leaves_unresolved_is_read_from_its_own_words() -> None:
-    """Defect A: the Context Check answered that the source does not attribute
-    the figure, while the words it quoted credit the U.S. Energy Information
-    Administration. Code reads the credit back out of those words, so the label
-    agrees with the sentence the writer quotes from the page (review-01)."""
-    read = make_read(PREFLIGHT_WORDS, url=PREFLIGHT_URL,
+    """The Context Check answered that the source does not attribute the
+    figure, while the words it quoted credit the U.S. Energy Information
+    Administration. Code reads the credit back out of those words, so the
+    label agrees with the sentence the writer quotes from the page.
+    """
+    read = make_read(RELAYED_CREDIT_WORDS, url=RELAYED_CREDIT_URL,
                      title="EIA: utility-scale battery storage capacity to reach 30 GW by 2026")
-    finding = make_finding(read, PREFLIGHT_WORDS,
+    finding = make_finding(read, RELAYED_CREDIT_WORDS,
                            figures=[figure("30", "GW", "2025", "forecast")])
 
     assert resolve_attribution(proposed="unattributed", organisation=None, finding=finding,
-                               read=read, issuer=None, words=PREFLIGHT_WORDS) == (
+                               read=read, issuer=None, words=RELAYED_CREDIT_WORDS) == (
         "relayed", "U.S. Energy Information Administration")
 
 
@@ -2000,7 +2003,7 @@ def test_a_body_merely_mentioned_leaves_the_figure_unattributed() -> None:
              "of 2025.")
     read = make_read(f"{words} Analysts at the U.S. Energy Information Administration track the "
                       "market each quarter, and this sentence is about something else.",
-                     url=PREFLIGHT_URL, title="Storage to reach 30 GW")
+                     url=RELAYED_CREDIT_URL, title="Storage to reach 30 GW")
     finding = make_finding(read, words, figures=[figure("30", "GW", "2025", "forecast")])
 
     assert resolve_attribution(proposed="unattributed", organisation=None, finding=finding,
@@ -2008,28 +2011,26 @@ def test_a_body_merely_mentioned_leaves_the_figure_unattributed() -> None:
         "unattributed", "power-eng.com")
 
 
-# ---------------------------------------------------------------------------
-# Round 3, Defect A: the period the words state in another spelling.
-# ---------------------------------------------------------------------------
+# A period the words state in another spelling is still stated.
 
-PREFLIGHT3_WORDS = (
+TWO_DIGIT_QUARTER_WORDS = (
     "The report says domestic storage capacity will rise from about 28 GW at the end of "
     "Q1\u201925 to 64.9 GW at the end of 2026."
 )
 
 
 def test_a_period_the_words_spell_another_way_is_stated() -> None:
-    """Round 3 (pre-flight run 3, the A2 traceability defect): the page dates its
-    figure "at the end of Q1'25" while the figure records "Q1 2025", so the
-    literal containment test read the period as not stated and the label said
-    "period not stated" for a page that states it."""
-    recorded = _figure_item(PREFLIGHT3_WORDS, figure("28", "GW", "Q1 2025", "actual"))
+    """The page dates its figure "at the end of Q1'25" while the figure
+    records "Q1 2025". The literal containment test read the period as not
+    stated, but the label said "period not stated" for a page that states it.
+    """
+    recorded = _figure_item(TWO_DIGIT_QUARTER_WORDS, figure("28", "GW", "Q1 2025", "actual"))
 
     unchanged = _check(recorded, verdict="correct")
 
     assert unchanged.kept and unchanged.context.period == "Q1 2025"
 
-    proposed = _check(_figure_item(PREFLIGHT3_WORDS, figure("28", "GW", None, "actual")),
+    proposed = _check(_figure_item(TWO_DIGIT_QUARTER_WORDS, figure("28", "GW", None, "actual")),
                       period="Q1 2025", kind="actual", verdict="correct")
 
     assert proposed.kept and proposed.context.period == "Q1 2025"
@@ -2039,7 +2040,7 @@ def test_a_period_the_words_do_not_state_is_still_refused() -> None:
     """The bound on the rule above: another quarter, and a fiscal year where the
     words write a calendar one, are still not the period the words state."""
     other_quarter = _check(
-        _figure_item(PREFLIGHT3_WORDS, figure("28", "GW", None, "actual")),
+        _figure_item(TWO_DIGIT_QUARTER_WORDS, figure("28", "GW", None, "actual")),
         period="Q2 2025", kind="actual", verdict="correct")
 
     assert other_quarter.dropped_reason == "correction_not_on_page"
@@ -2061,15 +2062,13 @@ def test_a_period_the_words_abbreviate_states_the_fiscal_year() -> None:
     assert kept.kept and kept.context.period == "fiscal 2025"
 
 
-# ---------------------------------------------------------------------------
-# Round 4, part 1: the review's findings, through the enforcement.
-# ---------------------------------------------------------------------------
+# The review's findings, through the enforcement.
 
 
 def test_a_part_number_that_looks_like_a_period_is_not_one() -> None:
-    """RevFF1r3's Important 1 through ``_checked``: "H20" is a chip, not the
-    year 2020, so the recorded period is not stated and a proposal of it is
-    refused."""
+    """A chip model designation like "H20" is not the year 2020, so the
+    recorded period is not stated and a proposal of it is refused.
+    """
     text = "Nvidia sold 1.2 million H20 chips, the filing said."
 
     cleared = _check(_figure_item(text, figure("1.2", "million", "2020", "actual")),
@@ -2082,7 +2081,7 @@ def test_a_part_number_that_looks_like_a_period_is_not_one() -> None:
 
 
 def test_a_fiscal_range_does_not_state_the_year_it_starts_in() -> None:
-    """RevFF1r3's Important 2 through ``_checked``."""
+    """A fiscal range does not state the year it starts in, checked through ``_checked``."""
     text = "India added 18 GW in FY2024-25, the ministry said."
 
     cleared = _check(_figure_item(text, figure("18", "GW", "fiscal 2024", "actual")),
@@ -2095,8 +2094,9 @@ def test_a_fiscal_range_does_not_state_the_year_it_starts_in() -> None:
 
 
 def test_a_period_the_words_abbreviate_beats_a_relative_reading() -> None:
-    """RevFF1r3's Minor 4: the two-digit period the words state is what
-    ``dated_explicitly`` reads, so a relative "this year" cannot replace it."""
+    """A two-digit period the words state beats a relative reading: the words
+    state "Q1 2025", so a relative "this year" cannot replace it.
+    """
     text = "Firms added 4 GW in Q1\u201925; this year they plan more."
     item = _figure_item(text, figure("4", "GW", "Q1 2025", "actual"), page_date="2026-02-20")
 
@@ -2105,14 +2105,13 @@ def test_a_period_the_words_abbreviate_beats_a_relative_reading() -> None:
     assert dropped.dropped_reason == "correction_not_on_page"
 
 
-# ---------------------------------------------------------------------------
-# Round 5: ReRevFF1p1's N1 through the enforcement, and RevFF1p2's D-2 labels.
-# ---------------------------------------------------------------------------
+# The ISO-date year and the page-owner acronym labels through the enforcement.
 
 
 def test_a_period_the_words_state_as_an_iso_date_is_stated() -> None:
-    """ReRevFF1p1's N1 through ``_checked``: the year of an ISO date is the
-    period the words state, so a recorded "calendar 2024" is not cleared."""
+    """The year of an ISO date is the period the words state, so a recorded
+    "calendar 2024" is not cleared.
+    """
     text = "Solar capacity was 18 GW, per the report published 2024-01-15."
 
     kept = _check(_figure_item(text, figure("18", "GW", "calendar 2024", "actual")),
@@ -2122,9 +2121,10 @@ def test_a_period_the_words_state_as_an_iso_date_is_stated() -> None:
 
 
 def test_page_owner_keeps_the_body_not_its_programme_or_form() -> None:
-    """RevFF1p2's D-2: the acronym rule is answering-only, so a page's byline is
-    read as the organisation itself -- not as the programme or the form number
-    whose text happens to lead the title."""
+    """The acronym rule is answering-only, so a page's byline is read as the
+    organisation itself, not as the programme or the form number whose text
+    happens to lead the title.
+    """
     eia = make_read(
         "EIA-923 monthly data. Published by the U.S. Energy Information Administration.",
         url="https://www.eia.gov/electricity/data.php",
@@ -2138,15 +2138,14 @@ def test_page_owner_keeps_the_body_not_its_programme_or_form() -> None:
     assert page_owner(united_nations) == "United Nations"
 
 
-# ---------------------------------------------------------------------------
-# Round 6: ReRevFF1r5's finding 1, through the enforcement.
-# ---------------------------------------------------------------------------
+# A finding through the enforcement.
 
 
 def test_a_multi_year_span_clears_a_recorded_start_year() -> None:
-    """ReRevFF1r5's finding 1 in the unsafe direction: a page writing a three-year
-    span let a figure whose recorded period is the span's start year be kept, so
-    the span clears it -- while a date's own year is stated and stands."""
+    """In the unsafe direction: a page writing a three-year span let a figure
+    whose recorded period is the span's start year be kept, so the span
+    clears it, while a date's own year is stated and stands.
+    """
     span = "India added 18 GW in 2024-25/26, the ministry said."
     date = "Solar capacity was 18 GW, per the report published 2024-01-05."
 
@@ -2159,17 +2158,15 @@ def test_a_multi_year_span_clears_a_recorded_start_year() -> None:
     assert kept.kept and kept.context.period == "calendar 2024"
 
 
-# ---------------------------------------------------------------------------
-# Round 7: the expert final review's F2 -- an own verdict the page does not back.
-# ---------------------------------------------------------------------------
+# An own verdict the page does not back.
 
 
 def test_an_own_verdict_the_page_does_not_back_is_never_the_pages_own() -> None:
-    """F2 (final review): the Context Check proposed "own" and named a body the
-    host does not own. When the page itself cues that body beside the snippet the
-    figure is that body's relay; when nothing cues it the figure is attributed to
-    nobody -- never to the host as its own figure, which presented a relay as the
-    issuer."""
+    """The Context Check proposed "own" and named a body the host does not
+    own. When the page itself cues that body beside the snippet the figure is
+    that body's relay; when nothing cues it the figure is attributed to
+    nobody, never to the host as its own figure.
+    """
     text = "Rainfall reached 15 mm in 2025, according to the National Weather Office."
     read = make_read(text, url="https://www.senator.example.gov/press", title="Press")
     finding = make_finding(read, text, figures=[figure("15", "mm", "2025", "actual")])
@@ -2187,16 +2184,16 @@ def test_an_own_verdict_the_page_does_not_back_is_never_the_pages_own() -> None:
 
     assert cued == ("relayed", "National Weather Office")
     assert uncued == ("unattributed", "example.gov")
-    # The unchecked-context path keeps its own-page answer (PD-26).
+    # The unchecked-context path keeps its own-page answer .
     assert resolve_attribution(proposed=None, organisation=None, finding=quiet_finding,
                                read=quiet_read, issuer=None) == ("own", "example.gov")
 
 
 def test_an_own_verdict_naming_the_pages_own_host_stands() -> None:
-    """The bound on F2: a verdict whose "own" names the page's *own host* (the
-    Context Check's block prints the host as the page owner) is the own-page
-    reading, not a body the host does not own -- while another site named as the
-    owner is not this page."""
+    """A verdict whose "own" names the page's own host is the own-page
+    reading, not a body the host does not own, while another site named as the
+    owner is not this page.
+    """
     text = ("Kettle K1 noise test. Published by Example Tester. The report states the Example "
             "Tester rated it 4.5 out of 5 for 2026.")
     read = make_read(text, url="https://tester.example.test/kettle-k1",
@@ -2214,10 +2211,10 @@ def test_an_own_verdict_naming_the_pages_own_host_stands() -> None:
 
 
 def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
-    """N3: the page's own host is the own-page reading PD-18 falls back to, so a
-    verdict that names the owner keeps it however the name is spelled -- the host
-    string or the owner's own name -- while a body the page is not stays
-    unattributed."""
+    """The page's own host is the own-page reading the attribution falls back to, so a verdict
+    that names the owner keeps it however the name is spelled — the host string
+    or the owner's own name — while a body the page is not stays unattributed.
+    """
     text = "Revenue was 400 billion USD in 2025."
     read = make_read(text, url="https://www.apple.com/newsroom/2026/01/x", title="Newsroom")
     finding = make_finding(read, text,
@@ -2232,10 +2229,10 @@ def test_an_own_verdict_naming_the_first_party_owner_stands() -> None:
 
 
 def test_resolve_attribution_rejects_a_pronoun_as_the_organisation() -> None:
-    """D11b (run 8): a determiner, pronoun or single function word is never
-    an organisation, whatever cue the page carries beside it -- 'According
-    to That' names nobody, so the figure falls back to unattributed rather
-    than crediting 'That'."""
+    """A determiner, pronoun or single function word is never an organisation,
+    whatever cue the page carries beside it. 'According to That' names nobody,
+    so the figure falls back to unattributed.
+    """
     snippet = "According to That, the total reached ten by 2019."
     read = make_read(snippet, url="https://example-register.test/notes", title="Notes")
     finding = make_finding(read, snippet)
@@ -2249,11 +2246,10 @@ def test_resolve_attribution_rejects_a_pronoun_as_the_organisation() -> None:
 
 
 def test_resolve_attribution_rejects_a_pronoun_read_back_from_evidence_words() -> None:
-    """D11b (RevV4 P1 follow-up): the Context Check's own evidence words can
-    read a pronoun back as a name through the same cue that reads a real
-    one ('That number, however, grew ...') -- the production path passes
-    `words` (line 861), so the rejection must hold there too, not only for
-    the model's own `organisation` argument."""
+    """The Context Check's own evidence words can read a pronoun back as a
+    name through the same cue that reads a real one. The rejection must hold
+    for the evidence words path, not only for the model's own argument.
+    """
     snippet = "At first, there were two officials, according to some sources."
     words = (
         "At first, there were two officials—or possibly four or five, "
@@ -2271,9 +2267,9 @@ def test_resolve_attribution_rejects_a_pronoun_read_back_from_evidence_words() -
 
 
 def test_resolve_attribution_rejects_a_pronoun_as_the_admitted_issuer() -> None:
-    """D11b (RevV4 P1 follow-up): a researcher-admitted
-    ``finding.attributed_issuer`` of 'That' is rejected the same way a
-    model-proposed or evidence-words-read pronoun is."""
+    """A researcher-admitted ``finding.attributed_issuer`` of a pronoun is
+    rejected the same way a model-proposed or evidence-words-read pronoun is.
+    """
     snippet = "That study found ten sites in the region."
     read = make_read(snippet, url="https://example-register.test/notes", title="Notes")
     finding = make_finding(read, snippet, attributed_issuer="That")
@@ -2286,7 +2282,7 @@ def test_resolve_attribution_rejects_a_pronoun_as_the_admitted_issuer() -> None:
 
 
 def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> None:
-    """Improvement 8: a snippet cut at the passage boundary is judged against the
+    """A snippet cut at the passage boundary is judged against the
     bounded passage, so a condition or an exception past the cut is seen."""
     snippet = "The grant covers travel when the visit is approved"
     page = (snippet + " in advance. It does not cover stays longer than five days.")
@@ -2313,9 +2309,9 @@ def test_the_statement_check_shows_the_passage_a_rules_conditions_live_in() -> N
 
 
 def test_the_statement_check_shows_the_source_line_a_kind_is_named_from() -> None:
-    """W2: the writer's rule lets a sentence name a weak page's kind "in the
-    source line's own words", so the checker must be shown that line too, or
-    it judges the naming against a block that never carried it."""
+    """The writer's rule lets a sentence name a weak page's kind "in the
+    source line's own words", so the checker must be shown that line too.
+    """
     finding = make_finding(make_read("A claim."), "A claim.").model_copy(
         update={"verification": FindingVerification(status="verified")})
     item = StatementCheckItem(
@@ -2337,7 +2333,7 @@ def test_the_statement_check_shows_the_source_line_a_kind_is_named_from() -> Non
 
 
 def test_a_date_figure_carries_no_period_correction_and_is_never_dropped() -> None:
-    """Improvement 9, on the run's shape: the date a page states *is* the figure,
+    """The date a page states *is* the figure,
     so the reply proposing it as the period corrects nothing, and a date the
     reply writes in another spelling is not a correction off the page."""
     text = ("Article 12 : Registration Comes into force 2 August 2025, "
@@ -2357,8 +2353,8 @@ def test_a_date_figure_carries_no_period_correction_and_is_never_dropped() -> No
 
 
 def test_filling_a_period_the_words_state_is_not_a_correction() -> None:
-    """Improvement 9: a figure recorded with no period, whose words state one the
-    reply also states, was published as "corrected context"."""
+    """A figure recorded with no period, whose words state one the
+    reply also states, is not published as "corrected context"."""
     text = "Capacity reached 12 GW in 2025."
     kept = _check(_figure_item(text, figure("12", "GW", None, "actual")),
                   period="2025", verdict="correct", evidence_words=text)
@@ -2377,7 +2373,7 @@ def test_a_period_the_words_contradict_is_still_a_correction() -> None:
 
 
 def test_a_confirm_verdict_carries_no_scope_correction() -> None:
-    """Improvement 9: corrections are gated on the verdict that asserts one, so a
+    """Corrections are gated on the verdict that asserts one, so a
     confirm reply cannot drop a figure for a proposal of its own."""
     text = "Capacity reached 12 GW in 2025."
     kept = _check(_figure_item(text, figure("12", "GW", "2025", "actual")),
@@ -2397,9 +2393,10 @@ def test_a_correct_verdict_still_drops_an_unbacked_scope() -> None:
 
 
 def test_the_statement_check_is_told_no_body_for_an_unattributed_relay_figure() -> None:
-    """Improvement 7 in the Statement Check's block: the page owner of a page
-    that serves another body's work is not the figure's organisation, so the
-    checker is not invited to credit the relaying site with the words."""
+    """The page owner of a page that serves another body's work is not the
+    figure's organisation, so the checker is not invited to credit the
+    relaying site with the words.
+    """
     snippet = "The grant covers travel when the visit is approved"
     page = snippet + " in advance."
     relayed_page = make_read(page, url="https://example-relay.example/law/12",
@@ -2430,7 +2427,7 @@ def test_the_statement_check_is_told_no_body_for_an_unattributed_relay_figure() 
 
     # The figure's own line claims no body for a page that serves another body's
     # work, while the page line (which the checker needs to allow naming the
-    # served document, C1) prints the title and host it was read on.
+    # served document) prints the title and host it was read on.
     relayed_line = next(line for line in relayed_body.splitlines()
                         if line.strip().startswith("two") or "| unattributed |" in line)
     assert "| unattributed |" in relayed_line and "Example Relay" not in relayed_line
@@ -2439,7 +2436,7 @@ def test_the_statement_check_is_told_no_body_for_an_unattributed_relay_figure() 
 
 
 def test_the_statement_check_sees_the_page_title_a_sentence_may_name_a_document_from() -> None:
-    """Re-review C1: the checker must see the page's own title, or a sentence
+    """The checker must see the page's own title, or a sentence
     naming the document the page reproduces is refused by construction."""
     snippet = "Providers shall register each widget."
     page = snippet + " Registration is made before the widget is placed."
@@ -2461,7 +2458,8 @@ def test_the_statement_check_sees_the_page_title_a_sentence_may_name_a_document_
 
 @pytest.mark.asyncio
 async def test_the_verification_completed_event_is_published_live(tracker: Tracker) -> None:
-    """live-briefs spec E3: verification.completed, live, as the object returned."""
+    """A verification.completed event is published live.
+    """
     read = make_read()
     finding = make_finding(read, SNIPPET)
     agent = _evidence_verifier(tracker, ScriptedCompleter())
@@ -2474,12 +2472,12 @@ async def test_the_verification_completed_event_is_published_live(tracker: Track
 
     [event] = outcome.state_update["events"]
     assert event.event_type == "evidence_verifier.verification.completed"
-    # notes-progress-report spec §4 item 1: the progress events are live-only.
+    # Progress events are live-only.
     assert [e.event_id for e in received if e.event_type != "evidence_verifier.progress"] == [event.event_id]
     assert [e.event_type for e in received].count("evidence_verifier.progress") == 1
 
 
-# --- notes-progress-report spec §6.1, §6.2, §6.5: Verifying's live progress --------
+# --- Verifying's live progress --------
 
 SECRET_REASON = "SECRET-CONTEXT-REASON"
 
@@ -2506,8 +2504,9 @@ def _four_findings():
 
 @pytest.mark.asyncio
 async def test_verifier_first_event_counts_figure_match(tracker: Tracker) -> None:
-    """AC16 (review M6): the first event arrives before any Context Check call, and its
-    ``checked`` already counts every finding Figure Match decided."""
+    """The first event arrives before any Context Check call, and its
+    ``checked`` count already accounts for every finding's Figure Match decision.
+    """
     read, findings = _four_findings()
     completer = ScriptedCompleter(outputs=[_secret_confirm_reply])
     agent = _evidence_verifier(tracker, completer)
@@ -2541,7 +2540,7 @@ async def test_verifier_first_event_counts_figure_match(tracker: Tracker) -> Non
 @pytest.mark.asyncio
 @pytest.mark.parametrize("batch_size", [2, 5])
 async def test_verifier_tally_ends_on_the_completed_counts(tracker: Tracker, batch_size: int) -> None:
-    """AC16: whatever the batch size, the last tally equals the completed event's
+    """Whatever the batch size, the last tally equals the completed event's
     counts, and the sample is never the Context Check's reason text."""
     read = make_read(_metrics_page(6), url="https://example.test/batch", title="Batch metrics")
     findings = [_metric_finding(read, i) for i in range(6)]
@@ -2569,7 +2568,8 @@ async def test_verifier_tally_ends_on_the_completed_counts(tracker: Tracker, bat
 
 
 def test_progress_counts_idempotent() -> None:
-    """AC16 (review M13): a batch reported as two halves, or twice, counts each finding once."""
+    """A batch reported as two halves, or twice, counts each finding once.
+    """
     from deep_research.agents.evidence_verifier import _VerifyProgress
 
     read, findings = _four_findings()
@@ -2609,8 +2609,10 @@ def _figure_result(figure_, *, period=None, scope=None, subject=None, kind="actu
     ],
 )
 def test_verifier_progress_samples(result: FigureResult, expected: dict) -> None:
-    """§6.1: a corrected sample names what the page changed, in the kept context's own
-    words; the host is the page's, without ``www.``; the role is the evaluated one."""
+    """A corrected sample names what the page changed, in the kept context's
+    own words. The host is the page's without ``www.``. The role is the
+    evaluated one.
+    """
     read = make_read()
     finding = make_finding(read, SNIPPET, figures=[result.figure], content="Finding A")
     kept = _figure_result(figure("19.6", "GW", "2025", "forecast"), period="2025", kind="forecast", corrected=False)
@@ -2629,8 +2631,10 @@ def test_verifier_progress_samples(result: FigureResult, expected: dict) -> None
 
 
 def test_a_sample_prefers_a_correction_then_a_drop_and_names_the_first_figures_reason() -> None:
-    """§6.2: verified_corrected > dropped > verified > quoted, first in report order; a
-    finding whose every figure dropped names its first figure's reason."""
+    """Samples prefer verified_corrected findings, then dropped, then verified,
+    then quoted, in report order. A finding whose every figure dropped names
+    its first figure's reason.
+    """
     read = make_read()
     quoted = make_finding(read, SNIPPET, content="Quoted")
     dropped = make_finding(read, SNIPPET, figures=[figure("1", "GW")], content="Dropped")
@@ -2649,7 +2653,8 @@ def test_a_sample_prefers_a_correction_then_a_drop_and_names_the_first_figures_r
 
 @pytest.mark.asyncio
 async def test_statement_check_reports_each_settled_batch() -> None:
-    """§6.2: ``on_batch`` is called once per settled batch with its items and verdicts."""
+    """The ``on_batch`` callback is called once per settled batch with its items and verdicts.
+    """
     finding = _statement_finding("18.9", "GW")
     items = [_statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding) for i in range(12)]
     completer = ScriptedCompleter(outputs=[_confirm_statement_reply] * 3)
@@ -2672,9 +2677,9 @@ async def test_statement_check_reports_each_settled_batch() -> None:
 async def test_the_two_checks_name_their_calls_for_the_call_records(
     tracker: Tracker,
 ) -> None:
-    """Latency audit O8: a Context Check and a Statement Check call carry their
-    own names in the run's call records, so a slow verifier call says which
-    check it was."""
+    """A Context Check and a Statement Check call carry their own names in the
+    run's call records, so a slow verifier call says which check it was.
+    """
     read = make_read()
     finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
     context = LabelRecordingCompleter(outputs=[_confirm_reply])
@@ -2697,8 +2702,9 @@ async def test_the_two_checks_name_their_calls_for_the_call_records(
 
 @pytest.mark.asyncio
 async def test_a_truncated_batchs_two_halves_are_asked_together(tracker: Tracker) -> None:
-    """Latency audit O10: the re-ask's two halves are in flight at once, and
-    every finding still gets the verdict its own half returned."""
+    """The re-ask's two halves are in flight at once, and every finding still
+    gets the verdict its own half returned.
+    """
     read = make_read(_metrics_page(4), url="https://example.test/halves", title="Halves")
     findings = [_metric_finding(read, i) for i in range(4)]
     completer = HoldingCompleter(
@@ -2768,9 +2774,10 @@ async def test_a_truncated_statement_batchs_halves_are_asked_together() -> None:
 async def test_a_truncated_context_check_batch_reports_progress_once_when_its_halves_settle(
     tracker: Tracker,
 ) -> None:
-    """Phase B's ``on_progress`` through the latency re-ask (O10): the two halves are in
-    flight together, yet the batch is one report, made after both settled, with every
-    finding counted once and ``batches_done`` at 1."""
+    """Progress through the latency re-ask: the two halves are in flight
+    together, yet the batch is one report, made after both settled, with every
+    finding counted once.
+    """
     read = make_read(_metrics_page(4), url="https://example.test/halves", title="Halves")
     findings = [_metric_finding(read, i) for i in range(4)]
     completer = HoldingCompleter(
@@ -2791,9 +2798,10 @@ async def test_a_truncated_context_check_batch_reports_progress_once_when_its_ha
 
 @pytest.mark.asyncio
 async def test_a_truncated_statement_batch_calls_on_batch_once_with_all_its_items() -> None:
-    """Phase B's ``on_batch`` through the latency re-ask (O10): a truncated first batch of
-    five is re-asked as two halves, yet is one report of five items, and each report's
-    labels are exactly its verdicts' keys."""
+    """A truncated first batch of five is re-asked as two halves, yet is one
+    report of five items, and each report's labels are exactly its verdicts'
+    keys.
+    """
     finding = _statement_finding("18.9", "GW")
     items = [
         _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)

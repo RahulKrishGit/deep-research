@@ -8,7 +8,7 @@ def tracker() -> Tracker:
     return Tracker(
         LangSmithRuntimeConfig(
             tracing_enabled=False,
-            project="graph-tests",
+            project="tests",
             api_key=None,
         )
     )

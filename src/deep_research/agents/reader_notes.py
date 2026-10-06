@@ -1,4 +1,4 @@
-"""Reader notes in the agents' requests (live-briefs spec §4.6, D9-D10).
+"""Reader notes in the agents' requests.
 
 One block, one line per note — ``- {restatement} ({kinds})`` — under a lead
 sentence that says how *this* step uses the notes. Only interpreted notes that
@@ -6,7 +6,7 @@ no later note replaces are rendered, and every renderer returns ``""`` when
 there is none, so a run without notes builds byte-identical requests.
 
 The Evidence Verifier has no entry here, deliberately: verification is never
-affected by a note (D10), and no verifier request carries this block.
+affected by a note, and no verifier request carries this block.
 
 The run's board is reached at call time: ``deep_research.runtime`` imports every
 agent while its package initialises, so a module-level import of
@@ -31,14 +31,14 @@ from deep_research.utils.types import (
 )
 
 STEERING_KINDS: frozenset[str] = frozenset({"emphasis", "exclude", "scope", "about_reader"})
-"""The kinds that steer the run's own steps (notes-progress-report spec §5.1); ``new_angle``
+"""The kinds that steer the run's own steps; ``new_angle``
 asks for research of its own instead."""
 
 NOTES_WAIT_S = 30.0
 """The longest a step waits for a note still being read before it moves on.
 
-Shared by the review node, before it reads its route (live-briefs spec §4.8), and the
-researcher, before its research window closes (notes-progress-report spec §5.3): twice
+Shared by the review node, before it reads its route, and the
+researcher, before its research window closes: twice
 ``hitl.note_interpret_timeout_s``'s default of 15 s, so with the default every reading in
 flight when the wait begins has ended first, and a raised timeout (up to ten minutes) holds
 either step for this long at most. A note still being read then is left out, and a later
@@ -110,21 +110,20 @@ class NoteLine(Protocol):
 
 
 def is_research_note(note: ReaderNote) -> bool:
-    """A research note asks the run to research something: its kinds include ``new_angle``
-    (notes-progress-report spec §5.1)."""
+    """A research note asks the run to research something: its kinds include ``new_angle``."""
     return "new_angle" in note.kinds
 
 
 def has_steering_kind(note: ReaderNote) -> bool:
     """Whether the note steers the run's steps: emphasis, exclude, scope or about_reader.
 
-    Every steering note has one; a research note that has one too is a mixed note (D20).
+    Every steering note has one; a research note that has one too is a mixed note.
     """
     return any(kind in STEERING_KINDS for kind in note.kinds)
 
 
 def steering_view(note: ReaderNote) -> ReaderNote | None:
-    """The note as every steering request prints it (spec §5.1, D20).
+    """The note as every steering request prints it.
 
     A note without ``new_angle`` is returned unchanged; a mixed note is a copy with
     ``new_angle`` left out of its kinds; a note whose only kind is ``new_angle`` has no
@@ -180,7 +179,7 @@ def live_reader_notes(state_notes: Sequence[ReaderNote]) -> list[ReaderNote]:
 def research_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
     """The notes a research loop's turns and its extraction apply: their steering views.
 
-    notes-progress-report spec §5.1: a note whose only kind is ``new_angle`` is researched
+    A note whose only kind is ``new_angle`` is researched
     as its own topic instead, and a mixed note steers with ``new_angle`` left out.
     """
     return steering_notes(notes)
@@ -209,7 +208,7 @@ def render_reader_notes(
 def note_sub_topic(
     note: ReaderNote, *, priority: int, reason: NoteTopicReason
 ) -> SubTopic:
-    """The sub-topic that researches one reader note (notes-progress-report spec §5.1).
+    """The sub-topic that researches one reader note.
 
     Titled ``Your note: {restatement}``, with coverage id ``note-{note_id}`` and one
     required target per question the note raised — or, for a note that raised none, the
@@ -246,7 +245,7 @@ def note_sub_topic(
 
 
 def board_version() -> int | None:
-    """The bound board's change count, or ``None`` with no board bound (spec §5.3)."""
+    """The bound board's change count, or ``None`` with no board bound."""
     from deep_research.runtime import notes  # noqa: PLC0415 - see the module docstring
 
     board = notes.current_note_board()
@@ -254,7 +253,7 @@ def board_version() -> int | None:
 
 
 async def wait_for_board_change(seen: int) -> int:
-    """Return the bound board's change count once it differs from ``seen`` (spec §5.3).
+    """Return the bound board's change count once it differs from ``seen``.
 
     Called only while a board is bound: ``board_version`` returned ``seen``.
     """
@@ -278,7 +277,7 @@ def research_notes_without_a_topic(
     state_notes: Sequence[ReaderNote], known_coverage_ids: Collection[str]
 ) -> list[ReaderNote]:
     """The active research notes, the state's then the board's, whose ``note-{id}`` is
-    not in ``known_coverage_ids``, in receipt order (notes-progress-report spec §5.3)."""
+    not in ``known_coverage_ids``, in receipt order."""
     return [
         note
         for note in live_reader_notes(state_notes)

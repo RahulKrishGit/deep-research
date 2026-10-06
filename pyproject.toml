@@ -37,6 +37,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I"]
+# Long prompt literals and test data are kept on one line; line length is not linted.
+ignore = ["E501"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

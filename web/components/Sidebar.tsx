@@ -24,7 +24,7 @@ export function Sidebar() {
   const router = useRouter();
   const params = useParams();
   const active = typeof params?.id === "string" ? params.id : null;
-  /* index.html:3782,:3838 — choosing a session or starting over collapses the drawer;
+  /* Choosing a session or starting over collapses the drawer;
      on desktop "expanded" is a pinned state, so navigation never touches it there. */
   const navigate = (path: string) => {
     router.push(path);
@@ -46,9 +46,9 @@ export function Sidebar() {
           <Fragment key={group}>
             <li className="sb-group">{group}</li>
             {items.map((s) => {
-              const running = isLive(s.status); // live-briefs spec §4.5: a session waiting for the reader counts as running
-              /* A running session is the only one that carries a mark: no chips, counts or durations here (index.html:1871-1876).
-                 A session the reader stopped says so in its accessible name only (notes-progress-report D29). */
+              const running = isLive(s.status); // a session waiting for the reader counts as running
+              /* A running session is the only one that carries a mark: no chips, counts or durations here.
+                 A session the reader stopped says so in its accessible name only. */
               const label = running ? `${s.query} — ${s.status === "needs_input" ? "waiting for you" : "running"}`
                 : s.status === "stopped" ? `${s.query} — stopped by you` : undefined;
               return (

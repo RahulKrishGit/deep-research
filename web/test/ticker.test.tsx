@@ -9,7 +9,7 @@ const s = (key: string): Sample => ({ key });
 const mount = (latest: Sample | null) =>
   renderHook(({ latest: l }: { latest: Sample | null }) => useTicker(l), { initialProps: { latest } });
 
-describe("useTicker (notes-progress-report spec §6.5: at most one sample per 1,200 ms)", () => {
+describe("useTicker (at most one sample per 1,200 ms)", () => {
   it("holds for 1,200 ms", () => { expect(TICKER_HOLD_MS).toBe(1200); });
   it("shows the first sample at once and holds the next until 1,200 ms after it", () => {
     vi.useFakeTimers();

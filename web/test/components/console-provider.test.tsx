@@ -1,18 +1,14 @@
-// C1: the banner used to hold a single { target, retry } pair — whichever component noted it
-// last "owned" the slot, and any component's success cleared it for everyone. A page loaded
-// while the API is down (SessionScreen) could sit behind a banner the sidebar's own later
-// success silently dismissed, still stuck. The registry below is keyed by owner: the banner
-// shows while any key is registered, and Retry repeats every registered retry, not just the
-// last one noted.
+// The unreachable-banner registry is keyed by owner: the banner shows while any key is registered,
+// and Retry repeats every registered retry, not just the last one noted. A page loaded while the
+// API is down (SessionScreen) therefore cannot sit behind a banner that the sidebar's own later
+// success silently dismissed.
 //
-// C1 residual (re-review): in a real outage every owner registers at once (sidebar included),
-// but only SessionScreen's own key had an automatic retry (its ladder). The sidebar's key had
-// none — its 5 s poll only runs while the *last successfully loaded* list showed a running
-// session, which a failed read can never produce — so the banner stayed up long after the
-// service actually came back, until something else happened to call refreshSessions(). Spec
-// §4.3:522 says the banner disappears on the first success: when any owner's read succeeds (or
-// gets a definite 404) and other keys are still registered, the provider now gives each of them
-// one more attempt right away, cascading until nothing is left broken.
+// In a real outage every owner registers at once (sidebar included), but only SessionScreen's own
+// key has an automatic retry (its ladder). The sidebar's key has none — its 5 s poll only runs
+// while the *last successfully loaded* list showed a running session, which a failed read can
+// never produce. The banner disappears on the first success: when any owner's read succeeds (or
+// gets a definite 404) and other keys are still registered, the provider gives each of them one
+// more attempt right away, cascading until nothing is left broken.
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider, useConsole } from "../../components/ConsoleProvider";
@@ -35,7 +31,7 @@ function Harness({ retryA, retryB, retryA2 }: { retryA: () => void; retryB: () =
   );
 }
 
-describe("ConsoleProvider — keyed unreachable registry (C1)", () => {
+describe("ConsoleProvider — keyed unreachable registry", () => {
   it("shows the banner while any key is registered, and clears only once every key clears", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
     const retryA = vi.fn();
@@ -46,7 +42,7 @@ describe("ConsoleProvider — keyed unreachable registry (C1)", () => {
     expect(screen.getByTestId("banner").textContent).toBe("http://x:1");
     fireEvent.click(screen.getByText("note-b"));
     expect(screen.getByTestId("banner").textContent).toBe("http://x:1");
-    // retryB would fire a cascade attempt here (see the residual tests below); make it a no-op
+    // retryB would fire a cascade attempt here (see the cascade tests below); make it a no-op
     // clear so this test still proves the plain "both still registered" case on its own.
     expect(screen.getByTestId("banner").textContent).toBe("http://x:1");
     fireEvent.click(screen.getByText("clear-b"));
@@ -79,7 +75,7 @@ describe("ConsoleProvider — keyed unreachable registry (C1)", () => {
     expect(first).not.toHaveBeenCalled();
   });
 
-  it("C1 residual: clearing one key gives every other still-registered key one more attempt, with no click", async () => {
+  it("clearing one key gives every other still-registered key one more attempt, with no click", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
     const retryA = vi.fn();
     const retryB = vi.fn();
@@ -91,7 +87,7 @@ describe("ConsoleProvider — keyed unreachable registry (C1)", () => {
     expect(retryB).toHaveBeenCalledTimes(1);
   });
 
-  it("C1 residual: clearing the last key never calls a retry — there is nothing left to cascade to", async () => {
+  it("clearing the last key never calls a retry — there is nothing left to cascade to", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
     const retryA = vi.fn();
     render(<ConsoleProvider><Harness retryA={retryA} retryB={vi.fn()} /></ConsoleProvider>);

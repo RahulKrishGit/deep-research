@@ -1,4 +1,4 @@
-// AC10: app/globals.css begins with docs/design/prototype/index.html lines 7-1137, line for line
+// app/globals.css begins with docs/design/prototype/index.html lines 7-1137, line for line
 // (CRLF-normalised), and anything after that sits under the app-only header with no colour literal.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";

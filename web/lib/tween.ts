@@ -1,4 +1,4 @@
-// Counts tween from the old value to the new one over 400 ms (live-briefs spec §4.3 motion table);
+// Counts tween from the old value to the new one over 400 ms;
 // under reduced motion they jump. A value that appears from nothing, or reaches or leaves 0, jumps
 // too: its words change ("no findings" ↔ "1 finding"), so there is nothing to count through.
 import { useEffect, useRef, useState } from "react";

@@ -100,7 +100,7 @@ def quality_state(
     accepted — a test that wants the unreviewed reading passes
     ``report_review=None`` explicitly and says so.
 
-    The default review is stamped the way the reviewer node stamps it (PD-5):
+    The default review is stamped the way the reviewer node stamps it:
     with the snapshot's own missing-target reading. A fixture whose gates
     measured a missing target while its review named none would describe a
     record the graph never produces, and it would be accepted by a route the
@@ -949,16 +949,16 @@ def test_the_summary_prints_identity_and_status_before_the_quality_block() -> No
 def test_the_summary_prints_findings_review_and_integrity_lines() -> None:
     lines = render_summary(build_outcome(state=quality_state()), verbose=False)
 
-    assert any(l.startswith("Findings: 2 checked") for l in lines)
+    assert any(line.startswith("Findings: 2 checked") for line in lines)
     assert any(
-        l.startswith(
+        line.startswith(
             "Integrity: 0 duplicate fact rows; 0 uncited statements; "
             "0 unjudged sentences; 0 forecasts without release"
         )
-        for l in lines
+        for line in lines
     )
     assert not any(
-        "critic" in l.casefold() or "claims:" in l.casefold() for l in lines
+        "critic" in line.casefold() or "claims:" in line.casefold() for line in lines
     )
 
 
@@ -994,7 +994,7 @@ def test_the_findings_line_counts_the_verifier_s_own_readings_apart() -> None:
 
 
 def test_the_findings_line_counts_quoted_findings_apart() -> None:
-    """D21: a quoted finding is neither checked nor dropped -- its own count
+    """A quoted finding is neither checked nor dropped -- its own count
     must appear beside the other four so the line's total still accounts for
     every finding the pass judged, and a cited finding never outnumbers a
     checked one."""
@@ -1046,7 +1046,7 @@ def run_telemetry_snapshot(
     rate_limits: int = 3,
     rate_limit_recovered: int = 2,
 ) -> RunTelemetry:
-    """One run's §7.3 figures, through the collector's own two seams.
+    """One run's telemetry figures, through the collector's own two seams.
 
     A real budget drives the peak (one model call reserved by the researcher),
     and ``record_call`` supplies the slow, near-cap reply of the plan's own
@@ -1088,7 +1088,7 @@ TELEMETRY_LINE = (
 
 
 def test_the_summary_prints_one_telemetry_line_after_the_integrity_line() -> None:
-    """One line, in the §7.3 order and wording, and one only.
+    """One line, in the telemetry order and wording, and one only.
 
     It sits with the other evidence readings -- after the Integrity line and
     before the artifact paths -- because it is read the same way: a fact about
@@ -1223,10 +1223,10 @@ def test_the_review_row_names_the_packet_its_score_was_made_over() -> None:
 
 
 def test_an_accepted_run_says_accepted() -> None:
-    """PD-23: passes spent, gates clear, reviewer accepts -> ``accepted``.
+    """Passes spent, gates clear, and reviewer accepts -> ``accepted``.
 
     The missing target is not hidden by the acceptance: it is listed under
-    Not found, which is what §6.4 accepts, and the console states both facts.
+    Not found, and the console states both facts.
     """
     outcome = build_outcome(
         state=quality_state(iteration=1, max_extra_passes=1)
@@ -1315,7 +1315,7 @@ def test_the_summary_is_explicit_when_no_report_reached_disk() -> None:
 
 
 def test_an_exhausted_extra_pass_budget_says_what_it_means() -> None:
-    """PD-23: the status now means extra passes spent with targets missing."""
+    """The status means extra passes spent with targets missing."""
     lines = render_summary(build_outcome(status="max_iterations"), verbose=False)
 
     joined = "\n".join(lines)
@@ -1700,7 +1700,7 @@ def composed_state(**overrides: object) -> ResearchState:
             semantic_review_score=0.86,
             semantic_review_fingerprint="abc123def456",
         ),
-        # Stamped the way the reviewer node stamps it (PD-5): a review that
+        # Stamped the way the reviewer node stamps it: a review that
         # named no missing target while the gates measured one describes a
         # record the graph never produces, and it routes to acceptance.
         report_review=scored_review(
@@ -1789,15 +1789,15 @@ def test_the_coverage_line_reports_the_required_targets_and_the_not_found_list()
 
 
 def test_the_coverage_line_never_counts_an_optional_answer_as_required() -> None:
-    """§6.4: the count is *required* targets answered, so it cannot exceed them.
+    """The count is *required* targets answered, so it cannot exceed them.
 
     The plan's optional targets are answered by the same verified findings, and
     ``answered_target_ids`` holds every target a finding answers. Counting that
-    list printed ``Required targets: 3/2 answered`` — and, when the answered
+    list would print ``Required targets: 3/2 answered`` — and, when the answered
     targets were the optional ones, a satisfied ``2/2 answered`` directly above
-    ``Unresolved: 1 missing required target``. The 6.4 audit reads this line out
-    of ``cli.log`` as the run's own answer to "every part of the question
-    answered", so a numerator of answers is a false statement about the run.
+    ``Unresolved: 1 missing required target``. The line is the run's own answer
+    to "every part of the question answered", so a numerator of answers is a
+    false statement about the run.
     """
     joined = "\n".join(
         render_summary(
@@ -1961,9 +1961,8 @@ def test_an_incomplete_publication_advertises_no_path_and_says_which_write_faile
 
 
 def test_cli_unchanged_for_progress_types() -> None:
-    """notes-progress-report spec §4 item 1 (AC13): plain and verbose output never
-    stream a live-only progress event; none ends in ``.completed`` or is a
-    progress type."""
+    """Plain and verbose output never stream a live-only progress event;
+    none ends in ``.completed`` or is a progress type."""
     from deep_research.cli import is_streamed_event
 
     for event_type in (

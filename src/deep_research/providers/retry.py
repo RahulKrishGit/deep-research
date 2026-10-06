@@ -38,8 +38,8 @@ AttemptObserver: TypeAlias = Callable[[int, float, float, str], None]
 def _attempt_outcome(error: BaseException) -> str:
     """One safe outcome tag for a failed transport attempt.
 
-    ``"timeout"`` and ``"connection error"`` name the two failure shapes the
-    stall investigation (stall-investigation-fable.md §1.3) cared about;
+    ``"timeout"`` and ``"connection error"`` name the two failure shapes that
+    matter when diagnosing a stalled call;
     anything else keeps its own exception class name, which stays safe here
     because every error this loop sees is already a project-owned typed
     failure whose message carries no provider content.
@@ -101,7 +101,7 @@ async def with_retries(
     last retry is re-raised as the final typed error, with no SDK exception
     chained behind it.
 
-    ``telemetry`` receives this loop's two contributions to §7.3. Each
+    ``telemetry`` receives this loop's two contributions to the run's telemetry. Each
     :class:`~deep_research.providers.contracts.ProviderRateLimitError` is one
     429, and a call whose later attempt succeeds has each of its 429s marked
     recovered — recovery is a property of the call, not of an attempt, because
@@ -109,10 +109,10 @@ async def with_retries(
     reservation it made: nothing else can, since a failed attempt never reports
     tokens. A refused attempt is the exception — the budget refused it before
     any I/O, so it holds nothing to release. ``None`` counts nothing, which is
-    what every caller that predates the telemetry gets.
+    what a caller without telemetry gets.
 
-    ``on_attempt`` receives this loop's per-attempt contribution to the stall
-    fix's call telemetry (stall-fix-brief.md P1-B): every transport attempt's
+    ``on_attempt`` receives this loop's per-attempt contribution to the call
+    telemetry: every transport attempt's
     number, its start offset and duration relative to this call, and its
     outcome (``"ok"`` or :func:`_attempt_outcome`). This is the one place that
     already knows all four, so callers never time attempts themselves. A

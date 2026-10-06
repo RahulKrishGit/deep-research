@@ -1,5 +1,5 @@
-// Issue 2A — idle→running, three beats (DESIGN.md:1359-1451; prototype clearFlight :1941,
-// flyQuestionToLock :2009, holdBeat :2069). Ported across the composer's route (`/`) and the
+// Idle → running, three beats (DESIGN.md §5.6, "The two handoffs"; prototype clearFlight,
+// flyQuestionToLock, holdBeat). Ported across the composer's route (`/`) and the
 // destination route (`/research/[id]`) via lib/handoff.ts, since the prototype's single-page
 // `.stage` siblings have no route boundary to cross.
 import { expect, test, type Page } from "@playwright/test";
@@ -58,7 +58,7 @@ test.describe("idle → running: the question flies from the composer to the loc
     expect(removedAt, "must be removed after settling, not left in the DOM").not.toBeNull();
     expect(removedAt!).toBeGreaterThanOrEqual(convergedAt!); // never removed while still short of the target
     // The idle page's own composer is gone: this is a different route, not an overlay — one box
-    // on screen for the whole journey (DESIGN.md:1407-1422), never a real composer beside it.
+    // on screen for the whole journey (DESIGN.md §5.6), never a real composer beside it.
     await expect(page.locator("#composer")).toHaveCount(0);
     expect(posts).toBe(1);
   });
@@ -81,7 +81,7 @@ test.describe("idle → running: the question flies from the composer to the loc
   });
 });
 
-test.describe("abandonment cleanup (review fix round 1, Important #1): the flight box is never stranded", () => {
+test.describe("abandonment cleanup: the flight box is never stranded", () => {
   test("the first /status 404s (session not in memory): no .q-flight left behind", async ({ page, context }) => {
     let first = true;
     await context.route(/\/api\/research\/[^/]+\/status$/, (route) => {
@@ -98,11 +98,11 @@ test.describe("abandonment cleanup (review fix round 1, Important #1): the fligh
     await expect(page.locator(".q-flight")).toHaveCount(0);
   });
 
-  test("/status is held past the submitted beat's expiry on every attempt, not just the first: no .q-flight left behind (fix round 2: the prior version never actually went RED)", async ({ page, context }) => {
-    // Review fix round 2: holding only the *first* /status let the C1 retry ladder's second
+  test("/status is held past the submitted beat's expiry on every attempt, not just the first: no .q-flight left behind", async ({ page, context }) => {
+    // Holding only the *first* /status would let the retry ladder's second
     // attempt (fired ~1000ms after the first, lib/stream.ts's backoffDelaysMs) land inside the
-    // 2170ms with-motion beat, so status always arrived on time and this test could never
-    // actually observe the bug it names. Holding every matching request past t0+3500ms — t0
+    // 2170ms with-motion beat, so status would arrive on time and this test could never
+    // observe the bug it names. Holding every matching request past t0+3500ms — t0
     // recorded right at the click, well past the 2170ms budget plus slack for the POST's own
     // latency (the budget is measured from submittedAt, set only once the POST resolves, so a
     // slow POST eats directly into the margin between the click and the beat's real expiry —
@@ -125,7 +125,7 @@ test.describe("abandonment cleanup (review fix round 1, Important #1): the fligh
       new MutationObserver(() => { if (document.querySelector(".q-flight")) w.__everSeenFlight = true; }).observe(document.documentElement, { childList: true, subtree: true });
     });
     await page.getByLabel("Research question").fill("q");
-    t0 = Date.now(); // recorded at the click, per the review's own prescription
+    t0 = Date.now(); // recorded at the click
     await page.getByRole("button", { name: "Start research" }).click();
     await page.waitForURL(/\/research\/[0-9a-f]+$/);
     // Straight to Running, never Submitted: the beat had already elapsed by the time status landed.

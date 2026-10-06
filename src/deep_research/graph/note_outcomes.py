@@ -1,10 +1,10 @@
-"""What a run concluded about each reader note (notes-progress-report spec §5.6).
+"""What a run concluded about each reader note.
 
-Moved here unchanged from ``api/notes.py`` by Phase C, so the finalizer can read
-each note's outcome when it stamps the report's note lines (spec §7.2): ``graph``
-never imports ``api``, because importing ``deep_research.api`` builds the app
-(``api/app.py``), which imports ``deep_research.main``, which imports this package.
-``api/notes.py`` re-exports every name here, so each caller keeps its import.
+The finalizer reads each note's outcome when it stamps the report's note lines,
+so this lives in ``graph``, which never imports ``api``: importing
+``deep_research.api`` builds the app (``api/app.py``), which imports
+``deep_research.main``, which imports this package. ``api/notes.py`` re-exports
+every name here, so each caller keeps its import.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ NoteOutcome: TypeAlias = Literal[
     "covered", "not_found", "not_addressed", "pending", "not_checked", "replaced"
 ]
 """``pending`` only while a session goes on; ``not_checked`` once it has ended with nothing
-to judge the note by (notes-progress-report spec §4 item 2)."""
+to judge the note by."""
 
 
 _VERDICT_OUTCOMES: dict[str, NoteOutcome] = {
@@ -39,7 +39,7 @@ _VERDICT_OUTCOMES: dict[str, NoteOutcome] = {
 def note_outcome(
     note_id: str, state: ResearchState | None, *, terminal: bool
 ) -> NoteOutcome:
-    """What the run concluded about one note (notes-progress-report spec §5.6, D5, D31).
+    """What the run concluded about one note.
 
     A research note — its kinds include ``new_angle``, a mixed note's new_angle
     half included — is decided by its own ``note-{id}`` topic's targets, never
@@ -47,7 +47,7 @@ def note_outcome(
     ``not_found`` once the composition lists one as searched and not found. A
     steering note is decided by the latest review's verdict: ``honoured`` is
     ``covered``, ``ignored_with_evidence`` is ``not_addressed`` (never
-    ``covered``: live-briefs Phase 3, O8), ``no_evidence`` is ``not_found``. A
+    ``covered``), ``no_evidence`` is ``not_found``. A
     note a later note replaced is ``replaced``. Anything else — no state, a
     note the state does not hold, no topic, no verdict — is ``pending`` while
     the run goes on, and ``not_checked`` once it has ended (``terminal``): a
@@ -73,7 +73,7 @@ def note_steering_outcome(
     terminal: bool,
     note: ReaderNote | None = None,
 ) -> NoteOutcome | None:
-    """A mixed note's steering half (notes-progress-report spec §5.6, D20), or ``None``.
+    """A mixed note's steering half, or ``None``.
 
     ``None`` for every note that is not mixed. For a mixed note: ``pending``
     (``not_checked`` once the run has ended) with no state, ``replaced`` when a
@@ -100,7 +100,7 @@ def note_steering_outcome(
 def _research_outcome(
     note_id: str, state: ResearchState, *, waiting: NoteOutcome
 ) -> NoteOutcome:
-    """A research note's result, from its own topic's targets (spec §5.6, D31)."""
+    """A research note's result, from its own topic's targets."""
     coverage_id = f"{NOTE_COVERAGE_PREFIX}{note_id}"
     topic = next((item for item in state.sub_topics if item.coverage_id == coverage_id), None)
     if topic is None:
@@ -129,21 +129,21 @@ def _verdict_outcome(
     return waiting if verdict is None else _VERDICT_OUTCOMES[verdict]
 
 
-#: A steering note's line (spec §7.2, (I)), by its terminal outcome.
+#: A steering note's line, by its terminal outcome.
 STEERING_NOTE_TEXT: dict[str, str] = {
     "covered": "Followed: {restatement}",
     "not_addressed": "Not followed in this report: {restatement}",
     "not_found": "No source we could check covers this: {restatement}",
     "not_checked": "Not checked: {restatement}",
 }
-#: A research note's line when its topic kept no line (spec §7.2, (I)). A research
-#: note's terminal outcome is covered, not_found or not_checked (spec §5.6).
+#: A research note's line when its topic kept no line. A research
+#: note's terminal outcome is covered, not_found or not_checked.
 RESEARCH_NOTE_TEXT: dict[str, str] = {
     "covered": "See the section below.",
     "not_found": "No source we could check covers this.",
     "not_checked": "Not researched.",
 }
-#: The sentence a mixed note's steering half adds (spec §7.2, D20, (I)).
+#: The sentence a mixed note's steering half adds.
 STEERING_HALF_TEXT: dict[str, str] = {
     "covered": "The rest of your note was followed.",
     "not_addressed": "The rest of your note was not followed in this report.",
@@ -153,7 +153,7 @@ STEERING_HALF_TEXT: dict[str, str] = {
 
 
 def report_note_lines(state: ResearchState, composition: ReportComposition) -> list[ReportNoteLine]:
-    """Notes-progress-report spec §7.2: one line per active reader note, in
+    """One line per active reader note, in
     receipt order, with its terminal outcome (and a mixed note's steering
     half's). Whatever the note's kind, a note whose ``note-{id}`` topic kept a
     bottom-line line points at it, so that line prints once, inside the note's

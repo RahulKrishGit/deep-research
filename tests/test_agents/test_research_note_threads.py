@@ -1,5 +1,4 @@
-"""A reader's research note gets its own research thread inside the running researcher
-(notes-progress-report spec §5.3, D3; AC2, AC3, AC4, AC35)."""
+"""A reader's research note gets its own research thread inside the running researcher."""
 
 from __future__ import annotations
 
@@ -113,7 +112,7 @@ def _read(board: NoteBoard, note_id: str, **overrides: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_researcher_note_topics_uncapped(tracker: Tracker) -> None:
-    """AC2: ten planned topics at max_sub_topics = 10 and one note topic: all eleven are
+    """Ten planned topics at max_sub_topics = 10 and one note topic: all eleven are
     researched, and the cap skips none of them."""
     planned = [_topic(number) for number in range(1, 11)]
     noted = note_sub_topic(fake_reader_note("n1", kinds=["new_angle"]), priority=11, reason="reader_note")
@@ -134,7 +133,7 @@ async def test_researcher_note_topics_uncapped(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_research_note_thread_starts_ungated(tracker: Tracker) -> None:
-    """AC3 (D3): with the only loop slot held by a blocked planned loop, a research note read
+    """With the only loop slot held by a blocked planned loop, a research note read
     meanwhile starts its own thread at once — its started event names the note and is published
     before the blocked loop completes — and the researcher's node completes only after the note's
     own loop has."""
@@ -175,7 +174,7 @@ async def test_research_note_thread_starts_ungated(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_late_note_waits_then_threads(tracker: Tracker) -> None:
-    """AC4 (§5.3): a note received while the last loop runs, and read only once every loop has
+    """A note received while the last loop runs, and read only once every loop has
     ended, is waited for and still gets its thread before the researcher returns."""
     completer = TargetKeyedCompleter(decisions={"topic-01": [_done("topic-01")], "note-n1": [_done("note-n1")]})
     agent = _researcher(tracker, completer)
@@ -200,7 +199,7 @@ async def test_late_note_waits_then_threads(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_late_note_wait_times_out_and_closes_window(tracker: Tracker, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§5.3, §5.8: a reading that outlasts the wait closes the window when the wait times out;
+    """A reading that outlasts the wait closes the window when the wait times out;
     the researcher returns with no thread for it, and the note stays on the board to be read."""
     monkeypatch.setattr("deep_research.agents.researcher.NOTES_WAIT_S", 0.05)
     completer = TargetKeyedCompleter(decisions={"topic-01": [_done("topic-01")]})
@@ -221,7 +220,7 @@ async def test_late_note_wait_times_out_and_closes_window(tracker: Tracker, monk
 
 @pytest.mark.asyncio
 async def test_note_thread_provider_failure_sets_stop(tracker: Tracker) -> None:
-    """AC35 (review I5): a note thread that ends in a provider failure stops the pass like any
+    """A note thread that ends in a provider failure stops the pass like any
     loop: the planned loop already running finishes, no later note gets a thread in this run,
     and the failed thread keeps its topic, its completed event recording the failure."""
     planned_gate = asyncio.Event()
@@ -257,7 +256,7 @@ async def test_note_thread_provider_failure_sets_stop(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_a_planning_time_note_topic_waits_its_turn_and_stop_leaves_it_unstarted(tracker: Tracker) -> None:
-    """§5.3 (review 2, I-1): a planning-time note topic is gated and sorts last; when another
+    """A planning-time note topic is gated and sorts last; when another
     loop's provider failure sets stop before it starts, it never opens, records only
     ``provider_failure_stopped_processing`` and has no completed event."""
     noted = note_sub_topic(fake_reader_note("n1", kinds=["new_angle"]), priority=2, reason="reader_note")
@@ -280,8 +279,8 @@ async def test_a_planning_time_note_topic_waits_its_turn_and_stop_leaves_it_unst
 
 @pytest.mark.asyncio
 async def test_dispatcher_cancels_threads_on_cancel(tracker: Tracker) -> None:
-    """§5.3: the dispatcher's tasks are not a gather's children, so a cancelled run (Phase D's
-    stop) cancels every thread still running — a planned loop and a note's — and awaits each
+    """The dispatcher's tasks are not a gather's children, so a cancelled run
+    cancels every thread still running — a planned loop and a note's — and awaits each
     before the cancellation leaves the researcher."""
     completer = GatedCompleter(
         gates={"topic-01": asyncio.Event(), "note-n1": asyncio.Event()},
@@ -306,7 +305,7 @@ async def test_dispatcher_cancels_threads_on_cancel(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_note_after_window_owes_pass(tracker: Tracker, monkeypatch: pytest.MonkeyPatch) -> None:
-    """AC4: a note read only after the research window closed gets no thread in that run; once
+    """A note read only after the research window closed gets no thread in that run; once
     it is read, the next node takes it in, and after the review notes_due_a_pass returns it."""
     monkeypatch.setattr("deep_research.agents.researcher.NOTES_WAIT_S", 0.05)
     completer = TargetKeyedCompleter(decisions={"topic-01": [_done("topic-01")]})
@@ -330,7 +329,7 @@ async def test_note_after_window_owes_pass(tracker: Tracker, monkeypatch: pytest
 
 @pytest.mark.asyncio
 async def test_a_note_thread_on_a_confined_pass_researches_its_own_targets(tracker: Tracker) -> None:
-    """§5.3, §5.8: a research note read while a confined pass (an extra pass) runs gets its own
+    """A research note read while a confined pass (an extra pass) runs gets its own
     thread, and that thread's targets join the extraction list beside the pass's confined target; a
     thread that finished leaves the note owed nothing."""
     topic_gate = asyncio.Event()

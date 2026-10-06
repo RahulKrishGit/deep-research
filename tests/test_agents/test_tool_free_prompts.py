@@ -588,27 +588,26 @@ PLANNED_OPERATION_INVENTORY = {
     # The extraction's second example is the text-finding shape: the first
     # teaches a figure finding whose fields are all stated by its passage, and
     # a rule, a reproduced instrument or a relayed statement — what a
-    # qualitative target usually rests on — carries no figure at all
-    # (EXTRA-2, review RES-6 §1).
+    # qualitative target usually rests on — carries no figure at all.
     "finding extraction": ("researcher", 2),
     "source scoring": ("source_evaluator", 2),
     "evaluation verdict": ("judge", 2),
-    # The evidence-verifier pipeline's four tool-free requests (Task 4.10d).
-    # The report review renders one example like the rest of the pipeline: D10
-    # gave it the shared reply format, so its row holds every convention here.
+    # The evidence-verifier pipeline's four tool-free requests.
+    # The report review renders one example like the rest of the pipeline: it
+    # uses the shared reply format, so its row holds every convention here.
     "context check": ("evidence_verifier", 1),
-    # Run-2 improvement 8 gave the statement check its second example: the
+    # The statement check carries two examples: the
     # first shows a wrong forecast/actual distinction, the second a conditional
     # rule stated without its condition or exception, judged against the
     # passage beside the snippet. Two failure classes, one example each.
     "statement check": ("evidence_verifier", 2),
-    # The parallel writer's two calls (spec §6.3, §6.6): the section call
+    # The parallel writer's two calls: the section call
     # keeps the writer's two-example shapes (a figure line and its snippet,
     # then a statement-only finding whose line names only the host it was
-    # read on -- the two shapes whose crediting the audits found wrong, run 2
-    # S005/S009, smoke 1), and the bottom-line call also carries two: a
-    # neutral picks/judgement shape (WRI-6) and a causal-mechanism shape
-    # (D1/D2, run-5 fix wave) showing ordered steps with sources named
+    # read on -- the two shapes whose crediting is easy to get wrong), and the
+    # bottom-line call also carries two: a
+    # neutral picks/judgement shape and a causal-mechanism shape
+    # showing ordered steps with sources named
     # together where they agree -- the second shape the first cannot teach.
     "report section drafting": ("report_writer", 2),
     "report bottom line drafting": ("report_writer", 2),
@@ -650,7 +649,7 @@ class StructuredOperation:
     build_messages: Callable[[], list]
     schema: type[BaseModel]
     examples: Callable[[str], tuple[tuple[str, str], ...]]
-    # D10 (PD-29): the request-owned sections before "# Reply format", in order.
+    # The request-owned sections before "# Reply format", in order.
     # None only for the evaluation judge, which keeps its reply contract last:
     # it is not a pipeline request.
     static_headings: tuple[str, ...] | None = None
@@ -671,7 +670,7 @@ OPERATIONS = (
         examples=_labelled_examples,
         static_headings=("# Plan requirements",),
     ),
-    # PD-29's one recorded exemption (final-review fix round, slice 3): the
+    # The one recorded exemption: the
     # plan review is the single tool-free pipeline request that is not
     # rendered static-first. Rebuilding it that way is not a request-shaped
     # edit: this matrix's pipeline assertions require the envelope to carry
@@ -841,7 +840,7 @@ PIPELINE_OPERATIONS = tuple(
 def test_every_pipeline_request_puts_its_static_sections_first(
     operation: StructuredOperation,
 ) -> None:
-    """D10 (E2.4): the contract and the reply format lead, the material follows."""
+    """The contract and the reply format lead, the material follows."""
     envelope = _request_envelope(operation.body())
     lines = envelope.rstrip().splitlines()
 
@@ -872,7 +871,7 @@ def test_every_pipeline_request_puts_its_static_sections_first(
 def test_the_judge_request_keeps_its_reply_contract_last(
     operation: StructuredOperation,
 ) -> None:
-    """The evaluation judge is outside the pipeline, so D10's layout is not its own."""
+    """The evaluation judge is outside the pipeline, so the static-first layout is not its own."""
     body = operation.body()
     envelope = _request_envelope(body)
 

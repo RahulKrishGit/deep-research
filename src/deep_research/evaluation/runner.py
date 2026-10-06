@@ -3,7 +3,7 @@
 ``preflight`` runs nine checks in a fixed order, cheapest and safest first,
 so a broken local input never reaches a remote call and a remote call
 never reaches a remote write. Nothing here creates a LangSmith experiment;
-that is Task 23's job, once ``preflight`` has passed.
+that happens afterwards, once ``preflight`` has passed.
 """
 
 from __future__ import annotations
@@ -116,20 +116,20 @@ PREFLIGHT_REASONS: tuple[str, ...] = (
     "guards_uninstallable",
 )
 
-# Reasons that are local-input errors under the CLI exit-code spec (Task 25):
+# Reasons that are local-input errors under the CLI exit-code contract:
 # a broken local registry or an unknown requested case is the caller's
 # mistake, not an environment or remote failure, so both map to exit code 2
 # instead of the general failure code 3. Every other ``PreflightError``
 # reason -- including the dataset-sync pass-through reason
 # "secret_in_dataset", which is deliberately not one of ``PREFLIGHT_REASONS``
 # -- maps to 3. Exposed as ``preflight_exit_code`` (a lookup function, not
-# data carried on ``PreflightError`` itself) so Task 25's CLI wiring has one
+# data carried on ``PreflightError`` itself) so the CLI wiring has one
 # place to call instead of duplicating this table.
 _LOCAL_INPUT_REASONS = frozenset({"invalid_registry", "unknown_case"})
 
 
 def preflight_exit_code(reason: str) -> int:
-    """The CLI exit code Task 25 must use for one ``PreflightError.reason``."""
+    """The CLI exit code for one ``PreflightError.reason``."""
     return 2 if reason in _LOCAL_INPUT_REASONS else 3
 
 
@@ -183,10 +183,8 @@ def validate_embedding_model(runtime: EvaluationRuntimeConfig) -> None:
     embed mid-run. Controlled runs never construct a real embedding
     provider (``_DeterministicEmbeddings`` in ``dependencies.py`` is a
     hash-based double), so their embedding model string is inert and this
-    check deliberately does nothing for them -- the pre-cutover test
-    ``test_the_embedding_model_is_only_checked_for_live_runs`` asserted
-    exactly this asymmetry, and a controlled run must never be blocked by
-    a value it does not use.
+    check deliberately does nothing for them: a controlled run must never be
+    blocked by a value it does not use.
     """
     if runtime.tier != "live":
         return
@@ -397,7 +395,7 @@ async def preflight(
         raise PreflightError(error.reason, str(error)) from error
 
 
-# --- Task 23: experiment execution, aggregation, and thresholds ------------
+# --- Experiment execution, aggregation, and thresholds ----------------------
 
 DETERMINISTIC_WEIGHT = 0.40
 JUDGE_WEIGHT = 0.60
@@ -480,7 +478,7 @@ def _safe_error_message(error: Exception, secrets: Sequence[str]) -> str:
 
 
 def aggregate_quality(deterministic: float, judge: float) -> float:
-    """The spec's fixed composition, computed without intermediate rounding.
+    """The fixed composition of quality, computed without intermediate rounding.
 
     Rendering to two decimals is a display concern and belongs in
     ``reporting``; rounding here would let 0.6499 clear a 0.65 floor.
@@ -545,7 +543,7 @@ def build_case_result(
     individual repetition's aggregate quality and defaults to ``threshold``
     itself so a caller that only cares about one number (every pure test
     in this module) never has to pass both. ``run_agent_evaluation`` passes
-    them independently for the controlled tier, where the spec's
+    them independently for the controlled tier, where the
     per-repetition floor and case-average threshold differ; for the live
     tier the two rules collapse onto ``runtime.live_threshold`` by
     construction.
@@ -634,7 +632,7 @@ def decide_status(
     errors: Sequence[EvaluationFailure] = (),
 ) -> EvaluationStatus:
     """The harness's pass/fail verdict. There is deliberately no
-    ``"APPROVED"`` status: the spec forbids an automatic human-approval
+    ``"APPROVED"`` status: the harness forbids an automatic human-approval
     state, so a clean run still requires a human to say ``"REVIEW
     REQUIRED"`` is actually approved.
 
@@ -1102,9 +1100,9 @@ async def run_agent_evaluation(
     """Run one experiment end to end: target, gates, judge, aggregation,
     thresholds, and the local artifact.
 
-    Builds the real production-parity target (Task 21) once, then a
+    Builds the real production-parity target once, then a
     dispatching pair of LangSmith evaluators -- one case's worth of
-    ``code_evaluator`` (Task 18) and judge evaluator (Task 20) apiece,
+    ``code_evaluator`` and judge evaluator apiece,
     looked up per row by the ``(case_id, case_version)`` read out of that
     row's own ``TargetOutput`` rather than assumed from submission order --
     and calls ``evaluate`` exactly once for the whole batch. Every
@@ -1177,13 +1175,13 @@ async def run_agent_evaluation(
                 metric_functions=METRIC_FUNCTIONS,
             )
         except Exception as error:
-            # Defense in depth for finding 16: a gate that raises (e.g. a
+            # Defense in depth: a gate that raises (e.g. a
             # malformed source URL reaching an unguarded
             # ``normalize_source_url`` call) must never leave ``key`` out
             # of ``pending_gates`` -- that would make ``_dispatch_judge``'s
             # ``if gates is not None`` guard silently drop the whole
-            # repetition from ``repetitions_by_case``, exactly like finding
-            # 14. Recording a failed gate here means the repetition is
+            # repetition from ``repetitions_by_case``. Recording a failed gate
+            # here means the repetition is
             # still reported, just as failed/errored rather than missing.
             message = _safe_error_message(error, secrets)
             detail = f"gate evaluation raised {type(error).__name__}: {message}"
@@ -1412,12 +1410,12 @@ async def run_agent_evaluation(
 
     return result
 
-# --- Task 26: the five-agent controlled suite --------------------------------
+# --- The five-agent controlled suite ------------------------------------------
 
 
 def suite_id(*, now: datetime, git_sha: str) -> str:
     """The suite-level identifier: same timestamp/SHA shape as
-    ``experiment_name`` (Task 5), but prefixed ``suite-`` instead of an
+    ``experiment_name``, but prefixed ``suite-`` instead of an
     agent/tier pair, since one suite id names a whole five-agent run."""
     return f"suite-{now.strftime('%Y%m%dT%H%M%SZ')}-{git_sha}"
 

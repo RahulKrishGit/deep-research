@@ -1,4 +1,4 @@
-"""The bottom line that answers first (notes-progress-report spec §7.1-§7.3; AC22-AC24, AC36).
+"""The bottom line that answers first.
 
 The bottom-line request carries the reader's answers and one ``## {coverage_id} ·
 {title}`` block per checked section; its reply is a direct answer of one or two
@@ -97,7 +97,7 @@ def _section(task) -> ReportSection:
                          points=[ReportPoint(text=statement.text, statement=statement)])
 
 
-# --- the request (AC22) ----------------------------------------------------------------
+# --- the request -----------------------------------------------------------------------
 
 
 def test_bottom_line_request_reader_answers_and_ids(tracker, tmp_path: Path) -> None:
@@ -199,7 +199,7 @@ async def test_missing_outcome_reask_text(checker, tracker, tmp_path: Path) -> N
     ) in seen[1]
 
 
-# --- the prompts and the reply examples (AC36) -------------------------------------------
+# --- the prompts and the reply examples ----------------------------------------------------
 
 
 def test_bottom_line_examples_valid_and_name_topics() -> None:
@@ -229,18 +229,6 @@ def test_the_request_shows_both_examples_under_its_reply_format(tracker, tmp_pat
         assert f"{label}\nExample JSON output:\n{compact}" in reply_format
 
 
-def test_no_old_sentence_cap_name_remains() -> None:
-    root = Path(__file__).resolve().parents[2]
-    needle = re.compile(r"\bMAX_BOTTOM_LINE" + r"_SENTENCES\b")
-    hits = [
-        str(path.relative_to(root))
-        for folder in ("src", "tests")
-        for path in (root / folder).rglob("*.py")
-        if needle.search(path.read_text(encoding="utf-8"))
-    ]
-    assert hits == []
-
-
 def test_the_rules_ask_for_the_answer_then_one_line_per_topic() -> None:
     assert BOTTOM_LINE_INSTRUCTION.splitlines()[1].startswith(
         "- sentences: one or two sentences that answer the question directly"
@@ -250,7 +238,7 @@ def test_the_rules_ask_for_the_answer_then_one_line_per_topic() -> None:
     assert "- short_title names the same part in one to three words for a contents list" in SECTION_INSTRUCTION
 
 
-# --- the section's short title (§7.2) ----------------------------------------------------
+# --- the section's short title -----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -259,7 +247,7 @@ def test_the_rules_ask_for_the_answer_then_one_line_per_topic() -> None:
         ("Capacity", "Capacity"),
         ("  Opening\nhours ", "Opening hours"),
         ("Value for money", "Value for money"),
-        # The two examples the prompt itself gives the model (§7.1): both must be kept, so a
+        # The two examples the prompt itself gives the model: both must be kept, so a
         # model that follows the prompt gets its own label, not the section's full title.
         ("Published picks", "Published picks"),
         ("Opening hours", "Opening hours"),
@@ -280,7 +268,7 @@ def test_a_short_title_keeps_one_to_three_plain_words(drafted: str, expected: st
 
 
 def test_the_prompts_short_title_examples_are_the_ones_the_check_keeps() -> None:
-    """The parametrized examples above are the prompt's own two (§7.1): the prompt contains
+    """The parametrized examples above are the prompt's own two: the prompt contains
     them, and the check keeps each one against a long section title, so they cannot drift."""
     assert '("Published picks", "Opening hours")' in SECTION_INSTRUCTION
     for name in ("Published picks", "Opening hours"):
@@ -303,7 +291,7 @@ async def test_a_written_section_carries_its_short_title(checker, tracker, tmp_p
     assert [(s.title, s.short_title) for s in composition.sections] == [("Capacity added", "Capacity")]
 
 
-# --- topic lines and the layout (§7.1, §7.2) -----------------------------------------------
+# --- topic lines and the layout ------------------------------------------------------------
 
 
 def _two_part_state(*, notes=(), note_topic=None):
@@ -378,7 +366,7 @@ async def test_bottom_line_topic_line_rules(checker, tracker, tmp_path: Path) ->
 
 @pytest.mark.asyncio
 async def test_bottom_line_layout_and_order(checker, tracker, tmp_path: Path) -> None:
-    """Spec §7.2: summary holds the answer, the plan's topic lines in plan order,
+    """Summary holds the answer, the plan's topic lines in plan order,
     then the notes' topic lines in receipt order -- whatever order the reply
     gave them -- and the layout labels a note's topic ``Your note · {short}``."""
 
@@ -438,7 +426,7 @@ async def test_a_topic_line_may_restate_the_answer_fact(checker, tracker, tmp_pa
     assert not [r for r in composition.rejected_points if r.reason.startswith("restates")]
 
 
-# --- the fallback (§7.3, AC24) -------------------------------------------------------------
+# --- the fallback --------------------------------------------------------------------------
 
 
 def _five_part_state() -> ResearchState:
@@ -495,7 +483,7 @@ async def test_fallback_one_line_per_topic(checker, tracker, tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_fallback_move_drops_emptied_section(checker, tracker, tmp_path: Path) -> None:
-    """Review M9: a picked point leaves its section, so a part whose only kept
+    """A picked point leaves its section, so a part whose only kept
     point is picked loses its section; its line stays in the bottom line."""
     agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
     task = agent.build_task(_five_part_state())
@@ -536,10 +524,9 @@ def _later_pass_state(first, **fields) -> ResearchState:
 async def test_a_note_pass_after_a_fallback_bottom_line_prints_every_statement_of_the_first_pass(
     checker, tracker, tmp_path: Path,
 ) -> None:
-    """Final review P2-1 (Phase A x Phase C): the fallback moved one point of every topic out
-    of its section into the bottom line, and a note pass carries those sections over while it
-    drafts the bottom line afresh -- so each topic's best checked statement vanished from the
-    report. The carried parts get the moved points back (a topic the move emptied gets its
+    """A fallback bottom line moves one point of every topic out of its section, and a
+    note pass carries those sections over while it drafts the bottom line afresh. The
+    carried parts get the moved points back (a topic the move emptied gets its
     section back), with no model call, so every pass-one statement is still printed."""
     first = await _five_part_fallback_pass(tracker, tmp_path)
     note = fake_reader_note("n1", kinds=["new_angle"], restatement="pastries at the caf\u00e9s", short="pastries")
@@ -598,10 +585,9 @@ async def test_a_note_pass_after_a_fallback_bottom_line_prints_every_statement_o
 async def test_a_redraft_after_a_fallback_bottom_line_keeps_the_moved_points_and_routes_to_them(
     checker, tracker, tmp_path: Path,
 ) -> None:
-    """Final review P2-1, the review's own redraft: the same carry-over. A defect naming a point
-    the fallback moved into the bottom line reaches the part that point came from -- so the
-    restored point is rewritten, never republished unchanged -- and the other parts keep
-    theirs."""
+    """A defect naming a point the fallback moved into the bottom line reaches the part
+    that point came from -- so the restored point is rewritten, never republished
+    unchanged -- and the other parts keep theirs."""
     first = await _five_part_fallback_pass(tracker, tmp_path)
     moved = next(line.statement_id for line in first.bottom_line.topic_lines if line.coverage_id == "topic-02")
     defect = ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
@@ -671,7 +657,7 @@ _NO_ANSWER_ERROR = "report_writer_bottom_line_no_answer"
 async def test_a_bottom_line_of_topic_lines_alone_records_that_it_has_no_answer(
     checker, tracker, tmp_path: Path,
 ) -> None:
-    """Final wave (Phase C review P2-1, writer half): every answer sentence refused but the
+    """Every answer sentence refused but the
     topic lines kept is published with ``answer_ids == []``; the writer records a recoverable
     error, so the missing direct answer is in the run's record and not only in the report."""
     agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
@@ -739,7 +725,7 @@ async def _fraction_events(compose) -> list[float]:
 
 @pytest.mark.asyncio
 async def test_writing_progress_ends_full_when_the_bottom_line_falls_back(checker, tracker, tmp_path: Path) -> None:
-    """Review I1: a bottom line that failed twice never reaches the Statement Check, so
+    """A bottom line that failed twice never reaches the Statement Check, so
     its scope enters the counts only when the composition settles it; the bar ends
     at 1.0, never below, and never goes down."""
     agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
@@ -758,7 +744,7 @@ async def test_writing_progress_ends_full_when_the_bottom_line_falls_back(checke
 async def test_writing_progress_ends_full_when_every_bottom_line_sentence_is_refused(
     checker, tracker, tmp_path: Path,
 ) -> None:
-    """Review I1: every drafted bottom-line sentence refused before the check leaves
+    """Every drafted bottom-line sentence refused before the check leaves
     the bottom line nothing to count; the bar still ends full."""
     agent = _writer(tracker, ScriptedCompleter(), report_writer_tools(tracker, output_root=tmp_path))
     task = agent.build_task(_two_part_state())

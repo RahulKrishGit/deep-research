@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from datetime import datetime, timezone
 from math import isfinite
-import re
 from typing import Annotated, Literal, TypeAlias, TypedDict
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -140,14 +140,13 @@ MAX_TARGETS_PER_TOPIC = 6
 class AnswerContract(ContractModel):
     """What this run owes the reader, frozen before any evidence is gathered.
 
-    Section 2.3 freezes the original question, the scope and as-of date, and
-    the answer form. This contract is that freeze: every later stage reads the
-    question here rather than from a possibly refined copy, and a coverage
-    denominator can only ever grow from these values.
+    This contract freezes the original question, the scope and as-of date, and
+    the answer form: every later stage reads the question here rather than from
+    a possibly refined copy, and a coverage denominator can only ever grow from
+    these values.
 
     ``as_of_date`` is stamped from the run's injected clock, never from model
-    knowledge or memory — a September 2026 session that treated 2024 as
-    "current" produced stale anchors (baseline TR-04). When the question
+    knowledge or memory, which can anchor "current" on a stale year. When the question
     itself *states* a date, that date is preserved instead: a question that
     says "as of 2025-12-31" is answered as of 2025-12-31, and the contract
     says so. A year the question merely observes is not a cutoff: it is the
@@ -204,8 +203,7 @@ class SubTopic(ContractModel):
     """The answerable obligations this sub-topic must satisfy, 1-6 of them.
 
     Stamped locally by ``PlannerAgent``: the draft proposes obligations, and
-    the planner assigns their ids, their required dimensions, and their
-    support policy before any verdict exists. An empty list is a *legacy*
+    the planner assigns their ids and their required dimensions. An empty list is a *legacy*
     plan — a snapshot written before this contract — and never means "nothing
     is required": such a plan has to be replanned before it can be executed,
     which is what ``planner.targets_requiring_replanning`` reports. The
@@ -259,7 +257,7 @@ class CandidateRecord(ContractModel):
     status: AcquisitionStatus = "queued"
     read_id: str | None = None
     denial_reason: str | None = None
-    """Why this candidate could not be opened (I2), in the acquisition
+    """Why this candidate could not be opened, in the acquisition
     disposition's own vocabulary: ``access_denied`` (401, 402, 403, 451, or a
     robots refusal), ``not_found`` (404, 410), ``http_error`` (another HTTP
     status), or an extraction/shell classification such as
@@ -344,30 +342,30 @@ _ENERGY_UNIT = re.compile(
 
 
 class FindingFigure(ContractModel):
-    """One figure a finding states, exactly as its snippet writes it (spec §4)."""
+    """One figure a finding states, exactly as its snippet writes it."""
 
     value: str = Field(min_length=1)
     unit: str = Field(min_length=1)
     period: str | None = None
     kind: FigureKind | None = None
     subject: str | None = None
-    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole."""
 
 
-# The Evidence Verifier's own vocabulary (spec §5). ``FigureAttribution`` is
+# The Evidence Verifier's own vocabulary. ``FigureAttribution`` is
 # who a kept figure credits; ``FindingStatus`` is the finding's outcome --
 # ``quoted`` is a no-figure finding whose snippet is on the page but that
 # neither the Context Check nor the Statement Check ever judged for
-# relevance or attribution (D21); the two drop-reason aliases name why a
+# relevance or attribution; the two drop-reason aliases name why a
 # figure or a whole finding did not survive, so a dropped record always
 # carries a reason a reader can print.
 FigureAttribution: TypeAlias = Literal["own", "relayed", "unattributed"]
 FindingStatus: TypeAlias = Literal["verified", "verified_corrected", "quoted", "dropped"]
 FigureDropReason: TypeAlias = Literal[
-    "evidence_not_on_page",     # §5.2: evidence_words are not in the read
-    "correction_not_on_page",   # §5.2: corrected period or scope not in evidence_words or passage
-    "context_rejected",         # §5.2: the Context Check said reject
-    "context_unavailable",      # §5.2: no reply for the figure, and its snippet does not state it
+    "evidence_not_on_page",     # evidence_words are not in the read
+    "correction_not_on_page",   # corrected period or scope not in evidence_words or passage
+    "context_rejected",         # the Context Check said reject
+    "context_unavailable",      # no reply for the figure, and its snippet does not state it
 ]
 FindingDropReason: TypeAlias = Literal[
     "read_not_found", "snippet_not_on_page", "all_figures_dropped"
@@ -375,18 +373,18 @@ FindingDropReason: TypeAlias = Literal[
 
 
 class FigureContext(ContractModel):
-    """The context a Context Check confirmed for one kept figure (spec §5.2)."""
+    """The context a Context Check confirmed for one kept figure."""
 
     period: str | None = None
     scope: str | None = None
     subject: str | None = None
-    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole."""
     attribution: FigureAttribution
     organisation: str = Field(min_length=1)
     """``own``: the publisher; ``relayed``: the originator; ``unattributed``: the page's owner (host)."""
     kind: FigureKind
     period_resolved_from: str | None = None
-    """The page's own stated date a relative period ("this year") was resolved from (spec §5.2, D11); None when the page states the period itself."""
+    """The page's own stated date a relative period ("this year") was resolved from; None when the page states the period itself."""
 
 
 class FigureResult(ContractModel):
@@ -396,7 +394,7 @@ class FigureResult(ContractModel):
     matched: bool
     """Whether the finding's snippet was found on its page, not a per-figure verdict.
 
-    D8 deleted the per-figure Figure Match, so every figure of a
+    There is no per-figure Figure Match, so every figure of a
     snippet-matched finding carries ``True``; a figure the Context Check
     refuses is reported through ``dropped_reason``, never through this field.
     """
@@ -461,11 +459,10 @@ class Finding(ContractModel):
     acquisition layer stamps on reads and evidence units (``topic-01``): a
     read is *fetched for* a sub-topic, while a finding *answers* an
     obligation, and one read can answer a target of a topic that never
-    fetched it. That is exactly the binding an audited run discarded — it
-    asked the model for "the target id it serves" and then kept only
-    ``related_sub_topic`` — which left every claim unbound and every target
-    unanswered. Empty is a legacy finding, extracted before the binding was
-    kept; a consumer then falls back to the finding's sub-topic, never to
+    fetched it. Binding a finding to the target id it serves, rather than
+    only to ``related_sub_topic``, is what keeps every claim bound and every
+    target answered. Empty is a legacy finding, extracted before the binding
+    was kept; a consumer then falls back to the finding's sub-topic, never to
     "answers everything".
     """
     vintage: str | None = None
@@ -493,8 +490,8 @@ class Finding(ContractModel):
     attributed_issuer: str | None = None
     """The body this page ATTRIBUTES the figure to, not the body that served it.
 
-    A relay is a page whose own words hand the figure to somebody else — the
-    audited run's cleanedge.com dive says "according to the U.S. Energy
+    A relay is a page whose own words hand the figure to somebody else — a
+    cleanedge.com article says "according to the U.S. Energy
     Information Administration (EIA)" beside EIA's 10.3 GW and 18.2 GW. Empty
     means the page states the figure as its own publisher's, which is the
     ``source_url``'s publisher and needs no second name. Credit is what this
@@ -590,7 +587,7 @@ class Finding(ContractModel):
 class SourceTemporal(ContractModel):
     """The dates one source carries, kept apart because they mean different things.
 
-    Section 2.3: a publication date, the period the data actually covers, the
+    A publication date, the period the data actually covers, the
     horizon a projection refers to, and the date a rule took effect are four
     different facts. Collapsing them is how a 2035 projection becomes today's
     cost and how a newly published article repeating 2019 figures reads as
@@ -699,7 +696,7 @@ class ScoredSource(ContractModel):
     """The content/metadata/temporal revision this assessment was made from.
 
     Empty means no revision was recorded, which is the honest value for a
-    record built without a read. Task 5's reverification cache key includes
+    record built without a read. The reverification cache key includes
     this field, so a changed body, title, or dating signal invalidates a
     cached verdict instead of surviving as a stale judgement.
     """
@@ -736,7 +733,7 @@ class ScoredSource(ContractModel):
 # legacy version and empty registries, so no read provenance is ever
 # synthesized for a run that recorded none, and a consumer can tell a
 # pre-contract snapshot from a current-contract one instead of assuming.
-# Contract 2 is the Evidence Verifier's record (spec §6.2): findings, facts, refusals.
+# Contract 2 is the Evidence Verifier's record: findings, facts, refusals.
 QUALITY_CONTRACT_VERSION = "2"
 LEGACY_QUALITY_CONTRACT_VERSION = "0"
 
@@ -796,7 +793,7 @@ class ReadRecord(_VerbatimContractModel):
     """The URL the content was served from, after any redirect."""
     title: str = Field(min_length=1)
     page_published: str | None = None
-    """The page's own publication date, from its own metadata only (D14):
+    """The page's own publication date, from its own metadata only:
     ``article:published_time``, a microdata ``itemprop="datePublished"``, a
     citation/Dublin Core meta name (``citation_publication_date``,
     ``dc.date.issued``, ...), or a JSON-LD ``datePublished`` (including
@@ -861,17 +858,16 @@ class EvidenceUnit(_VerbatimContractModel):
     target_ids: list[str] = Field(default_factory=list)
     origin: Literal["researcher"]
     """Which agent selected this passage. The researcher is the only one that
-    can: the Fact Checker that used to verify claims is deleted (step 4), so a
-    unit naming another selector names an agent this branch cannot run."""
+    can, so a unit naming another selector names an agent this build cannot
+    run."""
 
 
 class EvidenceTarget(ContractModel):
     """One answerable obligation a planned topic must satisfy.
 
-    Carries no support policy (PD-16): step 4 removes the pair and
-    support-policy fields along with the Fact Checker, so an obligation is
-    answered on the answer-side facts alone — the statement names the target,
-    asserts something, and fills the fields the target declares.
+    Carries no support policy: an obligation is answered on the answer-side
+    facts alone — the statement names the target, asserts something, and
+    fills the fields the target declares.
     """
 
     target_id: str = Field(min_length=1)
@@ -881,7 +877,7 @@ class EvidenceTarget(ContractModel):
     measure: str = Field(min_length=1)
     """The obligation's measured quantity, as the plan states it ("battery storage power capacity added")."""
     unit_dimension: str | None = Field(default=None, min_length=1)
-    """One word for the kind of quantity the target asks for (power, energy, percent, currency, count, …), as the planner stamps it; ``None`` for a qualitative target (D10)."""
+    """One word for the kind of quantity the target asks for (power, energy, percent, currency, count, …), as the planner stamps it; ``None`` for a qualitative target."""
     period: str | None = None
     """The period the target asks about ("2024")."""
     kind: FigureKind | None = None
@@ -936,10 +932,10 @@ class EvidenceDisposition(ContractModel):
 
 
 class BoundaryAudit(ContractModel):
-    """One Section 2.6 boundary manifest: what crossed one handoff.
+    """One boundary manifest: what crossed one handoff.
 
-    Persisted per boundary — read admission, passage selection, and the later
-    handoffs tasks 5-10 add — so a replay can name the exact first missing
+    Persisted per boundary — read admission, passage selection, and each later
+    handoff — so a replay can name the exact first missing
     boundary instead of reporting "not recorded". A missing manifest must
     fail a replay assertion (``evidence.require_boundary_manifest``); it must
     never be read as zero loss.
@@ -971,8 +967,7 @@ class ReportQualitySnapshot(ContractModel):
     terminal semantic review is stored on its own (``semantic_review_status``,
     ``semantic_review_score``) rather than folded into ``hard_failures``:
     a structural clean bill of health and a semantic acceptance are two
-    different claims, and the reviewed baseline showed a report can hold the
-    first while failing the second.
+    different claims, and a report can hold the first while failing the second.
     """
 
     # Every reading below carries a zero so a partially measured pass is
@@ -981,7 +976,7 @@ class ReportQualitySnapshot(ContractModel):
     cited_sources: int = Field(default=0, ge=0)
     uncited_settled_points: int = Field(default=0, ge=0)
     hard_failures: list[str] = Field(default_factory=list)
-    # --- Task 10: the semantic judgement, kept apart from the counts --------
+    # --- The semantic judgement, kept apart from the counts ------------------
     semantic_review_status: str = ""
     """``scored`` / ``incomplete`` / ``provider_failed``, or ``""`` for none.
 
@@ -993,12 +988,10 @@ class ReportQualitySnapshot(ContractModel):
     """The review's mean over the seven dimensions, or ``None`` for no score."""
     semantic_review_fingerprint: str = ""
     """The exact packet fingerprint the stored judgement was made over."""
-    # --- Step 4 (Task 4.1): what the Evidence Verifier pipeline reads -------
+    # --- What the Evidence Verifier pipeline reads --------------------------
     # One reading per reader-visible property of a finished pass, filled by
     # the quality pass from the verified findings and the composition, and
-    # gated by Task 4.3. ``unaccounted_target_ids``, ``cited_sources``,
-    # ``uncited_settled_points`` and ``hard_failures`` already exist above and
-    # are only added to by this step.
+    # gated on by the quality pass.
     required_target_ids: list[str] = Field(default_factory=list)
     answered_target_ids: list[str] = Field(default_factory=list)
     missing_required_target_ids: list[str] = Field(default_factory=list)
@@ -1007,22 +1000,22 @@ class ReportQualitySnapshot(ContractModel):
     verified_findings: int = Field(default=0, ge=0)
     corrected_findings: int = Field(default=0, ge=0)
     quoted_findings: int = Field(default=0, ge=0)
-    """D21: a no-figure finding neither check judged for relevance or attribution."""
+    """A no-figure finding neither check judged for relevance or attribution."""
     dropped_findings: int = Field(default=0, ge=0)
     context_unchecked_findings: int = Field(default=0, ge=0)
     dropped_figures: int = Field(default=0, ge=0)
     cited_findings: int = Field(default=0, ge=0)
     duplicate_fact_rows: int = Field(default=0, ge=0)
-    """An invariant, not a warning: ``fact_rows()`` already merges (PD-10)."""
+    """An invariant, not a warning: ``fact_rows()`` already merges."""
     unresolved_citations: int = Field(default=0, ge=0)
     unjudged_sentences: list[str] = Field(default_factory=list)
     """``"S003"``: kept with no verdict and no batch failure to blame."""
     refused_sentences: int = Field(default=0, ge=0)
     forecasts_without_release: int = Field(default=0, ge=0)
-    """PD-24: counted and printed, never a gate."""
+    """Counted and printed, never a gate."""
 
 
-# --- Task 8: the typed defect vocabulary ------------------------------------
+# --- The typed defect vocabulary --------------------------------------------
 #
 # Ten kinds, and the set is *normative*: the kind names what is wrong rather
 # than how to fix it. A kind outside this list is a schema failure, not a new
@@ -1070,12 +1063,12 @@ GAP_MATERIAL_SEVERITIES: tuple[GapSeverity, ...] = ("critical", "major")
 QUESTION_TARGET_ID = "question"
 
 
-# --- Step 4 (Task 4.1): the Report Reviewer's typed defects -----------------
+# --- The Report Reviewer's typed defects ------------------------------------
 #
-# The shape the terminal review returns from step 4 on. It keeps the gap
+# The shape the terminal review returns. It keeps the gap
 # vocabulary (``GapKind``, ``GapSeverity``, ``GAP_MATERIAL_SEVERITIES``)
 # because the kinds name what is wrong. ``target_ids`` is what makes a defect
-# routable (Task 4.4's targeted extra pass); ``statement_ids`` is what ties it
+# routable (the targeted extra pass); ``statement_ids`` is what ties it
 # to the sentence it judges, so an unsettled statement can be named by a
 # defect.
 class ReviewDefect(ContractModel):
@@ -1090,14 +1083,14 @@ class ReviewDefect(ContractModel):
     coverage_ids: list[str] = Field(default_factory=list)
     """Which part(s) (plan sub-topic coverage ids) this defect names.
 
-    Computed by code from the composition the defect was recorded against
-    (T5 scoped-re-review addendum), so a defect a scoped re-review carries
+    Computed by code from the composition the defect was recorded against,
+    so a defect a scoped re-review carries
     forward across a redraft's renumbering still names the right part even
     once its own statement id no longer exists in the redrafted
     composition. Empty for a defect no caller ever addressed this way.
     """
     resolution: Literal["resolved", "unresolved"] | None = None
-    """Set only on a defect a scoped re-review (T5 addendum) carried forward
+    """Set only on a defect a scoped re-review carried forward
     from the previous review: whether the redraft resolved it. ``None`` for
     every defect a review recorded fresh -- a full review's own defects, or
     a scoped review's own new ones.
@@ -1107,8 +1100,8 @@ class ReviewDefect(ContractModel):
     def material(self) -> bool:
         """True when this defect must be closed before the report is accepted.
 
-        A defect a scoped re-review marked ``resolution="resolved"`` (T5
-        addendum) is recorded -- the merged review keeps the full previous-
+        A defect a scoped re-review marked ``resolution="resolved"``
+        is recorded -- the merged review keeps the full previous-
         defect history rather than silently dropping the ones the redraft
         fixed -- but it no longer blocks acceptance, whatever its severity.
         """
@@ -1117,13 +1110,11 @@ class ReviewDefect(ContractModel):
         return self.severity in GAP_MATERIAL_SEVERITIES
 
 
-# --- Task 10: the terminal semantic report review --------------------------
+# --- The terminal semantic report review ------------------------------------
 #
-# The seven reader-facing dimensions keep the names the whole-report campaign
-# already used, so a historical artifact and a semantic review speak the same
-# vocabulary. What changed is what each one *means*: it is a judgement about
-# the report's substance, made by a reviewer that reads the report and the
-# evidence behind it, rather than a formula over counts.
+# The seven reader-facing dimensions are each a judgement about the report's
+# substance, made by a reviewer that reads the report and the evidence behind
+# it, rather than a formula over counts.
 REVIEW_DIMENSIONS: frozenset[str] = frozenset(
     {
         "completeness",
@@ -1140,22 +1131,22 @@ REVIEW_DIMENSIONS: frozenset[str] = frozenset(
 SEMANTIC_REVIEW_MEAN: float = 0.80
 """The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
 
-# Reader notes (live-briefs spec §4.6, D8-D11a): what the reader adds while a run
+# Reader notes: what the reader adds while a run
 # is going, as the run's own agents and routing read it.
 MAX_NOTES_PER_RUN = 10
-"""D11a: a run accepts at most ten notes; the API refuses an eleventh."""
+"""A run accepts at most ten notes; the API refuses an eleventh."""
 NOTE_COVERAGE_PREFIX = "note-"
 """A note's own sub-topic is ``note-{note_id}``, and its targets carry the same prefix."""
 NOTE_TOPIC_TITLE_PREFIX = "Your note: "
-"""A note's own sub-topic is titled ``Your note: {restatement}`` (live-briefs spec §4.6)."""
+"""A note's own sub-topic is titled ``Your note: {restatement}``."""
 MAX_NOTE_SHORT_CHARS = 24
-"""A note's label, ``ReaderNote.short``, is at most 24 characters (notes-progress-report spec §7.2)."""
+"""A note's label, ``ReaderNote.short``, is at most 24 characters."""
 
 
 def note_short_label(restatement: str) -> str:
     """The restatement's first three words, cut at 24 characters on a word boundary.
 
-    notes-progress-report spec §7.2: the label a note carries when its reading named
+    The label a note carries when its reading named
     none — the fallback and replay readings, a live reading whose ``short`` broke its
     bounds, and a note recorded before the field existed. A first word longer than 24
     characters is cut to its first 24.
@@ -1195,7 +1186,7 @@ class ReaderNoteScope(ContractModel):
 
 
 class ReaderNote(ContractModel):
-    """One interpreted reader note (live-briefs spec §4.6).
+    """One interpreted reader note.
 
     The first ten fields are fixed once the note is interpreted; the three
     flags are the run's own bookkeeping, set by the graph: ``reviewed`` is set
@@ -1203,13 +1194,13 @@ class ReaderNote(ContractModel):
     note included although the review packet leaves it out, and is read only
     for a note with a steering kind (``notes_due_a_redraft``); ``passed`` when
     its one targeted research pass was bought, ``redrafted`` when its one
-    redraft was (D11). ``finalize_report`` takes in a note read after the run
+    redraft was. ``finalize_report`` takes in a note read after the run
     decided to publish with all three set and ``replaces`` cleared: nothing is
     owed it any more, so it cannot reopen the decision, and it retires no note
     the report already followed (``graph.nodes._closed_notes_update``).
     ``restatement`` is the interpreter's plain-words reading, or the note's own
     text when the interpretation failed. ``short`` names the note's subject in
-    one to three words for a label (notes-progress-report spec §7.2): the
+    one to three words for a label: the
     reading's own, or ``note_short_label(restatement)`` when it named none.
     """
 
@@ -1249,7 +1240,7 @@ class ReaderNote(ContractModel):
     @field_validator("short", mode="before")
     @classmethod
     def short_is_one_line(cls, value: object) -> object:
-        """The label is printed inside one line of the report (spec §7.2)."""
+        """The label is printed inside one line of the report."""
         return collapse_whitespace(value) if isinstance(value, str) else value
 
     @model_validator(mode="after")
@@ -1261,23 +1252,23 @@ class ReaderNote(ContractModel):
 
 
 class NoteDisposition(ContractModel):
-    """What one review concluded about one reader note (live-briefs spec §4.6)."""
+    """What one review concluded about one reader note."""
 
     note_id: str = Field(min_length=1)
     status: NoteDispositionStatus
 
 
 NOTE_LABEL_PREFIX = "Your note \u00b7 "
-"""A note's label in the bottom line (notes-progress-report spec §7.2): ``Your note · {short}``."""
+"""A note's label in the bottom line: ``Your note · {short}``."""
 
 
 def note_label(note: ReaderNote) -> str:
-    """``Your note · {short}``: how the bottom line names a note and its topic (spec §7.2)."""
+    """``Your note · {short}``: how the bottom line names a note and its topic."""
     return f"{NOTE_LABEL_PREFIX}{note.short}"
 
 
 def active_reader_notes(notes: Sequence[ReaderNote]) -> list[ReaderNote]:
-    """The notes the run acts on: every note no later note replaces, in receipt order (D9)."""
+    """The notes the run acts on: every note no later note replaces, in receipt order."""
     replaced = {note.replaces for note in notes if note.replaces}
     return [note for note in notes if note.note_id not in replaced]
 
@@ -1300,9 +1291,9 @@ REVIEW_RUBRIC_VERSION = 3
 """Which semantic rubric a review was made under.
 
 Version 1 is the structural formula (``judge_whole_report``); version 2 is the
-seven semantic definitions; version 3 is the step-4 review, which judges every
+seven semantic definitions; version 3 is the statement-level review, which judges every
 statement it was given against the verified findings behind it and returns
-typed defects (spec §6.2). The version travels on the record so a historical
+typed defects. The version travels on the record so a historical
 diagnostic and a semantic judgement can never be compared as if they were the
 same measurement.
 """
@@ -1312,29 +1303,16 @@ same measurement.
 # judged at all, and collapsing the two is how "no judgement" starts reading
 # as a verdict.
 ReportReviewStatus: TypeAlias = Literal["scored", "incomplete", "provider_failed"]
-REPORT_REVIEW_STATUSES: tuple[ReportReviewStatus, ...] = (
-    "scored",
-    "incomplete",
-    "provider_failed",
-)
 
-# What one review concluded about one reader statement, in the step-4
-# vocabulary: ``supported`` is a statement the verified findings carry as
-# written, ``unsupported`` is one they do not, and ``not_reviewed`` is the
-# honest default for a statement the review never reached. The claim-era
-# ``attributed``/``inference``/``returned_to_fact_checker`` dispositions left
-# with the Fact Checker (PD-16, D2): nothing asks a statement for a pair, an
-# attribution badge, or a return trip any more.
+# What one review concluded about one reader statement: ``supported`` is a
+# statement the verified findings carry as written, ``unsupported`` is one
+# they do not, and ``not_reviewed`` is the honest default for a statement the
+# review never reached.
 StatementReviewDisposition: TypeAlias = Literal[
     "supported",
     "unsupported",
     "not_reviewed",
 ]
-STATEMENT_REVIEW_DISPOSITIONS: tuple[StatementReviewDisposition, ...] = (
-    "supported",
-    "unsupported",
-    "not_reviewed",
-)
 
 UNREVIEWED_STATEMENT_DISPOSITION: StatementReviewDisposition = "not_reviewed"
 """The disposition of a statement the review never reached.
@@ -1392,7 +1370,7 @@ class ReportReview(ContractModel):
     derived_defect_statement_ids: list[str] = Field(default_factory=list)
     """Statements whose material defect this project derived from a disposition."""
     missing_required_target_ids: list[str] = Field(default_factory=list)
-    """Required targets with no answer, stamped by code rather than asked of the model (PD-5)."""
+    """Required targets with no answer, stamped by code rather than asked of the model."""
     input_fingerprint: str = ""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this judgement was made over.
@@ -1407,7 +1385,7 @@ class ReportReview(ContractModel):
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     rationale: str = ""
     note_dispositions: list[NoteDisposition] = Field(default_factory=list)
-    """One entry per reader note this review judged (live-briefs spec §4.6).
+    """One entry per reader note this review judged.
 
     Optional and empty by default, so a review without reader notes, and every
     review recorded before notes existed, is unchanged. It never enters the
@@ -1514,7 +1492,7 @@ class ResearchEvent(ContractModel):
     timestamp: AwareISOString = Field(default_factory=_utc_now_iso)
     metadata: dict[str, _FiniteJsonValue] = Field(default_factory=dict)
     event_id: str = Field(default_factory=_new_event_id, min_length=1)
-    """This event's identity (live-briefs spec E1). One event object can reach the
+    """This event's identity. One event object can reach the
     stream twice — published live, then again inside its node's snapshot — and the
     orchestrator publishes each id once. Fresh per construction and kept by every
     copy and dump; an event dumped before this field existed loads with a fresh id."""
@@ -1549,7 +1527,7 @@ class Citation(ContractModel):
 
 
 class ItemMark(ContractModel):
-    """One option mark over a checked sentence's final text (spec §5, §6.4 rule 8).
+    """One option mark over a checked sentence's final text.
 
     ``name`` and ``verdict`` must be verbatim spans of the statement they
     mark, so every table cell code assembles from them is a span of checked
@@ -1561,7 +1539,7 @@ class ItemMark(ContractModel):
     picked: bool = False       # the sentence reports that this page picks or recommends the option
     source_url: str            # the page this mark rests on (resolved from the draft's `by`)
     finding_id: str | None = None
-    """The finding this mark's `by` (or the point's single cited finding) resolved to (R-2):
+    """The finding this mark's `by` (or the point's single cited finding) resolved to:
     a page can carry more than one finding, so the table must not guess which one a pick
     credits from whichever finding happens to come last on that page. Optional and defaults
     to ``None`` so an older snapshot still validates."""
@@ -1582,7 +1560,7 @@ class ReportStatement(ContractModel):
     target_ids: list[str] = Field(default_factory=list)
     finding_ids: list[str] = Field(default_factory=list)
     items: list[ItemMark] = Field(default_factory=list)
-    """This statement's option marks (spec §5); code assembles the options table from them."""
+    """This statement's option marks; code assembles the options table from them."""
 
 
 class ReportPoint(ContractModel):
@@ -1611,7 +1589,7 @@ class ReportSection(ContractModel):
     """The plan sub-topic this section renders; "" for a legacy composition."""
     short_title: str = ""
     """One to three words naming the part for the bottom line's label and the
-    contents list (notes-progress-report spec §7.2); "" for a composition
+    contents list; "" for a composition
     written before it, whose readers then use ``title``."""
 
 
@@ -1684,7 +1662,7 @@ class FactRow(ContractModel):
     attribution: FigureAttribution
     relay_host: str | None = None       # the relaying site when attribution == "relayed"
     subject: str | None = None
-    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole (spec §4, D11)."""
+    """The thing the figure is about, as the page names it: a product model, a place, a company as the thing measured, a patch or version, a named item; None when the page names none and the figure is about the topic as a whole."""
     measure: str                        # the answered target's measure, else the unit label
     period: str | None = None
     value: str                          # "10.4 GW", as written
@@ -1692,7 +1670,7 @@ class FactRow(ContractModel):
     scope: str | None = None
     release: str | None = None
     period_resolved_from: str | None = None
-    """The page's own stated date a relative period ("this year") was resolved from (spec §5.2, D11); None when the page states the period itself."""
+    """The page's own stated date a relative period ("this year") was resolved from; None when the page states the period itself."""
     finding_id: str                     # the cited finding
     duplicate_finding_ids: list[str] = Field(default_factory=list)
     earlier: list[EarlierEdition] = Field(default_factory=list)
@@ -1716,18 +1694,18 @@ class NotFoundTarget(ContractModel):
 
 class ReportPart(ContractModel):
     """One plan sub-topic's partition record: which findings it owns and
-    whether its writer call ran, carried over, or failed (spec §6.1, §6.7).
+    whether its writer call ran, carried over, or failed.
     """
 
     coverage_id: str
     sub_topic_title: str
-    finding_ids: list[str] = Field(default_factory=list)          # the partition (§6.1)
-    context_finding_ids: list[str] = Field(default_factory=list)  # D16 (§6.2)
+    finding_ids: list[str] = Field(default_factory=list)          # the partition
+    context_finding_ids: list[str] = Field(default_factory=list)  # findings given as context only
     status: Literal["written", "carried_over", "failed", "empty"]
 
 
 class PageCredit(ContractModel):
-    """One page's printed identity, computed once at compose time (spec §8).
+    """One page's printed identity, computed once at compose time.
 
     A renderer is pure and never reads a page itself, so every Sources line,
     options-table cell and Recommended-by date comes from this record.
@@ -1736,8 +1714,8 @@ class PageCredit(ContractModel):
     publisher: str
     date: str | None = None
     date_kind: Literal["published", "updated"] | None = None
-    """Which date ``date`` is (T3 renders them differently): the read's own
-    ``page_updated``, when it is later than its ``page_published`` (D8), or
+    """Which date ``date`` is (they render differently): the read's own
+    ``page_updated``, when it is later than its ``page_published``, or
     a read's ``page_updated`` used because no ``page_published`` exists, is
     ``"updated"``; the Source Evaluator's validated ``publication_date`` or
     the read's own ``page_published`` is ``"published"``. ``None`` when
@@ -1745,15 +1723,15 @@ class PageCredit(ContractModel):
 
 
 class UnreachablePage(ContractModel):
-    """One page a required target's acquisition could not open (spec §6.7, §10)."""
+    """One page a required target's acquisition could not open."""
 
     url: str
     title: str = ""
-    reason: str = ""           # empty until §12 I2 lands
+    reason: str = ""           # the candidate's denial reason; empty when none was recorded
 
 
 class TableEntry(ContractModel):
-    """One page's contribution to one options-table cell (spec §5)."""
+    """One page's contribution to one options-table cell."""
 
     text: str = ""             # verbatim spans joined "; " in options cells; "" for Recommended by
     source_url: str
@@ -1761,7 +1739,7 @@ class TableEntry(ContractModel):
 
 
 class TableCell(ContractModel):
-    """One cell of a ``ReportTable`` row, with the evidence it renders (spec §5, §9)."""
+    """One cell of a ``ReportTable`` row, with the evidence it renders."""
 
     text: str = ""             # findings-table text; "" with no entries renders "—"
     entries: list[TableEntry] = Field(default_factory=list)
@@ -1771,7 +1749,7 @@ class TableCell(ContractModel):
 
 
 class ReportTable(ContractModel):
-    """The question-shaped table code assembles from checked statements (spec §4).
+    """The question-shaped table code assembles from checked statements.
 
     Never written by a model call: ``shape`` names the structural rule that
     built it.
@@ -1793,7 +1771,7 @@ class ReportTable(ContractModel):
 
 
 class BottomLineTopic(ContractModel):
-    """One topic line of the bottom line (notes-progress-report spec §7.2)."""
+    """One topic line of the bottom line."""
 
     coverage_id: str = Field(min_length=1)
     label: str = Field(min_length=1)
@@ -1806,7 +1784,7 @@ NoteLineOutcome: TypeAlias = Literal["covered", "not_found", "not_addressed", "n
 
 class ReportNoteLine(ContractModel):
     """One reader note's line in the bottom line, stamped when the report is
-    published (notes-progress-report spec §7.2): the note's terminal outcome, a
+    published: the note's terminal outcome, a
     mixed note's steering half, and either the note's kept topic line
     (``statement_id``) or code-written ``text``, or both."""
 
@@ -1820,12 +1798,12 @@ class ReportNoteLine(ContractModel):
 
 class BottomLineLayout(ContractModel):
     """Which of a composition's ``summary`` statements are the direct answer and
-    which are topic lines, in the order the report prints them (spec §7.2)."""
+    which are topic lines, in the order the report prints them."""
 
     answer_ids: list[str] = Field(default_factory=list)
     topic_lines: list[BottomLineTopic] = Field(default_factory=list)
     assembled: bool = False
-    """True when the fallback assembled the lines from the sections (spec §7.3)."""
+    """True when the fallback assembled the lines from the sections."""
 
 
 ReportOutlineKind: TypeAlias = Literal[
@@ -1834,7 +1812,7 @@ ReportOutlineKind: TypeAlias = Literal[
 
 
 class ReportOutlineEntry(ContractModel):
-    """One ``##`` heading of the reader report, in order (notes-progress-report spec §7.5).
+    """One ``##`` heading of the reader report, in order.
 
     ``heading`` is the heading's text exactly as printed; ``label`` is its short
     name in the web's contents list. ``topic_index``/``topic_count`` number a
@@ -1901,15 +1879,15 @@ class ReportComposition(ContractModel):
     """Statement id to ``"consistent"`` / ``"corrected"`` / ``"unchecked"``.
 
     The Statement Check's verdict on every sentence this pass drafted, with
-    ``"unchecked"`` for a sentence whose batch failed (spec §5.4). Filled by
+    ``"unchecked"`` for a sentence whose batch failed. Filled by
     the Report Writer as it keeps, corrects, or refuses each sentence, and
-    gated on by the quality pass (Task 4.3, PD-10).
+    gated on by the quality pass.
     """
 
     statement_passages: dict[str, str] = Field(default_factory=dict)
     """Finding id to the bounded passage the Statement Check read for it.
 
-    The same words the checker's request carried (review F5): a snippet is cut
+    The same words the checker's request carried: a snippet is cut
     at its passage's boundary, so a verdict can rest on the sentence just past
     the cut, and the evidence log prints this passage beside the snippet so a
     reader can check exactly the words the verdict was made on. Empty for a
@@ -1920,12 +1898,12 @@ class ReportComposition(ContractModel):
     summary: list[ReportPoint] = Field(default_factory=list)
     sections: list[ReportSection] = Field(default_factory=list)
     parts: list[ReportPart] = Field(default_factory=list)
-    """One partition record per non-empty plan sub-topic (spec §6.1, §6.7)."""
+    """One partition record per non-empty plan sub-topic."""
     table: ReportTable | None = None
-    """The question-shaped table (spec §4); ``None`` when no shape qualifies."""
+    """The question-shaped table; ``None`` when no shape qualifies."""
     page_credits: dict[str, PageCredit] = Field(default_factory=dict)  # normalized URL -> credit
     unreachable: list[UnreachablePage] = Field(default_factory=list)
-    """Denied or blocked pages for a required target (spec §6.7)."""
+    """Denied or blocked pages for a required target."""
     dropped_marks: list[str] = Field(default_factory=list)            # "S004: 'Model A' is not in the sentence"
     uncertainty_notes: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
@@ -1957,16 +1935,16 @@ class ReportComposition(ContractModel):
     not told about.
     """
     bottom_line: BottomLineLayout | None = None
-    """The bottom line's shape: its answer, then one line per topic
-    (notes-progress-report spec §7.2). ``None`` when the bottom line is empty, and
+    """The bottom line's shape: its answer, then one line per topic.
+    ``None`` when the bottom line is empty, and
     for a composition written before the shape existed: both render ``summary``
     as one paragraph."""
     reader_answers: list[str] = Field(default_factory=list)
     """The values of the reader's answers to the one-time check, in question
-    order, printed on the evidence line (spec §7.5); ``[]`` when it asked nothing."""
+    order, printed on the evidence line; ``[]`` when it asked nothing."""
     reader_note_lines: list[ReportNoteLine] = Field(default_factory=list)
-    """One line per active reader note, in receipt order, stamped at publication
-    (spec §7.2); ``[]`` in the writer's own composition, which prints a note's
+    """One line per active reader note, in receipt order, stamped at publication;
+    ``[]`` in the writer's own composition, which prints a note's
     topic line as a plain topic line."""
 
     @model_validator(mode="after")
@@ -2007,7 +1985,7 @@ class ReportComposition(ContractModel):
         return unique
 
 
-# --- The parallel writer's reply schemas (spec §6.3) ------------------------
+# --- The parallel writer's reply schemas ------------------------------------
 #
 # One point shape shared by both calls: a section drafts a titled list of
 # them, and the bottom-line call drafts an untitled list of the same shape,
@@ -2043,8 +2021,8 @@ class SectionDraft(ContractModel):
     title: str
     points: list[WriterPointDraft] = Field(default_factory=list)
     short_title: str = ""
-    """The part named in one to three words for a contents list (notes-progress-report
-    spec §7.1); a reply without one keeps the section title in its place."""
+    """The part named in one to three words for a contents list; a reply
+    without one keeps the section title in its place."""
 
 
 class TopicLineDraft(WriterPointDraft):
@@ -2061,14 +2039,14 @@ class BottomLineDraft(ContractModel):
     topics: list[TopicLineDraft] = Field(default_factory=list)
 
 
-# The one-time check (live-briefs spec §4.4): the dimensions a check question may
+# The one-time check: the dimensions a check question may
 # ask about, and where each answer came from.
 ClarityDimension: TypeAlias = Literal["geography", "period", "purpose", "scope"]
 ReaderAnswerSource: TypeAlias = Literal["chosen", "typed", "best_guess"]
 
 
 class ReaderAnswer(ContractModel):
-    """One answer to the one-time check, as the planner reads it (live-briefs spec §4.4).
+    """One answer to the one-time check, as the planner reads it.
 
     ``text`` is the question the reader was asked and ``short`` its one- or
     two-word label ("Region"). ``source`` says where ``value`` came from: an
@@ -2102,7 +2080,7 @@ class ResearchState(ContractModel):
     Appendix-only: a later planning pass may add to this list and can never
     remove from it. ``merge_research_state`` unions these ids rather than
     replacing them, so a refinement that names three of five original targets
-    cannot shrink the coverage denominator (Section 2.3).
+    cannot shrink the coverage denominator.
     """
     expanded_target_ids: list[str] = Field(default_factory=list)
     """Targets a later reviewed ``extend_plan`` pass added to the inventory.
@@ -2181,7 +2159,7 @@ class ResearchState(ContractModel):
     evidence_dispositions: list[EvidenceDisposition] = Field(default_factory=list)
     """Why each non-admitted item was not admitted; never silently dropped."""
     boundary_audits: dict[str, BoundaryAudit] = Field(default_factory=dict)
-    """Section 2.6 boundary manifests, keyed by ``audit_id``."""
+    """Boundary manifests, keyed by ``audit_id``."""
     acquisition_state_by_target: dict[str, AcquisitionState] = Field(
         default_factory=dict
     )
@@ -2204,7 +2182,7 @@ class ResearchState(ContractModel):
     and sees that there was none.
     """
     run_telemetry: RunTelemetry | None = None
-    """The run's §7.3 telemetry, stamped at publication, or ``None``.
+    """The run's telemetry, stamped at publication, or ``None``.
 
     The collector's own snapshot, taken by the terminal finalizer from the one
     collector ``build_runtime`` created for the run, so it covers every
@@ -2219,7 +2197,7 @@ class ResearchState(ContractModel):
     """
     iteration: int = Field(default=0, ge=0)
     max_extra_passes: int = Field(default=1, ge=0)
-    """How many extra research passes this run may still buy (D4, §6.5).
+    """How many extra research passes this run may still buy.
 
     One by default: an extra pass runs only when required targets are still
     missing, and only for those targets. ``graph.max_extra_passes`` supplies
@@ -2246,21 +2224,21 @@ class ResearchState(ContractModel):
     reader_answers: list[ReaderAnswer] = Field(default_factory=list)
     """The reader's answers to the one-time check, best guesses included, or ``[]``.
 
-    Set once, when the run starts, and replaced on every write (live-briefs
-    spec §4.4). Empty when the check asked nothing, was turned off, or failed:
+    Set once, when the run starts, and replaced on every write. Empty when
+    the check asked nothing, was turned off, or failed:
     every consumer renders its reader-answers section only when this is
     non-empty, so a run without answers builds the same requests as before.
     """
     reader_notes: list[ReaderNote] = Field(default_factory=list)
     """The reader's notes the run has taken in so far, in receipt order, or ``[]``.
 
-    Replaced on every write (live-briefs spec §4.6). ``agent_node`` and the
+    Replaced on every write. ``agent_node`` and the
     review node copy in every note the run's board holds that this list does
     not, so each node starts with the notes received so far; the flags on each
     note are the graph's own record of its one pass and one redraft.
     """
     note_passes: int = Field(default=0, ge=0)
-    """How many targeted research passes the reader's notes bought (D11).
+    """How many targeted research passes the reader's notes bought.
 
     Counted apart from ``iteration``: a note pass never spends the extra-pass
     budget, and the report's pass fact names the two separately.
@@ -2329,7 +2307,7 @@ _APPEND_STATE_FIELDS = frozenset(
 
 # Fields whose update adds ids to what the state already holds, in
 # first-seen order, and can never remove one. These are the target
-# inventories: Section 2.3 lets a later reviewed omission ADD a target and
+# inventories: a later reviewed omission may ADD a target and
 # never drop or weaken one, and an update that names a subset of the existing
 # ids is exactly how a smaller denominator would otherwise appear. Kept
 # distinct from ``_APPEND_STATE_FIELDS`` because a repeated id must not be
@@ -2528,7 +2506,7 @@ def merge_research_state(
             payload[field_name] = deepcopy(value)
 
     if "composition" in update and "report_review" not in update:
-        # Task 10: a judgement belongs to the report it judged. Replacing the
+        # A judgement belongs to the report it judged. Replacing the
         # composition drops the stored review unless the incoming composition
         # still carries the same semantic fingerprint — the check is on
         # content, references, and targets, never on the generated quality
@@ -2560,12 +2538,12 @@ def advance_research_iteration(state: ResearchState) -> ResearchState:
     return ResearchState.model_validate(payload)
 
 
-# --- Task 4.14: run telemetry (spec 7.3) -------------------------------------
+# --- Run telemetry -----------------------------------------------------------
 #
 # What one run spent: its rate-limit errors, its peak number of provider calls
 # in flight, each stage's calls and seconds, and each operation's output tokens
 # against the cap that bounds it. These are measurements, never levers: nothing
-# in the run reads them back to change a cap or a concurrency limit (§7.3, §12),
+# in the run reads them back to change a cap or a concurrency limit,
 # and the advice lines rendered from them are for the operator between runs.
 #
 # The models live here rather than beside their collector because
@@ -2580,10 +2558,10 @@ class CallAttemptTelemetry(ContractModel):
     start (retries and backoff sleeps live in the gap between attempts), and
     ``seconds`` is this attempt's own wall time -- never the call's total.
     ``outcome`` is ``"ok"``, ``"timeout"``, ``"connection error"``, or the
-    failing exception's class name for anything else (P1-B).
+    failing exception's class name for anything else.
 
     ``first_event_seconds`` and ``first_token_seconds`` are set only for a
-    streaming attempt (Phase 2): the first chunk or event, and the first
+    streaming attempt: the first chunk or event, and the first
     content or reasoning delta, both relative to the attempt's own start --
     taken before the request is even sent, so time spent queued before the
     response headers arrive is included, not just time since the request
@@ -2627,7 +2605,7 @@ class OperationTelemetry(ContractModel):
 
 
 class CallRecordTelemetry(ContractModel):
-    """One provider call that returned, as the latency audit (O8) reads it.
+    """One provider call that returned, with its timing.
 
     ``label`` is what the call was for: the operation name its caller bound
     (``plan_draft``, ``page_extraction``, ``context_check`` ...) or, when the
@@ -2653,11 +2631,11 @@ class StageTelemetry(ContractModel):
 
     ``seconds`` is the total wall time of those calls and ``slowest_seconds``
     the longest one, which is the number a concurrent stage's runtime turns on.
-    ``slowest_call_attempts`` is that same call's own transport attempts (P1-B):
+    ``slowest_call_attempts`` is that same call's own transport attempts:
     empty for a call recorded before per-attempt records existed, and never
     more than one call's worth, since only the current slowest call's attempts
     are worth keeping. ``call_records`` is every call of the stage, in the
-    order they returned (latency audit O8): empty for a record written before
+    order they returned: empty for a record written before
     they existed.
     """
 
@@ -2675,7 +2653,7 @@ class StageTelemetry(ContractModel):
 
 
 class RunTelemetry(ContractModel):
-    """One run's §7.3 telemetry, as the quality record and the CLI report it."""
+    """One run's telemetry, as the quality record and the CLI report it."""
 
     model_config = ConfigDict(
         extra="forbid", str_strip_whitespace=True, validate_default=True, frozen=True
@@ -2689,10 +2667,10 @@ class RunTelemetry(ContractModel):
     input_tokens: int = Field(default=0, ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
     """Input tokens the provider calls reported, and the part DeepSeek served
-    from its context cache (D10, S5)."""
+    from its context cache."""
     reasoning_tokens: int = Field(default=0, ge=0)
-    """Output tokens DeepSeek reported as reasoning, apart from content (P1-B)."""
+    """Output tokens DeepSeek reported as reasoning, apart from content."""
     loop_lag_max_seconds: float = Field(default=0.0, ge=0.0)
-    """The largest event-loop wake-up delay the run's lag monitor saw (P1-B)."""
+    """The largest event-loop wake-up delay the run's lag monitor saw."""
     loop_lag_blocks: tuple[float, ...] = ()
-    """Each wake-up delay at or beyond the monitor's block threshold (P1-B)."""
+    """Each wake-up delay at or beyond the monitor's block threshold."""

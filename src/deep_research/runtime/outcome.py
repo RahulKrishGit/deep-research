@@ -84,7 +84,7 @@ class ToolCallSummary:
 
 @dataclass(frozen=True, slots=True)
 class DroppedProposals:
-    """What the researcher proposed and did not keep, by reason (ruling 7).
+    """What the researcher proposed and did not keep, by reason.
 
     Two reasons, counted apart because they are different events: a duplicate
     is a restatement folded into a finding the pass already held, and a cap
@@ -289,7 +289,7 @@ class CoverageProgress:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceCounts:
-    """Distinct quantities, each of a different thing (Section 2.5).
+    """Distinct quantities, each of a different thing.
 
     A read call is not a work; a work is not a publisher; a source URL is not a
     finding; "checked" is not "cited". Each field here answers a question the

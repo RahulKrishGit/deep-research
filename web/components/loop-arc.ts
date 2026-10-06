@@ -1,6 +1,6 @@
 "use client";
 // The return arc (DESIGN.md §3.5), measured from the two rows' bullets exactly as the prototype's
-// drawLoop() measures it, and kept attached while rows change height (live-briefs spec §4.3).
+// drawLoop() measures it, and kept attached while rows change height.
 import { useLayoutEffect, type DependencyList, type RefObject } from "react";
 import { ARCS } from "@/lib/run-state";
 

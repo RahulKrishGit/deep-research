@@ -1,4 +1,4 @@
-"""E1: the evidence JSON agrees with the evidence log the same run composed."""
+"""The evidence JSON agrees with the evidence log the same run composed."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Stop reaches every call in flight (notes-progress-report spec §8.3; D17, D25; AC29).
+"""Stop reaches every call in flight.
 
 The real graph runs with stub agents: the researcher's turn holds a provider call, an
 async search and a page fetch shared by two research loops in flight until it is cancelled,
@@ -98,9 +98,9 @@ class InFlightResearcher:
     """A researcher whose turn holds a provider call, a search and a shared page fetch in
     flight until cancelled.
 
-    Two research loops want one page through the run's one ``ToolGate`` (latency audit O4,
-    D38): the first one's download is the shared fetch, and the second waits behind it on
-    the page's flight lock, so one request is ever in flight (spec §8.3).
+    Two research loops want one page through the run's one ``ToolGate``: the first one's
+    download is the shared fetch, and the second waits behind it on the page's flight lock,
+    so one request is ever in flight.
     """
 
     name = "researcher"
@@ -165,10 +165,10 @@ def _graph_runner(agents: ResearchAgents, tracker: Tracker) -> Callable[..., Awa
 
 @pytest.mark.asyncio
 async def test_stop_cancels_inflight_calls() -> None:
-    """AC29 on the real graph: a stop cancels the running node's provider call, its async
+    """On the real graph: a stop cancels the running node's provider call, its async
     search and the page fetch two research loops share through the run's ToolGate within a
-    second; no later node starts and no later agent is called; nothing is
-    published, so no file and no memory entry is written (§8.3)."""
+    second; no later node starts and no later agent is called; nothing is published,
+    so no file and no memory entry is written."""
     tracker = Tracker(LangSmithRuntimeConfig(tracing_enabled=False, project="stop-tests", api_key=None))
     researcher = InFlightResearcher(tracker)
     publisher = FakePublisher()
@@ -193,7 +193,7 @@ async def test_stop_cancels_inflight_calls() -> None:
     assert researcher.cancelled_at is not None and researcher.cancelled_at - asked < 1.0
     assert researcher.search.cancelled is True
     # The shared fetch is cancelled with the run, within a second of the stop, and it was one
-    # download for the two loops that wanted the page (D38; spec §8.3).
+    # download for the two loops that wanted the page.
     assert researcher.page.page_requests == 1
     assert researcher.page.cancelled_at is not None and researcher.page.cancelled_at - asked < 1.0
     # The cancellation released the page's flight lock: it can be taken again at once.

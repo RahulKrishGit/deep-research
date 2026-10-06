@@ -1,4 +1,4 @@
-// @vitest-environment node — each step's own brief (notes-progress-report spec §6.3-§6.7), derived from
+// @vitest-environment node — each step's own brief, derived from
 // synthesized events: pure functions of RunState and a clock.
 import { describe, expect, it } from "vitest";
 import {
@@ -27,7 +27,7 @@ describe("elapsed times", () => {
   });
 });
 
-describe("Planning (spec §6.3)", () => {
+describe("Planning", () => {
   const started = ev("graph.node.started", { node: "planner", iteration: 0 }, at(0));
   const slot = (coverage_id: string, title: string, state: string) => ({ coverage_id, title, state });
   it("reads the question, then shows four skeleton slots that say 'drafting' while the plan is drafted", () => {
@@ -70,19 +70,19 @@ describe("Planning (spec §6.3)", () => {
     applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 1, sub_topics: [slot("topic-01", "Alpha", "not_checked")] }));
     expect(planningSlots(run, false)[0]).toMatchObject({ mark: "waiting", fact: "not checked" });
   });
-  it("gives a research note its own slot: 'joins the plan', then 'from your note' (D2)", () => {
+  it("gives a research note its own slot: 'joins the plan', then 'from your note'", () => {
     const run = play([started, ...note("n1", "pastries at the cafés", ["new_angle"])]);
     expect(planningSlots(run, false).at(-1)).toMatchObject({ key: "note-n1", n: 5, title: "Your note: pastries at the cafés", mark: "waiting", fact: "joins the plan", rise: true });
     applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 2, note_topic_count: 1, sub_topics: [slot("topic-01", "Alpha", "passed"), { coverage_id: "note-n1", title: "Your note: pastries at the cafés", note_id: "n1", state: "planned" }] }));
     expect(planningSlots(run, false).at(-1)).toMatchObject({ n: 2, mark: "done", fact: "from your note" });
   });
-  it("reads a slot still running at the stop 'stopped', with the ring (§8.5)", () => {
+  it("reads a slot still running at the stop 'stopped', with the ring", () => {
     const run = play([started, ev("planner.progress", { step: "checking", check_round: 1, sub_topics: [slot("topic-01", "Alpha", "checking")] })]);
     expect(planningSlots(run, true)[0]).toMatchObject({ mark: "stopped", fact: "stopped" });
   });
 });
 
-describe("Evaluating sources (spec §6.4)", () => {
+describe("Evaluating sources", () => {
   const progress = (md: Record<string, number>) => ev("source_evaluator.progress", { to_rate: 44, reused: 0, capped: 0, rated: 0, strong: 0, fair: 0, weak: 0, unrated: 0, batches: 4, batches_done: 0, ...md });
   it("says 'not yet' until the first batch lands, then the split, with a bar of (rated + unrated) / to_rate", () => {
     const run = play([progress({})]);
@@ -102,7 +102,7 @@ describe("Evaluating sources (spec §6.4)", () => {
   });
 });
 
-describe("Verifying evidence (spec §6.5)", () => {
+describe("Verifying evidence", () => {
   const s = (over: Partial<VerifierSample>): VerifierSample => ({ seq: 1, text: "T", verdict: "verified", correction: null, dropReason: null, role: null, host: "eia.gov", ...over });
   it("words every verdict, the corrected ones by what the page changed and the dropped ones by why", () => {
     expect(verifierVerdict(s({}))).toBe("verified");
@@ -161,7 +161,7 @@ describe("Verifying evidence (spec §6.5)", () => {
   });
 });
 
-describe("Writing report (spec §6.6)", () => {
+describe("Writing report", () => {
   it("words a backed and a removed sentence", () => {
     expect(writerVerdict({ seq: 1, text: "T", verdict: "backed", findings: 1, section: "S" })).toBe("✓ backed by 1 finding");
     expect(writerVerdict({ seq: 1, text: "T", verdict: "backed", findings: 3, section: "S" })).toBe("✓ backed by 3 findings");
@@ -186,7 +186,7 @@ describe("Writing report (spec §6.6)", () => {
     const returned = play([ev("report_writer.progress", { phase: "sections", parts_returned: 2, sentences_drafted: 4, ...counts })]);
     expect(writingBody(returned).placeholder).toBe("The first sentences are being checked…");
   });
-  it("says 'None of the drafted sentences could be checked' once every check has failed, not 'being checked' (E7)", () => {
+  it("says 'None of the drafted sentences could be checked' once every check has failed, not 'being checked'", () => {
     const failed = { phase: "sections", parts_total: 2, parts_returned: 2, sentences_drafted: 4, sentences_checked: 0, backed: 0, removed: 0, unchecked: 4, fraction: 1, sample: null };
     const run = play([ev("report_writer.progress", failed)]);
     expect(writingBody(run).placeholder).toBe("None of the drafted sentences could be checked");
@@ -207,7 +207,7 @@ describe("Writing report (spec §6.6)", () => {
     expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 0, sentences_drafted: 0, sentences_checked: 0, unchecked: 0 })])).placeholder)
       .toBe("The first section is being drafted…");
   });
-  it("never says sentences are being checked when none was drafted: the first-section line while a part is still out, 'No sentences were drafted to check' once every part has returned (P3-4)", () => {
+  it("never says sentences are being checked when none was drafted: the first-section line while a part is still out, 'No sentences were drafted to check' once every part has returned", () => {
     const counts = { phase: "sections", parts_total: 3, sentences_drafted: 0, sentences_checked: 0, backed: 0, removed: 0, unchecked: 0, fraction: 0.3, sample: null };
     // One part back with every point refused, two still out: sentences may still come.
     const partOut = writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 1 })]));
@@ -219,15 +219,15 @@ describe("Writing report (spec §6.6)", () => {
     expect(writingBody(allBack).placeholder).toBe("No sentences were drafted to check");
     expect(writingBody(allBack).samples).toEqual([]);
     expect(writingBody(allBack).tally).toBeNull();
-    // The bottom line's own phase, with still nothing drafted, names what is being written instead (owner decision
-    // O2, 2026-10-01: the next test): the bottom line is the one thing still to come.
+    // The bottom line's own phase, with still nothing drafted, names what is being written instead (see the
+    // test below): the bottom line is the one thing still to come.
     expect(writingBody(play([ev("report_writer.progress", { ...counts, phase: "bottom_line", parts_returned: 3, fraction: 1 })])).placeholder)
       .toBe("Writing the bottom line…");
     // A sentence drafted lifts the rule: it is being checked again.
     expect(writingBody(play([ev("report_writer.progress", { ...counts, parts_returned: 3, sentences_drafted: 2, fraction: 1 })])).placeholder)
       .toBe("The first sentences are being checked…");
   });
-  // owner decision O2 (2026-10-01): "No sentences were drafted to check" and "The first section is being drafted…"
+  // "No sentences were drafted to check" and "The first section is being drafted…"
   // describe the sections' own phase. A note pass whose own part was fully refused still lets the bottom line run
   // over the carried parts, and a pass with no part to draft runs it too; in `bottom_line`, while nothing at all
   // has been drafted, the ticker says what is being written, consistent with the subtitle's "writing the bottom
@@ -251,7 +251,7 @@ describe("Writing report (spec §6.6)", () => {
     const sampled = writingBody(play([ev("report_writer.progress", { ...base, ...empty, phase: "bottom_line", sentences_drafted: 1, sentences_checked: 1, backed: 1, sample: { text: "S.", verdict: "backed", findings: 1, section: "Bottom line" } })]));
     expect(sampled.samples).toHaveLength(1);
   });
-  // O2 fix round 1 (2026-10-01): `sentences_drafted` counts the bottom line's own candidates too. Both edges (no
+  // `sentences_drafted` counts the bottom line's own candidates too. Both edges (no
   // part returned; every part returned with nothing drafted) read "Writing the bottom line…" only while nothing has
   // been drafted at all; once the bottom line has drafted sentences they are what the ticker waits on, so both read
   // the checking line while any is unsettled and the all-failed line once every one is settled with none checked,
@@ -276,7 +276,7 @@ describe("Writing report (spec §6.6)", () => {
     // The same count with a section phase and no part back keeps the first-section line, whatever the counts say.
     expect(sections({ ...edges.noPart, sentences_drafted: 2 })).toBe("The first section is being drafted…");
   });
-  // O2 fix round 2 (2026-10-01): "Writing the bottom line…" is the in-flight line. A Writing row that has finished
+  // "Writing the bottom line…" is the in-flight line. A Writing row that has finished
   // (done, or hollow after a loop) and is reopened shows its body as it ended: when nothing was ever drafted that is
   // "No sentences were drafted to check", never a bottom line that is no longer being written.
   it("a finished Writing row with nothing drafted reads 'No sentences were drafted to check'; the running row and the stopped row keep the in-flight line", () => {
@@ -302,10 +302,10 @@ describe("Writing report (spec §6.6)", () => {
     // Sentences that were drafted keep their words on a finished row.
     const drafted = play([start, ev("report_writer.progress", { ...ended, parts_total: 2, parts_returned: 2, sentences_drafted: 4, unchecked: 4 })]);
     expect(placeholderOf(drafted, "done")).toBe("None of the drafted sentences could be checked");
-    // writingBody on its own is the in-flight reading (the default), as before.
+    // writingBody on its own is the in-flight reading (the default).
     expect(writingBody(play([start, ev("report_writer.progress", { ...ended, parts_total: 0, parts_returned: 0 })])).placeholder).toBe("Writing the bottom line…");
   });
-  // owner decision O2 (2026-10-01): a part that ended failed counts as returned (it settled, so the bar fills), but
+  // A part that ended failed counts as returned (it settled, so the bar fills), but
   // nothing of it was written: the subtitle says how many sections were, and how many could not be.
   it("names the sections that could not be written: written = returned − failed, then ' · {f} couldn't be written'", () => {
     const counts = { phase: "sections", parts_total: 5, sentences_drafted: 6, sentences_checked: 4, backed: 4, removed: 0, unchecked: 0, fraction: 0.4, sample: null };
@@ -341,7 +341,7 @@ describe("Writing report (spec §6.6)", () => {
   });
 });
 
-describe("Reviewing (spec §6.7)", () => {
+describe("Reviewing", () => {
   const crit = (failing: Record<string, string[]> = {}) => REVIEW_CRITERIA.map(({ dimension }) => ({ dimension, met: !failing[dimension], kinds: failing[dimension] ?? [] }));
   const start = ev("graph.node.started", { node: "report_reviewer", iteration: 0 }, at(0));
   const reviewed = (md: Record<string, unknown> = {}) => ev("graph.report.reviewed", { review_status: "scored", mean_score: 0.87, material_defects: 0, criteria: crit(), notes: [], ...md }, at(95));
@@ -367,7 +367,7 @@ describe("Reviewing (spec §6.7)", () => {
       ["fail", "2 issues · sources disagree and the draft does not say so"], ["done", ""],
     ]);
     expect(JSON.stringify(r)).not.toMatch(/0\.87/);
-    // owner decision O2 (2026-10-01): once the review has landed the row reads in the past tense, frozen at the
+    // Once the review has landed the row reads in the past tense, frozen at the
     // moment it landed: "read the draft in {elapsed}", which no clock moves.
     expect(liveSubtitle(run, "report_reviewer", NOW)).toBe("read the draft in 1m 35s");
     expect(liveSubtitle(run, "report_reviewer", NOW + 65_000)).toBe("read the draft in 1m 35s");
@@ -422,7 +422,7 @@ describe("Reviewing (spec §6.7)", () => {
     expect(verdict([...n1, start, reviewed({ notes: [{ note_id: "n1", result: "not_met", reason: "no_evidence" }] }), decided("report_accepted")])).toBe("Accepted · all 5 criteria met · your note not met");
     expect(verdict([start, reviewed({ material_defects: 1 }), decided("redraft_requested")])).toBe("1 thing to fix · sending the draft back to the writer");
     expect(verdict([start, reviewed({ material_defects: 3 }), decided("redraft_requested")])).toBe("3 things to fix · sending the draft back to the writer");
-    // A review that sent no defect count leaves the count out: an unknown value never reads as "0 things" (D19).
+    // A review that sent no defect count leaves the count out: an unknown value never reads as "0 things".
     expect(verdict([start, reviewed({ material_defects: null }), decided("redraft_requested")])).toBe("Things to fix · sending the draft back to the writer");
     expect(verdict([start, reviewed(), decided("extra_pass_requested", ["a", "b"])])).toBe("2 gaps to fill · going back to research");
     expect(verdict([...n1, start, reviewed(), decided("note_pass_requested")])).toBe("Going back to research your note");

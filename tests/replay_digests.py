@@ -1,4 +1,4 @@
-"""The request and event digests of one replay run (latency plan, Task 1).
+"""The request and event digests of one replay run.
 
 A replay's scripted completer records every provider request as ``(agent:schema,
 text)``. A digest is sha256[:16] over the sorted ``"agent:schema sha256[:16]"``
@@ -31,8 +31,7 @@ a digest is about the run and not the instant it ran.
 ``PYTHONPATH=src``) re-pins after a merge: it runs every row, rewrites the
 values of both pin dictionaries in ``tests/test_e2e_evaluation/
 test_request_digests.py`` and prints, per row, which of ``full``,
-``timing_free``, ``outside_research``, ``count`` and ``events`` moved. The
-comment that says why is the re-pinner's to write.
+``timing_free``, ``outside_research``, ``count`` and ``events`` moved.
 
 Not collected by pytest: the filename does not match ``test_*.py``.
 """
@@ -125,11 +124,6 @@ def replay_run(case_id: str, root: Path) -> ReplayRun:
         )
     assert attempts == [], attempts
     return run
-
-
-def replay_requests(case_id: str, root: Path) -> list[tuple[str, str]]:
-    """Every request one repetition of ``case_id`` sent, network denied."""
-    return list(replay_run(case_id, root).replay.completer.packet_sequence)
 
 
 _PINS = Path(__file__).parent / "test_e2e_evaluation" / "test_request_digests.py"

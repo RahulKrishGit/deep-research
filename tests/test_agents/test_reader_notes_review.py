@@ -1,4 +1,4 @@
-"""The review's verdict on each reader note (live-briefs spec §4.6 "Reviewing")."""
+"""The review's verdict on each reader note."""
 
 from __future__ import annotations
 
@@ -187,7 +187,7 @@ def test_the_notes_review_requests_keep_the_shared_reply_conventions() -> None:
 
 @pytest.mark.asyncio
 async def test_review_packet_steering_notes_only() -> None:
-    """notes-progress-report spec §5.5, AC8, D20: the packet lists the steering notes and each
+    """The packet lists the steering notes and each
     mixed note without new_angle in its kinds. A note whose only kind is new_angle is not put to
     the review, so a verdict naming it is dropped; a mixed note's verdict is kept, and judges
     its steering half."""

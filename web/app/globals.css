@@ -1039,7 +1039,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg .loops[hidden]{display:none}
 /* ═══ 2026-09-26: two arcs and the loop tag ═══ */
 /* The arc's stroke is the loop's kind: amber `--warn` for an extra pass, grey `--meta` for a
-   redraft (spec §4.1). `--meta` is a stroke here and never text. */
+   redraft. `--meta` is a stroke here and never text. */
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-base,
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-flow{stroke:var(--warn)}
 .spine-wrap[data-arc="extra_pass"] .loop-layer .loop-head{fill:var(--warn)}
@@ -1131,80 +1131,72 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 #reportMeta{flex:1 1 240px;min-width:0}
 
 /* ═══ 2026-09-27: app-only additions ═══ */
-/* Task 14 fix round: React hydrates after the server-rendered HTML paints, which carries
+/* React hydrates after the server-rendered HTML paints, which carries
    data-sidebar="expanded" (ConsoleProvider's initial state, before its mount effect can measure
    matchMedia). At the drawer breakpoint that markup alone reads as an open drawer + visible
    scrim for one frame. AppShell marks the shell `data-ready` once mounted; until then, force the
    drawer shut with no transition so the snap-closed never paints. */
 @media (max-width:1080px){.app:not([data-ready]) .sidebar{transform:translateX(-100%);transition:none}.app:not([data-ready]) .scrim{display:none}}
 
-/* The options table pins its Option column over the sideways scroll (states.html:157-159). */
+/* The options table pins its Option column over the sideways scroll. */
 .tbl-frame[data-pinned] .tbl{min-width:760px}
 .tbl-frame[data-pinned] th:first-child,.tbl-frame[data-pinned] td:first-child{position:sticky;left:0;background:var(--surface);z-index:1}
 /* The evidence-log link in the report is a button styled as text: it switches the view instead of navigating. */
 .prose .link{background:none;border:0;padding:0;font:inherit;color:inherit;text-decoration:underline;cursor:pointer}
-/* Controller fix round 1, item 4 (minor): the base .kv dd rule (index.html:815) already carries
+/* The base .kv dd rule already carries
    overflow-wrap:anywhere, so a long mono value never overflows — but right-aligned text still
    lands its wrapped remainder isolated at the line's right edge (e.g. "…configuration_err" then
    "or" on its own line) at phone width, reading worse than a left-to-right continuation would.
-   index.html's own .ev-detail .kv dd{text-align:left} (:1126) already makes this same trade for
+   The prototype's own .ev-detail .kv dd{text-align:left} already makes this same trade for
    prose-shaped values; the failed stage's facts get it too, only at phone width. */
 @media (max-width:480px){#stage-failed .kv dd{text-align:left}}
-/* Final-wave item 1: at <=390px with the replay mode chip showing, `.topbar-right{flex-wrap:wrap}`
+/* At <=390px with the replay mode chip showing, `.topbar-right{flex-wrap:wrap}`
    (the base rule above, unmodified) let the mode chip drop to a second row once the status chip's
    note grew long enough (e.g. "Completed · review accepted · 0.90"), pushing the topbar past its
-   fixed --topbar height. `.chip`'s own min-width:0/ellipsis (2026-09-27 fix, above) already lets
+   fixed --topbar height. `.chip`'s own min-width:0/ellipsis (above) already lets
    the status chip shrink; nowrap here keeps both chips on the bar's one row so that shrink is what
    actually happens, and the mode chip — a fixed, short label — never itself shrinks or wraps. */
 .topbar-right{flex-wrap:nowrap;min-width:0}
 #modeChip{flex-shrink:0;white-space:nowrap}
-/* Live-run fix (AC21): at 390 px a refused row's single tag ("cited F11, F22, …") holding a long
+/* At 390 px a refused row's single tag ("cited F11, F22, …") holding a long
    finding_labels list forced the page into horizontal scroll — .tag inherits white-space:nowrap
-   (index.html:1115) from the verbatim base rule, and neither it nor its .tags parent had any
+   from the verbatim base rule, and neither it nor its .tags parent had any
    shrink budget below the tag's own content width. Replay data never produces a long
-   finding_labels list, so no existing capture or test exercised this.
-   min-width:0 on .tags (a grid item in .ev-row's untouched, verbatim grid-template-columns —
-   redefining that column as minmax(0,auto) was tried and re-review-verified empirically
-   redundant once .tags itself has min-width:0: a grid item's own min-width overrides its
-   automatic-minimum-size contribution to an "auto" track regardless of the track's own
-   definition, so the desktop grid needs no override at all) plus min-width:0 on .tag itself (the
-   flex child inside .tags) — the same every-link-in-the-chain pattern the chip-ellipsis fix above
-   needs — let the tag's box actually shrink; max-width:100%/overflow:hidden/text-overflow:
-   ellipsis then truncates it instead of letting it spill past .tags's own bounds. Truncating
-   (rather than wrapping) matches .ev-row .txt's own single-line convention so every row keeps the
-   same height. Both declarations are load-bearing: dropping either alone still passes the AC21
-   regression test (each is independently sufficient once the other is present), but dropping
-   both together reproduces the original horizontal-scroll defect — this file keeps one of the
-   two working declarations (.tags's, the smaller and more targeted of the two), not both. */
+   finding_labels list, so the replay captures never exercise this.
+   min-width:0 on .tags (a grid item in .ev-row's untouched, verbatim grid-template-columns:
+   a grid item's own min-width overrides its automatic-minimum-size contribution to an "auto"
+   track regardless of the track's own definition, so the desktop grid needs no override at all)
+   plus min-width:0 on .tag itself (the flex child inside .tags) — the same every-link-in-the-chain
+   pattern the chip-ellipsis fix above needs — let the tag's box actually shrink; max-width:100%/
+   overflow:hidden/text-overflow:ellipsis then truncates it instead of letting it spill past
+   .tags's own bounds. Truncating (rather than wrapping) matches .ev-row .txt's own single-line
+   convention so every row keeps the same height. */
 .ev-row .tags{min-width:0}
 .ev-row .tags .tag{min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis}
-/* Live-run fix (AC21): the list row above truncates, but the detail pane has no such single-line
+/* The list row above truncates, but the detail pane has no such single-line
    convention — a long source URL (FindingDetail's Source: link, reused verbatim by
    NotFoundDetail's pages-read links, both .tlink) is one unbroken token with no space to wrap at,
    so it would otherwise force the rail, and the page, wider than the viewport — the same failure
    mode the .ask-q and .kv dd overflow-wrap rules already guard against elsewhere. */
 .ev-detail{overflow-wrap:anywhere}
 
-/* Issue 1 (human-reported 2026-09-28): a long, left-aligned question left a gap on the right —
-   measured on a live 136-char question, `.ask-locked`'s dashed box spanned 572-1292 but the text
-   ended at 1057, ~215px short. Cause: the global `h1{text-wrap:balance}` rule (line 64, verbatim
-   from the prototype) balances a long question's two wrapped lines to similar widths instead of
-   filling the frame — the same defect `.report-q` already worked around locally (line 893) by
-   overriding `balance` with `pretty` for its own frame. `.ask-q` (the running/submitted stages'
-   question, ":363") never got the same override. `pretty` wraps greedily and only intervenes to
-   stop a lone word on the last line, so a long question now fills the frame the way `.report-q`
-   already does; a short (<=80 char, `.q-center`) question is centred and single-line regardless,
+/* A long, left-aligned question left a gap on the right: the global `h1{text-wrap:balance}` rule
+   (verbatim from the prototype) balances a long question's two wrapped lines to similar widths
+   instead of filling the frame — the same defect `.report-q` already works around locally by
+   overriding `balance` with `pretty` for its own frame. `pretty` wraps greedily and only
+   intervenes to stop a lone word on the last line, so a long question fills the frame the way
+   `.report-q` does; a short (<=80 char, `.q-center`) question is centred and single-line regardless,
    so the wrap algorithm makes no visible difference for it. */
 .ask-q{text-wrap:pretty}
 
-/* Report stage at wide windows (human-reported live at 1568×843). .report-main's left grid
-   column was minmax(0,1fr): it grew to fill whatever the 300px rail left (892px at 1568) while
-   .prose{max-width:720px} (verbatim, :826) stayed put — an empty strip inside the card, to the
+/* Report stage at wide windows. .report-main's left grid
+   column was minmax(0,1fr): it grew to fill whatever the 300px rail left while
+   .prose{max-width:720px} (verbatim) stayed put — an empty strip inside the card, to the
    right of the text and tables. Separately, .report-head-bar and #reportOpts spanned the full
    viewport width (.report-head carries no max-width of its own) while #report-h stayed centred
-   at 720px (:891-893) — three rows at three different widths.
-   Human decision, "card hugs the text": the card is exactly the prose width plus the card's own
-   padding (--space-6 each side, notes-progress-report spec §7.6) and border (1px each side); the card and the 300px rail are
+   at 720px — three rows at three different widths.
+   The card hugs the text: the card is exactly the prose width plus the card's own
+   padding (--space-6 each side) and border (1px each side); the card and the 300px rail are
    centred together as one group; the head row, the question frame and the settings row all align
    to that group's left edge, right edge and axis.
    --report-card-w is scoped on #stage-report so .report-main and .report-head read the same one
@@ -1212,13 +1204,13 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    shrink-to-fit behaviour below the width the cap needs (at 1252px the column already renders
    narrower than 720px and this changes nothing there); max-width + margin-inline:auto is what
    turns the leftover space above that width into centred margins instead of a dead strip on the
-   right. Guarded to the existing rail breakpoint (1120px, verbatim :332-337) so the single-column
+   right. Guarded to the existing rail breakpoint (1120px, verbatim) so the single-column
    phone layout is unchanged. */
 #stage-report{--report-card-w:calc(var(--reading-max) + 2 * var(--space-6) + 2px)}
 @media (min-width:1121px){
   .report-main{grid-template-columns:minmax(0,var(--report-card-w)) var(--rail);max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
   #stage-report .report-head{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
-  /* Fix round 1, Minor #1 (controller ruling): the Evidence view is the other content this same
+  /* The Evidence view is the other content this same
      head sits above, toggled in place (data-view on #stage-report) rather than a separate stage —
      without this its own .with-rail grid (unmodified: minmax(0,1fr) var(--rail)) still spanned the
      full width, so switching Report/Evidence moved the head under it. max-width is enough on its
@@ -1228,7 +1220,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .evidence-view{max-width:calc(var(--report-card-w) + var(--space-8) + var(--rail));margin-inline:auto}
 }
 
-/* ═══ 2026-09-28: live step briefs (live-briefs spec §4.3; picks 1A, 2C) ═══
+/* ═══ 2026-09-28: live step briefs ═══
    Scoped to the running stage's spine (`ol.spine-lg.briefs`, BriefSpine.tsx); the Failed and
    Stopped stages keep the compact rows above. Rows align to the top, so an open row keeps its node
    beside its name, and the connector is drawn by the upper row from its own node centre to the next
@@ -1265,7 +1257,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs .m-out{opacity:0}
 .spine-lg.briefs > li[data-state="done"] .m-live,.spine-lg.briefs > li[data-state="loop"] .m-live{opacity:0}
 .spine-lg.briefs > li[data-state="done"] .m-out,.spine-lg.briefs > li[data-state="loop"] .m-out{opacity:1}
-/* The brief (pick 1A): the height opens by the 0fr → 1fr technique, then its lines rise 4px and fade
+/* The brief: the height opens by the 0fr → 1fr technique, then its lines rise 4px and fade
    in 60ms apart; closing fades the lines out, then closes the height. */
 .spine-lg.briefs .ps-x{display:grid;grid-template-rows:0fr;transition:grid-template-rows var(--motion-fluid) var(--ease-entrance) var(--d-h,0ms)}
 .spine-lg.briefs > li[data-open="1"] .ps-x{grid-template-rows:1fr}
@@ -1279,7 +1271,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs .b-line{color:var(--fg)}
 .spine-lg.briefs .b-why{color:var(--muted)}
 .spine-lg.briefs .b-why[data-kind="extra_pass"]{color:var(--status-warn)}
-/* Researching's checklist (pick 2C): mark · number · title · fact, hairlines between topics. Divs, not
+/* Researching's checklist: mark · number · title · fact, hairlines between topics. Divs, not
    list items: the verbatim `.spine-lg li` rules would otherwise style every topic as a pipeline row. */
 .ps-topics{display:flex;flex-direction:column}
 .ps-topics > .ln{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:var(--space-3);align-items:center;padding:6px 0;font-size:var(--text-sm);color:var(--muted)}
@@ -1304,7 +1296,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .ps-topics .tf{grid-column:2}
 }
 
-/* ═══ 2026-09-28: the hand-off between steps (pick 3B, overlapped; live-briefs spec §4.3) ═══
+/* ═══ 2026-09-28: the hand-off between steps (overlapped) ═══
    Timed from the render in which row k is marked done and row k+1 becomes active; BriefSpine holds
    the two roles (data-handoff) for HANDOFF_HOLD_MS. Row k: its lines fade out at 0 (180ms), its
    height closes at 100ms, its subtitle cross-fades to the outcome at 260ms and the connector below it
@@ -1331,16 +1323,16 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .mk svg path{transition:none !important}
   .mk .dotc{transform:none !important}
   [data-topic="running"] > .mk .dotc{box-shadow:0 0 0 4px color-mix(in oklch,var(--status-ok) 13%,transparent) !important}
-  /* notes-progress-report spec §6.9 (D21): no sheen — the skeleton bar stays, still; Reviewing's bar is
+  /* No sheen — the skeleton bar stays, still; Reviewing's bar is
      a static full-width bar at .35; every cross-fade is opacity only, over 160ms; counts jump (useTween). */
   .spine-lg.briefs .sk::after{content:none !important;animation:none !important}
   .spine-lg.briefs .pb.ind[data-on="1"] i{animation:none !important;width:100% !important;transform:none !important;opacity:.35 !important}
   .spine-lg.briefs .ps-brief .xf > *{transform:none !important;transition-property:opacity !important;transition-duration:160ms !important}
 }
 
-/* ═══ 2026-09-29: the one-time check (live-briefs spec §4.5; pick 4B, docs/design/running-stage-picks/Hitl1.dc.html column B) ═══ */
+/* ═══ 2026-09-29: the one-time check ═══ */
 /* One card in the pipeline card's place: a step line with dots, one question, its answers stacked
-   full width, a hairline footer. No purple at rest (D17): the answers and the footer's buttons are
+   full width, a hairline footer. No purple at rest: the answers and the footer's buttons are
    neutral; the text field alone shows the app's focus ring while it has focus. */
 #clarifyCard{display:flex;flex-direction:column;gap:var(--space-4)}
 #clarifyCard .ck-top{display:flex;align-items:center;justify-content:space-between;gap:var(--space-3)}
@@ -1353,7 +1345,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .choice:hover{background:var(--border-soft);border-color:var(--muted);color:var(--fg)}
 .choice[aria-pressed="true"]{background:var(--border-soft);border-color:var(--fg);color:var(--fg)}
 .choice .cap{flex:none}
-/* Text entry that reads as text (theme.css .tx): transparent, a soft ground on hover, the ring on focus.
+/* Text entry that reads as text (.tx): transparent, a soft ground on hover, the ring on focus.
    Its box and its text line up with the answers above it (same padding, an invisible 1px border). */
 .tx{flex:1;min-width:0;display:block;min-height:44px;background:transparent;border:1px solid transparent;outline:none;color:var(--fg);font:inherit;font-size:var(--text-sm);padding:8px var(--space-4);border-radius:var(--radius-md);transition:background var(--motion-fast) var(--ease-standard)}
 .tx:hover{background:var(--border-soft)}
@@ -1365,17 +1357,17 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 #clarifyCard .ck-back{margin-left:calc(-1 * var(--space-4))}
 #clarifyCard .ck-summary{color:var(--fg);animation:enter var(--motion-base) var(--ease-entrance) both}
 /* Focus is moved to the question and to the line that replaces the buttons, so a keyboard or
-   screen-reader user keeps their place; neither is a control, so neither draws a ring (D17). */
+   screen-reader user keeps their place; neither is a control, so neither draws a ring. */
 #clarifyCard [tabindex="-1"]:focus{outline:none}
 @media (prefers-reduced-motion:reduce){
-  /* the next question and the summary fade in place, with no travel (spec §4.3, §4.8) */
+  /* the next question and the summary fade in place, with no travel */
   #clarifyCard .ck-q,#clarifyCard .ck-summary{animation-duration:160ms !important}
 }
 
-/* ═══ 2026-09-29: reader notes (live-briefs spec §4.7; pick 6A, docs/design/running-stage-picks/Hitl3.dc.html column A) ═══ */
+/* ═══ 2026-09-29: reader notes ═══ */
 /* The note line: the pipeline card's last element, under a hairline — a borderless field that reads
-   as text (.tx, above) and a neutral icon send (D8). No purple at rest (D17): only the field's focus
-   ring, while it has focus. Disabled after the tenth note with nothing added (D11a). */
+   as text (.tx, above) and a neutral icon send. No purple at rest: only the field's focus
+   ring, while it has focus. Disabled after the tenth note with nothing added. */
 .note-line{display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-3);border-top:1px solid var(--border-soft)}
 .note-line .tx{min-height:36px;padding:6px var(--space-2);margin-left:calc(-1 * var(--space-2));text-overflow:ellipsis}
 .note-line .tx[readonly]{color:var(--muted)}
@@ -1390,9 +1382,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .note-line[data-failed="1"]{flex-wrap:wrap}
 .note-line #noteFailed{flex-basis:100%;padding:0}
 /* Once notes close, focus moves to the caption that replaces the line (as the clarify card's does):
-   it is not a control, so it draws no ring (D17). */
+   it is not a control, so it draws no ring. */
 .note-line [tabindex="-1"]:focus{outline:none}
-/* Each acknowledgement (D9): a muted dot, then the run's reading of the note in --fg and the rest
+/* Each acknowledgement: a muted dot, then the run's reading of the note in --fg and the rest
    muted. A new one rises in from its starting style over 200ms: at once in a row that is already
    open, and in its place in the stagger in the row a hand-off is opening. Under reduced motion the
    brief's own rule keeps the fade and drops the travel. */
@@ -1408,7 +1400,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-wrap[data-arc="note_pass"] .loop-layer .loop-flow{stroke:var(--meta)}
 .spine-wrap[data-arc="note_pass"] .loop-layer .loop-head{fill:var(--meta)}
 
-/* ═══ 2026-09-30: Stop (notes-progress-report spec §8.4-§8.5; D18, D19, D29, D33; Stop.dc.html, progress.css:159-171) ═══ */
+/* ═══ 2026-09-30: Stop ═══ */
 /* The stopped stage (#stage-user-stopped): one short note on the card surface, then the pipeline frozen
    at the row the reader stopped. The stopped row's node is quiet — a --muted edge, its digit in --fg, the
    surface fill, no halo — and later rows read in --meta. The chip's dot is neutral: stopping is neither a
@@ -1418,17 +1410,17 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .stopped-note .b-now{font-size:var(--text-base);color:var(--fg);line-height:1.5}
 .stopped-note .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
 .stopped-note .stop-actions{display:flex;align-items:center;gap:var(--space-3);flex-wrap:wrap;padding-top:var(--space-1)}
-/* Focus moves to the first line when this stage replaces the running one; it is not a control (D19). */
+/* Focus moves to the first line when this stage replaces the running one; it is not a control. */
 .stopped-note [tabindex="-1"]:focus{outline:none}
 .spine-lg.briefs > li[data-state="stopped"] .bullet{border-color:var(--muted);color:var(--fg);background:var(--surface)}
 .spine-lg.briefs > li[data-state="stopped"] .stage-name{color:var(--fg)}
 .spine-lg.briefs > li[data-state="off"] .stage-name,.spine-lg.briefs > li[data-state="off"] .stage-meta{color:var(--meta)}
 /* A topic the reader stopped before it started reads "not run" with no ring — it never began; one that was running keeps its ring. */
 .spine-lg.briefs > li[data-state="stopped"] .ps-topics > [data-topic="waiting"] > .mk .ring{opacity:0}
-/* The Stop control (§8.5; D18, D24): a small ghost button after the status chip — a square in the text
+/* The Stop control: a small ghost button after the status chip — a square in the text
    colour, then "Stop", kept at every width — and its one confirmation, hung below it, right-aligned, on
    one surface. "Stop research" is the one red word: --status-danger text on a --border edge, the danger
-   edge on hover, never a filled button; nothing here is purple (D19). */
+   edge on hover, never a filled button; nothing here is purple. */
 .stop-anchor{position:relative;display:inline-flex;flex:none}
 .btn-stop{color:var(--fg)}
 .stop-sq{width:8px;height:8px;background:currentColor;border-radius:1px;display:inline-block;flex:none}
@@ -1439,8 +1431,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .stop-confirm .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
 .stop-confirm .confirm-btns{display:flex;gap:var(--space-2);justify-content:flex-end}
 /* On a phone the replay chip sits to Stop's right, so a 320px box hung from its right edge would start
-   left of the viewport: there it spans the width between the phone gutters, under the topbar
-   (spec ambiguity 9). */
+   left of the viewport: there it spans the width between the phone gutters, under the topbar. */
 @media (max-width:480px){
   .stop-confirm{position:fixed;top:calc(var(--topbar) + var(--space-2));left:var(--container-gutter-phone);right:var(--container-gutter-phone);width:auto}
 }
@@ -1450,12 +1441,11 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   .stop-confirm{animation-duration:var(--motion-base) !important}
 }
 
-/* ═══ 2026-09-30: the report as section cards with a contents list (notes-progress-report spec §7.6;
-   docs/design canvas Report.dc.html B + C, progress.css:118-155) ═══
+/* ═══ 2026-09-30: the report as section cards with a contents list ═══
    ReportBody splits the report at its "## " headings into one card per section. The contents list is
    a sticky 176px rail left of the cards when the report stage is at least 1310px wide (176 + 32 + 770
    + 32 + 300: the rail, a gap, a card, a gap, the Review rail), and a sticky row of chips above them
-   otherwise (D28). ReportBody sets data-contents from the same stage width the @container query below
+   otherwise. ReportBody sets data-contents from the same stage width the @container query below
    reads. Never the class `.rail`: that is the Review rail's (layout.spec.ts measures it at 300px). */
 #stage-report{container:report / inline-size}
 .report-col,.rep-layout,.rep-cards{display:flex;flex-direction:column;gap:var(--space-4);min-width:0}
@@ -1469,7 +1459,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
    (tabindex -1) shows no ring. */
 .rsec .prose h2.eyebrow{font-family:var(--font-mono);font-size:var(--text-xs);font-weight:400;line-height:1.5;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 var(--space-4)}
 .rsec h2[tabindex="-1"]:focus{outline:none}
-/* The bottom line: the answer as a lead (the prototype's own .lead, :637, is muted and 62ch wide),
+/* The bottom line: the answer as a lead (the prototype's own .lead is muted and 62ch wide),
    then one row per topic line and note line, the key column 132px, a note's mark ✓ ok or ✗ warn. */
 .rsec[data-kind="bottom_line"] .prose p.lead{font-size:var(--text-lg);line-height:1.6;color:var(--fg);max-width:none}
 .rsec[data-kind="bottom_line"] .prose p.b-sub{font-size:var(--text-sm);line-height:1.5;color:var(--muted)}
@@ -1478,7 +1468,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .rsec[data-kind="bottom_line"] .bl-list .k{font-size:var(--text-sm);line-height:1.6;color:var(--muted)}
 .rsec[data-kind="bottom_line"] .bl-list .k .ok{margin-right:4px;color:var(--status-ok)}
 .rsec[data-kind="bottom_line"] .bl-list .k .no{margin-right:4px;color:var(--status-warn)}
-/* Key figures: the copy of a row's Source under its What cell shows only on a phone (D32). */
+/* Key figures: the copy of a row's Source under its What cell shows only on a phone. */
 .rsec .tbl .kf-src{display:none;margin-top:2px;font-size:var(--text-xs);line-height:1.5;color:var(--muted)}
 /* The contents list as chips: one horizontally scrolling row, sticky under the topbar. Its overflow
    clips a focus ring at the row's edge, so the row keeps --space-1 of inline padding (the 2px ring and
@@ -1506,7 +1496,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
   #reportEvidence{padding-left:calc(176px + var(--space-8))}
 }
 /* A phone: tighter cards, the bottom line's rows stacked, the evidence line as "{date} · {n} sources"
-   (Report.dc.html:93), and the Key figures' Source shown under each What cell. */
+   and the Key figures' Source shown under each What cell. */
 @media (max-width:480px){
   .rep-cards > .rsec.card{padding:var(--space-4)}
   .rsec[data-kind="bottom_line"] .bl-list li{grid-template-columns:minmax(0,1fr);gap:2px}
@@ -1516,10 +1506,10 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 }
 .rsec .tbl .kf-src .cite{font-size:inherit;color:inherit}
 
-/* ═══ 2026-09-30: live progress per step (notes-progress-report spec §6.3-§6.9; Main.dc.html B, Evaluating.dc.html A, Verifying.dc.html C, Writing.dc.html E, Reviewing.dc.html A revised; progress.css) ═══ */
+/* ═══ 2026-09-30: live progress per step ═══ */
 /* Each step's own brief, scoped to the running spine's briefs. Colour is status only: green for the
    active step's own progress, amber for a check that did not pass, a dropped finding or a removed
-   sentence (D30). Two loops besides the halo (D21), each only while its step is the active row: the
+   sentence. Two loops besides the halo, each only while its step is the active row: the
    sheen on Planning's skeleton slots and the drift on Reviewing's bar while its call runs. */
 .spine-lg.briefs .b-now{font-size:var(--text-base);color:var(--fg);line-height:1.5}
 .spine-lg.briefs .b-sub{font-size:var(--text-sm);color:var(--muted);line-height:1.5}
@@ -1528,14 +1518,14 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs .b-facts .ok{color:var(--status-ok)}
 .spine-lg.briefs .b-facts .no{color:var(--status-warn)}
 .spine-lg.briefs .b-rule{height:1px;background:var(--border-soft);margin:var(--space-1) 0}
-/* Cross-fades (progress.css:23-24, :34-35; theme.css .xf): a line's texts stacked in one grid cell, the
+/* Cross-fades (.xf): a line's texts stacked in one grid cell, the
    data-on="1" one shown; a .rise stack also lifts 5px as a text fades out, and settles as one fades in. */
 .spine-lg.briefs .ps-brief .xf{display:grid}
 .spine-lg.briefs .ps-brief .xf > *{grid-area:1/1;min-width:0;transition:opacity var(--motion-base) var(--ease-standard)}
 .spine-lg.briefs .ps-brief .xf > [data-on="0"]{opacity:0}
 .spine-lg.briefs .ps-brief .xf.rise > *{transition:opacity var(--motion-base) var(--ease-standard),transform var(--motion-fluid) var(--ease-entrance)}
 .spine-lg.briefs .ps-brief .xf.rise > [data-on="0"]{transform:translateY(5px)}
-/* Planning's slots (§6.3, progress.css:30-33): a quiet bar until a title lands. Its sheen runs only on a
+/* Planning's slots: a quiet bar until a title lands. Its sheen runs only on a
    skeleton slot of the active row, so it ends when the titles arrive, when Planning finishes and when
    the run stops. */
 .spine-lg.briefs .ps-slots .sk{display:block;height:9px;border-radius:var(--radius-sm);background:var(--border-soft);position:relative;overflow:hidden;align-self:center}
@@ -1552,28 +1542,28 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs > li .ps-slots > [data-gone="1"]{--d-c:0ms}
 .spine-lg.briefs > li[data-open="1"]:not([data-handoff]) .ps-slots > [data-rise="1"]{--d-c:0ms}
 @starting-style{.spine-lg.briefs > li[data-open="1"] .ps-slots > [data-rise="1"]{opacity:0;transform:translateY(4px)}}
-/* The amber ✗ (progress.css:82-88): a slot still flagged, a check that did not pass, a note not met. */
+/* The amber ✗: a slot still flagged, a check that did not pass, a note not met. */
 .ps-topics .mk svg.x path{stroke:var(--status-warn)}
 [data-topic="done"] > .mk svg.x path{stroke-dashoffset:14}
 [data-topic="fail"] > .mk svg.x path{stroke-dashoffset:0}
 [data-topic="fail"] > .mk .ring{opacity:0}
 .ps-topics > [data-topic="fail"]{color:var(--fg)}
 .ps-topics > [data-topic="fail"] .tf{color:var(--status-warn)}
-/* The determinate bar (§6.4-§6.6, progress.css:8-10): green, because it is the active step's own
+/* The determinate bar: green, because it is the active step's own
    progress, filling over --fill-line. */
 .spine-lg.briefs .pb{display:block;height:2px;background:var(--border-soft);border-radius:var(--radius-pill);overflow:hidden}
 .spine-lg.briefs .pb i{display:block;height:100%;background:var(--status-ok);transform-origin:left;transition:transform var(--fill-line) var(--ease-entrance)}
-/* Reviewing's indeterminate bar (§6.7, progress.css:12-14): a 28% segment drifting while the call runs;
+/* Reviewing's indeterminate bar: a 28% segment drifting while the call runs;
    it stops, and the segment hides, once the review lands. */
 .spine-lg.briefs .pb.ind i{width:28%}
 .spine-lg.briefs > li[data-state="active"] .pb.ind[data-on="1"] i{animation:drift var(--motion-halo) var(--ease-standard) infinite}
 .spine-lg.briefs .pb.ind[data-on="0"] i{animation:none;opacity:0}
 @keyframes drift{0%{transform:translateX(-110%)}100%{transform:translateX(380%)}}
-/* Evaluating's split (§6.4; theme.css:137-139), wrapping on a phone. */
+/* Evaluating's split, wrapping on a phone. */
 .spine-lg.briefs .stats{display:flex;flex-wrap:wrap;gap:var(--space-2) var(--space-6);padding:var(--space-1) 0}
 .spine-lg.briefs .stat{display:flex;flex-direction:column;gap:2px}
 .spine-lg.briefs .stat .v{font-family:var(--font-mono);font-size:var(--text-lg);color:var(--fg);font-variant-numeric:tabular-nums;line-height:1.3}
-/* Verifying's and Writing's ticker (§6.5-§6.6, progress.css:61-64): the newest sample shows and the one
+/* Verifying's and Writing's ticker: the newest sample shows and the one
    before it fades out under it; a kept verdict is green, a dropped finding or removed sentence amber. */
 .spine-lg.briefs .tickbox{padding:var(--space-3) 0;border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);min-height:112px}
 .spine-lg.briefs .qt{font-size:var(--text-base);color:var(--fg);line-height:1.5;margin:0;overflow-wrap:anywhere}
@@ -1581,7 +1571,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .spine-lg.briefs .vd b{font-weight:500;color:var(--status-ok)}
 .spine-lg.briefs .vd[data-kept="0"] b{color:var(--status-warn)}
 @starting-style{.spine-lg.briefs .tickbox .xf > [data-on="1"]{opacity:0;transform:translateY(5px)}}
-/* Reviewing's checks (§6.7): rings that read "reading" while the call runs; when the review lands each
+/* Reviewing's checks: rings that read "reading" while the call runs; when the review lands each
    row's mark and fact change 60ms after the row above it (--r, its place in the reveal). */
 .spine-lg.briefs .rv-list .tf{white-space:normal;text-align:right}
 .spine-lg.briefs .rv-list .mk .ring,.spine-lg.briefs .rv-list .mk .dotc,.spine-lg.briefs .rv-list .tf > *{transition-delay:calc(var(--r,0) * 60ms)}

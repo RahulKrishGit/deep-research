@@ -50,10 +50,10 @@ from deep_research.utils.types import ContractModel, JsonValue
 EVALUATION_PACKAGE_VERSION = "1.1.0"
 """The evaluator package version stamped into every artifact it writes.
 
-Bumped ``1.0.0`` → ``1.1.0`` with Task 8: the evaluators read typed gaps now
-and parse the legacy string-gap shape into them, so a score this package
-produces is not the score 1.0.0 produced. Stamping the version is what keeps
-"the new numbers are the honest ones" checkable rather than assumed.
+The evaluators read typed gaps and parse the legacy string-gap shape into
+them, so a score this package produces is not the score 1.0.0 produced.
+Stamping the version is what keeps "the new numbers are the honest ones"
+checkable rather than assumed.
 """
 
 _SECRET_ENVIRONMENT_VARIABLES = (
@@ -74,8 +74,7 @@ _JUDGE_STRUCTURED_TRANSPORT = {
 }
 
 # How the *target* agents select tools. Distinct from the judge's structured
-# transport above: the target ReAct turn now uses provider-native tool calls,
-# so an artifact recorded before this change is not comparable to one after it.
+# transport above: the target ReAct turn uses provider-native tool calls.
 _TARGET_REACT_TRANSPORT = {
     "deepseek": "deepseek_chat_tools_auto_v1",
     "openai": "openai_responses_tools_auto_v1",
@@ -83,7 +82,7 @@ _TARGET_REACT_TRANSPORT = {
 
 # The thinking mode the judge always runs under, and the target's unless the
 # ``agent`` command's ``--target-thinking-mode`` names another one for one
-# invocation (latency plan Task 19, audit O6: the researcher with thinking
+# invocation (the researcher with thinking
 # disabled is measured on its controlled suite before any paired live run). The
 # evaluation block still carries no thinking knob. The mode participates in the
 # production-parity comparison: a production declaration that names another
@@ -190,10 +189,8 @@ def resolve_target_profile(
     bool keeps that single resolution point instead of a second copy of the
     same precedence logic here.
 
-    Before this, an evaluation run always used the evaluation-only profile
-    while the CLI could express only one effort for all six agents, so the
-    two resolved different reasoning and the corpus measured a configuration
-    no release could reproduce (baseline §6.2, D-10).
+    The run therefore measures a configuration a release can reproduce rather
+    than an evaluation-only profile.
     """
     if override is not None:
         declared = base.resolve_for(agent_name)

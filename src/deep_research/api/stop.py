@@ -1,10 +1,10 @@
-"""Stopping a session (notes-progress-report spec §8, D17): the step it was on, and its event.
+"""Stopping a session: the step it was on, and its event.
 
 ``POST /research/{id}/stop`` records the step the reader stopped the run at, and the
 console names the same step: ``active_row`` reads a session's published events with the
 console's own rule for its active row (``run.active`` in ``web/lib/run-state.ts``;
-DESIGN.md §3.5), so the row the page shows as stopped is the row the API recorded (AC32,
-pinned for both by ``web/test/fixtures/active-rows.json``). ``session_stopped_event`` is
+DESIGN.md §3.5), so the row the page shows as stopped is the row the API recorded
+(pinned for both by ``web/test/fixtures/active-rows.json``). ``session_stopped_event`` is
 the last event a stopped session publishes.
 """
 
@@ -27,7 +27,7 @@ PIPELINE_ROWS: tuple[str, ...] = (
 """The console's seven rows, in order (``STAGES``, ``web/lib/run-state.ts``)."""
 
 CHECK_STEP = "check"
-"""The step of a session stopped while the one-time check waits for the reader (spec §4 item 3)."""
+"""The step of a session stopped while the one-time check waits for the reader."""
 
 _HOPS = frozenset({"extra_pass", "note_pass", "writer_redraft"})
 _DESTINATION_ROWS = {

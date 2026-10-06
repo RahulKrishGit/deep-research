@@ -10,8 +10,8 @@ const cardsUnclipped = async (page: Page) => {
 
 for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["390×844", { width: 390, height: 844 }]] as const) {
   test.describe(label, () => {
-    // reducedMotion: the .app grid animates its columns over --motion-base (index.html:78-81); the CSS
-    // zeroes transitions under prefers-reduced-motion (index.html:997-1000), so widths are final at once.
+    // reducedMotion: the .app grid animates its columns over --motion-base (the prototype's `.app` rule); the CSS
+    // zeroes transitions under prefers-reduced-motion (the prototype's reduced-motion media block), so widths are final at once.
     test.use({ viewport, reducedMotion: "reduce" });
     const phone = viewport.width === 390;
 
@@ -46,10 +46,10 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
         expect(await px(page, ".prose", "width")).toBeLessThanOrEqual(720);
         expect(await px(page, ".rail", "width")).toBe(300);
       } else {
-        // Final-wave item 1: at 390 px, with the replay mode chip showing and the status chip's
+        // At 390 px, with the replay mode chip showing and the status chip's
         // note at its longest (a completed, reviewed run), the topbar must still hold both chips
         // on its one fixed-height row rather than wrapping the mode chip onto a second line. 60,
-        // not the desktop's 56: globals.css:987 enlarges .icon-btn to a 44 px touch target at this
+        // not the desktop's 56: globals.css enlarges .icon-btn to a 44 px touch target at this
         // breakpoint (verbatim prototype CSS, phone-only), so 60 = 44 + the topbar-in's own 8 px
         // top/bottom padding is this row's real single-line height — a second row would add a
         // whole chip's height (~28 px) on top of that, not 4 px.
@@ -67,7 +67,7 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
       await page.goto("/research/does-not-exist");
       // exact: true — the sidebar's persistent "New Research" button (Sidebar.tsx) matches the
       // default case-insensitive substring name search too; only the case differs from this one
-      // (same ambiguity as not-found.spec.ts, same accepted fix).
+      // (same name clash as in not-found.spec.ts).
       await expect(page.getByRole("button", { name: "New research", exact: true })).toBeVisible();
       await noSideScroll(page);
       await context.setExtraHTTPHeaders({ "X-Replay-Case": "no-such-case" });
@@ -78,12 +78,12 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
       await cardsUnclipped(page);
     });
 
-    // Controller ruling: a full-page capture at this 853px viewport shows the sticky 100vh sidebar
+    // A full-page capture at this 853px viewport shows the sticky 100vh sidebar
     // and the sticky, internally-scrolling rail cut off once the page's content exceeds the viewport
     // height — that is a screenshot artifact of `fullPage: true`, not a layout defect. This proves the
     // live layout instead: once the page is scrolled to its end, the sidebar still covers the full
     // viewport (it is pinned to the viewport, not the document), and the rail — shorter than the report
-    // but taller than the viewport (globals.css:314-322) — either fits without scrolling or exposes its
+    // but taller than the viewport (see globals.css) — either fits without scrolling or exposes its
     // last card through its own internal scroll, so every rail card stays reachable.
     if (!phone) {
       test("report stage: the sticky sidebar and rail stay reachable once the page outgrows the viewport", async ({ page, request }) => {
@@ -119,12 +119,11 @@ for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["
   });
 }
 
-// Human-reported (live session, 1568×843): the report card grows with the grid (1fr against the
-// 300px rail), leaving an empty strip to the right of .prose{max-width:720px}; the head row and
-// #reportOpts spanned the full width while #report-h stayed centred at 720px, so the three rows
-// didn't line up either. Human decision: "card hugs the text" — the card is exactly the prose
-// width plus its own padding, the card and the rail are centred together as one group, and the
-// head row/question frame/settings row all align to that group.
+// The report card hugs the text: the card is exactly the prose width plus its own padding, the card
+// and the rail are centred together as one group, and the head row/question frame/settings row all
+// align to that group. Otherwise the card grows with the grid (1fr against the 300px rail), leaving
+// an empty strip to the right of .prose{max-width:720px}; the head row and #reportOpts would span the
+// full width while #report-h stayed centred at 720px, so the three rows wouldn't line up either.
 for (const width of [1252, 1568, 1920]) {
   test.describe(`report stage at ${width}px — card hugs the text`, () => {
     test.use({ viewport: { width, height: 853 }, reducedMotion: "reduce" });
@@ -149,7 +148,7 @@ for (const width of [1252, 1568, 1920]) {
         const s = getComputedStyle(el);
         return { left: r.left + parseFloat(s.paddingLeft), right: r.right - parseFloat(s.paddingRight) };
       });
-      // notes-progress-report spec §7.6 (D28): from a 1310px report stage the contents rail leads the
+      // From a 1310px report stage the contents rail leads the
       // group (1920px with the sidebar expanded); below it the contents are chips above the cards.
       const contentsMode = await page.locator(".rep-layout").getAttribute("data-contents");
       expect(contentsMode).toBe(width === 1920 ? "rail" : "chips");
@@ -168,7 +167,7 @@ for (const width of [1252, 1568, 1920]) {
   });
 }
 
-// Review fix round 1, Minor #1 (controller ruling): the Evidence view shares the report head, so
+// The Evidence view shares the report head, so
 // it must share the head's frame too — otherwise toggling Report/Evidence moves the head under it.
 test.describe("report stage at 1568px — Evidence view shares the report group's frame", () => {
   test.use({ viewport: { width: 1568, height: 853 }, reducedMotion: "reduce" });
@@ -185,9 +184,9 @@ test.describe("report stage at 1568px — Evidence view shares the report group'
   });
 });
 
-test.describe("Evidence view — long refused-citation list and a long source URL (live-run fix)", () => {
-  // AC21 found this: replay data never produces a refused item with a long finding_labels list,
-  // so no existing capture or test exercised it. Real replay E1 JSON, mutated with the two shapes
+test.describe("Evidence view — long refused-citation list and a long source URL", () => {
+  // Replay data never produces a refused item with a long finding_labels list,
+  // so the replay alone never exercises it. Real replay evidence JSON, mutated with the two shapes
   // that overflowed — a refused row's single tag holding a dozen joined labels, and a finding
   // whose source URL is long enough that an unbroken string alone would force the rail wider than
   // the viewport.
@@ -211,7 +210,7 @@ test.describe("Evidence view — long refused-citation list and a long source UR
     await page.locator("#segView button[data-view='evidence']").click();
     await expect(page.locator(".ev-row").first()).toBeVisible();
     // The list: every row, including the refused row's long "cited F11, F22, …" tag, is on screen
-    // at once — this is the defect AC21 found (scrollWidth 435 against innerWidth 390).
+    // at once — the overflow this guards against measured scrollWidth 435 against innerWidth 390.
     await noSideScroll(page);
     // scrollWidth alone is not enough to catch every way this can go wrong: with
     // justify-content:flex-end on .tags and no shrink budget on .tag, an unellipsized tag spills

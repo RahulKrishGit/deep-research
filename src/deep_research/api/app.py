@@ -200,12 +200,11 @@ def create_app(
 ) -> FastAPI:
     """Build the local FastAPI interface around one process's session store.
 
-    ``clarity_checker`` decides the one-time check's questions (live-briefs
-    spec §4.4). Left ``None`` it follows ``mode``: live mode asks the
-    configured provider, and replay mode uses the scripted checker, so a
-    replay server can never reach a provider for the check.
-    ``note_interpreter`` reads each reader note (spec §4.6) and follows
-    ``mode`` the same way: replay restates a note as written.
+    ``clarity_checker`` decides the one-time check's questions. Left ``None``
+    it follows ``mode``: live mode asks the configured provider, and replay
+    mode uses the scripted checker, so a replay server can never reach a
+    provider for the check. ``note_interpreter`` reads each reader note and
+    follows ``mode`` the same way: replay restates a note as written.
     """
     if clarity_checker is None:
         clarity_checker = (
@@ -298,7 +297,7 @@ def create_app(
         request: Request,
         payload: ClarificationAnswersRequest,
     ) -> ResearchSessionResponse:
-        """Take the reader's answers to the one-time check, once (spec §4.4).
+        """Take the reader's answers to the one-time check, once.
 
         ``404`` for an unknown session, ``409 not_waiting_for_input`` when it is
         not in ``needs_input`` (never asked, already answered, or past its
@@ -329,12 +328,12 @@ def create_app(
         request: Request,
         payload: NoteRequest,
     ) -> NoteAcceptedResponse:
-        """Take one reader note for a running session (live-briefs spec §4.6).
+        """Take one reader note for a running session.
 
         ``404`` for an unknown session; ``409 notes_closed`` while the session
         waits for the one-time check's answers, once it has finished or
         stopped, and once publication has begun; ``409 note_limit_reached``
-        past the tenth accepted note (D11a); ``422`` for an empty or overlong
+        past the tenth accepted note; ``422`` for an empty or overlong
         note. The note is interpreted after this answer, which is why its
         status is ``received``.
         """
@@ -354,7 +353,7 @@ def create_app(
         response_model=ResearchSessionResponse,
     )
     async def stop_research(request: Request) -> ResearchSessionResponse:
-        """Stop a session at once (notes-progress-report spec §8.1, D17).
+        """Stop a session at once.
 
         ``202`` with the stopped session: its run is cancelled where it stands — every
         provider, search and page request in flight with it — nothing is written, and
@@ -428,7 +427,7 @@ def create_app(
         A running session has no report yet and a finished session may have
         finished without one, so both are explicit 409 conflicts — never a
         fabricated body and never a fake 404. A stopped session wrote none and
-        answers as a halted run does (notes-progress-report spec §8.4, D26).
+        answers as a halted run does.
         """
         try:
             session = store.require(request.state.session_id)
@@ -456,7 +455,7 @@ def create_app(
         request: Request,
         format: Literal["json", "markdown"] = Query(default="json"),
     ) -> Response:
-        """E1: the run's findings, verification and sources as JSON, or its
+        """The run's findings, verification and sources as JSON, or its
         evidence log.
 
         Both forms come from the finished run's own state — the composition
@@ -469,7 +468,7 @@ def create_app(
         except KeyError:
             raise ApiProblem(code="session_not_found", status_code=404) from None
         if session.status == "stopped":
-            # notes-progress-report spec §8.4 (D26): a stopped run composed nothing.
+            # A stopped run composed nothing.
             raise ApiProblem(code="evidence_unavailable", status_code=409)
         if session.outcome is None:
             raise ApiProblem(code="session_not_complete", status_code=409)

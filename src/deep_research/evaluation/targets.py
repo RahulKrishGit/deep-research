@@ -1,8 +1,8 @@
 """The LangSmith target: one agent run inside the project's own session trace.
 
-``build_target`` wires the production-parity factory chain (Task 6), the
-controlled/live dependency bundles (Tasks 7-8), and the case registry
-(Task 9) into a single callable LangSmith's ``aevaluate`` invokes once per
+``build_target`` wires the production-parity factory chain, the
+controlled/live dependency bundles, and the case registry into a single
+callable LangSmith's ``aevaluate`` invokes once per
 repetition. The target never raises: every failure path is captured as a
 typed ``TargetOutput`` with ``completed=False``, because an exception
 escaping the returned callable would abort every remaining repetition in
@@ -101,7 +101,6 @@ class RepetitionCounter:
                 "is only exact under sequential execution, got "
                 f"{max_concurrency!r}"
             )
-        self._max_concurrency = max_concurrency
         self._counts: dict[str, int] = {}
 
     def next(self, case_id: str) -> int:
@@ -335,7 +334,7 @@ def _trajectory_from_steps(
 ) -> list[TrajectoryStep]:
     """One run's typed steps, as the trajectory's own redacted, clamped rows.
 
-    RevSelectionR3 P2: a model's ``thought`` is exactly as free-text as an
+    A model's ``thought`` is exactly as free-text as an
     observation, and just as capable of naming a source URL in full ("Next
     I will read https://...") -- the clamp that bounds its length is not a
     privacy boundary either, so it is redacted before the same clamp

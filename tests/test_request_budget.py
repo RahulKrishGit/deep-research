@@ -1,12 +1,11 @@
 """Tests for the request attempt budget.
 
-``RequestBudget`` is what makes a declared spend ceiling real. A live canary
-breached its declared Tavily ceiling by roughly eleven percent and nothing
-stopped it, because the ceiling existed only as arithmetic in a plan
-document: it was derived wrongly and no reader could see the spend while the
-run was happening. These tests pin the two properties that close that gap —
-the arithmetic that decides how many attempts the ceiling permits, and the
-counting rules that keep a refused attempt from becoming one.
+``RequestBudget`` is what makes a declared spend ceiling real: a ceiling that
+exists only as arithmetic in a plan document cannot stop a run that overspends
+it, and no reader can see the spend while the run is happening. These tests
+pin the two properties that make the ceiling enforceable — the arithmetic that
+decides how many attempts the ceiling permits, and the counting rules that
+keep a refused attempt from becoming one.
 
 Every test here is offline. A reservation is counter arithmetic followed by a
 comparison; no transport, provider, or network is involved.

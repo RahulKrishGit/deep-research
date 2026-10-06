@@ -1,5 +1,5 @@
-// notes-progress-report spec §8.5 (D17, D18, D24; Stop.dc.html columns 1-2): Stop and its one
-// confirmation. The control is rendered on its own inside the provider; POST /stop is scripted per test.
+// Stop and its one confirmation. The control is rendered on its own inside the provider; POST /stop is
+// scripted per test.
 import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
@@ -29,9 +29,9 @@ const stopBtn = () => document.getElementById("stopBtn") as HTMLButtonElement;
 const dialog = () => document.querySelector('[role="dialog"]');
 const button = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".stop-confirm button")].find((b) => b.textContent === name)!;
 
-// Phase D minor (owner decision O2, 2026-10-01): when the control goes away holding focus, it hands focus to the
-// element it was given (the topbar's status chip) instead of letting it fall to <body>; focus elsewhere stays put.
-describe("StopControl — focus when it is withdrawn (owner decision O2)", () => {
+// When the control goes away holding focus, it hands focus to the element it was given (the topbar's status
+// chip) instead of letting it fall to <body>; focus elsewhere stays put.
+describe("StopControl — focus when it is withdrawn", () => {
   function withdrawable() {
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
     const returnFocusTo = { current: null as HTMLElement | null };
@@ -79,7 +79,7 @@ describe("StopControl — focus when it is withdrawn (owner decision O2)", () =>
   });
 });
 
-describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
+describe("StopControl", () => {
   it("is a small ghost button with a square, closed until pressed", () => {
     mount(() => json(202, STOPPED));
     expect(stopBtn().className).toBe("btn btn-ghost btn-sm btn-stop");
@@ -89,7 +89,7 @@ describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
     expect(dialog()).toBeNull();
   });
 
-  it("asks once, in the canvas's words, with Keep going focused", () => {
+  it("asks once, in the design's words, with Keep going focused", () => {
     mount(() => json(202, STOPPED));
     fireEvent.click(stopBtn());
     const box = dialog()!;
@@ -103,7 +103,7 @@ describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
     expect([stopBtn().getAttribute("aria-expanded"), stopBtn().getAttribute("aria-controls")]).toEqual(["true", "stopConfirm"]);
   });
 
-  it("describes itself to a screen reader: the dialog is described by the question's body, and by the too-late line after a 409 (phase review P3-3)", async () => {
+  it("describes itself to a screen reader: the dialog is described by the question's body, and by the too-late line after a 409", async () => {
     mount(() => json(409, REFUSED));
     fireEvent.click(stopBtn());
     const box = dialog()!;
@@ -128,7 +128,7 @@ describe("StopControl (notes-progress-report spec §8.5; D18, D24)", () => {
     expect(document.activeElement).toBe(stopBtn());
     fireEvent.click(stopBtn());
     // The press outside is cancelled (`false`): a browser would otherwise move focus to what was
-    // pressed, or to the page itself, after the handler gave it back to Stop (review round 1, I1).
+    // pressed, or to the page itself, after the handler gave it back to Stop.
     expect(fireEvent.mouseDown(document.getElementById("elsewhere")!)).toBe(false);
     expect(dialog()).toBeNull();
     expect(document.activeElement).toBe(stopBtn());

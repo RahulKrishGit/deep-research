@@ -1,4 +1,4 @@
-"""The Evidence Verifier's evaluation cases (spec §5.1-5.2, D8).
+"""The Evidence Verifier's evaluation cases.
 
 Every controlled case's fixture is driven through the real
 ``EvidenceVerifierAgent`` with a ``ScriptedCompleter`` answering the Context
@@ -180,7 +180,7 @@ def test_every_case_declares_the_verifier_gates_and_metrics() -> None:
 
 
 def test_every_seeded_finding_is_bound_to_its_own_seeded_read() -> None:
-    """A fixture that fails Figure Match would grade nothing (§5.1 step 1)."""
+    """A figure that fails Figure Match would grade nothing."""
     for case in cases_for("evidence_verifier", "controlled") + cases_for(
         "evidence_verifier", "live"
     ):
@@ -196,7 +196,7 @@ def test_every_seeded_finding_is_bound_to_its_own_seeded_read() -> None:
 
 
 def test_the_live_case_cites_the_benchmark_s_own_addresses() -> None:
-    """R4: the live case's pages are the benchmark's, down to the address.
+    """The live case's pages are the benchmark's, down to the address.
 
     The EIA address is the one the benchmark itself declares
     (``tests.evidence_fakes.EIA_URL``), compared through production's own

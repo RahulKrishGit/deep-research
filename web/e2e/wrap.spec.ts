@@ -1,14 +1,14 @@
-// Issue 1 (human-reported 2026-09-28): a long, left-aligned question left a gap on the right —
-// measured on a live 136-char question, the dashed box spanned 572-1292 but the text ended at
-// 1057, ~215px short. Cause: the global `h1{text-wrap:balance}` rule (globals.css:64, verbatim
-// from the prototype) balances the two wrapped lines to similar widths instead of filling the
-// frame. `.report-q` already carried `text-wrap:pretty` (verbatim, prototype line 893); fix:
-// `.ask-q{text-wrap:pretty}` in the app-only block.
+// A long, left-aligned question must fill its frame: measured on a 136-char question, the dashed
+// box spanned 572-1292 but the text ended at 1057, ~215px short. Cause: the global
+// `h1{text-wrap:balance}` rule (globals.css, verbatim from the prototype) balances the two wrapped
+// lines to similar widths instead of filling the frame. `.report-q` already carries
+// `text-wrap:pretty` (verbatim from the prototype); `.ask-q{text-wrap:pretty}` in the app-only
+// block does the same here.
 //
 // The replay middleware rewrites every submitted query to the chosen case's own question
-// (src/deep_research/api/replay.py:136-193), so a long question cannot be driven through the
+// (src/deep_research/api/replay.py), so a long question cannot be driven through the
 // composer directly — the real status body is intercepted here and its `query` replaced with a
-// 142-character one, per the brief's own suggested approach. reducedMotion:'reduce' skips the
+// 142-character one. reducedMotion:'reduce' skips the
 // (separately tested) idle→running flight box entirely, so this test is only ever exercising the
 // wrap, not the handoff.
 import { expect, test } from "@playwright/test";
@@ -17,7 +17,7 @@ import { submit } from "./support";
 const LONG_QUESTION =
   "What measurable long-term effects have large-scale reforestation and afforestation programs had on regional precipitation patterns since 2010?";
 
-test.describe("long question wrap (Issue 1)", () => {
+test.describe("long question wrap", () => {
   test.use({ viewport: { width: 1568, height: 843 }, reducedMotion: "reduce" });
 
   test("a long left-aligned question fills the frame instead of stopping short of its right edge", async ({ page, context }) => {
@@ -43,8 +43,8 @@ test.describe("long question wrap (Issue 1)", () => {
       const textRight = Math.max(...rects.map((r) => r.right));
       return contentRight - textRight;
     });
-    // Balanced (the pre-fix behaviour): ~215px short. Pretty: within ~60px of the frame's own
-    // content-right edge, per the brief's own tolerance.
+    // Balanced: ~215px short. Pretty: within ~60px of the frame's own
+    // content-right edge.
     expect(gap).toBeLessThanOrEqual(60);
     expect(gap).toBeGreaterThanOrEqual(0);
   });

@@ -1,4 +1,4 @@
-"""The reader's notes for one run (live-briefs spec §4.6): the board the API
+"""The reader's notes for one run: the board the API
 writes and the graph reads.
 
 ``SessionStore`` makes one ``NoteBoard`` per session and binds it for the run
@@ -12,7 +12,7 @@ interpreted note once its interpretation finishes. Only added notes are
 readable: an agent never sees a note before it is interpreted. ``settled``
 waits until every received note has been added or dropped, which is how the
 review node takes in a note that was still being interpreted when the review
-ended (§4.8 "A note arrives during Reviewing").
+ended.
 
 Nothing here is imported by an agent at module level: ``deep_research.runtime``
 imports every agent while its package initialises, so agents and graph nodes
@@ -31,7 +31,7 @@ from deep_research.utils.types import MAX_NOTES_PER_RUN, ReaderNote
 
 
 class NoteLimitReached(Exception):
-    """The run already holds ``MAX_NOTES_PER_RUN`` accepted notes (D11a)."""
+    """The run already holds ``MAX_NOTES_PER_RUN`` accepted notes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +58,7 @@ class NoteBoard:
 
     @property
     def version(self) -> int:
-        """How many times a note was added or dropped (notes-progress-report spec §5.3).
+        """How many times a note was added or dropped.
 
         A reader that reads it before it looks at the board, and then waits with
         ``wait_for_change``, misses no add or drop in between.
@@ -72,7 +72,7 @@ class NoteBoard:
 
     @property
     def remaining(self) -> int:
-        """How many more notes this run accepts (D11a)."""
+        """How many more notes this run accepts."""
         return max(0, MAX_NOTES_PER_RUN - len(self._received))
 
     @property

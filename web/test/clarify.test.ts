@@ -1,5 +1,5 @@
 // @vitest-environment node
-// The one-time check's derivations (live-briefs spec §4.4-§4.5): which face it shows, the answers
+// The one-time check's derivations: which face it shows, the answers
 // as posted and as the run starts with them, the summary line and the countdown.
 import { describe, expect, it } from "vitest";
 import { answersBody, checkPhase, countdownText, pipelineBegun, resolvedAnswers, secondsLeft, summaryText } from "../lib/clarify";
@@ -25,7 +25,7 @@ function answered(run: RunState): RunState {
   return run;
 }
 
-describe("checkPhase: which face the check shows (live-briefs spec §4.5)", () => {
+describe("checkPhase: which face the check shows", () => {
   it("a needs_input status asks before the stream has delivered the questions; a running one shows no check", () => {
     expect(checkPhase(newRunState(), "needs_input")).toBe("asking");
     expect(checkPhase(newRunState(), "running")).toBeNull();

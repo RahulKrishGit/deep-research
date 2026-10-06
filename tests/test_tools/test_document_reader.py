@@ -292,10 +292,10 @@ async def test_a_whitespace_only_document_is_a_documented_failure(
 ) -> None:
     """A canonical-empty document is no content at all, not a partial read.
 
-    Its chunk list is non-empty, so the old ordering reached the content-hash
-    helper first and let an internal contract error escape as
-    ``error_type="EvidenceContractError"`` — an undocumented failure neither
-    the model nor an audit can act on.
+    Its chunk list is non-empty, so the content-hash helper must not be
+    reached before the blank-text check: an internal contract error would
+    escape as ``error_type="EvidenceContractError"`` — an undocumented
+    failure neither the model nor an audit can act on.
     """
     source = tmp_path / "blank.txt"
     source.write_text("\n", encoding="utf-8")
@@ -427,7 +427,7 @@ async def test_reader_retries_rate_limit_using_numeric_retry_after(tracker) -> N
 
 
 # ---------------------------------------------------------------------------
-# D3: a document's title, when its metadata carries none.
+# A document's title, when its metadata carries none.
 # ---------------------------------------------------------------------------
 
 
@@ -475,10 +475,9 @@ async def test_reader_uses_the_first_heading_line_when_a_pdf_has_no_metadata_tit
 async def test_reader_returns_no_title_for_non_pdf_formats(
     tracker, tmp_path, filename, content
 ) -> None:
-    """RevW5Titles P1-b: only a PDF's own metadata or heading stands in for a
-    title; json, csv, text and markdown defer to the URL/search-candidate
-    title path (acquisition.py's ``_resolve_read_title``), exactly as before
-    a document ever carried a title of its own."""
+    """Only a PDF's own metadata or heading stands in for a title; json, csv,
+    text and markdown defer to the URL/search-candidate title path, exactly as
+    before a document ever carried a title of its own."""
     source = tmp_path / filename
     source.write_text(content, encoding="utf-8")
 
@@ -492,9 +491,9 @@ async def test_reader_returns_no_title_for_non_pdf_formats(
 async def test_reader_uses_heading_when_pdf_metadata_title_is_just_the_file_stem(
     monkeypatch, tracker
 ) -> None:
-    """RevW5Titles P2: a metadata title that only echoes the file name (its
-    stem, without the extension) carries no information the reader does not
-    already have, so the heading line stands in for it."""
+    """A metadata title that only echoes the file name (its stem, without the
+    extension) carries no information the reader does not already have, so the
+    heading line stands in for it."""
 
     class Page:
         def extract_text(self):
@@ -529,8 +528,8 @@ async def test_reader_uses_heading_when_pdf_metadata_title_is_just_the_file_stem
 async def test_reader_skips_a_page_number_and_copyright_line_for_the_heading(
     monkeypatch, tracker
 ) -> None:
-    """RevW5Titles P2: a running page number and a copyright line are never
-    a document's title, however early they sit in the extracted text."""
+    """A running page number and a copyright line are never a document's title,
+    however early they sit in the extracted text."""
 
     class Page:
         def extract_text(self):
@@ -609,9 +608,9 @@ async def test_reader_returns_no_title_when_the_only_line_is_several_sentences(
 async def test_reader_keeps_a_compound_heading_with_one_sentence_break(
     monkeypatch, tracker
 ) -> None:
-    """RevW5Titles P2 (ReRevW5): a short two-clause heading -- a chapter or
-    figure caption with one embedded full stop -- is not a run-on
-    paragraph, and must still become the title."""
+    """A short two-clause heading -- a chapter or figure caption with one
+    embedded full stop -- is not a run-on paragraph, and must still become the
+    title."""
 
     class Page:
         def extract_text(self):
@@ -645,8 +644,8 @@ async def test_reader_keeps_a_compound_heading_with_one_sentence_break(
 async def test_reader_skips_a_rule_of_underscores_for_the_heading(
     monkeypatch, tracker
 ) -> None:
-    """D3 (run 5): a heading line must contain letters; a rule of
-    underscores or dashes -- a PDF's own page-break ornament -- is skipped."""
+    """A heading line must contain letters; a rule of underscores or dashes --
+    a PDF's own page-break ornament -- is skipped."""
 
     class Page:
         def extract_text(self):
@@ -684,9 +683,9 @@ async def test_reader_skips_a_rule_of_underscores_for_the_heading(
 async def test_reader_joins_a_heading_wrapped_onto_the_next_line(
     monkeypatch, tracker
 ) -> None:
-    """D3 (run 5): a heading that continues onto the next line -- the first
-    line ends on a bare function word with no terminal punctuation -- is
-    joined with it, within the 200-character cap."""
+    """A heading that continues onto the next line -- the first line ends on a
+    bare function word with no terminal punctuation -- is joined with it, within
+    the 200-character cap."""
 
     class Page:
         def extract_text(self):
@@ -727,9 +726,9 @@ async def test_reader_joins_a_heading_wrapped_onto_the_next_line(
 async def test_reader_does_not_join_a_heading_ending_in_a_capitalised_word(
     monkeypatch, tracker
 ) -> None:
-    """D3 (run 5 follow-up): a heading ending in a capitalised word that
-    happens to spell a function word ('Appendix A') is complete; only a
-    bare lower-case function word signals a genuine line wrap."""
+    """A heading ending in a capitalised word that happens to spell a function
+    word ('Appendix A') is complete; only a bare lower-case function word signals
+    a genuine line wrap."""
 
     class Page:
         def extract_text(self):
@@ -767,10 +766,9 @@ async def test_reader_does_not_join_a_heading_ending_in_a_capitalised_word(
 async def test_reader_joins_a_heading_whose_continuation_starts_lower_case(
     monkeypatch, tracker
 ) -> None:
-    """D3 (run 5 follow-up): a heading with no terminal punctuation is
-    joined with its continuation whenever that next line starts lower
-    case, even when the first line's last word is not a bare function
-    word."""
+    """A heading with no terminal punctuation is joined with its continuation
+    whenever that next line starts lower case, even when the first line's last
+    word is not a bare function word."""
 
     class Page:
         def extract_text(self):
@@ -812,8 +810,8 @@ async def test_reader_joins_a_heading_whose_continuation_starts_lower_case(
 async def test_a_remote_format_no_parser_reads_is_refused_before_any_request(
     tracker,
 ) -> None:
-    """Latency audit O11: a .doc/.docx/.xls/.xlsx URL fails exactly as its
-    download would have failed, without the download."""
+    """An unsupported format URL fails exactly as its download would have failed,
+    without the download."""
     requests: list[str] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -868,8 +866,8 @@ def test_every_document_suffix_the_policy_routes_here_is_parsed_or_refused_unrea
 
 @pytest.mark.asyncio
 async def test_a_remote_read_goes_through_the_runs_pool(tracker) -> None:
-    """Latency audit O4: the reader builds its own client over the pool it was
-    given, and its request is the one it always sent."""
+    """The reader builds its own client over the pool it was given, and its
+    request is the one it always sent."""
     seen: list[str | None] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:

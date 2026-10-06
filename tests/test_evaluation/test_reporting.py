@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import json
 
-import pytest  # noqa: F401 - available for tests that grow a pytest.raises
-
 from deep_research.evaluation.models import ExperimentResult
 from deep_research.evaluation.reporting import (
     format_score,
     render_experiment,
     render_listing,
-    render_suite,  # noqa: F401 - imported to assert the module's public surface
     write_experiment_artifact,
 )
 
@@ -23,7 +20,7 @@ def test_scores_render_to_two_decimals_and_never_lie(
     assert format_score(None) == "n/a"
 
 
-def test_the_summary_matches_the_shape_the_spec_shows(
+def test_the_summary_has_the_documented_shape(
     researcher_experiment_result,
 ) -> None:
     lines = render_experiment(researcher_experiment_result, verbose=False)

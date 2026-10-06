@@ -12,8 +12,8 @@ async function settle() { await act(async () => { await Promise.resolve(); await
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
-describe("NoteLine — the quiet line at the foot of the pipeline card (live-briefs spec §4.7, D8, D11a)", () => {
-  it("is a borderless field with the spec's placeholder and a neutral icon send, never the purple primary", () => {
+describe("NoteLine — the quiet line at the foot of the pipeline card", () => {
+  it("is a borderless field with its placeholder and a neutral icon send, never the purple primary", () => {
     const { container } = render(<NoteLine sessionId="s1" remaining={10} />);
     expect(field().className).toBe("tx");
     expect(field().placeholder).toBe(NOTE_PLACEHOLDER);

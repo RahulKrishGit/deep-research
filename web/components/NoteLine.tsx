@@ -3,11 +3,10 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, addNote } from "@/lib/api";
 import { NOTES_CLOSED, NOTE_FIELD_LABEL, NOTE_MAX_CHARS, NOTE_PLACEHOLDER, NOTE_SEND_FAILED, NOTE_SEND_LABEL } from "@/lib/notes";
 
-/* The note line (live-briefs spec §4.7, D8; pick 6A, docs/design/running-stage-picks/Hitl3.dc.html
-   column A): the last element in the pipeline card, under a hairline — a borderless field and a
+/* The note line: the last element in the pipeline card, under a hairline — a borderless field and a
    neutral icon send, never the purple primary. Enter sends. While the POST is in flight the field is
    read-only. With no note left to take (`remaining` is 0, or a 409 note_limit_reached) the field and
-   the button are disabled, with no message and the placeholder unchanged (D11a). Once
+   the button are disabled, with no message and the placeholder unchanged. Once
    `finalize_report` has started (409 notes_closed) one caption, a status, takes the line's place;
    if focus was on the line (the field, or the send button) it moves to the caption rather than
    falling to the page, as the clarify card's does. Any other failure (a 5xx, a network error) keeps

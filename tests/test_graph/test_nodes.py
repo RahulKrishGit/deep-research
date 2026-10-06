@@ -10,15 +10,14 @@ import pytest
 
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_reviewer import (
     ScopedReportReviewInput,
     build_report_review_input,
     composition_semantic_fingerprint,
-    remap_review_for_redraft,
 )
-from deep_research.agents.quality import compute_report_quality
-from deep_research.agents.report_writer import ReportWriterAgent
+from deep_research.agents.report_writer import REPORT_WRITER_NAME, ReportWriterAgent
 from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationError
 from deep_research.graph.events import extra_pass_started_event, redraft_requested_event
 from deep_research.graph.nodes import (
@@ -67,14 +66,13 @@ from deep_research.utils.types import (
     ReportComposition,
     ReportPart,
     ReportPoint,
+    ReportReview,
     ReportSection,
     ReportStatement,
-    ReportReview,
     ResearchError,
     ResearchState,
     ReviewDefect,
 )
-from deep_research.agents.report_writer import REPORT_WRITER_NAME
 from tests.agent_fakes import ScriptedCompleter
 from tests.graph_fakes import (
     SNIPPET,
@@ -556,12 +554,11 @@ async def test_the_review_node_records_a_scored_review_beside_the_diagnostics() 
 
 @pytest.mark.asyncio
 async def test_the_review_node_stamps_the_missing_targets_the_gates_computed() -> None:
-    """PD-5: code computes the missing targets; the reviewer never produces them.
+    """Code computes the missing targets; the reviewer never produces them.
 
     The stamp is what routing reads, and it is written whatever the review
     said — a review that named no missing target of its own cannot clear the
-    obligation the deterministic pass measured.
-    """
+    obligation the deterministic pass measured."""
     reviewer = FakeReviewer()
     one = verified_pass()
     two_topics = fake_sub_topic(
@@ -811,14 +808,12 @@ def _coverage_defect_only_state(**overrides: object) -> ResearchState:
 
 @pytest.mark.asyncio
 async def test_the_extra_pass_hop_targets_a_reviewers_own_coverage_defect() -> None:
-    """D10 fix (P0): a coverage defect, not only the code-stamped gate, funds
-    the pass and names the pass's job list.
+    """A coverage defect, not only the code-stamped gate, funds the pass
+    and names the pass's job list.
 
-    Before this fix ``extra_pass_node`` read only
-    ``review.missing_required_target_ids``, which this review leaves empty, so
-    the hop opened with an empty job list and the researcher re-ran every
-    planned sub-topic instead of the one target the review actually named.
-    """
+    The hop reads both the code-stamped missing targets and the reviewer's
+    own coverage defect when deciding the job list; a coverage defect the
+    reviewer named but the code did not compute gets researched."""
     state = _coverage_defect_only_state(iteration=0, max_extra_passes=1)
 
     advanced = load_state(await extra_pass_node(dump_state(state)))
@@ -949,7 +944,7 @@ async def test_the_redraft_hop_skips_a_halted_run() -> None:
     assert skipped.events[-1].source == f"graph.{REDRAFT_NODE}"
 
 
-# --- T5 addendum: the redraft-to-reviewer handoff ---------------------------
+# --- The redraft-to-reviewer handoff ---------------------------
 
 
 _PART_A = "topic-01"
@@ -1018,10 +1013,9 @@ def _redraft_review(old: ReportComposition) -> ReportReview:
 
 def _writer_redraft_state() -> ResearchState:
     """A writer pass about to redraft: the old composition, its full review,
-    and the redraft hop's own marker event (the P2 gate reads this to tell
-    a redraft from an extra research pass -- ``writer_redraft_node``'s own
-    output, reused here rather than run, so this fixture agrees with the
-    real hop's event shape)."""
+    and the redraft hop's own marker event (which tells a redraft from an
+    extra research pass), taken from ``writer_redraft_node``'s own output
+    rather than run, so this fixture agrees with the real hop's event shape."""
     old, _new = _redraft_compositions()
     base = _pass_state()
     return base.model_copy(
@@ -1128,10 +1122,9 @@ async def test_the_reviewer_node_falls_back_to_a_full_review_without_a_verified_
 
 @pytest.mark.asyncio
 async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_is_not_scored() -> None:
-    """P2: the addendum's own promise -- a scoped call that could not be
-    made falls back to one full, fresh review, rather than ending in
-    ``review_unavailable`` where a full review might have produced a
-    verdict."""
+    """A scoped call that could not be made falls back to one full, fresh
+    review, rather than ending in ``review_unavailable`` where a full review
+    might have produced a verdict."""
     state = _writer_redraft_state()
     _old, new = _redraft_compositions()
     redrafted = load_state(
@@ -1153,8 +1146,8 @@ async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_cal
 
 @pytest.mark.asyncio
 async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_call_raises() -> None:
-    """P2, the other trigger: a scoped call that raises outright (a provider
-    error) falls back the same way as one that merely returns unscored."""
+    """A scoped call that raises outright (a provider error) falls back the
+    same way as one that merely returns unscored."""
     from deep_research.providers import ProviderResponseError
 
     state = _writer_redraft_state()
@@ -1178,9 +1171,9 @@ async def test_the_reviewer_node_falls_back_to_a_full_review_when_the_scoped_cal
 
 @pytest.mark.asyncio
 async def test_the_scoped_calls_own_retry_telemetry_survives_the_fallback() -> None:
-    """ReRevFormatT5 P3: the scoped attempt's own retry record must not
-    vanish just because the fallback full review resets the reviewer's
-    ``review_records`` at the start of its own call."""
+    """The scoped attempt's own retry record must not vanish just because
+    the fallback full review resets the reviewer's ``review_records`` at the
+    start of its own call."""
     state = _writer_redraft_state()
     _old, new = _redraft_compositions()
     redrafted = load_state(
@@ -1208,10 +1201,10 @@ async def test_the_scoped_calls_own_retry_telemetry_survives_the_fallback() -> N
 
 @pytest.mark.asyncio
 async def test_a_successful_scoped_calls_retry_record_is_not_duplicated() -> None:
-    """ReRevFormatT5 (round 3): when the scoped call itself succeeds, no
-    fallback call ever runs to reset ``review_records`` -- so the same
-    tuple must not be listed twice just because ``scoped_records`` and
-    ``reviewer.review_records`` are, in that case, the identical object."""
+    """When the scoped call itself succeeds, no fallback call ever runs to
+    reset ``review_records`` — so the same tuple must not be listed twice
+    just because ``scoped_records`` and ``reviewer.review_records`` are, in
+    that case, the identical object."""
     state = _writer_redraft_state()
     _old, new = _redraft_compositions()
     redrafted = load_state(
@@ -1236,7 +1229,7 @@ async def test_a_successful_scoped_calls_retry_record_is_not_duplicated() -> Non
 
 @pytest.mark.asyncio
 async def test_an_extra_pass_rewrite_gets_a_full_review_not_a_remap() -> None:
-    """P2: the remap must fire only through the writer-redraft hop, never
+    """The remap must fire only through the writer-redraft hop, never
     across an extra-pass iteration boundary, even with a scored review and
     a defect-bearing ``state.report_review`` still in hand."""
     state = _writer_redraft_state()
@@ -1533,7 +1526,7 @@ async def test_the_real_writer_publishes_three_artifacts_into_a_real_root(
     assert published.metadata["document_writes"] == 3
     assert published.metadata["memory_writes"] == 1
     assert memory.saved
-    # Latency audit O2: the real writer saved the cited finding in one batch.
+    # The real writer saved the cited finding in one batch.
     assert memory.batches == [1]
 
 
@@ -1745,14 +1738,15 @@ def test_a_graph_node_factory_refuses_a_blank_name() -> None:
 
 
 
-# --- notes-progress-report spec §6.1: the reviewer's start and result, live ---------
+# --- The reviewer's start and result, live ---------
 
 
 @pytest.mark.asyncio
 async def test_reviewer_started_live(monkeypatch: pytest.MonkeyPatch) -> None:
-    """§6.1: the reviewer's graph.node.started is published live when the node starts,
-    and graph.report.reviewed -- with its five criteria and the notes' results -- before
-    the notes wait; both stay in the node's snapshot as the objects published."""
+    """The reviewer's graph.node.started is published live when the node
+    starts, and graph.report.reviewed — with its five criteria and the notes'
+    results — before the notes wait; both stay in the node's snapshot as the
+    objects published."""
     from deep_research.graph import nodes as nodes_module
     from deep_research.graph.live import bind_live_sink
 
@@ -1782,9 +1776,9 @@ async def test_reviewer_started_live(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_reviewer_started_is_published_before_the_review_call() -> None:
-    """§6.1: Reviewing's clock starts when the node starts, not when the (slow) review
-    returns: at the moment the reviewer agent is called, the live sink already holds the
-    node's ``graph.node.started``, and nothing else."""
+    """Reviewing's clock starts when the node starts, not when the (slow)
+    review returns: at the moment the reviewer agent is called, the live sink
+    already holds the node's ``graph.node.started``, and nothing else."""
     from deep_research.graph.live import bind_live_sink
 
     received: list = []
@@ -1805,7 +1799,7 @@ async def test_reviewer_started_is_published_before_the_review_call() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unscored_review_marks_no_criterion() -> None:
-    """§6.2: without a scored review every criterion is ``met: null``."""
+    """Without a scored review, every criterion is ``met: null``."""
     loaded = load_state(await report_reviewer_node(
         FakeReviewer([fake_report_review(status="provider_failed")])
     )(dump_state(_writer_state())))
@@ -1841,8 +1835,8 @@ class _BatchPublisher(FakePublisher):
 
 @pytest.mark.asyncio
 async def test_an_accepted_report_saves_its_cited_findings_in_one_batch() -> None:
-    """Latency audit O2: a publisher that can batch gets one write for every
-    cited finding, and the published event still counts each one."""
+    """A publisher that can batch gets one write for every cited finding,
+    and the published event still counts each one."""
     publisher = _BatchPublisher()
 
     result = await finalize_report_node(publisher)(dump_state(_finalized_state()))
@@ -1854,8 +1848,8 @@ async def test_an_accepted_report_saves_its_cited_findings_in_one_batch() -> Non
 
 @pytest.mark.asyncio
 async def test_a_failed_batch_falls_back_to_one_write_per_finding() -> None:
-    """When the batch fails, each finding is written on its own, exactly as
-    before O2, so each failure is still recorded against its own finding."""
+    """When the batch fails, each finding is written on its own, so
+    each failure is still recorded against its own finding."""
     publisher = _BatchPublisher(fail_batch=True)
 
     result = await finalize_report_node(publisher)(dump_state(_finalized_state()))
@@ -1871,8 +1865,8 @@ async def test_a_failed_batch_falls_back_to_one_write_per_finding() -> None:
 async def test_a_bound_capture_writes_the_state_its_agent_starts_from(
     tmp_path: Path,
 ) -> None:
-    """Latency plan Task 16: the stage replay's input is exactly what the
-    agent was handed, its own node-started event included."""
+    """The stage replay's input is exactly what the agent was handed,
+    including the node-started event."""
     agent = FakeAgent("evidence_verifier")
 
     with bind_stage_capture(tmp_path, nodes=["evidence_verifier"]):

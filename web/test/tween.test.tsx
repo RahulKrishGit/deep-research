@@ -6,7 +6,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 function Shown({ value }: { value: number }) { return <span>{useTween(value)}</span>; }
 
-describe("count tweens (live-briefs spec §4.3: numbers tween over 400 ms)", () => {
+describe("count tweens (numbers tween over 400 ms)", () => {
   it("eases from the old value to the new one and lands exactly at 400 ms", () => {
     expect(TWEEN_MS).toBe(400);
     expect(tweenValue(10, 20, 0)).toBe(10);

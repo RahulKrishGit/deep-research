@@ -1,4 +1,4 @@
-"""Run-scoped concurrency and budget telemetry (spec §7.3, decisions D8/D9).
+"""Run-scoped concurrency and budget telemetry.
 
 One run's four measurements — rate-limit errors and how many a retry recovered,
 the peak number of provider calls in flight, each stage's calls and seconds,
@@ -15,13 +15,13 @@ collected here from seams that already exist:
   reservations and token reports to this object as its observer, which is what
   makes the peak a fact about the run rather than about one adapter.
 
-Nothing here changes a cap or a concurrency limit. §7.3 asks for telemetry and
-advice for the operator; §12 forbids automatic adjustment, and a measurement
+Nothing here changes a cap or a concurrency limit. The telemetry and its advice
+are for the operator; automatic adjustment is excluded, because a measurement
 that fed back into the run would make every figure it reports suspect.
 
 One lock guards every counter, and no lock is ever held across an ``await``:
-sub-topic research and verification batches really do run concurrently (Task
-4.13), so these counters are shared mutable state.
+sub-topic research and verification batches really do run concurrently, so
+these counters are shared mutable state.
 """
 
 from __future__ import annotations
@@ -60,11 +60,11 @@ __all__ = [
 #: calls always carry one; evaluation and ad-hoc harnesses need not.
 UNATTRIBUTED_AGENT = "unattributed"
 
-#: The concurrency knob each agent's own stage is bounded by (§7.3). These
+#: The concurrency knob each agent's own stage is bounded by. These
 #: four are the per-stage caps a run can be fanning out under; anything else
 #: at the peak falls back to the researcher's, the cap that bounds the
 #: widest fan-out. ``agents.extraction_concurrency`` is a fifth concurrency
-#: knob (S6) but not a per-stage one: it bounds how many of the researcher's
+#: knob but not a per-stage one: it bounds how many of the researcher's
 #: own per-page extraction calls run at once, a narrower bound layered
 #: *under* ``sub_topic_concurrency`` rather than a stage of its own, so it
 #: is not a key of this mapping.
@@ -93,17 +93,17 @@ _DEFAULT_CAP_KEY = "llm.max_tokens"
 #: it would hold the gauge one call high per search.
 _MODEL_PROVIDER_CATEGORIES = frozenset({"deepseek", "openai"})
 
-#: A call this close to its cap is what the advice line is for (§7.3).
+#: A call this close to its cap is what the advice line is for.
 _NEAR_CAP_PERCENT = 90
 
-#: A loop-lag wake-up this long or longer is a "block" on the Telemetry line
-#: (P1-B). The event-loop lag monitor uses this as its own default; a test
+#: A loop-lag wake-up this long or longer is a "block" on the Telemetry line.
+#: The event-loop lag monitor uses this as its own default; a test
 #: calling ``note_loop_wakeup`` directly may pass a smaller one.
 _LOOP_LAG_BLOCK_SECONDS = 5.0
 
 
-# The operation name a caller bound around its provider call (latency audit
-# O8): ``record_call`` reads it, so a stage's per-call records say which of an
+# The operation name a caller bound around its provider call:
+# ``record_call`` reads it, so a stage's per-call records say which of an
 # agent's calls was slow without any provider signature changing.
 _CALL_LABEL: ContextVar[str | None] = ContextVar(
     "deep_research_call_label", default=None
@@ -156,7 +156,7 @@ class _StageAccumulator:
 
 
 class RunTelemetryCollector:
-    """Collects one run's §7.3 telemetry from the provider seams.
+    """Collects one run's telemetry from the provider seams.
 
     Every method is safe to call from concurrent tasks. A provider built
     without a collector gets a private instance of this class, so an
@@ -165,7 +165,7 @@ class RunTelemetryCollector:
     """
 
     def __init__(self) -> None:
-        # The zero of every call record's ``start_offset_s`` (latency audit O8).
+        # The zero of every call record's ``start_offset_s``.
         self._started_at = perf_counter()
         self._lock = threading.Lock()
         self._calls_in_flight = 0
@@ -243,7 +243,7 @@ class RunTelemetryCollector:
     def note_loop_wakeup(
         self, lag: float, *, block_threshold: float = _LOOP_LAG_BLOCK_SECONDS
     ) -> None:
-        """Record one event-loop lag monitor wake-up's delay (P1-B).
+        """Record one event-loop lag monitor wake-up's delay.
 
         ``lag`` is the wake-up's delay beyond the tick the monitor asked for.
         Every positive reading can raise the run's maximum; a reading at or
@@ -287,17 +287,17 @@ class RunTelemetryCollector:
         an operator would raise.
 
         ``input_tokens`` and ``cached_input_tokens`` are the run's cache
-        figures (D10, S5). A provider that reports neither -- OpenAI does not
+        figures. A provider that reports neither -- OpenAI does not
         -- leaves both at their defaults and so contributes zeros.
 
-        ``reasoning_tokens`` is the run's total apart from content tokens
-        (P1-B); a provider that never reports it leaves the default, zero.
+        ``reasoning_tokens`` is the run's total apart from content tokens;
+        a provider that never reports it leaves the default, zero.
         ``attempts`` is this call's own per-transport-attempt records; the
         stage keeps only the attempts of whichever call is currently its
         slowest, since that is the only call the Telemetry line names.
 
-        Each call is also kept as one ``CallRecordTelemetry`` on its stage
-        (latency audit O8): the operation name its caller bound
+        Each call is also kept as one ``CallRecordTelemetry`` on its stage:
+        the operation name its caller bound
         (``call_label``), when it started, how long it took and its output and
         reasoning tokens.
         """
@@ -411,12 +411,11 @@ def _truncations(telemetry: RunTelemetry) -> int:
 
 
 def _render_loop_lag(telemetry: RunTelemetry) -> str:
-    """Render the event-loop lag monitor's reading (P1-B).
+    """Render the event-loop lag monitor's reading.
 
     Always present, even at zero: a quiet run's "0 blocks" is itself the
-    fact worth reporting, the same way "0 truncated" is above. ASCII only
-    (RevTelemetry P2): stdout without UTF-8 mode -- the Windows default when
-    piped, exactly how ``scratch/run_live_proof.py`` runs the CLI -- cannot
+    fact worth reporting, the same way "0 truncated" is above. ASCII only:
+    stdout without UTF-8 mode -- the Windows default when piped -- cannot
     encode U+2265 and would crash the run after this line printed.
     """
     blocks = telemetry.loop_lag_blocks
@@ -430,15 +429,15 @@ def _render_loop_lag(telemetry: RunTelemetry) -> str:
 
 
 def render_telemetry_line(telemetry: RunTelemetry) -> str:
-    """Render the run's §7.3 figures as the one CLI summary line.
+    """Render the run's figures as the one CLI summary line.
 
-    The line carries the four groups of §7.3 in a fixed order, so the same run
+    The line carries four groups of figures in a fixed order, so the same run
     always renders it the same way: the peak and the agent that set it, the
     rate limits and how many came back, the slowest call, the operation
     closest to its cap, and the truncation count. A run whose calls reported
-    input tokens closes with the cache-hit share (D10, S5); a run that
+    input tokens closes with the cache-hit share; a run that
     reported none prints no cache part rather than a measured zero. The
-    event-loop lag monitor's reading (P1-B) always closes the line.
+    event-loop lag monitor's reading always closes the line.
     """
     peak = f"peak {telemetry.peak_calls_in_flight} provider calls in flight"
     if telemetry.peak_agent is not None:
@@ -477,9 +476,9 @@ def render_telemetry_line(telemetry: RunTelemetry) -> str:
 
 
 def render_telemetry_advice(telemetry: RunTelemetry) -> tuple[str, ...]:
-    """The §7.3 advice this telemetry triggers, in a fixed order.
+    """The advice this telemetry triggers, in a fixed order.
 
-    Advice only: the run never acts on it, and nothing is auto-tuned (§12).
+    Advice only: the run never acts on it, and nothing is auto-tuned.
     A run with no rate limits and no operation near or over its cap produces
     no lines at all.
 

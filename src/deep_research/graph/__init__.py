@@ -37,15 +37,6 @@ from deep_research.graph.events import (
     session_started_event,
 )
 from deep_research.graph.live import LiveSink, bind_live_sink, publish_live
-from deep_research.graph.note_outcomes import (
-    RESEARCH_NOTE_TEXT,
-    STEERING_HALF_TEXT,
-    STEERING_NOTE_TEXT,
-    NoteOutcome,
-    note_outcome,
-    note_steering_outcome,
-    report_note_lines,
-)
 from deep_research.graph.nodes import (
     BatchReportPublisher,
     GraphNode,
@@ -61,6 +52,15 @@ from deep_research.graph.nodes import (
     report_writer_node,
     route_after_review,
     writer_redraft_node,
+)
+from deep_research.graph.note_outcomes import (
+    RESEARCH_NOTE_TEXT,
+    STEERING_HALF_TEXT,
+    STEERING_NOTE_TEXT,
+    NoteOutcome,
+    note_outcome,
+    note_steering_outcome,
+    report_note_lines,
 )
 from deep_research.graph.orchestrator import (
     AGENT_NODE_ORDER,

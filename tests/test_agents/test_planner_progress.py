@@ -1,4 +1,4 @@
-"""Planning's live progress (notes-progress-report spec §6.1-§6.3, AC13, AC14).
+"""Planning's live progress.
 
 The planner publishes one live ``planner.progress`` right before each plan-side
 request -- the draft, a repair, each review -- and stamps every slot's final
@@ -55,7 +55,7 @@ def _states(metadata: dict) -> list[tuple[str, str]]:
 
 
 def test_plan_progress_reads_each_slot_as_the_request_about_to_start_leaves_it() -> None:
-    """§6.3: drafted before any review, checking while one runs, being_fixed while a
+    """Drafted before any review, checking while one runs, being_fixed while a
     flagged slot's repair runs, then passed -- or fixed when a repair changed it."""
     topics = _topics("Alpha", "Beta", "Gamma")
 
@@ -84,7 +84,7 @@ def test_a_slot_title_is_capped_at_160_characters() -> None:
 
 
 def test_flagged_ids_are_the_plans_own_coverage_ids_named_in_the_text() -> None:
-    """§6.2: only ids leave the helper; a target id names its topic, an unknown id is dropped."""
+    """Only ids leave the helper; a target id names its topic, an unknown id is dropped."""
     topics = _topics("Alpha", "Beta")
     texts = [
         "topic-02-target-01 anchors currency to 2019",
@@ -95,7 +95,7 @@ def test_flagged_ids_are_the_plans_own_coverage_ids_named_in_the_text() -> None:
 
 
 def test_planning_completed_carries_each_slots_final_state() -> None:
-    """§6.1: every entry gains its final state; a note topic reads ``planned``; without
+    """Every entry gains its final state; a note topic reads ``planned``; without
     states the event is exactly what it was."""
     plan = ResearchPlan(sub_topics=_topics("Alpha", "Beta"))
     note = _sub_topic("note-n1", "Your note: pastries at the cafés")
@@ -118,7 +118,7 @@ def test_planning_completed_carries_each_slots_final_state() -> None:
 
 
 def _flow(name: str) -> tuple[list[object], list[tuple[str, int, list[tuple[str, str]]]], list[tuple[str, str]]]:
-    """(scripted outputs, expected progress events, expected final states) for one AC14 flow."""
+    """(scripted outputs, expected progress events, expected final states) for one flow."""
     three = _plan("Cryptography", "Hardware timelines", "Mitigations")
     flagged_review = _review(
         sound=False,
@@ -196,8 +196,8 @@ def _flow(name: str) -> tuple[list[object], list[tuple[str, int, list[tuple[str,
     ],
 )
 async def test_planner_progress_states(tracker: Tracker, flow: str) -> None:
-    """AC14 on the planner: one live planner.progress before each plan-side request,
-    with the §6.3 slot states, and each slot's final state on planning.completed."""
+    """One live planner.progress before each plan-side request,
+    with the per-slot states, and each slot's final state on planning.completed."""
     outputs, expected_progress, expected_final = _flow(flow)
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")], outputs=outputs,
@@ -218,7 +218,7 @@ async def test_planner_progress_states(tracker: Tracker, flow: str) -> None:
     completed = outcome.state_update["events"][-1]
     assert completed.event_type == "planner.planning.completed"
     assert _states(completed.metadata) == expected_final
-    # AC13: live-only, and never the review's own words.
+    # Live-only, and never the review's own words.
     returned = {e.event_id for e in outcome.state_update["events"]}
     assert all(e.event_id not in returned for e in progress)
     assert all(SECRET not in json.dumps(e.metadata) for e in received)

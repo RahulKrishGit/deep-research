@@ -10,10 +10,10 @@ import { BriefSpine } from "./BriefSpine";
 import { DEFAULT_SETTINGS, buildRequest } from "./Composer";
 import { useConsole } from "./ConsoleProvider";
 
-/* notes-progress-report spec §8.5 (D18, D33; Stop.dc.html column 3): a session the reader stopped. The
+/* A session the reader stopped. The
    question and its settings; one short note — when, how far in, that no report was written — with "Ask
    again" (the same question, a new session); then the pipeline frozen at the stopped row. A stop during
-   the one-time check shows no pipeline card (D33). The service-stopped stage (#stage-stopped,
+   the one-time check shows no pipeline card. The service-stopped stage (#stage-stopped,
    SessionScreen.tsx) is a different stage: the service shut down, the reader did not stop anything. */
 export function UserStoppedStage({ status, run, strip, settings, onToggleRow }: {
   status: ResearchSessionResponse; run: RunState; strip: ReactNode; settings: SubmittedSettings | null; onToggleRow(id: NodeId): void;
@@ -24,7 +24,7 @@ export function UserStoppedStage({ status, run, strip, settings, onToggleRow }: 
   const [failed, setFailed] = useState(false);
   const line = useRef<HTMLParagraphElement>(null);
   // The response says the step; the stream's session.stopped says when and how long, and until it has
-  // arrived the response's own times stand in (spec ambiguity 15).
+  // arrived the response's own times stand in.
   const step = status.stopped_step ?? run.stopped?.step ?? null;
   const at = run.stopped?.at ?? status.finished_at;
   const seconds = run.stopped?.elapsedSeconds ?? secondsBetween(status.started_at, status.finished_at);
@@ -33,7 +33,7 @@ export function UserStoppedStage({ status, run, strip, settings, onToggleRow }: 
   // keyboard or screen-reader user keeps their place. It is not a control, so it draws no ring. When the
   // stream's end and /status show the stop before the POST's 202 lands, this stage mounts while the
   // control is still up and still holds focus (a disabled "Stop research"), and unmounts a moment
-  // later: focus inside it counts as lost too (spec ambiguity 11).
+  // later: focus inside it counts as lost too.
   useEffect(() => {
     const held = document.activeElement;
     if (held === document.body || held?.closest(".stop-anchor")) line.current?.focus();

@@ -35,18 +35,18 @@ from deep_research.agents.errors import (
     planning_provider_error,
 )
 from deep_research.agents.events import agent_event, publish_live
+from deep_research.agents.prompts import (
+    AgentTask,
+    render_memory_guidance,
+    render_structured_reply_format,
+    render_structured_request,
+)
 from deep_research.agents.reader_notes import (
     PLANNING_NOTES,
     is_research_note,
     live_reader_notes,
     note_sub_topic,
     render_reader_notes,
-)
-from deep_research.agents.prompts import (
-    AgentTask,
-    render_memory_guidance,
-    render_structured_reply_format,
-    render_structured_request,
 )
 from deep_research.agents.steps import ReActRun, ReActStep, summarize_text
 from deep_research.agents.toolset import AgentToolset
@@ -63,6 +63,8 @@ from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.text import collapse_whitespace
 from deep_research.utils.types import (
+    _ENERGY_UNIT,
+    _POWER_UNIT,
     MAX_TARGETS_PER_TOPIC,
     NOTE_COVERAGE_PREFIX,
     AnswerContract,
@@ -78,15 +80,13 @@ from deep_research.utils.types import (
     ResearchState,
     ResearchStateUpdate,
     SubTopic,
-    _ENERGY_UNIT,
-    _POWER_UNIT,
     counted_evidence_targets,
 )
 
 PLANNER_NAME = "planner"
 # The floor is one sub-topic: a one-part question is one sub-topic, and
-# requiring three made a small question's size — not its content — the reason
-# a run reached ``graph_planning_failed`` (D11). Every reader of the bound
+# requiring three would make a small question's size — not its content — the reason
+# a run reached ``graph_planning_failed``. Every reader of the bound
 # follows this constant, so the instruction, the plan validators and the
 # planning event's metadata all move together.
 MIN_SUB_TOPICS = 1
@@ -103,8 +103,8 @@ _COVERAGE_ID_WIDTH = 2
 MAX_PLAN_REVIEW_CALLS = 2
 
 # Which plan a problem came from. Every problem the planner reports is labelled
-# with one of these, because the merged, unlabelled list is what made the live
-# run 3 diagnosis read the draft's defects as the repaired plan's.
+# with one of these, because a merged, unlabelled list cannot tell the draft's
+# defects from the repaired plan's.
 _PLAN_DRAFT_LABEL = "draft"
 _PLAN_REPAIR_LABEL = "repair"
 _PLAN_REVIEW_REPAIR_LABEL = "review_repair"
@@ -209,7 +209,7 @@ _COMPARISON_MARKERS = (
 # A bare inequality does not — "waited more than 5 years", "tariffs of more
 # than 10%" are threshold questions — and treating those as comparisons
 # stamped the comparison answer form ("the same measured dimension for every
-# option compared") onto a quantity question, which Section 2.3 then judges
+# option compared") onto a quantity question, which the contract then judges
 # the target unanswered against. A definite threshold noun is also not a
 # referent: "greater than the 10% threshold" still asks about one rule.
 _COMPARATIVE_CUES = (
@@ -381,8 +381,8 @@ _CURRENCY_MARKERS = (
 
 # ``10%``, ``5 percentage points``, ``3 pp``. A cross-publisher agreement
 # tolerance is a measurement claim: without a basis in the question or a named
-# method it is invented, and the last measured plan invented four of them
-# (baseline TR-04). The amount alone is not the defect — "did withdrawals
+# method it is invented, and a plan can invent several of them. The amount
+# alone is not the defect — "did withdrawals
 # exceed 15%?" is a perfectly ordinary question — so a tolerance is reported
 # only when an *agreement frame* governs it (``_AGREEMENT_FRAME`` within
 # ``_AGREEMENT_WINDOW`` characters before the amount). The frame is what makes
@@ -582,14 +582,14 @@ PLAN_INSTRUCTION = (
 # the model has to get right: the first compares two transport options, the
 # second traces a causal public-health question, and both name hypothetical
 # bodies, so the request teaches the format and the field relationships rather
-# than a domain's answer (Fable §2.3).
+# than a domain's answer.
 #
 # The examples are plans the planner's own checks accept, which is the only
-# property an example can teach: an earlier one modelled a "benefits and
-# risks" sub-topic for a comparison question (scope widening) and a target
+# property an example can teach: none models a "benefits and
+# risks" sub-topic for a comparison question (scope widening) or a target
 # asking two things at once ("Which documented risks does each option carry,
 # and by which issuer?") — both of which the plan review, whose rules the
-# instruction now states, names as defects. Every target here asks one
+# instruction states, names as defects. Every target here asks one
 # question.
 _PLAN_REPLY_EXAMPLES = (
     (
@@ -695,10 +695,10 @@ class EvidenceTargetDraft(ContractModel):
     question: str
     # The model states whether the question names this obligation rather than
     # the planner deriving it, because only the question's own wording says
-    # whether a part is one a complete answer needs (spec §7.1). It is
+    # whether a part is one a complete answer needs. It is
     # required of every construction, provider reply and replay double alike.
     required: bool
-    """Whether the question names this obligation, so its answer is required (spec §7.1)."""
+    """Whether the question names this obligation, so its answer is required."""
     # The fields a program checks an answer against; empty when the question
     # does not name one.
     measure: str = ""
@@ -794,7 +794,7 @@ def planner_guidance(memory_context: MemorySnapshot) -> str:
 def has_startup_guidance(memory_context: MemorySnapshot) -> bool:
     """True when this session's startup recall produced procedural guidance.
 
-    Keyed on ``suggested_strategies`` alone, and that is the whole ruling: the
+    Keyed on ``suggested_strategies`` alone, and that is the whole rule: the
     planner's own tool lookup is permitted only when startup recall returned
     nothing. A resumed session whose snapshot carries recalled leads but no
     strategies has *not* been given procedural guidance, so it keeps its one
@@ -964,7 +964,7 @@ class _QuestionClassification:
     """One deterministic result consumed by both Planner stamping paths.
 
     ``ambiguous`` preserves uncertainty inside the local classifier without
-    widening the persisted Task 2 contract. Only ``explicit`` earns the
+    widening the persisted contract. Only ``explicit`` earns the
     comparison answer form; ambiguous inequality language follows the ordinary
     answer-form rules.
     """
@@ -1196,7 +1196,7 @@ def _evidence_period_requirement(
     """What period counts as current for this question.
 
     Publication date, data period, forecast horizon, effective policy date,
-    and retrieval date are different things (Section 2.3), so this names the
+    and retrieval date are different things, so this names the
     one the question is about instead of leaving "current" unqualified.
     """
     parts: list[str] = []
@@ -1228,7 +1228,7 @@ def _evidence_period_requirement(
 # Natural-language phrases that state an explicit evidence cutoff, the way
 # an ISO date in the question already does: "as of December 31, 2025", "as
 # of the end of 2025", "at the end of 2025" and "by the end of 2025" all
-# freeze the date they name (user decision 2). A bare observation year with
+# freeze the date they name. A bare observation year with
 # no such phrase — "for 2025" — still does not: :func:`_past_years` reads
 # that as the period the answer is *about*, not a cutoff.
 _EXPLICIT_CUTOFF_PREFIX_PATTERN = re.compile(
@@ -1325,7 +1325,7 @@ def derive_answer_contract(
     evidence period — "answer it as of 2025-12-31 and never substitute today's
     figures" — which forbids the later revisions and the published 2025
     outturn the reader needs, on a session whose question is exactly about
-    them (user decision 2, review rank 4). The period requirement says which
+    them. The period requirement says which
     period the answer is *about*; the delivery date says when the evidence was
     read, and only a stated date freezes anything.
 
@@ -1335,8 +1335,8 @@ def derive_answer_contract(
     would put a date nobody has lived through into every target's binding
     obligation — the very defect class this contract exists to remove.
 
-    ``reader_answers`` are the reader's answers to the one-time check
-    (live-briefs spec §4.4), applied after the question's own reading: a
+    ``reader_answers`` are the reader's answers to the one-time check,
+    applied after the question's own reading: a
     ``geography`` answer sets the scope, a ``period`` answer sets the evidence
     period, and every answer adds one assumption line. With none, the contract
     is exactly the one the question alone yields.
@@ -1420,7 +1420,7 @@ def _with_reader_answers(
     geography" assumption goes with the unspecified scope it explained; the
     last ``period`` answer becomes the evidence period. Every answer adds
     ``Reader said: {short} = {value}``, or ``Assumed (best guess): {short} =
-    {value}`` for one the reader did not give (live-briefs spec §4.4).
+    {value}`` for one the reader did not give.
     """
     geography = [a.value for a in reader_answers if a.dimension == "geography"]
     periods = [a.value for a in reader_answers if a.dimension == "period"]
@@ -1445,8 +1445,8 @@ def frozen_contract_for(
 ) -> AnswerContract:
     """Return the contract a session is bound by: the one it already froze.
 
-    Section 2.3 freezes the original question, the scope, and the as-of date
-    for the session. A later planning pass may plan more work, but it may not
+    The session freezes the original question, the scope, and the as-of date.
+    A later planning pass may plan more work, but it may not
     re-anchor the period or widen the scope: an as-of date or geography that
     moves between passes silently changes what every already-stamped target's
     binding dimensions mean.
@@ -1521,7 +1521,7 @@ def _structured_fields(target: EvidenceTargetDraft) -> dict[str, object]:
 
     ``unit_dimension`` is one lower-case word from the open vocabulary the
     rule hands the model — ``count`` and ``currency`` are as real as ``power``
-    — so nothing but whitespace and case is normalized here (D10). ``kind`` is
+    — so nothing but whitespace and case is normalized here. ``kind`` is
     still checked against the two values the figure rules read, because a
     downstream check compares it to a vocabulary, not to prose.
     """
@@ -1588,13 +1588,13 @@ def stale_year_anchors(
     anywhere in it into the report. That is why ``question_years`` exists —
     a year the frozen question itself names is the question's subject, not a
     claim that the year is current, so it is dropped before the report is
-    built. The audit question names 2024 under a contract whose as-of date is
-    the session clock, and without this exemption the rule reported the
-    question's own wording and ended two live runs before any research.
+    built. A question that names 2024 under a contract whose as-of date is
+    the session clock would otherwise have its own wording reported and the
+    run ended before any research.
 
     The co-occurrence reading is deliberate in the other direction too: it
     over-reports rather than under-reports, and the plan review call is what
-    judges meaning. The TR-04 defect this rule exists for is a plan that treats
+    judges meaning. The defect this rule exists for is a plan that treats
     an earlier year as today — "the current 2024 figures", "2024 is current".
     """
     normalized = _normalized_question(text)
@@ -1654,9 +1654,8 @@ def invented_tolerances(text: str, *, question: str) -> list[str]:
     A cross-publisher tolerance ("both sources agree within 10%") is a
     measurement claim: it is legitimate when the question asks for that
     precision, or when the criterion names the measurement or method that
-    establishes it. Otherwise the planner invented it — the last measured
-    plan invented 10%, 5 percentage points, 15%, and 3 percentage points
-    (baseline TR-04) — and it is reported so the repair prompt can remove it.
+    establishes it. Otherwise the planner invented it — "10%", "5 percentage
+    points" — and it is reported so the repair prompt can remove it.
     A number with no agreement frame is not a tolerance at all and is never
     reported; see ``_agreement_tolerances``. "The question states it" means the
     same number *and* the same unit.
@@ -1695,13 +1694,13 @@ class _PlanProblem:
     kind: Literal["structural", "advisory"]
 
 
-# What a sub-topic or criterion may demand the question never asked for. The
-# planner's own instruction used to *require* a benefits-and-risks sub-topic
-# for any technology question, which is the widening the plan review names as
+# What a sub-topic or criterion may demand the question never asked for.
+# A benefits-and-risks sub-topic demanded of every technology question is
+# the widening the plan review names as
 # a defect: a plan stays inside the question it was given. The vocabulary is
 # explicit and small, like the currency and tolerance tables, because a
-# judgement about meaning is the review's and this check only names the one
-# class the planner itself used to mandate.
+# judgement about meaning is the review's and this check only names that
+# one class.
 _WIDENING_MARKERS = (
     "benefit",
     "risk",
@@ -1774,7 +1773,7 @@ def _unrequested_energy_measure(
     "How much grid-scale battery storage capacity was added" is a power
     question; a target that asks for MWh/GWh answers a different measure the
     question never asked for, and the researcher spends a whole acquisition
-    loop on a figure nobody wanted (audit #3, C5). Read from the target's own
+    loop on a figure nobody wanted. Read from the target's own
     prose — its question and its measure — because either can carry the unit
     and neither is the whole obligation; the question's own capacity wording
     is the anchor, so the check never has to guess what family a unit-free
@@ -1810,12 +1809,12 @@ def _conjoined_demands(question: str) -> list[str]:
 def _demanded_widening(sub_topic: SubTopic) -> list[str]:
     """The benefits-and-risks *dimension* one sub-topic demands, if it demands one.
 
-    A dimension is a pairing, not a word. The check exists for the sub-topic an
-    earlier instruction *mandated* — benefits and risks together — and a single
+    A dimension is a pairing, not a word. The check exists for the sub-topic
+    that *mandates* benefits and risks together, and a single
     marker is a domain word as often as it is a demand: "systemic risk" is what
-    the EU AI Act calls the subject matter it regulates, so a live plan whose
-    sub-topic used it bought a max-effort repair call for a good plan, and a
-    repair can delete the dimension the question asked for (D14). Two distinct
+    the EU AI Act calls the subject matter it regulates, so a plan whose
+    sub-topic used it would buy a max-effort repair call for a good plan, and a
+    repair can delete the dimension the question asked for. Two distinct
     markers are the pairing; one marker is left to the plan review, which
     judges scope widening with meaning. The words are counted here, not judged,
     which is why the count has to be the shape the check was written for.
@@ -2137,12 +2136,12 @@ _BODY_WORD = re.compile(r"[^\W\d_][\w'\u2019-]*")
 def _names_a_body(value: str) -> bool:
     """Whether ``value`` names a body, as a page's organisation label does.
 
-    §6.6 binds a target's answer to a finding through ``same_organisation``,
+    A target's answer is bound to a finding through ``same_organisation``,
     which matches names: a page's own organisation label, its acronym, or its
     host. A *description* of a body's role matches none of those, so a target
-    stamped with one was reported Not found for the whole run while the report
-    held its answer, and an extra pass was bought for it (live probe P3/P4 —
-    "the manufacturer of semaglutide" for a drug's maker).
+    stamped with one would be reported Not found for the whole run while the
+    report held its answer, and an extra pass would be bought for it ("the
+    manufacturer of semaglutide" for a drug's maker).
 
     The shape decides, in both directions. A description is lower case prose
     with a role or a relative clause in it ("the regional health authority",
@@ -2178,7 +2177,7 @@ def _names_a_body(value: str) -> bool:
 def _stamped_organisation(value: str | None) -> str | None:
     """The organisation a plan may stamp: a body's name, or nothing.
 
-    The ruling the check implements: a plan may stamp an organisation only when
+    The rule the check implements: a plan may stamp an organisation only when
     it is a name — one the question states, or the name of the body that
     publishes the primary record — and never a description of a role. A
     description is left empty, which is exactly the state the plan instruction
@@ -2197,10 +2196,10 @@ def _stamped_organisation(value: str | None) -> str | None:
 # The answer forms whose answer is an argument or a text rather than a
 # measured quantity: a why-question's mechanism, and a question about a list of
 # rules, provisions or dated changes. A target of such a question that carries
-# a unit dimension or a kind is a figure the plan added of its own accord — the
-# grader's P6 Roman Republic plan marked required count and currency targets of
-# kind actual on a why-question — so the run owed figures nobody asked for while
-# the reasons it did ask for were not what acceptance measured.
+# a unit dimension or a kind is a figure the plan added of its own accord
+# (required count and currency targets of kind actual on a why-question), so
+# the run would owe figures nobody asked for while the reasons it did ask for
+# were not what acceptance measured.
 _FIGURE_ANSWER_FORMS = frozenset({"explanation", "constraints"})
 
 # What says the question itself asks for a quantity to be measured: an ask for
@@ -2223,7 +2222,7 @@ _MAGNITUDE_WORDS = (
 
 
 def _question_asks_for_a_quantity(contract: AnswerContract) -> bool:
-    """Whether the question itself asks for a quantity to be measured (§7.1).
+    """Whether the question itself asks for a quantity to be measured.
 
     Read from the frozen question's own words: an ask for a magnitude ("how
     much", "what share"), a unit token, or a word that names a measured
@@ -2259,11 +2258,11 @@ _USE_FRAME_WINDOW = 24
 
 
 def _question_window(contract: AnswerContract) -> str | None:
-    """The one time window the question bounds, as a period to stamp (§7.1).
+    """The one time window the question bounds, as a period to stamp.
 
-    The final probe's P7 plan stamped "since 1993" on two of its three sea-level
-    targets and left the third empty, and its P8 plan left the window off a
-    share target while its siblings carried it: a figure target of a windowed
+    A plan can stamp "since 1993" on two of three sea-level targets and leave
+    the third empty, or leave the window off a share target while its siblings
+    carry it: a figure target of a windowed
     question that states no period of its own is a defect the review has to
     repair. The window is read from the question's own words, and only when the
     question names exactly one year *and* frames it as the window it asks about,
@@ -2289,9 +2288,9 @@ def _question_window(contract: AnswerContract) -> str | None:
 # total, share or rate *of something*. Only the ask counts, never a magnitude
 # word on its own: the middle of a measure is where a magnitude word lives
 # without any obligation behind it ("interconnection constraints" beside a
-# sub-topic called "Queue totals"), and demoting that shape is how a word list
-# removed `required` from every target of a headphones question in the probe
-# re-run. Rule 4's other half — a question answered by a reason carries no
+# sub-topic called "Queue totals"), and demoting that shape would let a word
+# list remove `required` from every target of a headphones question. The
+# other half of the figure rule: a question answered by a reason carries no
 # figure obligation the question never asked for.
 _TARGET_QUANTITY_ASKS = (
     "how much", "how many", "number of", "count of", "total of", "share of",
@@ -2308,14 +2307,14 @@ def _target_asks_for_a_quantity(target: EvidenceTarget) -> bool:
 
 
 def _figure_targets_are_planned(contract: AnswerContract) -> bool:
-    """Whether this question's own form lets a target carry a figure (§7.1).
+    """Whether this question's own form lets a target carry a figure.
 
     A question answered by a mechanism or by a text plans no figure target of
     its own: its parts are reasons, rules, provisions or dated changes, and any
     figure the researcher later finds is evidence inside that finding rather
     than an obligation the run must answer. A question that asks for a quantity
-    keeps its figures whatever its form — the audit question is answered by an
-    argument in part and still asks "how much capacity was added".
+    keeps its figures whatever its form — a question can be answered by an
+    argument in part and still ask "how much capacity was added".
     """
     if contract.answer_kind not in _FIGURE_ANSWER_FORMS:
         return True
@@ -2326,25 +2325,25 @@ def apply_answer_contract(
     sub_topics: Sequence[SubTopic],
     contract: AnswerContract,
 ) -> list[SubTopic]:
-    """Re-stamp each target's id, organisation and ``required`` flag (spec §7.1).
+    """Re-stamp each target's id, organisation and ``required`` flag.
 
     The model marks a target required only when the question names it, and that
-    reading is enforced by the instruction, not by a word test: the probe re-run
-    showed what a word test costs — a majority-of-distinctive-words rule removed
-    ``required`` from every target of a headphones question whose measures were
+    reading is enforced by the instruction, not by a word test: a
+    majority-of-distinctive-words rule would remove
+    ``required`` from every target of a headphones question whose measures are
     *paraphrases* of it ("sound quality rating (highest-ranked model)" against
-    "best audio quality"), so the plan owed nothing and a report could omit every
+    "best audio quality"), so the plan would owe nothing and a report could omit every
     part and still pass. A word list cannot judge paraphrase, and the failure
     mode of a wrong demotion is worse than a wrongly-required aid, which costs
     one extra pass. The instruction therefore says which targets are optional
-    (``PLAN_INSTRUCTION``), and one bounded code rule remains (Fable C-d): a
+    (``PLAN_INSTRUCTION``), and one bounded code rule remains: a
     target that asks for an energy figure (MWh) a capacity question never named
     is optional whatever the draft said.
 
     Two fields are corrected on the way: a question answered by an argument or a
     text plans no figure of its own (``_figure_targets_are_planned``), and a body
     the plan can only *describe* is emptied so a target is never bound to a label
-    §6.6 can never match (``_stamped_organisation``). Nothing is ever promoted:
+    ``same_organisation`` can never match (``_stamped_organisation``). Nothing is ever promoted:
     required is the model's to grant.
     """
     stamped: list[SubTopic] = []
@@ -2391,9 +2390,8 @@ def apply_answer_contract(
         for sub_topic in stamped
         for target in sub_topic.evidence_targets
     ):
-        # Rule 4's second half may not leave a plan that owes nothing: the probe
-        # re-run measured that failure, so the first obligation of every
-        # sub-topic is required again and the plan keeps owing its dimensions.
+        # A plan may not owe nothing: the first obligation of every
+        # sub-topic is required again, so the plan keeps owing its dimensions.
         stamped = [
             sub_topic.model_copy(
                 update={
@@ -2435,7 +2433,7 @@ def inventory_target_ids(sub_topics: Sequence[SubTopic]) -> list[str]:
     Filtered through ``counted_evidence_targets`` because these ids populate
     the frozen coverage denominator: the reserved omission reference records a
     gap and is not an evidence obligation, so counting it would inflate the
-    inventory Section 2.3 makes load-bearing.
+    inventory the frozen contract makes load-bearing.
     """
     return [
         target.target_id
@@ -2686,11 +2684,11 @@ def render_answer_contract(contract: AnswerContract) -> str:
 
 
 def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
-    """Print the reader's answers to the one-time check (live-briefs spec §4.4).
+    """Print the reader's answers to the one-time check.
 
     One line per question, saying whether the reader gave the answer or the
     check assumed it. Rendered only when there are answers, so a request
-    without them is byte-identical to one built before the check existed.
+    without them carries no answers section.
     """
     lines = [
         "Before planning, the reader answered a short check about what the "
@@ -2704,8 +2702,7 @@ def render_reader_answers(reader_answers: Sequence[ReaderAnswer]) -> str:
 def reader_answer_lines(reader_answers: Sequence[ReaderAnswer]) -> list[str]:
     """One line per answer to the one-time check: the question, the answer, and
     whether the reader gave it or the check assumed it -- the lines the planner
-    prints under its lead sentence and the bottom line prints alone
-    (notes-progress-report spec §7.1)."""
+    prints under its lead sentence and the bottom line prints alone."""
     lines: list[str] = []
     for answer in reader_answers:
         said = (
@@ -2731,15 +2728,15 @@ def plan_messages(
 
     Static first: the requirements and the reply format are the same text on
     every request, so a provider's prefix cache can reuse them, and they are
-    what the model must read before the question they govern (PD-29).
+    what the model must read before the question they govern.
 
     ``contract`` is the frozen answer contract. The planner always passes
     one; a caller that omits it gets the plan requirements without a frozen
     scope, which is what a replay of an older prompt looks like.
     ``reader_answers`` add a ``# Reader answers`` section after the contract,
-    only when there are any (live-briefs spec §4.4). ``reader_notes`` is the
+    only when there are any. ``reader_notes`` is the
     rendered ``# Reader notes`` block (``agents.reader_notes``), added after
-    them only when it is not empty (live-briefs spec §4.6).
+    them only when it is not empty.
     """
     static = [
         f"# Plan requirements\n{PLAN_INSTRUCTION}",
@@ -2877,9 +2874,9 @@ def plan_review_messages(
 
     ``reader_answers`` add the same ``# Reader answers`` section the plan
     request carries, only when there are any, so the review does not flag a
-    narrowing the reader asked for as a missing dimension (spec §4.4).
+    narrowing the reader asked for as a missing dimension.
     ``reader_notes`` adds the plan request's ``# Reader notes`` block after
-    them, for the same reason, only when it is not empty (spec §4.6).
+    them, for the same reason, only when it is not empty.
     """
     sections = [
         f"# Original question (frozen)\n{contract.question}",
@@ -2940,10 +2937,10 @@ def planning_completed_event(
     """Report the finished plan's size, its sub-topics and how the scoping loop stopped.
 
     ``sub_topics`` lists each planned sub-topic's ``coverage_id`` and title, the
-    title capped at 160 characters (live-briefs spec AC2): plan content a console
+    title capped at 160 characters: plan content a console
     shows the reader, never provider error text (``agents/events.py``). The
     reader's research notes the plan is published with follow, each with its
-    ``note_id`` (notes-progress-report spec §5.2); ``sub_topic_count`` counts
+    ``note_id``; ``sub_topic_count`` counts
     both, and ``note_topic_count`` the notes' alone.
     """
     plan = outcome.result
@@ -2980,14 +2977,14 @@ def planning_completed_event(
             "tool_calls": outcome.react.tool_calls,
         },
     )
-    # notes-progress-report spec §6.1: with ``states`` each entry also carries
-    # its slot's final state (§6.3); without them the event is as Phase A built it.
+    # With ``states`` each entry also carries
+    # its slot's final state; without them the event carries no slot states.
     return event if states is None else with_slot_states(event, states)
 
 
-# --- notes-progress-report spec §6.1-§6.3: Planning's live progress ----------
+# --- Planning's live progress -------------------------------------------------
 
-#: What a plan slot reads (spec §6.3). ``planner.progress`` carries ``drafted``,
+#: What a plan slot reads. ``planner.progress`` carries ``drafted``,
 #: ``checking``, ``being_fixed``, ``passed`` and ``fixed`` while the plan is
 #: drafted, checked and fixed; ``planner.planning.completed`` carries each
 #: slot's final state: ``passed``, ``fixed``, ``flagged`` or ``not_checked``.
@@ -2998,7 +2995,7 @@ _PLAN_TOPIC_ID = re.compile(r"\btopic-\d{2}\b")
 
 
 def flagged_topic_ids(texts: Sequence[str], sub_topics: Sequence[SubTopic]) -> set[str]:
-    """The plan's coverage ids that ``texts`` name (notes-progress-report spec §6.2).
+    """The plan's coverage ids that ``texts`` name.
 
     Only ids leave this function, never the text it read: a problem line or a
     plan review's ``repair_instruction`` is the model's own words.
@@ -3020,12 +3017,12 @@ def plan_progress(
     step: str,
     check_round: int,
 ) -> dict[str, JsonValue]:
-    """``planner.progress`` metadata for the plan-side request about to start (spec §6.1).
+    """``planner.progress`` metadata for the plan-side request about to start.
 
     ``step`` names the request: ``drafting`` (the draft), ``fixing`` (a repair)
     or ``checking`` (a review), and ``check_round`` is 0 before the first
     review, 1 for the review and its repair, 2 for the confirming review. Each
-    slot's ``state`` follows §6.3: every slot reads ``checking`` while a review
+    slot's ``state``: every slot reads ``checking`` while a review
     runs; a slot the text being acted on flagged reads ``being_fixed`` while its
     repair runs; before any review a slot reads ``drafted``, and after one it
     reads ``passed``, or ``fixed`` when a repair changed or added it.
@@ -3055,7 +3052,7 @@ def plan_progress(
 
 
 def planner_progress_event(metadata: dict[str, JsonValue]) -> ResearchEvent:
-    """One ``planner.progress`` event (notes-progress-report spec §4 item 1, §6.1).
+    """One ``planner.progress`` event.
 
     Live-only: published through the run's sink and never returned in the
     planner's state update, so it is never in ``ResearchState.events``.
@@ -3069,10 +3066,10 @@ def planner_progress_event(metadata: dict[str, JsonValue]) -> ResearchEvent:
 
 
 def with_slot_states(event: ResearchEvent, states: Mapping[str, str]) -> ResearchEvent:
-    """``planner.planning.completed`` with each sub-topic's final slot state (spec §6.1).
+    """``planner.planning.completed`` with each sub-topic's final slot state.
 
     A planned topic reads the state the plan checks left it in (``not_checked``
-    when none is recorded); a note topic the run appended (§5.2) reads
+    when none is recorded); a note topic the run appended reads
     ``planned``.
     """
     entries = event.metadata.get("sub_topics")
@@ -3099,7 +3096,7 @@ def _plan_signature(sub_topic: SubTopic) -> str:
 
 
 class _PlanProgress:
-    """One planning run's slot states, published live as ``planner.progress`` (spec §6.2).
+    """One planning run's slot states, published live as ``planner.progress``.
 
     ``repaired`` collects the ids a repair changed or added. ``judged`` holds
     each id's signature as the latest review that produced a verdict saw it,
@@ -3155,7 +3152,7 @@ class _PlanProgress:
         )
 
     def final(self, sub_topics: Sequence[SubTopic]) -> dict[str, str]:
-        """Each slot's final state (spec §6.3), for ``planner.planning.completed``.
+        """Each slot's final state, for ``planner.planning.completed``.
 
         ``not_checked`` when no review produced a verdict on the slot as it now
         stands; otherwise ``flagged`` when that verdict named it (no repair is
@@ -3336,10 +3333,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     description = "Turn a research question into a validated research plan."
     allowed_tools = ("query_memory", "web_search")
     preserve_provider_errors = True
-    # The planner's prompt contract changed in Task 2: the plan request prints
-    # the frozen answer contract and asks for atomic evidence targets, and a
-    # tool-free plan review runs after it. An artifact therefore says which
-    # planner instructions produced it.
+    # The plan request prints the frozen answer contract and asks for
+    # atomic evidence targets, and a tool-free plan review runs after it. An
+    # artifact therefore says which planner instructions produced it.
     prompt_version = "planner-2"
 
     def __init__(
@@ -3387,7 +3383,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         self._planned_coverage_ids: frozenset[str] = frozenset()
         # Counted per run so the review/repair cycle stays bounded.
         self._review_calls = 0
-        # Set by ``finalize`` (notes-progress-report spec §6.3): each slot's final
+        # Set by ``finalize``: each slot's final
         # state, which ``run`` stamps on ``planner.planning.completed``.
         self._plan_states: dict[str, str] = {}
 
@@ -3413,7 +3409,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         )
 
     def reader_notes_block(self) -> str:
-        """The ``# Reader notes`` block as of now, or ``""`` (live-briefs spec §4.6).
+        """The ``# Reader notes`` block as of now, or ``""``.
 
         The notes the run was handed plus any that arrived since, from the
         run's board, so a note sent while the planner scopes the question
@@ -3432,21 +3428,11 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> str:
         """The scoping loop's per-turn context: the reader's notes, when there are any.
 
-        Empty without notes, so the scoping turn's request is exactly what it
-        was before notes existed (live-briefs spec §4.6).
+        Empty without notes, so the scoping turn's request carries no notes
+        block.
         """
         del task, iteration, steps
         return self.reader_notes_block()
-
-    @property
-    def frozen_contract(self) -> AnswerContract | None:
-        """The contract this session already froze, if any.
-
-        ``None`` until ``run`` has been handed a state; set from the state's
-        own ``answer_contract`` so both ``finalize`` and ``state_update`` can
-        honour it.
-        """
-        return self._frozen_contract
 
     @property
     def toolset(self) -> AgentToolset:
@@ -3489,7 +3475,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             planning_started_event(state),
             memory_recalled_event(state.memory_context),
         ]
-        # Published live (live-briefs spec E3); the same objects are returned below.
+        # Published live; the same objects are returned below.
         for event in events:
             publish_live(event)
         try:
@@ -3498,10 +3484,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise planning_provider_error("react_decision") from error
         finally:
             self._restricted_toolset = None
-        # notes-progress-report spec §5.2 (D1, D2): every research note read so
+        # Every research note read so
         # far joins the plan it is published with, as its own sub-topic. Nothing
         # from here to the live publication below awaits, so a note read after
-        # this line is the researcher's to pick up (§5.3).
+        # this line is the researcher's to pick up.
         note_topics = self._note_topics_for(state, outcome.result)
         completed = planning_completed_event(
             outcome, note_topics=note_topics, states=self._plan_states
@@ -3527,7 +3513,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     def _note_topics_for(
         self, state: ResearchState, plan: ResearchPlan | None
     ) -> list[SubTopic]:
-        """The sub-topics of the research notes this plan is published with (spec §5.2).
+        """The sub-topics of the research notes this plan is published with.
 
         Every active note read so far — the state's, then the board's newer ones —
         whose kinds include ``new_angle`` and whose ``note-{id}`` neither the
@@ -3582,7 +3568,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> _PlanAttempt:
         try:
             # ``plan`` is draft, repair or review_repair: the call record's
-            # name for this request (latency audit O8).
+            # name for this request.
             with call_label(f"plan_{plan}"):
                 draft = await self._complete_plan_request(
                     plan_messages(
@@ -3673,7 +3659,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             )
         self._review_calls += 1
         try:
-            # The call record's name for this request (latency audit O8): the
+            # The call record's name for this request: the
             # review a plan gets on every pass, or the one after its repair.
             with call_label(
                 "plan_review"
@@ -3710,10 +3696,10 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         """One plan-side structured request, re-asked once if it is truncated.
 
         Every plan-side call — the draft, its two repairs, the review and the
-        confirming review — runs under ``planner_final_max_tokens``, and run 2's
-        plan call ended at 90 % of it: a request that reasons past the cap raises
+        confirming review — runs under ``planner_final_max_tokens``, and a plan
+        call can end near it: a request that reasons past the cap raises
         ``ProviderOutputLimitError``, which is not retryable, and a truncated
-        first draft ended the run before any research. A truncation is the one
+        first draft would end the run before any research. A truncation is the one
         failure a different request can fix, so it is re-asked once with the
         same messages, schema and output budget at the shared retry effort,
         which leaves more of that budget for the answer — the reviewer's and
@@ -3782,7 +3768,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
 
         The one repair is what a plan's own local defects get. A plan that keeps
         the very target its repair was told about has not taken the correction,
-        and the live nine-question probe's P3, P4 and P6 plans shipped a
+        and would ship a
         planner_plan_defects_unresolved record for exactly that: an advisory
         naming a target the plan kept anyway. Removing the target removes the
         defect — the plan ships without it, its id leaves the frozen inventory
@@ -3823,8 +3809,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             for target in sub_topic.evidence_targets
         ):
             # The dropped targets were the whole of what the plan owed. A plan
-            # that owes nothing is the failure the probe re-run measured (every
-            # target optional), so the first obligation of every sub-topic that
+            # that owes nothing (every target optional) is a failure, so the
+            # first obligation of every sub-topic that
             # survived is required again: the plan keeps owing its dimensions
             # and still ships without the target its repair was told about.
             pruned = [
@@ -3872,7 +3858,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         warning block, the ledger's run-error table, and the quality record's
         error registry by the path every recorded error takes. ``plan`` names
         the plan the problems belong to and every problem carries that label:
-        the merged, unlabelled list is what made the live run 3 diagnosis wrong.
+        a merged, unlabelled list cannot say which plan a problem belongs to.
 
         Nothing here is an acceptance gate. The report-level gates judge what
         the *research* produced; a planning defect that survived its bounded
@@ -3916,9 +3902,9 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
     ) -> ResearchPlan | None:
         """Request a plan, repair and review it at most once each, or fail.
 
-        The bounds are unchanged — one repair of the local checks, one semantic
+        The bounds are one repair of the local checks, one semantic
         review, at most one repair of what the review named, and one confirming
-        review — but a surviving defect no longer ends the run. Planning raises
+        review — and a surviving defect does not end the run. Planning raises
         only when no structurally valid plan exists: when both the draft and
         its repair fail the structural checks, which are the target count, the
         question form, and ``validate_plan_draft``. Anything else continues
@@ -3947,7 +3933,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             raise planning_provider_error("react_loop")
 
         contract = self.answer_contract_for(task.instruction)
-        # notes-progress-report spec §6.2: one live ``planner.progress`` right
+        # One live ``planner.progress`` right
         # before each plan-side request; nothing runs between one request's
         # return and the next one's start, so each event also marks the return.
         progress = _PlanProgress()
@@ -3978,7 +3964,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
             except PlanningError as error:
                 # A repair that cannot be produced is not a reason to end a run
                 # whose draft is researchable: repairs are the heaviest plan
-                # request, and live run 2 truncated on one. When the draft is
+                # request, and one can truncate. When the draft is
                 # not researchable either, there is nothing left to hand the
                 # researcher, so the failure stays fatal and carries the
                 # draft's own labelled problems.
@@ -4165,8 +4151,8 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         appends, so re-emitting ``topic-01`` beside the existing ``topic-01``
         would put two different topics under one id while
         ``initial_target_ids`` — union-protected — kept counting both. The plan
-        already reviewed stands, and a pass cannot replace or weaken it
-        (Section 2.3); only genuinely new ids cross this boundary.
+        already reviewed stands, and a pass cannot replace or weaken it; only
+        genuinely new ids cross this boundary.
 
         The contract is stamped only when the session has none. A later plan
         therefore cannot re-anchor a session's as-of date or scope: the state

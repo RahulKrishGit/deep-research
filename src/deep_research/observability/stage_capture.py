@@ -1,6 +1,6 @@
-"""Write a live run's stage inputs to disk, for the latency plan's stage replay.
+"""Write a live run's stage inputs to disk, for stage replay.
 
-Latency audit §7 tier 2: a change to how a stage batches its model calls (X1)
+A change to how a stage batches its model calls
 is judged by running that stage again on exactly the evidence a recorded run
 handed it. Two inputs are captured, and only while an experiment has bound a
 directory with ``bind_stage_capture``:

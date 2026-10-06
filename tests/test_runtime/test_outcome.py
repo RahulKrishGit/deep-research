@@ -649,7 +649,7 @@ def test_build_outcome_carries_both_terminal_artifact_paths() -> None:
 
 
 def test_a_failed_terminal_evidence_write_yields_no_evidence_path() -> None:
-    """Step 1: a failed ledger write yields ``None``, not an earlier path."""
+    """A failed ledger write yields ``None``, not an earlier path."""
     run = GraphRun(
         session_id="session-1",
         state=base_state(
@@ -697,10 +697,10 @@ def test_a_gate_failure_is_never_accepted() -> None:
 
 
 def test_a_pass_with_an_extra_pass_left_is_not_accepted() -> None:
-    """PD-23: the route is ``extra_pass``, so the report is not accepted yet.
+    """The route is ``extra_pass``, so the report is not accepted yet.
 
     The fixture is the shape the reviewer node leaves: the deterministic pass
-    measured one missing required target and the record names it (PD-5), with
+    measured one missing required target and the record names it, with
     an extra pass still to spend. Acceptance is the router's own decision
     (``graph_quality_status``), which the outcome reads rather than re-derives.
     """
@@ -715,10 +715,10 @@ def test_a_pass_with_an_extra_pass_left_is_not_accepted() -> None:
 
 
 def test_a_spent_extra_pass_with_the_target_under_not_found_is_accepted() -> None:
-    """PD-23: passes spent, gates clear, reviewer accepts -> completed.
+    """Passes spent, gates clear, reviewer accepts results in completion.
 
     The missing target stays missing and stays disclosed — it is listed under
-    Not found, which §6.4 accepts — so the run finishes ``completed`` with an
+    Not found — so the run finishes ``completed`` with an
     accepted report rather than ``max_iterations``. The budget running out is a
     fact about the machine, not a defect in the report.
 
@@ -1169,7 +1169,7 @@ def test_coverage_progress_is_a_frozen_reading_of_ids() -> None:
     )
 
 
-# --- work identity and citation counts (Task 4.10d) ---------------------------
+# --- work identity and citation counts ---------------------------
 #
 # Three work-identity records the claim-era quality record published, restored
 # against the live counts. ``distinct_retention_counts`` (``agents/report.py``)
@@ -1385,11 +1385,11 @@ def test_a_source_no_assessment_covers_is_its_own_work_entry() -> None:
 
 
 def test_the_cited_count_is_what_the_published_report_cites() -> None:
-    """P2-1: ``cited_assessed_sources`` is the report's own evidence line.
+    """``cited_assessed_sources`` is the report's own evidence line.
 
     The count intersects the assessed URLs with exactly the pages the written
     report cites: everything its points, its sections and the question-shaped
-    table's cells reference (spec §5), with mirror copies never merged. A
+    table's cells reference, with mirror copies never merged. A
     source cited only through a table cell therefore counts as cited, three
     URLs of one work are three cited sources, and an assessed source the
     report never cites is not counted at all.

@@ -1,4 +1,4 @@
-"""The written report's deterministic gate set (spec §6.4, PD-10).
+"""The written report's deterministic gate set.
 
 Nine gates over one pass's report and the verified findings behind it:
 unresolved citations, uncited settled points, duplicate fact rows, a missing
@@ -31,12 +31,12 @@ from deep_research.utils.types import (
 
 def _one_fact(left: FactRow, right: FactRow,
               targets: Iterable[EvidenceTarget]) -> bool:
-    """Whether two rows would be one fact to ``fact_rows`` (F11, PD-9, D11).
+    """Whether two rows would be one fact to ``fact_rows``.
 
-    Invariant (F11): ``fact_rows()`` already merges same-fact rows, so this
+    Invariant: ``fact_rows()`` already merges same-fact rows, so this
     guards hand-built compositions and future producers, and it may only count a
     pair the rows path would have merged. Two of its rules keep rows apart, and
-    both are mirrored here (the final review's P2-3 and I6):
+    both are mirrored here:
 
     * a row that states no subject is not the same fact as a row that names one.
       ``same_subject`` treats no subject as compatible with any, which is what
@@ -46,8 +46,7 @@ def _one_fact(left: FactRow, right: FactRow,
     * two rows answering different obligations are two facts, however equal
       their values -- the two parts of one question, not one fact stated twice.
 
-    The subject term is asked over the same context the rows path builds
-    (Task 5.6c fix round 1).
+    The subject term is asked over the same context the rows path builds.
     """
     if left.kind != right.kind or left.value != right.value:
         return False
@@ -66,7 +65,7 @@ def compute_report_quality(
     state: ResearchState,
     composition: ReportComposition,
 ) -> ReportQualitySnapshot:
-    """The written report's own gate set (spec §6.4, PD-10).
+    """The written report's own gate set.
 
     ``state`` supplies the plan's targets, the verified findings and the two
     published artifacts; ``composition`` supplies the sentences that reached
@@ -77,12 +76,12 @@ def compute_report_quality(
 
     A required target is missing when no verified finding answers it
     (``verified_facts.answered_target_ids``), and accounted for when the
-    reader report lists it under Not found: §2.3 requires every remaining
-    obligation to be disclosed, not to be met.
+    reader report lists it under Not found: every remaining
+    obligation must be disclosed, not met.
     """
     targets = [t for topic in state.sub_topics for t in topic.evidence_targets]
     required = [t.target_id for t in targets if t.required]
-    # The plan goes in with the findings (improvement 1A): an extraction that
+    # The plan goes in with the findings: an extraction that
     # bound no target is answered through the sub-topic it names, which is what
     # stops the gate declaring an obligation the report itself answers.
     answered = answered_target_ids(state.verified_findings, targets,
@@ -95,9 +94,8 @@ def compute_report_quality(
     points = [*composition.summary, *(p for s in composition.sections for p in s.points)]
     stated = {identifier for p in points if p.statement is not None
               for identifier in p.statement.finding_ids}
-    # Review F2 (extended, P1-3, and its disclosure follow-up): an answered
-    # target is not yet *accounted for*, whichever way it was answered. With
-    # the fallback (1A) an unbound finding answers a target of its own
+    # An answered target is not yet *accounted for*, whichever way it was
+    # answered. With the fallback an unbound finding answers a target of its own
     # sub-topic; an explicit binding answers it directly. Either way,
     # nothing else forces that answer to reach the reader -- a required
     # question could be neither stated nor disclosed while every other gate
@@ -118,7 +116,7 @@ def compute_report_quality(
     uncited = sum(1 for p in points if p.statement is None or not p.statement.finding_ids)
     unresolved = sum(1 for p in points if p.statement is not None and (
         any(i not in by_id for i in p.statement.finding_ids) or not p.source_urls))
-    # §6.4, D8: every kept sentence was judged by the Statement Check, or its
+    # Every kept sentence was judged by the Statement Check, or its
     # batch failure is recorded. A kept sentence with neither is the gate.
     failure_recorded = any(
         error.error_type in {"evidence_verifier_statement_check_failed", "report_writer_statement_check_failed"}

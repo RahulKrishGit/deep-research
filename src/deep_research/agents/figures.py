@@ -1,4 +1,4 @@
-"""Figure normalisation for the Evidence Verifier (spec §5.1 step 2).
+"""Figure normalisation for the Evidence Verifier.
 
 One fixed, question-independent rule set reads a figure out of text:
 
@@ -10,7 +10,7 @@ One fixed, question-independent rule set reads a figure out of text:
   parenthetical; an ``ac``/``dc`` suffix on the abbreviated unit is ignored;
 - a single number word before a unit ("ten gigawatts") is its number;
 - a currency spelling (``$``, ``US$``, ``USD``, ``dollar(s)``) is one unit,
-  and a score's ``/5`` is one unit with ``out of 5`` (D13), but only when
+  and a score's ``/5`` is one unit with ``out of 5``, but only when
   :func:`same_quantity` *compares* two already-parsed figures: neither gets a
   scale (``unit_dimension`` still reads ``None`` for both), ``Quantity.unit``
   keeps the plain spelling ``_canonical_unit`` read, and a figure's own
@@ -18,9 +18,9 @@ One fixed, question-independent rule set reads a figure out of text:
   finds "390 dollars" or "4.8 out of 5" exactly as the page wrote them.
 
 Two live uses: :func:`figure_in_text` and :func:`quantities_in` decide whether
-a snippet states the figure when the Context Check could not judge it (PD-26),
+a snippet states the figure when the Context Check could not judge it,
 and :func:`parse_figure` with :func:`same_quantity` compares two figures'
-values -- the row grouping (PD-9) and a report sentence's restatement of a
+values -- the row grouping and a report sentence's restatement of a
 figure. Nothing here ever reads a finding's ``content``.
 """
 
@@ -77,8 +77,6 @@ class Quantity:
     unit: str
     dimension: UnitDimension | None
     base: Decimal | None
-    value_text: str
-    unit_text: str
     start: int = 0
     end: int = 0
 
@@ -102,17 +100,16 @@ def _known_unit(text: str) -> str | None:
 # the ac/dc qualifier a unit may carry. A half that scales or denominates the
 # unit is not its abbreviation ("kWh (millions)" is a million kWh, "GW
 # (thousands)" a thousand GW, "kWh (per capita)" a rate), and reading one half
-# while dropping the other gave those units a base that was off by orders of
-# magnitude (RevFF1r3's Important 3).
+# while dropping the other would give those units a base that is off by orders
+# of magnitude.
 _BRACKETED_UNIT = re.compile(r"^(?P<outer>[^()]+?)\((?P<inner>[^()]+)\)$")
 _UNIT_QUALIFIERS = frozenset({"ac", "dc", "acdc"})
 
-# A currency spelling names one unit for comparison only (D13): the run's own
-# prices came back as "$390" one loop and "390 USD" the next, and the two
-# spellings never folded into one fact. Never added to ``_SCALES`` -- a
+# A currency spelling names one unit for comparison only: the same price can
+# come back as "$390" one loop and "390 USD" the next, and the two
+# spellings must fold into one fact. Never added to ``_SCALES`` -- a
 # currency has no scale to convert, and a target asking for one is answered
-# through the unscaled path (``unit_dimension`` stays ``None``), same as
-# before.
+# through the unscaled path (``unit_dimension`` stays ``None``).
 _CURRENCY_UNITS = frozenset({"$", "us$", "usd", "dollar", "dollars"})
 # A score's denominator is part of the unit, not the value: "4.8/5" and "4.8
 # out of 5" are one figure, but "4.8/5" and "4.8/10" are not the same scale.
@@ -129,8 +126,7 @@ def _canonical_unit(unit: str) -> str:
         halves = [bracketed.group(part).strip() for part in ("outer", "inner")]
         units = [_known_unit(half) for half in halves]
         # The ac/dc qualifier is written with whatever separator the page uses
-        # ("AC/DC", "a/c", "A.C."), so it is tested with them all removed
-        # (ReRevFF1p1's N2).
+        # ("AC/DC", "a/c", "A.C."), so it is tested with them all removed.
         qualified = [re.sub(r"[^a-z]", "", half.casefold()) in _UNIT_QUALIFIERS
                      for half in halves]
         if units[0] is not None and units[0] == units[1]:
@@ -145,11 +141,11 @@ def _canonical_unit(unit: str) -> str:
 def _comparison_unit(unit: str) -> str:
     """``unit`` (already ``_canonical_unit``-read) folded for comparison only.
 
-    P1 fix: this must never feed ``Quantity.unit`` -- ``figure_in_text``
-    builds its literal search from that field, so folding it there made the
-    search look for "usd"/"/5" instead of the spelling the page actually
-    used, and a verbatim price or score figure stopped matching (dropped by
-    the Context Check's PD-26 fallback as unsupported). Read only by
+    This must never feed ``Quantity.unit`` -- ``figure_in_text``
+    builds its literal search from that field, so folding it there would make
+    the search look for "usd"/"/5" instead of the spelling the page actually
+    used, and a verbatim price or score figure would stop matching (dropped by
+    the Context Check's fallback as unsupported). Read only by
     ``same_quantity``'s unscaled branch, which compares two already-parsed
     figures and never touches what either one prints or is searched for.
     """
@@ -185,8 +181,6 @@ def _quantity(value: str, unit: str, *, start: int = 0, end: int = 0) -> Quantit
         unit=canonical,
         dimension=scale[0] if scale else None,
         base=number * scale[1] if scale else None,
-        value_text=value,
-        unit_text=unit,
         start=start,
         end=end,
     )
@@ -212,16 +206,14 @@ _DATE_UNITS = frozenset({"date", "dates", "deadline", "deadlines"})
 
 
 def is_a_date(value: str, unit: str) -> bool:
-    """Whether a figure is a calendar date rather than a measured quantity (improvement 9).
+    """Whether a figure is a calendar date rather than a measured quantity.
 
     A date is not a measure: it names no unit dimension of its own, and its
     value reads as a calendar date ("2 August 2025", "August 2, 2025",
-    "2027-08-02") or its unit names one ("date", "deadline"). The live run
-    recorded five of them as stated figures, and the verifier then "corrected"
-    each figure's period to the date the figure *was*, publishing them as
-    corrected context and dropping one for the ISO spelling of the date its own
-    words spell out. Nothing about such a figure's period is a correction of
-    anything: the date is what the page states.
+    "2027-08-02") or its unit names one ("date", "deadline"). A date recorded
+    as a stated figure must not have its period "corrected" to the date the
+    figure *was*: nothing about such a figure's period is a correction of
+    anything -- the date is what the page states.
     """
     if unit_dimension(unit) is not None:
         return False
@@ -252,14 +244,14 @@ def quantities_in(text: str) -> list[Quantity]:
 
 
 def same_quantity(left: Quantity, right: Quantity) -> bool:
-    """Equal after scale for known units; equal comparison unit and number otherwise (D13)."""
+    """Equal after scale for known units; equal comparison unit and number otherwise."""
     if left.base is not None and right.base is not None:
         return left.dimension == right.dimension and left.base == right.base
     return _comparison_unit(left.unit) == _comparison_unit(right.unit) and left.number == right.number
 
 
 def figure_in_text(value: str, unit: str, text: str) -> bool:
-    """Spec §5.1 step 2: the figure occurs in ``text`` under the fixed rules."""
+    """Whether the figure occurs in ``text`` under the fixed rules."""
     target = parse_figure(value, unit)
     if target is None:
         return False

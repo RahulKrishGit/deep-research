@@ -431,7 +431,7 @@ class OpenAIChatProvider:
         so it consumes an attempt and reports no tokens -- there is nothing to
         measure, and zero is only honest because nothing is added.
 
-        The same rule is what makes the §7.3 per-call record honest: this call
+        The same rule is what makes the per-call telemetry record honest: this call
         is the run's slowest, its operation's largest reply and its truncation
         count only when the response really carried the numbers.
         """

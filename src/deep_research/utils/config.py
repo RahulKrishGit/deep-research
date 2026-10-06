@@ -230,8 +230,8 @@ class AgentRuntimeConfig(BaseModel):
     request at 32,768 tokens, which -- the error being nonretryable by design
     -- stopped the run before research began. The code default here is the
     headroom a caller with no file gets; the shipped ``config.yaml`` sends
-    every operation budget at the provider's documented maximum (user
-    decision 2026-09-25), except ``re_extraction_max_tokens``.
+    every operation budget at the provider's documented maximum, except
+    ``re_extraction_max_tokens``.
 
     ``judge_max_tokens`` is the budget for the judge's ``JudgeVerdict``
     request. The judge hit the global cap scoring a researched question's
@@ -248,7 +248,7 @@ class AgentRuntimeConfig(BaseModel):
     that make decision requests are the planner and the researcher.
 
     ``max_sub_topics`` is how many planned sub-topics one Researcher pass
-    attempts. It defaults to the Planner's own ceiling of seven, so the
+    attempts. It defaults to the Planner's own ceiling of ten, so the
     production default attempts the whole plan: a cap below the plan size
     silently drops planned sub-topics, and the ones it drops are the least
     important by priority, which is exactly where a thin report comes from.
@@ -260,20 +260,20 @@ class AgentRuntimeConfig(BaseModel):
     produced a plan and discovered no new public evidence doing it. Every
     other agent's entry here is ``0``: the researcher is the only agent that
     searches, the source evaluator and the writer need no tools, and the
-    Evidence Verifier's calls are tool-free by contract (§5.2, §5.4). Keys are
+    Evidence Verifier's calls are tool-free by contract. Keys are
     the five production agent names — a misspelled key would leave the agent
     on the global budget while the configuration read as bound, so an
     unknown key is rejected rather than ignored.
 
     ``sub_topic_concurrency``, ``source_scoring_concurrency``,
     ``verifier_batch_size``, ``verifier_concurrency`` and
-    ``extraction_concurrency`` are spec §7.3's concurrency bounds (D9/PD-27,
-    S6): the researcher's sub-topics and the source evaluator's scoring
+    ``extraction_concurrency`` are the concurrency bounds: the researcher's
+    sub-topics and the source evaluator's scoring
     batches run under the first two, the Evidence Verifier's Context Check
     and Statement Check run ``verifier_batch_size`` items per call with
     ``verifier_concurrency`` calls in flight, and ``extraction_concurrency``
     bounds how many of one sub-topic's per-page extraction calls run at
-    once (S6: each admitted read's own extraction starts in the background
+    once (each admitted read's own extraction starts in the background
     as soon as it is admitted, rather than one call after every page of a
     sub-topic is read). Each has an ``AGENTS_*`` environment override, so a
     live result can lower one without a code change.
@@ -283,8 +283,8 @@ class AgentRuntimeConfig(BaseModel):
 
     source_evaluator: SourceEvaluatorConfig = SourceEvaluatorConfig()
     # The two code defaults below are deliberately *not* config.yaml's shipped
-    # values: the shipped file raises the ReAct turn cap to 7 (spec §7.2) and
-    # bounds each production agent's tool budget (planner 1, researcher 20, the
+    # values: the shipped file raises the ReAct turn cap to 15 and
+    # bounds each production agent's tool budget (planner 1, researcher 40, the
     # other three 0), and every production run reads that file —
     # ``prepare_research_settings`` refuses to run without it. They are what a
     # caller that builds this model with no file gets: a test double, or the
@@ -296,14 +296,13 @@ class AgentRuntimeConfig(BaseModel):
     tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
     max_sub_topics: int = Field(default=10, ge=1)
     read_admission_chars: int = Field(default=200000, ge=1)
-    """Per-read admission cap, in characters (fix-round: whole-page admission).
+    """Per-read admission cap, in characters.
 
     Every passage of a read is admitted, in ranked order, up to this cap; only
     an extreme document (past it) still defers passages to a continuation
-    batch. Replaces the old passage-count cap (``selected_passages_per_read``),
-    which starved a page of many short, on-topic chunks or wasted the whole
-    allowance on a few long ones -- a raw count never matched a real page's
-    own character size.
+    batch. A passage-count cap would starve a page of many short, on-topic
+    chunks or waste the whole allowance on a few long ones -- a raw count
+    never matches a real page's own character size.
     """
     evidence_packet_chars: int = Field(default=400000, ge=1)
     """The extraction packet's own budget: a sub-topic's whole admitted reads
@@ -314,7 +313,7 @@ class AgentRuntimeConfig(BaseModel):
     the place a whole page belongs."""
     prompt_context_entries: int = Field(default=20, ge=0)
     observation_summary_chars: int = Field(default=2000, ge=1)
-    # Spec §7.3's concurrency bounds (D9/PD-27, S6). The mission defaults the
+    # The concurrency bounds. The mission defaults the
     # module constants carry stay as the code-level defaults; these are what a
     # production run reads.
     sub_topic_concurrency: int = Field(default=5, ge=1)
@@ -322,7 +321,7 @@ class AgentRuntimeConfig(BaseModel):
     verifier_batch_size: int = Field(default=5, ge=1)
     verifier_concurrency: int = Field(default=16, ge=1)
     extraction_concurrency: int = Field(default=16, ge=1)
-    """S6: how many of one sub-topic's per-page extraction calls run at once.
+    """How many of one sub-topic's per-page extraction calls run at once.
 
     Each admitted read starts its own extraction call in the background as
     soon as it is admitted, rather than the whole sub-topic waiting for one
@@ -332,14 +331,12 @@ class AgentRuntimeConfig(BaseModel):
     choice about latency and provider load, not a provider limit.
     """
     writer_section_concurrency: int = Field(default=10, ge=1)
-    """How many of the parallel writer's section drafts run at once (spec
-    §6.10). Equal to the plan's own maximum part count (max_sub_topics, 10),
-    so every part starts drafting at once -- a controller ruling for this
-    build ("no strong limits"); spec §17 Q6 chose 7 when max_sub_topics was
-    7. Lower it if a live run's telemetry reports rate limits
-    (``observability.run_telemetry``)."""
+    """How many of the parallel writer's section drafts run at once. Equal to
+    the plan's own maximum part count (max_sub_topics, 10), so every part
+    starts drafting at once. Lower it if a live run's telemetry reports rate
+    limits (``observability.run_telemetry``)."""
     report_target_words: int = Field(default=2000, ge=1)
-    """D11's reader-length point budget fallback: the writer's per-part
+    """The reader-length point budget fallback: the writer's per-part
     point budget uses this only when the frozen answer contract's own
     ``requested_word_limit`` is ``None`` (``AGENTS_REPORT_TARGET_WORDS``)."""
     writer_authority_floor: float = Field(default=0.4, ge=0.0, le=1.0)
@@ -407,7 +404,7 @@ class GraphConfig(BaseModel):
     """Bounds and durability for the macro research loop.
 
     ``max_extra_passes`` is how many *extra* research passes the graph may buy
-    after the first one (D4, §6.5): the first pass always runs, and an extra
+    after the first one: the first pass always runs, and an extra
     pass runs only when required targets are still missing and only for those
     targets. Zero is a legitimate ceiling — a run that may buy no extra pass —
     and ``AgentRuntimeConfig.max_iterations`` is the *micro* ReAct bound inside
@@ -429,13 +426,13 @@ HITL_TIMING_MAX_S = 600.0
 
 
 class HitlConfig(BaseModel):
-    """The reader-in-the-loop timings (live-briefs spec §4.4), in seconds.
+    """The reader-in-the-loop timings, in seconds.
 
     ``check_timeout_s`` bounds the one-time check's provider call: a check that
     fails or runs out of time asks nothing and the run starts. ``answer_wait_s``
     is how long a session waits in ``needs_input`` before it starts on the
-    check's best guesses (D6). ``note_interpret_timeout_s`` bounds one reader
-    note's interpretation (reader notes, live-briefs Phase 3). Request-scoped
+    check's best guesses. ``note_interpret_timeout_s`` bounds one reader
+    note's interpretation. Request-scoped
     ``config_overrides`` may set each; nothing reads them from the environment.
 
     Each is a finite number of seconds in (0, ``HITL_TIMING_MAX_S``]. A larger
@@ -469,9 +466,7 @@ class OutputConfig(BaseModel):
 EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 
 # The configured DeepSeek model supports exactly two enabled efforts: high and
-# max. The original OpenAI baseline's low/medium levels map onto them as
-# approved in the cutover spec: the two cheapest agents to high, everything
-# else to max.
+# max. The two cheapest agents run at high, everything else at max.
 # Production parity (on by default) resolves the target from
 # ``llm.model_overrides`` instead; this profile is what an experiment uses.
 _DEFAULT_TARGET_EFFORTS: dict[str, ReasoningEffort] = {
@@ -506,7 +501,7 @@ class EvaluationConfig(BaseModel):
     ``llm.model_overrides`` that declaration wins and the record says so.
     ``target_reasoning_effort`` and its overrides then describe the profile
     an *experiment* would use — for an agent production does not name, or for
-    a run that turns parity off deliberately. Task 12 exposes the CLI flag;
+    a run that turns parity off deliberately. The CLI flag exposes it;
     a run that resolves an evaluation-only profile is labelled non-release
     evidence rather than silently reported as a measurement of production.
     """
@@ -519,8 +514,8 @@ class EvaluationConfig(BaseModel):
     # pair.
     embedding_provider: EmbeddingProviderName | None = None
     embedding_model: str | None = Field(default=None, min_length=1)
-    # ``None`` omits the parameter for models that reject it; the spec pins
-    # the judge at 0.0 and that is the default.
+    # ``None`` omits the parameter for models that reject it; the judge is
+    # pinned at 0.0 and that is the default.
     judge_temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
     # Fixed at 1: repetition indexing in ``targets.py`` is only exact when
     # LangSmith runs the target sequentially.
@@ -555,9 +550,9 @@ class RequestBudgetConfig(BaseModel):
 
     These values are deliberately request-scoped. They are not read from the
     environment and have no ``config.yaml`` leaf, because a second way to set
-    a spend ceiling is the exact failure this bound exists to remove: a live
-    canary breached its declared ceiling while nothing enforced it. A canary
-    supplies its limits through ``config_overrides["request_budget"]`` for the
+    a spend ceiling is the exact failure this bound exists to remove: a
+    declared ceiling that nothing enforced. A live run supplies its limits
+    through ``config_overrides["request_budget"]`` for the
     one run that declares them.
     """
 
@@ -631,7 +626,7 @@ _ENVIRONMENT_OVERRIDES = {
     "AGENTS_OBSERVATION_SUMMARY_CHARS": ("agents", "observation_summary_chars"),
     "AGENTS_REPORT_TARGET_WORDS": ("agents", "report_target_words"),
     "AGENTS_WRITER_AUTHORITY_FLOOR": ("agents", "writer_authority_floor"),
-    # Spec §7.3's concurrency bounds (D9/PD-27, S6).
+    # The concurrency bounds.
     "AGENTS_SUB_TOPIC_CONCURRENCY": ("agents", "sub_topic_concurrency"),
     "AGENTS_SOURCE_SCORING_CONCURRENCY": (
         "agents",

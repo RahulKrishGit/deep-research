@@ -1,11 +1,11 @@
-"""Stage replay on frozen state (latency audit §7 tier 2; latency plan X1).
+"""Stage replay on frozen state.
 
 A live run made with a stage capture bound (``observability.stage_capture``)
 leaves the evidence verifier's input state and every Statement Check call's
 items on disk. ``run`` asks those same stages again, once, under one arm's
 settings -- the production config plus that arm's overrides -- and writes what
 each figure and each sentence was judged; ``summarize`` compares two arms the
-way the audit's pass rule reads: the treatment must agree with the control at
+way the pass rule reads: the treatment must agree with the control at
 least as often as the control agrees with itself, and drop no more.
 
     python -m deep_research.experiments.stage_replay run --capture DIR \\
@@ -240,11 +240,10 @@ def _stage(repetition: list[dict[str, Any]], stage: str) -> tuple[dict[str, Any]
 
 
 def summarize(out: Path, *, control: str = "control", treatment: str = "treatment") -> dict[str, Any]:
-    """The X1 verdict for one capture's replays (latency plan Task 18; run in
-    Tasks 21 and 22).
+    """The verdict for one capture's replays.
 
     Per stage: ``agreement_control_floor`` is the lowest agreement between two
-    control repetitions (the control's own noise floor, audit §7 tier 2) and
+    control repetitions (the control's own noise floor) and
     ``agreement_treatment`` the mean agreement of each treatment repetition
     with each control one. Every accuracy check must hold for both stages;
     the time check is the Context Check's.

@@ -1,6 +1,8 @@
-"""Spec §5.3, §6.4 and §6.6: facts are read from verified fields, never from prose."""
+"""Facts are read from verified fields, never from prose."""
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 import pytest
 
@@ -33,8 +35,10 @@ from deep_research.agents.verified_facts import (
 )
 from deep_research.utils.types import (
     AcquisitionState,
+    EvidenceTarget,
     FigureContext,
     FigureResult,
+    Finding,
     FindingVerification,
     SubTopic,
 )
@@ -118,7 +122,7 @@ def test_a_qualitative_target_is_answered_by_naming_it() -> None:
 
 
 def test_a_quoted_finding_still_answers_a_qualitative_target() -> None:
-    """D21: "quoted" (a no-figure finding neither check judged for relevance
+    """A quoted finding (a no-figure finding neither check judged for relevance
     or attribution) is not "dropped" -- citable_findings and finding_answers
     gate only on that, so a quoted finding still answers its target exactly
     as a verified one does."""
@@ -247,7 +251,7 @@ def test_a_percent_figure_does_not_answer_a_currency_target() -> None:
     ("sales this quarter", "2026", None),
     ("installed 4 GW in 2024", "2026-02-20", None),
     ("installed 4 GW this year", None, None),
-    # Fix round 1: a period the words state themselves, a window of time, and a
+    # A period the words state themselves, a window of time, and a
     # garbled page date are never resolved into a calendar period.
     ("sales rose in the last quarter of 2024", "2026-02-20", None),
     ("the last month of the year", "2026-02-20", None),
@@ -300,7 +304,7 @@ def test_equal_values_about_different_subjects_stay_apart(left, right, rows) -> 
 
 
 def test_figures_with_no_period_are_one_fact_only_on_a_shared_subject() -> None:
-    """Ruling N1: one rating on its own page and on a relay; a re-test is a revision."""
+    """One rating on its own page and on a relay; a re-test is a revision."""
     target = make_target(**RATING)
     assert len(fact_rows([_rated("Kettle K1"), _rated("Kettle K1", page="news")], [target])) == 1
     assert len(fact_rows([_rated("Kettle K1"), _rated("Kettle K2", page="news")], [target])) == 2
@@ -323,7 +327,7 @@ def _priced(subject, value, unit, *, url):
 
 
 def test_dollar_spellings_fold_into_one_fact_printed_as_the_page_wrote_it() -> None:
-    """D13: "$", "USD" and "dollars" are one unit when facts are compared, so
+    """The "$", "USD" and "dollars" spellings are one unit when facts are compared, so
     the same price extracted with two spellings is one row -- printed exactly
     as its own page wrote it, never rewritten to the other page's spelling."""
     target = make_target("topic-01-target-01", measure="price", unit_dimension="currency",
@@ -338,7 +342,7 @@ def test_dollar_spellings_fold_into_one_fact_printed_as_the_page_wrote_it() -> N
 
 
 def test_score_scales_fold_into_one_fact_printed_as_the_page_wrote_it() -> None:
-    """D13: "/5" and "out of 5" are one scale when facts are compared."""
+    """The "/5" and "out of 5" spellings are one scale when facts are compared."""
     target = make_target("topic-01-target-01", measure="rating", unit_dimension="rating",
                          period=None, kind=None, geography=None, organisation=None)
     slash = _priced("Model X", "4.8", "/5", url="https://a.example.test/x")
@@ -372,15 +376,14 @@ def test_two_releases_about_two_versions_are_not_one_revision() -> None:
 
 
 def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
-    """D11 (Fable §8.5): two targets that ask one thing of two places.
+    """Two targets that ask one thing of two places.
 
     The Italian figure binds both targets (the extraction could not tell them
     apart), and the subject is the whole of what places it: it answers Italy's
-    and not Spain's. The last assertion used to read the other way — an Italian
-    figure counted as answering the Spanish target, because every field but the
-    subject matched. That is the same failure the live pre-flight's review-02
-    recorded (a figure about another subject answering the target), so Defect
-    B's subject rule is asserted here as well, and only the recorded answer is
+    and not Spain's. An Italian figure must not count as answering the Spanish
+    target merely because every field but the subject matched (a figure about
+    another subject answering the target), so the subject rule is asserted here
+    as well, and only the recorded answer is
     ``answered_target_ids``.
     """
     spain = make_target("topic-01-target-01", question="What was Spain's unemployment rate in 2024?",
@@ -401,12 +404,12 @@ def test_a_figure_answers_only_its_own_subjects_sibling_target() -> None:
     assert not finding_answers(italian, spain)
 
 
-# Fix round 1 (CRITICAL 1): a target whose question carries an article.
+# A target whose question carries an article.
 ARTICLE_RATING = {**RATING, "question": "What noise rating did testers give a kettle?"}
 
 
 def test_an_article_in_the_targets_question_never_strips_a_subject() -> None:
-    """Fix round 1 (CRITICAL 1): "a" is filler in the target's words, never in the subject's."""
+    """The "a" is filler in the target's words, never in the subject's."""
     target = make_target(**ARTICLE_RATING)
     assert len(fact_rows([_rated("Model A"), _rated("Model B", page="news")], [target])) == 2
     early = _rated("Model A").model_copy(update={"release_date": "2026-01-10"})
@@ -416,7 +419,7 @@ def test_an_article_in_the_targets_question_never_strips_a_subject() -> None:
 
 
 def test_a_group_admits_only_figures_that_are_one_fact_with_every_member() -> None:
-    """Fix round 1 (IMPORTANT 3): a subject-less figure is not a wildcard for its group."""
+    """A subject-less figure is not a wildcard for its group."""
     target = make_target(**RATING)
     nothing = _rated(None, period="2026").model_copy(update={"release_date": "2026-01-05"})
     model_a = _rated("Model A", period="2026").model_copy(update={"release_date": "2026-02-05"})
@@ -432,7 +435,7 @@ def test_a_group_admits_only_figures_that_are_one_fact_with_every_member() -> No
 
 
 def test_a_revision_needs_the_same_subject_not_merely_a_nested_spelling() -> None:
-    """Fix round 1 (Minor 4 ruling): a fold claims a release history; only one subject earns it."""
+    """A fold claims a release history; only one subject earns it."""
     target = make_target(**RATING)
     x200 = _rated("X200", period="2026").model_copy(update={"release_date": "2026-01-10"})
     x200_pro = _rated("X200 Pro", "4.7", page="news", period="2026").model_copy(
@@ -447,7 +450,7 @@ SPAIN, ITALY = "topic-01-target-01", "topic-01-target-02"
 
 
 def _siblings():
-    """Two targets asking one thing of two places (D11, Fable §8.5)."""
+    """Two targets asking one thing of two places."""
     return (make_target(SPAIN, question="What was Spain's unemployment rate in 2024?",
                         measure="unemployment rate", unit_dimension="percent", geography="Spain",
                         organisation="Example Statistical Agency"),
@@ -471,7 +474,7 @@ def _unemployment_figure(subject, page, targets):
 
 
 def test_a_finding_bound_to_both_sibling_targets_keeps_its_own_subject() -> None:
-    """Fix round 1 (IMPORTANT 2): the shared targets' words are their intersection, not their union."""
+    """The shared targets' words are their intersection, not their union."""
     spain, italy = _siblings()
     figures = [_unemployment_figure("Spain", "lab", [spain, italy]),
                _unemployment_figure("Italy", "news", [spain, italy])]
@@ -481,7 +484,7 @@ def test_a_finding_bound_to_both_sibling_targets_keeps_its_own_subject() -> None
 
 
 def test_an_article_in_sibling_questions_does_not_mix_the_subjects() -> None:
-    """Fix round 1 (CRITICAL 1, the sibling rule): the questions' "a" never strips "Model A"."""
+    """The questions' "a" never strips "Model A"."""
     a_lab = make_target("topic-01-target-01", question="What did testers score Model A in a lab?",
                         measure="noise rating", unit_dimension="rating", period=None,
                         geography=None, organisation="Example Test Lab")
@@ -500,13 +503,13 @@ def test_an_article_in_sibling_questions_does_not_mix_the_subjects() -> None:
     assert set(answered_target_ids([scored], [a_lab, b_lab])) == {a_lab.target_id}
 
 
-# Task 5.6c: a comparison target names both options, and must not erase either subject.
+# A comparison target names both options, and must not erase either subject.
 COMPARISON_RATING = {**RATING, "question": ("How do the Kettle K1 and the Kettle K2 compare "
                                             "on the Example Tester noise rating for 2026?")}
 
 
 def test_a_comparison_target_naming_both_products_keeps_them_apart() -> None:
-    """Task 5.6c: the target that names both options must not erase either subject."""
+    """The target that names both options must not erase either subject."""
     target = make_target(**COMPARISON_RATING)
     rows = fact_rows([_rated("Kettle K1", period="2026"),
                       _rated("Kettle K2", page="news", period="2026")], [target])
@@ -515,7 +518,7 @@ def test_a_comparison_target_naming_both_products_keeps_them_apart() -> None:
 
 
 def test_a_combined_target_naming_two_places_keeps_them_apart() -> None:
-    """Task 5.6c: "Spain and Italy" in one target's question tells the two subjects apart."""
+    """A target question reading "Spain and Italy" tells the two subjects apart."""
     target = make_target(question="How did Spain and Italy compare on unemployment in 2024?",
                          measure="unemployment rate", unit_dimension="percent", geography=None,
                          organisation="Example Statistical Agency")
@@ -526,7 +529,7 @@ def test_a_combined_target_naming_two_places_keeps_them_apart() -> None:
 
 
 def test_an_alias_the_target_never_names_still_matches() -> None:
-    """Task 5.6c pin (ruling check 1): the target names "United States", never "US"."""
+    """The target names "United States", never "US"."""
     target = make_target(question="What was battery storage capacity in the United States?")
     words = subject_context([target.target_id], [target])
     assert same_subject("US battery storage", "battery storage in the United States",
@@ -534,7 +537,7 @@ def test_an_alias_the_target_never_names_still_matches() -> None:
 
 
 def test_a_subject_that_restates_a_field_of_its_target_still_matches() -> None:
-    """Task 5.6c: the target's own measure and geography are its topic, not two options.
+    """The target's own measure and geography are its topic, not two options.
 
     The committed e2e row ``single-subject-spellings`` pins this shape: three
     pages about widget adoption in the United States -- subject "United States",
@@ -581,11 +584,11 @@ def _widget_figure(subject, page, target):
 
 
 def test_a_subject_carrying_an_extra_question_word_stays_one_row() -> None:
-    """Fix round 1 (Critical 1): the target's own fields decide, not a whole-subject match.
+    """The target's own fields decide, not a whole-subject match.
 
     "widget adoption rate" carries a word the measure does not state ("rate" is
     the target's own question word) and "United States" is its geography: the
-    two name one topic, and BASE printed one row.
+    two name one topic, and the group prints one row.
     """
     target = make_target(question="What was the widget adoption rate in the United States in 2025?",
                          measure="widget adoption", unit_dimension="percent", period="2025",
@@ -596,7 +599,7 @@ def test_a_subject_carrying_an_extra_question_word_stays_one_row() -> None:
 
 
 def _grid_figure(subject, page, target):
-    """One 10.4 GW 2024 capacity figure about ``subject`` (the live run's shape)."""
+    """One 10.4 GW 2024 capacity figure about ``subject``."""
     text = "Grid-scale battery storage capacity added in the United States was 10.4 GW in 2024."
     read = make_read(text, url=f"https://{page}.example.test/capacity", title="Capacity report")
     finding = make_finding(read, text,
@@ -609,11 +612,11 @@ def _grid_figure(subject, page, target):
 
 
 def test_a_benchmark_shaped_subject_keeps_every_spelling_in_one_row() -> None:
-    """Fix round 1 (Critical 1): the live run's most important case.
+    """Every spelling of one benchmark-shaped subject folds into one row.
 
     One benchmark-shaped target, one value, period, organisation and kind, under
     five spellings of one subject -- the place, its abbreviation, the place plus
-    the measure, the measure alone, and no subject at all: one row, as at BASE.
+    the measure, the measure alone, and no subject at all: one row.
     """
     target = make_target(question=("How much grid-scale battery storage capacity was added in "
                                    "the United States in 2024?"),
@@ -628,7 +631,7 @@ def test_a_benchmark_shaped_subject_keeps_every_spelling_in_one_row() -> None:
 
 
 def test_an_article_only_give_away_needs_the_target_to_spell_it() -> None:
-    """Fix round 1 (Minor 3): an article nobody wrote tells "a kettle" from "Kettle K2" nothing."""
+    """An article nobody wrote tells "a kettle" from "Kettle K2" nothing."""
     target = make_target(**COMPARISON_RATING)
     words = subject_context([target.target_id], [target])
     fields = _target_fields([target.target_id], [target])
@@ -636,7 +639,7 @@ def test_an_article_only_give_away_needs_the_target_to_spell_it() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task FF1 (final review, slice 1): the row a group prints, the figures the
+# The row a group prints, the figures the
 # number parser cannot read, period spellings, and one value answering two
 # measures.
 # ---------------------------------------------------------------------------
@@ -659,7 +662,7 @@ def _kettle_targets():
 
 
 def test_a_group_with_a_named_subject_prints_that_subject() -> None:
-    """Task FF1 (review I2): a subject-less figure and a named one can be one
+    """A subject-less figure and a named one can be one
     row -- the extraction order decides which joins which -- and the row must
     print the subject its group carries.
 
@@ -702,7 +705,7 @@ def test_a_group_with_a_named_subject_prints_that_subject() -> None:
 
 
 def test_an_unreadable_figure_answers_only_its_own_dimensions_target() -> None:
-    """Task FF1 (review I3): a currency symbol or a sign is not a number the
+    """A currency symbol or a sign is not a number the
     parser reads, but the figure's unit still says what the figure is about.
 
     A price or a signed growth rate then answers the target it belongs to --
@@ -735,7 +738,7 @@ def test_an_unreadable_figure_answers_only_its_own_dimensions_target() -> None:
 
 
 def test_period_spellings_of_one_fiscal_quarter_and_half_agree() -> None:
-    """Task FF1 (review I4): a planner writes the question's own spelling and
+    """A planner writes the question's own spelling and
     the page writes another; one period spelled two ways answers the same
     target, while a fiscal year stays distinct from a bare calendar year."""
     assert same_period("FY2025", "fiscal 2025")
@@ -749,7 +752,7 @@ def test_period_spellings_of_one_fiscal_quarter_and_half_agree() -> None:
 
 
 def test_two_figures_answering_different_targets_stay_two_rows() -> None:
-    """Task FF1 (review I6): PD-9's fact key is the measure family -- the unit
+    """The fact key is the measure family -- the unit
     dimension plus the target the finding answers -- so two measures that
     happen to share one value are two rows, each answering its own obligation."""
     read = make_read("Participants lost 15 percent of body weight. Nausea affected 15 percent "
@@ -783,7 +786,7 @@ def test_two_figures_answering_different_targets_stay_two_rows() -> None:
 
 
 def test_a_comparison_base_is_never_resolved_as_the_figures_period() -> None:
-    """Task FF1 (review P2-1): "over last year" names the base a figure is
+    """The phrase "over last year" names the base a figure is
     compared with, not the period the figure applies to, so no period is
     resolved from it -- while a plain relative phrase still resolves."""
     assert resolve_relative_period("Sales rose 12 percent over last year", "2026-02-20") is None
@@ -796,10 +799,10 @@ def test_a_comparison_base_is_never_resolved_as_the_figures_period() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The live pre-flight's Defect B (review-02) and Defect A's label end to end.
+# A figure about another subject answers no target; the row label end to end.
 # ---------------------------------------------------------------------------
 
-PREFLIGHT_MEASURE = "projected grid-scale battery storage capacity additions"
+BATTERY_FORECAST_MEASURE = "projected grid-scale battery storage capacity additions"
 
 
 def _battery_forecast(subject: str | None, value: str, url: str):
@@ -813,8 +816,8 @@ def _battery_forecast(subject: str | None, value: str, url: str):
 
 
 def test_a_figure_whose_subject_is_another_technology_answers_no_battery_target() -> None:
-    """Defect B (review-02): the pre-flight printed the EIA's 2025 forecasts for
-    32.5 GW of utility-scale solar, 7.7 GW of wind and 4.4 GW of natural gas
+    """The EIA's 2025 forecasts for 32.5 GW of utility-scale solar, 7.7 GW of
+    wind and 4.4 GW of natural gas must not be printed
     under the measure "projected grid-scale battery storage capacity additions".
 
     A figure that names its own subject answers a target only when that subject
@@ -824,7 +827,7 @@ def test_a_figure_whose_subject_is_another_technology_answers_no_battery_target(
     """
     target = make_target("topic-02-target-01", question=(
         "How much grid-scale battery storage capacity is projected to be added in 2025?"),
-        measure=PREFLIGHT_MEASURE, unit_dimension="power", period="2025", kind="forecast",
+        measure=BATTERY_FORECAST_MEASURE, unit_dimension="power", period="2025", kind="forecast",
         geography=None, organisation="EIA")
 
     for subject in ("utility-scale solar capacity", "wind power",
@@ -841,7 +844,7 @@ def test_a_figure_whose_subject_is_another_technology_answers_no_battery_target(
         target)
 
     # A subject that only restates the target's own words is not a rival claim
-    # about something else: the D11 sibling row's "Spain" and the comparison
+    # about something else: the sibling row's "Spain" and the comparison
     # row's "Kettle K1" keep answering, which is what ``single-subject-spellings``
     # and ``two-subjects-one-value`` measure.
     spanish = make_target("topic-03-target-01",
@@ -855,9 +858,9 @@ def test_a_figure_whose_subject_is_another_technology_answers_no_battery_target(
 
 
 def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
-    """Defect A end to end (review-01): the Context Check answered that the
-    source does not attribute the figure, the writer then quoted the page's own
-    sentence, and the reviewer read the two as a contradiction.
+    """The Context Check answers that the
+    source does not attribute the figure, the writer then quotes the page's own
+    sentence, and the reviewer must not read the two as a contradiction.
 
     With the credit read back out of the words the check itself quoted, the
     row's label says exactly what the page says: relayed by the site that
@@ -886,7 +889,7 @@ def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
     judged = finding.model_copy(update={"verification": judgement})
     target = make_target("topic-02-target-01", question=(
         "How much grid-scale battery storage capacity is projected to be added in 2025?"),
-        measure=PREFLIGHT_MEASURE, unit_dimension="power", period="2025", kind="forecast",
+        measure=BATTERY_FORECAST_MEASURE, unit_dimension="power", period="2025", kind="forecast",
         geography=None, organisation="EIA")
 
     [row] = fact_rows([judged], [target])
@@ -896,12 +899,12 @@ def test_the_row_label_agrees_with_the_pages_own_attribution() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 3, Defect A: a period the words state in another spelling.
+# A period the words state in another spelling.
 # ---------------------------------------------------------------------------
 
 
 def test_a_two_digit_year_reads_as_its_four_digit_year() -> None:
-    """Round 3 (pre-flight run 3): the page dates its figure "at the end of
+    """The page dates its figure "at the end of
     Q1'25", and "Q1 2025" has to read as the same period — an apostrophe or a
     period abbreviation attaches a two-digit year, which folds by the usual
     pivot (00-49 is 20xx, 50-99 is 19xx). A bare two-digit number is not a year.
@@ -933,9 +936,9 @@ def test_the_words_state_a_period_however_they_spell_it() -> None:
 
 
 def test_a_bracketed_unit_answers_the_target_it_belongs_to() -> None:
-    """Round 3 (pre-flight run 3): the Key facts row read `26 gigawatts (GW)`
-    under the measure "stated figure", because the bracketed unit had no
-    dimension for the target's own dimension to match."""
+    """A bracketed unit ("26 gigawatts (GW)") still has a dimension for the
+    target's own dimension to match, so the Key facts row is not left under
+    the measure "stated figure"."""
     text = ("Cumulative utility-scale battery storage capacity exceeded 26 gigawatts (GW) "
             "in 2024.")
     read = make_read(text, url="https://eia.gov/todayinenergy/detail.php?id=64705")
@@ -954,13 +957,12 @@ def test_a_bracketed_unit_answers_the_target_it_belongs_to() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 4, part 1: the review's findings on the two-digit-year fold, the range
-# continuation, and the bracketed unit's qualifier.
+# The two-digit-year fold, the range continuation, and the bracketed unit's qualifier.
 # ---------------------------------------------------------------------------
 
 
 def test_a_two_digit_year_needs_an_apostrophe_or_fy() -> None:
-    """RevFF1r3's Important 1: only "'" and "FY" attach a two-digit year. A
+    """Only "'" and "FY" attach a two-digit year. A
     part number that happens to look like one ("H20 chips", "H100") is not a
     year, and neither is a bare "Q25"."""
     assert not same_period("half 2020", "H20")
@@ -975,7 +977,7 @@ def test_a_two_digit_year_needs_an_apostrophe_or_fy() -> None:
 
 
 def test_a_period_the_words_state_as_a_range_is_not_stated() -> None:
-    """RevFF1r3's Important 2: "FY2024-25" and "FY25/26" are ranges, and the
+    """Both "FY2024-25" and "FY25/26" are ranges, and the
     year a range *starts* in is not the period it states."""
     assert not _period_stated_in("India added 18 GW in FY2024-25, the ministry said.",
                                  "fiscal 2024")
@@ -991,8 +993,7 @@ def test_a_period_the_words_state_as_a_range_is_not_stated() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 4, part 2: Defect C (a qualitative target's organisation) and Defect D
-# (a leading article, and an all-capitals first word).
+# A qualitative target's organisation, a leading article, and an all-capitals first word.
 # ---------------------------------------------------------------------------
 
 TEXT_TARGET = dict(question="When does the new title enter closed beta?",
@@ -1008,7 +1009,7 @@ def _text_finding(url: str = "https://games-studio.test/news/beta",
 
 
 def test_an_own_site_text_finding_answers_a_qualitative_target() -> None:
-    """Defect C (the controller's probe): a target with no unit dimension takes
+    """A target with no unit dimension takes
     its organisation from the plan, and a host name is not evidence of who a page
     speaks for -- playvalorant.com is Riot Games's, github.blog is GitHub's --
     so an organisation its host does not spell must not refuse the page's own
@@ -1073,11 +1074,11 @@ def test_not_found_does_not_list_a_qualitative_target_its_bound_finding_answers(
     ("the EIA", "U.S. Energy Information Administration"),
 ])
 def test_a_leading_article_never_blocks_a_match(left, right) -> None:
-    """Defect D (i): a leading article is the page's grammar, not part of the
+    """A leading article is the page's grammar, not part of the
     name.
 
-    The all-capitals-first-word rule is no longer part of this matcher
-    (RevFF1p2's D-1): it lives in ``_answers_organisation``, which only the
+    The all-capitals-first-word rule is not part of this matcher: it lives
+    in ``_answers_organisation``, which only the
     answering paths read, and
     ``test_an_acronym_leads_its_own_name_when_the_obligation_is_answered``
     covers it where it belongs.
@@ -1099,7 +1100,7 @@ def test_a_title_case_first_word_never_stands_for_the_rest(left, right) -> None:
 
     ``same_organisation`` never reads a first word as the whole name at all, and
     ``_answers_organisation`` -- the one predicate that reads an all-capitals
-    token that way (RevFF1p2's D-1) -- refuses a Title Case spelling just the
+    token that way -- refuses a Title Case spelling just the
     same, so a plan's "Energy Information Administration" is never answered by a
     page whose own name is "Energy" or "Tiobe".
     """
@@ -1109,13 +1110,8 @@ def test_a_title_case_first_word_never_stands_for_the_rest(left, right) -> None:
     assert not _answers_organisation(right, left)
 
 
-# ---------------------------------------------------------------------------
-# Round 5: RevFF1p2's C-1, D-1 and D-2, and ReRevFF1p1's N1.
-# ---------------------------------------------------------------------------
-
-
 def test_a_relayed_figure_does_not_answer_a_qualitative_target() -> None:
-    """RevFF1p2's C-1: a figure the Context Check read as another body's relay
+    """A figure the Context Check read as another body's relay
     credits that body, so the finding answers that body's obligation and not the
     target's other organisation."""
     text = "Additions reached 15 GW in 2025, the firm said."
@@ -1130,16 +1126,16 @@ def test_a_relayed_figure_does_not_answer_a_qualitative_target() -> None:
 
     assert not finding_answers(finding, target)
     assert finding_answers(finding, own)
-    # A near miss the legal-form fold does not cover is still another body (F4
-    # makes "Wood Mackenzie Inc" the same organisation as "Wood Mackenzie", so
-    # that spelling is no longer the negative case).
+    # A near miss the legal-form fold does not cover is still another body (the
+    # fold makes "Wood Mackenzie Inc" the same organisation as "Wood Mackenzie",
+    # so that spelling is not a negative case).
     assert not finding_answers(finding, make_target("topic-01-target-01",
                                                    organisation="BloombergNEF",
                                                    **{**TEXT_TARGET, "measure": "storage added"}))
 
 
 def test_two_bodies_whose_names_share_an_acronym_stay_two_rows() -> None:
-    """RevFF1p2's D-1: the acronym rule is answering-only, so the IEA's figure
+    """The acronym rule is answering-only, so the IEA's figure
     and IEA PVPS's are two facts -- never one row with the other printed as its
     earlier edition, which would hide their disagreement as a revision."""
     iea = verified(
@@ -1161,7 +1157,7 @@ def test_two_bodies_whose_names_share_an_acronym_stay_two_rows() -> None:
 
 
 def test_an_acronym_leads_its_own_name_when_the_obligation_is_answered() -> None:
-    """RevFF1p2's D-2 fix: the acronym rule survives where it belongs -- a figure
+    """The acronym rule survives where it belongs -- a figure
     whose organisation is the all-capitals first word of the target's does answer
     it -- and a programme is not the body whose acronym leads it."""
     read = make_read()
@@ -1194,7 +1190,7 @@ def test_an_acronym_leads_its_own_name_when_the_obligation_is_answered() -> None
 
 
 def test_a_date_that_is_an_iso_date_states_its_year() -> None:
-    """ReRevFF1p1's N1: the range guard reads a *year span*, so the year part of
+    """The range guard reads a *year span*, so the year part of
     an ISO date is stated while a fiscal range still is not."""
     assert _period_stated_in("Solar capacity was 18 GW, per the report published 2024-01-15.",
                              "calendar 2024")
@@ -1203,12 +1199,12 @@ def test_a_date_that_is_an_iso_date_states_its_year() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 6: ReRevFF1r5's finding 1 -- a multi-year span's start year.
+# A multi-year span's start year.
 # ---------------------------------------------------------------------------
 
 
 def test_a_multi_year_span_does_not_state_its_start_year() -> None:
-    """ReRevFF1r5's finding 1: the span and the date readings are separate, so a
+    """The span and the date readings are separate, so a
     three-year span states no year while a date's own year is stated."""
     for text in ("Additions reached 18 GW in 2024-25/26.",
                  "Additions reached 18 GW in 2024-25-26.",
@@ -1222,13 +1218,8 @@ def test_a_multi_year_span_does_not_state_its_start_year() -> None:
         assert _period_stated_in(text, "calendar 2024"), text
 
 
-# ---------------------------------------------------------------------------
-# Round 7: the expert final review's F3, F4 and F8.
-# ---------------------------------------------------------------------------
-
-
 def test_targets_told_apart_only_by_words_no_subject_can_carry_defer_to_the_binding() -> None:
-    """F3 (final review, smoke 2): two sibling price targets differ only by the
+    """Two sibling price targets differ only by the
     publisher they cite ("the model RTINGS ranks highest" against "the model
     Wirecutter ranks highest"), words a product's subject cannot carry, so the
     sibling rule cannot decide and the extraction's own binding answers -- the
@@ -1264,7 +1255,7 @@ def test_targets_told_apart_only_by_words_no_subject_can_carry_defer_to_the_bind
     ("Example Lab Ltd", "Example Lab"),
 ])
 def test_a_legal_form_suffix_never_splits_one_organisation(left, right) -> None:
-    """F4 (final review): a legal form is not part of the name, so a filing's
+    """A legal form is not part of the name, so a filing's
     "Apple Inc." and a newsroom's "Apple" are one organisation -- in either
     direction, and against the organisation's own host."""
     assert same_organisation(left, right)
@@ -1281,14 +1272,14 @@ def test_a_legal_form_suffix_never_splits_one_organisation(left, right) -> None:
     ("Ford Motor Company", "Ford"),
 ])
 def test_the_legal_form_fold_keeps_every_guard(left, right) -> None:
-    """The bound on F4: dropping a legal form is not dropping the words that tell
+    """The bound on the legal-form fold: dropping a legal form is not dropping the words that tell
     two organisations apart."""
     assert not same_organisation(left, right)
     assert not same_organisation(right, left)
 
 
 def test_a_period_states_the_same_words_in_any_order() -> None:
-    """F8 (final review): "Q3 2025" and "2025 Q3" are one period, while a month
+    """The words "Q3 2025" and "2025 Q3" are one period, while a month
     with its year is not the year alone."""
     assert same_period("Q3 2025", "2025 Q3")
     assert same_period("2025 Q3", "third quarter of 2025")
@@ -1297,11 +1288,6 @@ def test_a_period_states_the_same_words_in_any_order() -> None:
     assert not same_period("March 2026", "2026")
     assert not same_period("Q3 2025", "Q4 2025")
     assert not same_period("Q1 2025", "Q2 2025")
-
-
-# ---------------------------------------------------------------------------
-# Round 8: ReRevF2F4's N1 (the deferral's bounds) and N2 (legal forms).
-# ---------------------------------------------------------------------------
 
 
 def _sibling_price_targets(first: str, second: str, measure: str = "current list price",
@@ -1326,7 +1312,7 @@ def _price_finding(target_ids, subject: str, organisation: str = "Roborock"):
 
 
 def test_an_item_family_never_defers_to_the_binding() -> None:
-    """N1: siblings told apart by item identifiers ("Kettle K1" against "Kettle
+    """Siblings told apart by item identifiers ("Kettle K1" against "Kettle
     K2") are a family the subject is expected to state, so a figure about a third
     item is refused rather than deferred to the extraction's binding."""
     t1, t2 = _sibling_price_targets("the Kettle K1", "the Kettle K2")
@@ -1336,7 +1322,7 @@ def test_an_item_family_never_defers_to_the_binding() -> None:
 
 
 def test_a_finding_bound_to_both_referent_siblings_answers_neither() -> None:
-    """N1: the deferral needs exactly one binding -- a finding bound to both
+    """The deferral needs exactly one binding -- a finding bound to both
     siblings cannot be the reason either one is answered."""
     t1, t2 = _sibling_price_targets("the model RTINGS ranks highest",
                                     "the model Wirecutter ranks highest")
@@ -1348,7 +1334,7 @@ def test_a_finding_bound_to_both_referent_siblings_answers_neither() -> None:
 
 
 def test_a_referent_only_sibling_pair_still_defers_to_its_single_binding() -> None:
-    """The shape N1 keeps: the distinguishing words are two publishers no
+    """The shape the deferral keeps: the distinguishing words are two publishers no
     product's subject carries, and the finding binds exactly one target."""
     t1, t2 = _sibling_price_targets("the model RTINGS ranks highest",
                                     "the model Wirecutter ranks highest")
@@ -1359,7 +1345,7 @@ def test_a_referent_only_sibling_pair_still_defers_to_its_single_binding() -> No
 
 
 def test_two_registrations_of_one_brand_stay_two_rows() -> None:
-    """N2: "Siemens AG" and "Siemens SA" are different legal entities, so one
+    """The names "Siemens AG" and "Siemens SA" are different legal entities, so one
     entity's figure is never printed as the other's earlier edition."""
     assert not same_organisation("Siemens AG", "Siemens SA")
     assert not same_organisation("TotalEnergies SE", "TotalEnergies SA")
@@ -1385,7 +1371,7 @@ def test_two_registrations_of_one_brand_stay_two_rows() -> None:
 
 
 def test_a_name_without_a_legal_form_still_matches_its_formed_spelling() -> None:
-    """The bound on N2: refusing two *different* forms must not refuse a name
+    """The bound on the legal-form guard: refusing two *different* forms must not refuse a name
     that writes none at all."""
     assert same_organisation("Apple", "Apple Inc.")
     assert same_organisation("Siemens", "Siemens AG")
@@ -1394,12 +1380,12 @@ def test_a_name_without_a_legal_form_still_matches_its_formed_spelling() -> None
 
 
 # ---------------------------------------------------------------------------
-# Improvement 1A: the sub-topic fallback types.Finding.target_ids promises
+# The sub-topic fallback types.Finding.target_ids promises
 # ---------------------------------------------------------------------------
 #
-# The live run this wave answers extracted every finding with no binding at all
-# -- its fifteen figures, all of them dates, carried an empty ``target_ids`` --
-# so the coverage gate declared two obligations the report's own pages answer
+# Extraction can leave every finding with no binding at all -- fifteen
+# figures, all of them dates, each with an empty ``target_ids`` -- so
+# the coverage gate would declare two obligations the report's own pages answer
 # "Not found". The contract on ``Finding.target_ids`` already promises the way
 # out: a finding "with no planned target left is kept but can then be
 # attributed only through the sub-topic that fetched its read".
@@ -1511,7 +1497,7 @@ def capacity_findings(topic_title: str) -> list[Finding]:
 
 
 def test_the_fold_never_turns_an_extracted_fact_into_a_not_found() -> None:
-    """F1 (pre-run review): the passage fold may not decide what a sentence says.
+    """The passage fold may not decide what a sentence says.
 
     The fold runs on raw findings before anything is verified (and on every
     sub-topic's output), so a figure it drops is never verified and never
@@ -1538,9 +1524,9 @@ def test_the_fold_never_turns_an_extracted_fact_into_a_not_found() -> None:
 
 
 def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:
-    """1A, on the run's shape: unbound findings of the third sub-topic each answer
+    """Unbound findings of the third sub-topic each answer
     the one required target their own content states, so the report stops
-    declaring either Not found (D9: the fallback needs a content check, so the
+    declaring either Not found (the fallback needs a content check, so the
     two targets sharing "what date" are told apart by what each finding says)."""
     topics, targets = when_sub_topics(), when_targets()
     applies = dated_finding()
@@ -1564,9 +1550,9 @@ def test_an_unbound_finding_answers_its_own_sub_topics_targets() -> None:
 
 
 def test_an_unbound_off_topic_finding_answers_no_target() -> None:
-    """D9: naming the sub-topic is not enough on its own -- the run's Shure
-    findings named the mic-quality sub-topic's coverage id and, with no check
-    on what they actually said, answered every required target it owned. A
+    """Naming the sub-topic is not enough on its own -- findings that
+    name the mic-quality sub-topic's coverage id would, with no check
+    on what they actually said, answer every required target it owns. A
     finding whose content states neither target's question answers neither."""
     topics, targets = when_sub_topics(), when_targets()
     off_topic = dated_finding(text="The manufacturer offers a two-year limited warranty.")
@@ -1576,7 +1562,7 @@ def test_an_unbound_off_topic_finding_answers_no_target() -> None:
 
 
 def test_the_content_check_ignores_a_borrowed_function_word() -> None:
-    """P2 regression: a function/question word the target's own question
+    """A function/question word the target's own question
     happens to use ("from") is not proof a finding states what it asks."""
     topics, targets = when_sub_topics(), when_targets()
     warranty = dated_finding(
@@ -1634,7 +1620,7 @@ def test_a_figure_target_is_answered_by_its_fields_not_by_the_sub_topic() -> Non
 
 def test_a_fallback_answer_reaches_the_row_it_builds() -> None:
     """The row a writer cites carries the obligation the fallback answered,
-    and only that obligation (D9): a finding's content states one target's
+    and only that obligation: a finding's content states one target's
     question, so its row carries that target alone."""
     topics, targets = when_sub_topics(), when_targets()
     [row] = fact_rows([dated_finding()], targets, sub_topics=topics)
@@ -1643,12 +1629,12 @@ def test_a_fallback_answer_reaches_the_row_it_builds() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Improvement 7: a relay-shaped page's unattributed row claims no organisation
+# A relay-shaped page's unattributed row claims no organisation
 # ---------------------------------------------------------------------------
 #
-# The live run published an unattributed figure of a page that reproduces
-# another body's document as "the site states…", because the row's organisation
-# column was the page's owner. The page's own title carries the work it serves
+# An unattributed figure of a page that reproduces another body's document as
+# "the site states…" must not take the page's owner as the row's organisation.
+# The page's own title carries the work it serves
 # beside its own site label, and that is what the row must respect.
 
 def relay_shaped_finding(*, title: str, url: str = "https://example-relay.example/law/12"):
@@ -1663,7 +1649,7 @@ def relay_shaped_finding(*, title: str, url: str = "https://example-relay.exampl
 
 
 def test_an_unattributed_row_of_a_relay_shaped_page_claims_no_organisation() -> None:
-    """Improvement 7, on the run's shape: the serving site is not the issuer."""
+    """The serving site is not the issuer of an unattributed relay-shaped row."""
     pages = {
         # the run's shape: headline | the work it serves | its own site label
         "relayed": "Article 12: Registration | Example Act | Example Relay",

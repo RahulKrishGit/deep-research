@@ -189,7 +189,7 @@ def test_source_helpers_do_not_expose_false_corroboration_api() -> None:
 def test_mirror_is_not_a_new_publisher() -> None:
     """A mirror is a transport relation, and it inherits the issuer it serves.
 
-    Task 4's minimum RED case: the host that served the bytes is not the
+    The host that served the bytes is not the
     publisher, so an official mirror of one report must resolve to the same
     canonical publisher as the original — otherwise one work looks like two
     independent publishers and a mirror silently corroborates its original.

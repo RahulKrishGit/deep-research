@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 import deep_research.runtime.memory_bridge as memory_bridge_module
-
 from deep_research.memory.entries import MemoryEntry
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.runtime.memory_bridge import (
@@ -218,7 +217,7 @@ _BATCH = [
 async def test_a_batch_stores_exactly_what_one_save_per_finding_stores(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Latency audit O2: one ``save_many`` of three findings stores the same
+    """One ``save_many`` of three findings stores the same
     ids, documents, metadata and vectors as three single saves, and reaches
     the store in one upsert instead of three."""
 

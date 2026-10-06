@@ -697,7 +697,7 @@ async def test_search_without_a_request_budget_stays_uncounted(tracker) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The async default client (notes-progress-report spec §8.3, D25)
+# The async default client
 #
 # A stop cancels the run's task. A search the tool awaits on the run's own loop
 # is cancelled with it; one running in a worker thread cannot be stopped. So the
@@ -733,7 +733,7 @@ class _AsyncSearchClient:
 
 @pytest.mark.asyncio
 async def test_default_search_client_is_async(tracker) -> None:
-    """D25: a tool built with a key and no client holds tavily's async client; nothing is sent."""
+    """A tool built with a key and no client holds tavily's async client; nothing is sent."""
     tool = WebSearchTool(tracker, api_key="tvly-test-key")
     assert isinstance(tool._client, AsyncTavilyClient)
     assert inspect.iscoroutinefunction(tool._client.search)
@@ -742,7 +742,7 @@ async def test_default_search_client_is_async(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_search_cancelled_with_task(tracker) -> None:
-    """§8.3: cancelling the task that awaits a search cancels the request in flight, after
+    """Cancelling the task that awaits a search cancels the request in flight, after
     exactly one reserved unit."""
     budget = _tavily_budget()
     client = _AsyncSearchClient()
@@ -784,7 +784,7 @@ async def test_sync_search_client_runs_in_thread(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_search_5xx_retried(tracker) -> None:
-    """R9: the async client raises ``httpx.HTTPStatusError`` for a status tavily does not map, so a
+    """The async client raises ``httpx.HTTPStatusError`` for a status tavily does not map, so a
     503 is retried under the tool's own rule, each retry reserving its own unit."""
     budget = _tavily_budget()
     client = _AsyncSearchClient([_status_error(503), _status_error(503), _search_response()])

@@ -1,4 +1,4 @@
-"""Reader notes at the API (live-briefs spec §4.6, D8-D11a): the interpreter,
+"""Reader notes at the API: the interpreter,
 its fallback, the two session events, and each note's outcome.
 
 A reader may add up to ten notes while a run is going. The notes route accepts
@@ -6,8 +6,8 @@ one (``session.note.received``), and a ``NoteInterpreter`` reads it: live mode
 asks the configured provider — the same path as the one-time check, thinking
 disabled, structured output — and replay mode restates the note as written.
 The interpreted note joins the run's board (``runtime/notes.py``), where every
-step but verification reads it (D10), and ``session.note.interpreted`` carries
-the run's reading back to the page, which acknowledges it (D9).
+step but verification reads it, and ``session.note.interpreted`` carries
+the run's reading back to the page, which acknowledges it.
 
 An interpretation never blocks a note. A call that fails, runs out of time or
 answers with something invalid keeps the note as written, as an emphasis, and
@@ -85,7 +85,7 @@ class NoteInterpretationDraft(BaseModel):
 
 
 class NoteInterpretation(BaseModel):
-    """One note's reading (live-briefs spec §4.6): what kind of note, in plain words."""
+    """One note's reading: what kind of note, in plain words."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
 
@@ -93,7 +93,7 @@ class NoteInterpretation(BaseModel):
     restatement: str = Field(min_length=1, max_length=500)
     short: str = Field(default="", max_length=MAX_NOTE_SHORT_CHARS)
     """The note's subject in 1-3 words for a label, or ``""`` when the reading named
-    none (notes-progress-report spec §7.2); the board's note then derives it."""
+    none; the board's note then derives it."""
     scope: ReaderNoteScope | None = None
     new_questions: list[str] = Field(default_factory=list, max_length=MAX_NEW_QUESTIONS)
     replaces: str | None = None
@@ -134,7 +134,7 @@ NoteInterpreter: TypeAlias = Callable[
 
 
 def fallback_interpretation(text: str) -> NoteInterpretation:
-    """The note as written, as an emphasis (spec §4.6: the interpreter failed)."""
+    """The note as written, as an emphasis (the interpreter failed)."""
     return NoteInterpretation(kinds=["emphasis"], restatement=text)
 
 
@@ -152,7 +152,7 @@ def validated_interpretation(
     over 200 characters; a scope field over 120 characters. A ``replaces`` that
     names no earlier note of this run is dropped rather than failing the
     reading: the note itself stands. So is a ``short`` that is not one to three
-    words of at most 24 characters (notes-progress-report spec §7.2): a label
+    words of at most 24 characters: a label
     never costs the reading, and the board's note derives one instead.
     """
     earlier_ids = {note.note_id for note in earlier}
@@ -284,7 +284,7 @@ async def scripted_note_interpreter(
     earlier: Sequence[ReaderNote],
     settings: object,
 ) -> NoteInterpretation:
-    """Replay mode's interpreter (spec §4.8): the note restated as written, an emphasis."""
+    """Replay mode's interpreter: the note restated as written, an emphasis."""
     del question, earlier, settings
     return NoteInterpretation(kinds=["emphasis"], restatement=text)
 
@@ -356,14 +356,14 @@ def note_interpreted_event(note: ReaderNote, *, fallback: bool) -> ResearchEvent
 
 
 class NoteRecord(NamedTuple):
-    """One accepted note as the session response reports it (notes-progress-report spec §5.6)."""
+    """One accepted note as the session response reports it."""
 
     received: ReceivedNote
     restatement: str | None
     """The run's reading of the note, ``None`` until it is read."""
     outcome: NoteOutcome
     steering_outcome: NoteOutcome | None
-    """A mixed note's steering half (D20); ``None`` for every other note."""
+    """A mixed note's steering half; ``None`` for every other note."""
 
 
 def note_records(

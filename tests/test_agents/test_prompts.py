@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from deep_research.agents.evidence import build_read_dossiers
 from deep_research.agents.prompts import (
     NATIVE_REACT_RESPONSE_CONTRACT,
     SOURCE_EVALUATOR_SYSTEM_PROMPT,
@@ -19,7 +20,6 @@ from deep_research.agents.prompts import (
     render_structured_reply_format,
     render_structured_request,
 )
-from deep_research.agents.evidence import build_read_dossiers
 from deep_research.agents.sources import SourceGroup
 from deep_research.memory.entries import ScratchpadEntry
 from deep_research.utils.types import Finding
@@ -393,12 +393,10 @@ def test_new_prompt_constants_state_their_contracts() -> None:
 def test_the_source_evaluator_keeps_a_written_date_at_its_own_precision() -> None:
     """A dateline written in words dates the document by that day.
 
-    The instruction used to ask for "the year, for 'January 15, 2026'",
-    because the value had to appear in the quote. Every EIA page in the
-    audited run dates itself that way, so two releases of one series were
-    recorded as the same "2026" and could not be ranked — the reduction is
-    what the instruction must not ask for, and the reader now accepts the
-    full date a spelled quote states.
+    The instruction must not ask for "the year, for 'January 15, 2026'":
+    two releases of one series dated that way would be recorded as the same
+    "2026" and could not be ranked. The reader accepts the full date a
+    spelled quote states.
     """
     instruction = SOURCE_SCORING_INSTRUCTION
 

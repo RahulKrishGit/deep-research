@@ -1,4 +1,4 @@
-"""The note outcomes live below the API (notes-progress-report spec §5.6, §7.2).
+"""The note outcomes live below the API.
 
 The finalizer stamps the bottom line's note lines from ``note_outcome`` and
 ``note_steering_outcome``; ``graph`` cannot import ``api``, so the two live in

@@ -40,7 +40,7 @@ describe("readStream", () => {
   const portOf = (s: NetServer) => (s.address() as { port: number }).port;
   const listen = (handler: Parameters<typeof createServer>[1]) =>
     new Promise<string>((resolve) => { server = createServer(handler).listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${portOf(server!)}`)); });
-  // K11: no hard-coded refused port — reserve an ephemeral port with a real bind, then close it
+  // No hard-coded refused port — reserve an ephemeral port with a real bind, then close it
   // so the same port is guaranteed refused for the duration of the assertion below.
   const reservePort = () =>
     new Promise<number>((resolve) => {

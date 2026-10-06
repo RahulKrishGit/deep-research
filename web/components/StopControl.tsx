@@ -4,14 +4,14 @@ import { ApiError, stopResearch } from "@/lib/api";
 import { STOP_BODY, STOP_CLOSE, STOP_CONFIRM, STOP_FAILED, STOP_KEEP, STOP_LABEL, STOP_TITLE, STOP_TOO_LATE } from "@/lib/stop";
 import { useConsole, type StopTarget } from "./ConsoleProvider";
 
-/* notes-progress-report spec §8.5 (D17, D18, D24; Stop.dc.html columns 1-2): Stop, after the running
+/* Stop, after the running
    status chip — ghost, small, a square in the text colour — and its one confirmation. "Keep going" takes
    focus on open; Escape, a click outside or "Keep going" closes it and gives focus back to Stop. "Stop
    research" posts once: a 202 hands the stopped session to the screen, a 409 means the run is already
    finishing, and any other failure keeps the question open. Nothing stops until the reader says so.
    When the screen withdraws the control for another reason (Publishing, finished, failed) while Stop or its
-   popover holds focus, focus goes to `returnFocusTo` (the topbar's status chip) instead of falling to <body>
-   (owner decision O2, 2026-10-01). A stop by the reader has its own hand-over: the stopped stage's first line. */
+   popover holds focus, focus goes to `returnFocusTo` (the topbar's status chip) instead of falling to <body>.
+   A stop by the reader has its own hand-over: the stopped stage's first line. */
 type Face = "ask" | "busy" | "late" | "failed";
 
 export function StopControl({ target, returnFocusTo }: { target: StopTarget; returnFocusTo?: RefObject<HTMLElement | null> }) {
@@ -40,7 +40,7 @@ export function StopControl({ target, returnFocusTo }: { target: StopTarget; ret
     else if (face === "failed") confirmBtn.current?.focus();
   }, [open, face]);
   // While the POST is in flight neither Escape nor a click outside closes it, so the answer always
-  // lands on an open popover (spec ambiguity 10).
+  // lands on an open popover.
   useEffect(() => {
     if (!open || busy) return;
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") close(); };

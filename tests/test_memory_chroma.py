@@ -176,8 +176,8 @@ def test_importing_the_memory_package_does_not_import_chromadb() -> None:
 async def test_the_real_store_answers_many_reputation_reads_at_once(
     tmp_path: Path,
 ) -> None:
-    """Latency audit O12: the source evaluator reads every source's reputation
-    at once, so the real backend has to answer concurrent reads correctly."""
+    """The source evaluator reads every source's reputation at once, so the
+    real backend has to answer concurrent reads correctly."""
     import asyncio
 
     memory = LongTermMemory.from_config(_config(tmp_path), embeddings=FakeEmbeddings())
@@ -203,8 +203,8 @@ async def test_the_real_store_answers_many_reputation_reads_at_once(
 
 @pytest.mark.asyncio
 async def test_the_real_store_answers_many_queries_at_once(tmp_path: Path) -> None:
-    """Latency audit O4: research loops' memory lookups no longer wait for one
-    another, so the real backend has to answer concurrent queries correctly."""
+    """Research loops' memory lookups do not wait for one another, so the real
+    backend has to answer concurrent queries correctly."""
     import asyncio
 
     memory = LongTermMemory.from_config(_config(tmp_path), embeddings=FakeEmbeddings())

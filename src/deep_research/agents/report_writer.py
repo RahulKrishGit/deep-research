@@ -1,20 +1,19 @@
-"""The Report Writer (spec §6): the parallel writer.
+"""The Report Writer: the parallel writer.
 
 One call per plan sub-topic ("part"), each request listing only that part's
-own verified findings (spec §6.1-6.3); each part's Statement Check starts the
-moment its own draft returns, sharing one semaphore
-(``agents.verifier_concurrency``) with every other part's batches and the
-bottom line's (spec §6.5, decision D8); the bottom line is written last, fed
-only the checked section statements (spec §6.6); a redraft re-asks only the
-parts a material defect names, and carries every other part over unchanged
-(spec §6.9). Code keeps only the mechanical rules spec §6.4 names -- a point
-cites at least one known label belonging to its part, is not built only from
-context-only findings, names its subject, and fits the length and count
-shape. Every other question about a sentence's wording -- its numbers,
-dates, scope, organisation, forecast or actual -- is judged once for every
-drafted sentence by the Statement Check (spec §5.4, decision D8). §6.7's
-assembly (the table, page credits and unreachable pages) runs after every
-part and the bottom line finish, driven by the frozen ``answer_kind``.
+own verified findings; each part's Statement Check starts the moment its own
+draft returns, sharing one semaphore (``agents.verifier_concurrency``) with
+every other part's batches and the bottom line's; the bottom line is written
+last, fed only the checked section statements; a redraft re-asks only the
+parts a material defect names, and carries every other part over unchanged.
+Code keeps only the mechanical rules -- a point cites at least one known
+label belonging to its part, is not built only from context-only findings,
+names its subject, and fits the length and count shape. Every other question
+about a sentence's wording -- its numbers, dates, scope, organisation,
+forecast or actual -- is judged once for every drafted sentence by the
+Statement Check. The assembly (the table, page credits and unreachable pages)
+runs after every part and the bottom line finish, driven by the frozen
+``answer_kind``.
 """
 
 from __future__ import annotations
@@ -104,8 +103,8 @@ from deep_research.utils.types import (
     ItemMarkDraft,
     NotFoundTarget,
     PageCredit,
-    ReadRecord,
     ReaderAnswer,
+    ReadRecord,
     RejectedDraftPoint,
     ReportComposition,
     ReportPart,
@@ -130,60 +129,54 @@ from deep_research.utils.types import (
 
 REPORT_WRITER_NAME = "report_writer"
 
-# Controller ruling 2026-09-25 ("no strong limits"; quality and latency come
-# first over every artificial content cap): MAX_POINT_CHARS 600 -> 1200,
-# _DEFECT_PROBLEM_CHARS 400 -> 2000, the old DEFAULT_MAX_SECTIONS = 4 cap is
-# deleted outright (every plan part gets its section, one call per part, no
-# part dropped for count), and no new cap is added on points per section or
-# findings per part. MAX_ANSWER_SENTENCES (2) is the top of the bottom
-# line's direct answer, one or two sentences (notes-progress-report spec
-# §7.1), not a truncation of content: the bottom line's topic lines have no
-# count cap.
-# Whole-branch review P2-1: _SECTION_TITLE_CHARS moved to the spec's 80 (a
-# drafted title prints raw and becomes an options-table column header, so
-# the earlier 120 was too wide a backstop) and its cut is now a word
-# boundary, never mid-word; a title carrying a digit/quantity or a verdict
-# word (spec §6.4 rule 7's own concern) falls back to the sub-topic's own
-# title instead of printing unchecked.
+# No strong limits: quality and latency come first over every artificial
+# content cap. Every plan part gets its section (one call per part, no part
+# dropped for count), and there is no cap on points per section or findings
+# per part. MAX_ANSWER_SENTENCES (2) is the top of the bottom line's direct
+# answer, one or two sentences, not a truncation of content: the bottom
+# line's topic lines have no count cap.
+# _SECTION_TITLE_CHARS is 80 (a drafted title prints raw and becomes an
+# options-table column header, so a wider backstop would be too loose) and
+# its cut is a word boundary, never mid-word; a title carrying a
+# digit/quantity or a verdict word falls back to the sub-topic's own title
+# instead of printing unchecked.
 MAX_POINT_CHARS = 1200
 MAX_POINT_WORDS = 60
 MAX_ANSWER_SENTENCES = 2
 MAX_BOTTOM_LINE_SENTENCE_WORDS = 60
 _SECTION_TITLE_CHARS = 80
-#: A section's short title (notes-progress-report spec §7.2): 1-3 words, at
+#: A section's short title: 1-3 words, at
 #: most 24 characters, no digit and no verdict word, else the title stands in.
 _SHORT_TITLE_WORDS = 3
 _SHORT_TITLE_CHARS = 24
-#: A bottom-line request that lists no topic (spec §7.1): no topic line is kept.
+#: A bottom-line request that lists no topic: no topic line is kept.
 _NO_TOPICS: Mapping[str, frozenset[str]] = {}
 _MARK_SPAN_CHARS = 80
 CONTEXT_ONLY_RELEVANCE = 0.5
 DEFAULT_WRITER_AUTHORITY_FLOOR = 0.4
-#: ReRevZ2 C7: a safe, shared empty default for ``_bottom_line_fallback``'s
+#: A safe, shared empty default for ``_bottom_line_fallback``'s
 #: ``label_by_finding_id`` -- never mutated, so one shared instance is fine.
 _EMPTY_MAPPING: Mapping[str, str] = {}
-# Spec §17 Q6 chose 7 (= max_sub_topics) so every part starts at once; a
-# controller override for this build raised it to 10 (at least the part
-# count; the target provider allows far higher concurrency) -- see
-# ``utils/config.py``'s ``writer_section_concurrency`` for the shipped value.
-# This is only the fallback a caller with no configured value gets.
+# Every part starts at once: 10 is at least the part count, and the target
+# provider allows far higher concurrency -- see ``utils/config.py``'s
+# ``writer_section_concurrency`` for the shipped value. This is only the
+# fallback a caller with no configured value gets.
 DEFAULT_WRITER_SECTION_CONCURRENCY = 10
 # One defect's own sentence as the re-draft's request carries it: the whole
-# sentence, not a clipped one -- the redraft has to see what is wrong in full
-# (controller ruling: no strong limits).
+# sentence, not a clipped one -- the redraft has to see what is wrong in full.
 _DEFECT_PROBLEM_CHARS = 2000
-# F10: the first attempt runs at the resolved profile's effort (config.yaml
+# The first attempt runs at the resolved profile's effort (config.yaml
 # model_overrides.report_writer, the one effort source); a truncated draft is
 # asked once more at high, the retry this writer's own call makes.
 _WRITER_ATTEMPT_EFFORTS: tuple[str | None, ...] = (None, OUTPUT_LIMIT_RETRY_EFFORT)
 
 # Fallbacks used when a caller passes no explicit bound, mirroring the
-# evidence_verifier module constants of the same shape (PD-12).
+# evidence_verifier module constants of the same shape.
 _CHECK_BATCH_SIZE_DEFAULT = 5
 _CHECK_CONCURRENCY_DEFAULT = 8
 
 
-# --- WRI-1'/WRI-2'/WRI-3': the section call's prompt contract ---------------
+# --- the section call's prompt contract ---------------------------------------
 
 SECTION_SYSTEM_PROMPT = (
     "You write one section of a research report: the part of the question "
@@ -398,7 +391,7 @@ _SECTION_REPLY_EXAMPLES = (
 )
 
 
-# --- WRI-4/WRI-5/WRI-6: the bottom-line call's prompt contract --------------
+# --- the bottom-line call's prompt contract -----------------------------------
 
 BOTTOM_LINE_SYSTEM_PROMPT = (
     "Write the bottom line from the checked statements listed: first a direct answer "
@@ -522,7 +515,7 @@ class ReportWriterTask(AgentTask):
     scope: str = ""
     generated_on: str = ""
     answer_kind: AnswerKind | None = None
-    """The frozen contract's answer form (spec §3.2), printed as ``Answer form:
+    """The frozen contract's answer form, printed as ``Answer form:
     {answer_form_requirement(kind)}`` to both writer calls; ``None`` prints
     "not classified" (a legacy or contract-less run)."""
     sub_topics: list[SubTopic] = Field(default_factory=list)
@@ -535,13 +528,13 @@ class ReportWriterTask(AgentTask):
     answered: dict[str, list[str]] = Field(default_factory=dict)
     reads: dict[str, ReadRecord] = Field(default_factory=dict)
     """Read id -> the page it read, so the Statement Check can see each cited
-    finding's bounded passage (improvement 8). Empty for a caller with no reads
-    in hand, which shows the snippet alone as before."""
+    finding's bounded passage. Empty for a caller with no reads
+    in hand, which shows the snippet alone."""
     passages: dict[str, str] = Field(default_factory=dict)
-    """Finding id -> its bounded registry passage (spec §6.2, D5), computed once
+    """Finding id -> its bounded registry passage, computed once
     at task-build time for the whole registry -- not only for cited findings."""
     self_descriptions: dict[str, str] = Field(default_factory=dict)
-    """Read id -> the read's own ``derivative_self_description`` (D1), computed
+    """Read id -> the read's own ``derivative_self_description``, computed
     once per read at task-build time -- several findings can share one read,
     so this is keyed by read id, not finding id."""
     defects: list[ReviewDefect] = Field(default_factory=list)
@@ -551,47 +544,45 @@ class ReportWriterTask(AgentTask):
     re-run *for* these defects: the run already composed a report, the terminal
     review scored it and named what is materially wrong, and no research pass
     can fix it from the same evidence -- so each defect is routed to the parts
-    (or the bottom line) its statement or target ids name (spec §6.9).
+    (or the bottom line) its statement or target ids name.
     """
     previous: ReportComposition | None = None
     """The prior pass's composition, read only on a redraft — a part with no
-    routed defect is carried over from here unchanged (spec §6.9) — and after
-    a note pass, when every part but the notes' own is (notes-progress-report
-    spec §5.4)."""
+    routed defect is carried over from here unchanged — and after
+    a note pass, when every part but the notes' own is."""
     note_pass_coverage_ids: list[str] = Field(default_factory=list)
-    """The reader notes' own parts a note pass researched (notes-progress-report
-    spec §5.4, D4): after a note pass only these parts — and a part with no
-    previous section (P2-1) — and the bottom line are drafted, and every other
-    part is carried over from ``previous`` unchanged; ``[]`` otherwise."""
+    """The reader notes' own parts a note pass researched: after a note pass
+    only these parts — and a part with no previous section — and the bottom
+    line are drafted, and every other part is carried over from ``previous``
+    unchanged; ``[]`` otherwise."""
     acquisition_state_by_target: dict[str, AcquisitionState] = Field(default_factory=dict)
     """Keyed by ``coverage_id`` (the field name is the type's own historical
-    name; every caller in this codebase keys it by sub-topic). Spec §6.7's
-    ``unreachable`` is built from each required sub-topic's own
+    name; every caller in this codebase keys it by sub-topic). The
+    ``unreachable`` list is built from each required sub-topic's own
     ``denied_urls`` and ``candidate_records`` here."""
     target_words: int = 2000
-    """D11: the reader-length point budget's word count -- the frozen
+    """The reader-length point budget's word count -- the frozen
     contract's own ``requested_word_limit`` when the question asked for
-    one, else ``agents.report_target_words`` (spec §6.3)."""
+    one, else ``agents.report_target_words``."""
     reader_notes: str = ""
-    """The rendered reader-notes block (live-briefs spec §4.6), printed as
+    """The rendered reader-notes block, printed as
     ``# Reader notes`` in every section and bottom-line request; ``""`` for a
-    run without notes, whose requests are then exactly what they were."""
+    run without notes, whose requests then carry no notes block."""
     reader_answers: list[ReaderAnswer] = Field(default_factory=list)
     """The reader's answers to the one-time check (``state.reader_answers``),
     printed as ``# Reader answers`` in the bottom-line request so its direct
-    answer takes the form they ask for (notes-progress-report spec §7.1); ``[]``
+    answer takes the form they ask for; ``[]``
     when the check asked nothing."""
     note_labels: dict[str, str] = Field(default_factory=dict)
-    """``note-{note_id}`` -> ``Your note · {short}`` for every active reader note
-    (notes-progress-report spec §7.2): the label of a note's topic line, and what
+    """``note-{note_id}`` -> ``Your note · {short}`` for every active reader note:
+    the label of a note's topic line, and what
     orders note topics after the plan's, by receipt."""
     authority_floor: float = DEFAULT_WRITER_AUTHORITY_FLOOR
-    """D6/D7: ``agents.writer_authority_floor`` -- the bottom line's own
+    """``agents.writer_authority_floor`` -- the bottom line's own
     per-statement floor filter (``_statement_meets_authority_floor``): a
     checked statement resting only on below-floor findings is dropped from
     the bottom line's citable pool once an above-floor statement exists
-    elsewhere. No longer read by ``is_context_only`` (reverted, Y2.1,
-    audit D3)."""
+    elsewhere. ``is_context_only`` does not read it."""
 
 
 class WrittenReport(ContractModel):
@@ -608,20 +599,19 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
                      sources: Sequence[ScoredSource] = ()) -> list[tuple[str, Finding]]:
     """One label per citable finding: answers to required targets first, then
     the rest. Within each group, its source's own ``authority_score``,
-    descending, with a missing score last (D1, D3) -- so the strongest
+    descending, with a missing score last -- so the strongest
     sources of a target get the first labels, and a weaker source never
     outranks the target's own best evidence merely by extracting first.
-    Within an authority tie (RevV2 P2: missing or equal scores are common --
+    Within an authority tie (missing or equal scores are common --
     every score is missing when ``sources`` is empty, and evaluators often
-    give several sources the same value), the required group still falls
-    back to the targets' own plan order, the pre-authority registry's only
-    tiebreak, so two required targets' answers are not interleaved by
-    citable-list order.
+    give several sources the same value), the required group falls
+    back to the targets' own plan order, so two required targets' answers
+    are not interleaved by citable-list order.
 
     The answers are resolved against every target, so an optional sibling
-    still keeps a figure about its subject off a required target's answers
-    (F11), and only the required targets' answers are then ranked first. The
-    plan resolves an unbound extraction's own sub-topic (improvement 1A), so a
+    still keeps a figure about its subject off a required target's answers,
+    and only the required targets' answers are then ranked first. The
+    plan resolves an unbound extraction's own sub-topic, so a
     finding that answers a required obligation that way ranks with the rest.
     """
     citable = citable_findings(findings)
@@ -649,7 +639,7 @@ def finding_registry(findings: Sequence[Finding], targets: Sequence[EvidenceTarg
 
 def statement_passages(findings: Sequence[Finding],
                        reads: Mapping[str, ReadRecord]) -> dict[str, str]:
-    """Finding id -> the bounded passage of the page it was read from (improvement 8).
+    """Finding id -> the bounded passage of the page it was read from.
 
     A snippet is cut at its passage's boundary, so the condition, exception or
     object a reported rule attaches to can sit just past the cut and a sentence
@@ -676,12 +666,12 @@ def statement_passages(findings: Sequence[Finding],
 
 def _read_self_descriptions(reads: Mapping[str, ReadRecord]) -> dict[str, str]:
     """Read id -> the read's own declaration that it is derivative or
-    teaching content (D1), computed once per read, not per finding --
+    teaching content, computed once per read, not per finding --
     several findings can share one read.
     """
     # Imported at call time for the same reason ``context_passage`` is
-    # above: V1 owns this module, and nothing here should bind before a
-    # test's own substitution (or V1's own module) can be seen.
+    # above: nothing here should bind before a test's own substitution can
+    # be seen.
     from deep_research.agents.document_kind import derivative_self_description
 
     descriptions: dict[str, str] = {}
@@ -694,7 +684,7 @@ def _read_self_descriptions(reads: Mapping[str, ReadRecord]) -> dict[str, str]:
 
 _RATIONALE_CHARS = 120
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z])")
-#: P3-2: a token abutting the split point that never ends a sentence on its
+#: A token abutting the split point that never ends a sentence on its
 #: own -- a single letter ("U" in "U.S.") or a known abbreviation. Checked
 #: on the whole token immediately before the break, periods and all.
 _RATIONALE_ABBREVIATIONS = {
@@ -713,7 +703,7 @@ def _is_abbreviation_break(text: str, position: int) -> bool:
 
 
 def _first_sentence(text: str) -> str:
-    """P3-2: the first real sentence break -- ``[.!?]`` followed by
+    """The first real sentence break -- ``[.!?]`` followed by
     whitespace and an uppercase letter, skipping a break at a single-letter
     or known-abbreviation token ("U.S. Department" is not two sentences)."""
     for match in _SENTENCE_END.finditer(text):
@@ -723,11 +713,11 @@ def _first_sentence(text: str) -> str:
 
 
 def _source_rationale_line(source: ScoredSource | None) -> str | None:
-    """D8/D9: the Source Evaluator's own rationale, first sentence, at most
+    """The Source Evaluator's own rationale, first sentence, at most
     ``_RATIONALE_CHARS`` characters -- so the writer (and through it the
     reader) learns what kind of page a weak source is, not just its host.
     ``None`` for a pipeline-generated rationale ("Cited for: ...", carrying
-    no source-evaluator judgement at all, P3-2)."""
+    no source-evaluator judgement at all)."""
     if source is None:
         return None
     rationale = source.rationale.strip()
@@ -746,7 +736,7 @@ def registry_lines(label: str, finding: Finding,
                    sources: Mapping[str, ScoredSource] | None = None,
                    self_descriptions: Mapping[str, str] | None = None) -> list[str]:
     """One finding's registry block: header, source rationale, content,
-    snippet, then its figure or statement lines (spec §6.2, D5, D8/D9).
+    snippet, then its figure or statement lines.
 
     ``content`` is the researcher's own wording, which names the referent a
     snippet leaves as a pronoun. A finding with no kept figure also shows the
@@ -758,10 +748,10 @@ def registry_lines(label: str, finding: Finding,
         f"## {label}: {finding.source_title} ({publisher_identity(finding.source_url)})",
     ]
     if finding.disputes:
-        # Z1/Z2 shared contract (audit D2, CODE 1): a finding the dissent
-        # re-ask returned disputes, qualifies or dates a step another
-        # retained finding states -- the writer's own disagreement-first
-        # rule and the bottom line's dispute guard both need to see it.
+        # A finding the dissent re-ask returned disputes, qualifies or dates a
+        # step another retained finding states -- the writer's own
+        # disagreement-first rule and the bottom line's dispute guard both
+        # need to see it.
         lines.append(
             "disputes: yes (the dissent re-ask returned this finding as disputing, "
             "qualifying or dating a step another finding of the run states; its "
@@ -775,7 +765,7 @@ def registry_lines(label: str, finding: Finding,
         lines.append(f"source: {rationale_line}")
     self_description = (self_descriptions or {}).get(finding.read_id)
     if self_description:
-        # Run-8 D1: the read's own words on what it is -- a role-play, a
+        # The read's own words on what it is -- a role-play, a
         # teaching case, or content based on an encyclopedia's or a
         # chatbot's entries -- reach the writer before it credits the
         # finding, so a derivative page never gets read as a primary
@@ -792,7 +782,7 @@ def registry_lines(label: str, finding: Finding,
         number += 1
         context = result.context
         subject = f" | subject {context.subject}" if context.subject else ""
-        # Improvement 7: an unattributed figure of a relay-shaped page has no
+        # An unattributed figure of a relay-shaped page has no
         # organisation to claim, and naming the page's owner here is what the
         # writer turned into "<the site> states …"; the label beside it already
         # says "source does not attribute it".
@@ -807,9 +797,9 @@ def registry_lines(label: str, finding: Finding,
         passage = passages.get(finding_fingerprint(finding), "")
         if passage:
             lines.append(f"passage: {passage}")
-        # D1 (the prompt re-review): the writer's two phrases -- "the body the
-        # line attributes it to" (WRI-1) and "a host is where a statement was
-        # read" (WRI-2) -- map to two different words here, the same two the
+        # The writer's two phrases -- "the body the
+        # line attributes it to" and "a host is where a statement was
+        # read" -- map to two different words here, the same two the
         # Statement Check's own block prints for the same fact. An admitted
         # issuer is ``attributed to``; a page that names nobody is ``read at``,
         # so the writer never has to guess a body from the shape of a domain.
@@ -827,7 +817,7 @@ def registry_lines(label: str, finding: Finding,
     return lines
 
 
-# --- §6.1: the partition -----------------------------------------------------
+# --- the partition ----------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -835,7 +825,7 @@ class PartPlacement:
     """One plan sub-topic's placed findings, before any writer call runs.
 
     Every ``sub_topics`` entry gets one of these, in plan order, even when its
-    ``findings`` list is empty: an empty part makes no call (spec §6.1).
+    ``findings`` list is empty: an empty part makes no call.
     """
 
     coverage_id: str
@@ -850,7 +840,7 @@ def _target_answers(finding: Finding, target: EvidenceTarget,
 
 def _finding_coverage_id(finding: Finding, targets: Sequence[EvidenceTarget],
                          sub_topics: Sequence[SubTopic]) -> str | None:
-    """The coverage id spec §6.1 places one citable finding under, or ``None``.
+    """The coverage id one citable finding is placed under, or ``None``.
 
     Six categories, each swept over every target in plan order before the
     next is tried: the first target any category matches decides the part.
@@ -884,12 +874,12 @@ def report_parts(
     findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
     sub_topics: Sequence[SubTopic],
 ) -> tuple[list[PartPlacement], list[Finding]]:
-    """Partition every citable finding into exactly one plan sub-topic (spec §6.1).
+    """Partition every citable finding into exactly one plan sub-topic.
 
     Returns one ``PartPlacement`` per sub-topic, in plan order (empty ones
     included, since an empty part still needs to be recorded as such), and
     the findings placed nowhere -- recorded in the evidence log, never
-    written ("T4 compose" wires that recording).
+    written.
     """
     citable = citable_findings(findings)
     buckets: dict[str, list[Finding]] = {topic.coverage_id: [] for topic in sub_topics}
@@ -917,11 +907,11 @@ def finding_source_lines(
     findings: Sequence[Finding], sources: Mapping[str, ScoredSource]
 ) -> dict[str, str]:
     """Finding id (``finding_fingerprint``) -> its ``source:`` registry line
-    (W2), when its source carries one.
+    when its source carries one.
 
     The same line ``registry_lines`` prints for the writer -- the run's own
     source evaluation of the page's kind, in that evaluation's own words --
-    now built once and handed to the Statement Check and the terminal review
+    built once and handed to the Statement Check and the terminal review
     too, so a sentence naming a weak page's kind (the writer's own rule, "in
     the source line's own words") can be judged against what those checkers
     were actually shown, not invented against a block that never carried it.
@@ -937,24 +927,23 @@ def finding_source_lines(
 
 
 def is_context_only(finding: Finding, sources: Mapping[str, ScoredSource]) -> bool:
-    """D16 (spec §6.2): unbound, and from a low-relevance or low-confidence source.
+    """Unbound, and from a low-relevance or low-confidence source.
 
     Context-only findings are listed under a part's ``# Context only``
     heading rather than its verified-findings registry, and a point resting
-    only on them is refused (mechanical rule 3). A bound finding is never
+    only on them is refused. A bound finding is never
     context-only, whatever its source's score.
 
-    Y2.1 (audit D3, CODE 4; reverted, run-6 wave): the run-4/5 waves' gate
-    also made a *bound* weak-authority finding context-only once a
-    stronger finding answered one of the same targets. That target-level
-    comparison erased distinct facts wholesale -- 14 of 16 civil-war
-    findings on one run, gone because one Wikipedia finding merely touched
-    the same target. Citing the stronger source when both state the same
-    fact is now the model's own job (``SECTION_INSTRUCTION``'s "cite the
+    A *bound* weak-authority finding is never context-only, even when a
+    stronger finding answers one of the same targets: a target-level
+    comparison would erase distinct facts wholesale -- most of a part's
+    findings could vanish because one stronger finding merely touched the
+    same target. Citing the stronger source when both state the same
+    fact is the model's own job (``SECTION_INSTRUCTION``'s "cite the
     stronger" rule), not code's to enforce by hiding the weaker finding
     entirely -- its own distinct fact stays citable. The bottom line's
     separate per-statement floor filter (``_statement_meets_authority_floor``)
-    is unaffected by this revert; it never gated a section's findings.
+    never gated a section's findings.
     """
     source = sources.get(normalize_source_url(finding.source_url))
     if source is None:
@@ -966,7 +955,7 @@ def is_context_only(finding: Finding, sources: Mapping[str, ScoredSource]) -> bo
     return source.relevance_score is not None and source.relevance_score < CONTEXT_ONLY_RELEVANCE
 
 
-# --- §6.3/§6.6: the section and bottom-line requests ------------------------
+# --- the section and bottom-line requests -----------------------------------
 
 
 @dataclass(frozen=True)
@@ -980,26 +969,26 @@ class PartJob:
     findings: list[Finding]
     """This part's placed, citable, non-context-only findings."""
     context_findings: list[Finding]
-    """This part's placed findings that are context-only (spec §6.2)."""
+    """This part's placed findings that are context-only."""
     previous: ReportSection | None
     """The prior pass's section for this part, if one exists."""
     defects: list[ReviewDefect]
     """Defects routed to this part; non-empty only when ``redraft`` re-asks it."""
     redraft: bool
     """Whether this part's call runs at all: ``False`` means carried over
-    unchanged from ``previous`` (spec §6.9), no call made."""
+    unchanged from ``previous``, no call made."""
     part_weight_sum: int = 1
-    """Y2.2 (audit D2, CODE 2): the sum of every drafted part's weight
+    """The sum of every drafted part's weight
     (``_part_weight``: 3 for a part that owns a required target, 1
     otherwise) -- the weighted reader-length point/word budget's own
-    denominator, computed once across every ``PartJob`` a report builds
-    (spec §6.3). Defaults to 1 so a caller that builds one ``PartJob``
+    denominator, computed once across every ``PartJob`` a report builds.
+    Defaults to 1 so a caller that builds one ``PartJob``
     directly (a unit test) still gets this part's own weight as the
     denominator: the whole budget, exactly as if no other part existed to
     share it with."""
 
 
-# --- notes-progress-report spec §6.1, §6.2, §6.6: Writing's live progress -----
+# --- Writing's live progress --------------------------------------------------
 
 #: The scope the bottom line's sentences are counted under; a part's is its coverage id.
 _BOTTOM_LINE_SCOPE = "bottom_line"
@@ -1007,11 +996,11 @@ _BOTTOM_LINE_SECTION = "Bottom line"
 
 
 def _drafts_this_pass(job: PartJob) -> bool:
-    """Whether ``_run_part`` makes a section call for this job (spec §6.2's ``P``).
+    """Whether ``_run_part`` makes a section call for this job.
 
     A job with no findings is empty, and one with ``redraft`` false and a
-    previous section is carried over with no call (§6.9); every other job,
-    one with no previous section included (P2-1), is drafted.
+    previous section is carried over with no call; every other job,
+    one with no previous section included, is drafted.
     """
     return bool(job.findings or job.context_findings) and (
         job.redraft or job.previous is None
@@ -1019,7 +1008,7 @@ def _drafts_this_pass(job: PartJob) -> bool:
 
 
 def writing_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
-    """One ``report_writer.progress`` event (spec §4 item 1, §6.1): live-only."""
+    """One ``report_writer.progress`` event: live-only."""
     return agent_event(
         agent_name=REPORT_WRITER_NAME,
         event_type="report_writer.progress",
@@ -1029,20 +1018,20 @@ def writing_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
 
 
 class _WritingProgress:
-    """One composition's running counts (spec §6.1, §6.2), published live.
+    """One composition's running counts, published live.
 
     ``drafted`` maps each drafted part's coverage id -- and the bottom line's
     scope -- to the candidate keys handed to its Statement Check. A key is
     counted once, the first time a batch reports it (``backed``, ``removed``,
     or ``unchecked`` when its batch failed), so no total depends on how many
-    events arrive or how sentences were batched (review M13). ``fraction``
+    events arrive or how sentences were batched. ``fraction``
     weighs each drafted part and the bottom line ``1/(P+1)``; a scope
     contributes its settled share once drafted, a part that returned nothing
     to check contributes in full, and the value never decreases.
 
     ``returned`` holds every part that has settled, written or failed, so the bar's
     arithmetic does not care how a part ended; ``failed`` is the subset that ended
-    ``failed`` (owner decision O1), so the page can say how many were written. A part
+    ``failed``, so the page can say how many were written. A part
     fails at one of two exits: its draft failed, or its draft returned and the
     Statement Check refused every point (or there were none), so nothing of it is
     written.
@@ -1167,7 +1156,7 @@ class _WritingProgress:
             self.publish(sample)
 
 
-#: The composition in progress (spec §6.2). ``compose_written_report`` sets it
+#: The composition in progress. ``compose_written_report`` sets it
 #: before its part tasks start, so every part task, ``_check`` and each
 #: bottom-line call of that composition read the same counts without a
 #: parameter through the bottom-line helpers. Its value stays set for the rest
@@ -1195,17 +1184,16 @@ def _target_line(
     label_by_id: Mapping[str, str], findings_by_id: Mapping[str, Finding],
     sub_topics: Sequence[SubTopic], own_finding_ids: set[str],
 ) -> str:
-    """§6.3's target line, using only the finding ids ``# Verified findings
+    """The target line, using only the finding ids ``# Verified findings
     for this part`` will actually list: a label placed in another part, or a
     context-only finding, must never be named as answering the target here --
-    the writer would be told to cite a label the mechanical rules then refuse
-    (P2-2)."""
+    the writer would be told to cite a label the mechanical rules then refuse."""
     kind = "required" if target.required else "optional"
     finding_ids = [fid for fid in answered.get(target.target_id, []) if fid in own_finding_ids]
     labels = [label_by_id[fid] for fid in finding_ids if fid in label_by_id]
     if not labels:
         return f"- {target.target_id}: {target.question} ({kind}; no listed finding answers it)"
-    # §6.13: a fallback answer (no explicit binding) is labelled as such, so
+    # A fallback answer (no explicit binding) is labelled as such, so
     # the writer states it honestly without claiming an extraction-time bind.
     fallback_only = all(
         fid in findings_by_id and answers_by_fallback(findings_by_id[fid], target, sub_topics)
@@ -1240,7 +1228,7 @@ def _rendered_previous_bottom_line(
     points: Sequence[ReportPoint], topics: Mapping[str, str] = _EMPTY_MAPPING,
 ) -> str:
     """The previous bottom line, each point prefixed with ``answer:`` or, for a
-    topic line, its own ``{coverage_id}:`` (notes-progress-report spec §7.1).
+    topic line, its own ``{coverage_id}:``.
     ``topics`` maps a topic line's statement id to its coverage id."""
     return "\n".join(
         f"- {topics.get(point.statement_id, 'answer')}: {point.text}" for point in points
@@ -1262,7 +1250,7 @@ def material_defects(review: ReportReview | None) -> list[ReviewDefect]:
 
 
 def _is_redraft_hop(state: ResearchState) -> bool:
-    """P0-1: a redraft (the same iteration re-run after review) carries the
+    """A redraft (the same iteration re-run after review) carries the
     review's defects and the previous composition forward; a new iteration
     (an extra research pass) does not, even when a material defect is still
     on file from the iteration that bought the pass -- that review is
@@ -1271,7 +1259,7 @@ def _is_redraft_hop(state: ResearchState) -> bool:
     would silently apply "minimal edits" to a part that instead needs its
     new finding written from scratch.
 
-    A reader note's loops keep the iteration (live-briefs spec §4.6) and read
+    A reader note's loops keep the iteration and read
     as a fresh draft too: after a note pass the draft is over new evidence,
     and a note redraft drafts every part afresh with the notes. The latest
     loop marker decides.
@@ -1287,7 +1275,7 @@ def _is_redraft_hop(state: ResearchState) -> bool:
 
 
 # The loop markers a writer call can follow: the review's own redraft, an extra
-# pass, and a reader note's two loops (spec §6.9; live-briefs spec §4.6).
+# pass, and a reader note's two loops.
 _LOOP_MARKERS = frozenset(
     {
         "graph.report.redraft_requested",
@@ -1301,7 +1289,7 @@ _LOOP_MARKERS = frozenset(
 def _note_pass_coverage_ids(state: ResearchState) -> list[str]:
     """The notes' own parts a note pass researched, when one is what this draft follows.
 
-    notes-progress-report spec §5.4 (D4): read from the latest loop marker. Only
+    Read from the latest loop marker. Only
     when it is ``graph.note_pass.started`` and the composition on hand is this
     iteration's does this draft carry every other part over; after any other
     loop, or with no composition to carry, ``[]``.
@@ -1329,8 +1317,8 @@ def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
 
     The sentence is the reviewer's own text; the packet spends characters on
     everything it carries, so it is still summarized to ``_DEFECT_PROBLEM_CHARS``
-    -- generous enough (controller ruling: no strong limits) that a redraft
-    sees the defect whole in every case observed so far.
+    -- generous enough that a redraft sees the defect whole in every case
+    observed so far.
     """
     lines: list[str] = []
     for defect in defects:
@@ -1351,17 +1339,16 @@ def _required_targets_answered(job: PartJob, task: ReportWriterTask, own_finding
 
 
 def _part_weight(targets: Sequence[EvidenceTarget]) -> int:
-    """Y2.2 (audit D2, CODE 2): a part that owns a required target pulls
+    """A part that owns a required target pulls
     three times the reader length of a part that does not, so a required
     target's answer is never capped to the same handful of points as an
-    optional part (D2: a required-target part with 48 citable findings got
-    six points under the old flat division)."""
+    optional part."""
     return 3 if any(target.required for target in targets) else 1
 
 
 def _point_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
-    """D11's reader-length point budget (spec §6.3), weighted toward the
-    required target (Y2.2, audit D2, CODE 2): an instruction to the model
+    """The reader-length point budget, weighted toward the
+    required target: an instruction to the model
     only -- code never truncates or drops a checked point for exceeding
     it. ``W_part`` is this part's own weighted share of the report's word
     budget: the budget times this part's weight (``_part_weight``)
@@ -1375,9 +1362,9 @@ def _point_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str
 
 
 def _word_budget(task: ReportWriterTask, job: PartJob, own_finding_ids: set[str]) -> int:
-    """D14's word budget (spec §6.3), the same weighted share
-    ``_point_budget`` uses (Y2.2, audit D2, CODE 2): code refuses nothing
-    new; ``MAX_POINT_CHARS`` stays the runaway guard. Never below
+    """The word budget, the same weighted share
+    ``_point_budget`` uses: code refuses nothing over it;
+    ``MAX_POINT_CHARS`` stays the runaway guard. Never below
     ``MAX_POINT_WORDS`` times the part's own required-target count."""
     weight = _part_weight(job.targets)
     w_part = task.target_words * weight / max(job.part_weight_sum, weight)
@@ -1396,7 +1383,7 @@ def _point_budget_line(task: ReportWriterTask, job: PartJob, own_finding_ids: se
 
 
 def section_messages(task: ReportWriterTask, job: PartJob) -> list[ChatMessage]:
-    """One part's section request (spec §6.3): static-first, so every part
+    """One part's section request: static-first, so every part
     shares a cacheable prefix."""
     label_by_id = {finding_fingerprint(f): label for label, f in task.registry}
     findings_by_id = {finding_fingerprint(f): f for f in task.findings}
@@ -1447,22 +1434,22 @@ def bottom_line_messages(
     disputed_statement_ids: frozenset[str] = frozenset(),
     outcome_statement_ids: frozenset[str] = frozenset(),
 ) -> list[ChatMessage]:
-    """The bottom-line request (spec §6.6): fed only the checked, kept section
+    """The bottom-line request: fed only the checked, kept section
     statements a caller passes in ``sections`` -- filtering to consistent or
-    corrected verdicts is the caller's job (§6.7 assembly needs the verdicts
+    corrected verdicts is the caller's job (assembly needs the verdicts
     this function has no access to).
 
-    ``disputed_statement_ids`` (audit D1 fix (b), ReRevZ2 C7) is the caller's
+    ``disputed_statement_ids`` is the caller's
     own union, across every part, of the statement ids of the writer's kept,
     marked ``disputes: true`` points (``_run_bottom_line``). Label-scoped,
-    not target-scoped (C7): a required target can carry a dozen statements,
+    not target-scoped: a required target can carry a dozen statements,
     and target scoping told the bottom line every one of them was disputed,
     the moment any one was marked. The block lists the marked points
     themselves, then every other checked statement that cites one of the
     same findings -- never an untouched statement that merely shares the
     marked points' target.
 
-    ``outcome_statement_ids`` (Run-8 D4/D5) is the same kind of union for
+    ``outcome_statement_ids`` is the same kind of union for
     the writer's kept points marked ``outcome: true`` -- the mechanism's
     own last step. Listed under "# Outcome" so a mechanism's bottom line
     can end on it, credited and dated as the statement states it.
@@ -1543,7 +1530,7 @@ def bottom_line_messages(
             ChatMessage(role="user", content=render_structured_request(static, material))]
 
 
-# --- redraft routing (spec §6.9) --------------------------------------------
+# --- redraft routing ---------------------------------------------------------
 
 
 def _route_defects(
@@ -1599,7 +1586,7 @@ def _route_defects(
     return routed, by_coverage, bottom_line
 
 
-# --- mechanical rules (§6.4); the Statement Check judges everything else ---
+# --- mechanical rules; the Statement Check judges everything else -----------
 
 #: Where a drafted point too long for ``MAX_POINT_CHARS`` may be cut: after a
 #: sentence or clause end, and only where what follows starts a word. The cut is
@@ -1607,8 +1594,9 @@ def _route_defects(
 #: invents, drops or reorders a word and every piece keeps the point's citations.
 _CLAUSE_BOUNDARY = re.compile(r"(?<=[.;!?])\s+(?=[\"“(\[]?\S)")
 
-#: D6's guard: a judgement whose subject is a bare pronoun, unquoted or inside
-#: a quotation, and that carries no option mark to name the subject instead.
+#: The unnamed-subject guard: a judgement whose subject is a bare pronoun,
+#: unquoted or inside a quotation, and that carries no option mark to name
+#: the subject instead.
 _UNNAMED_SUBJECT = re.compile(
     r"^[\"“'(]*\s*(it|this|that|these|those|they|he|she)\b\s+"
     r"(is|are|was|were|has|have|had|remains|offers|delivers|makes|sounds)\b",
@@ -1616,10 +1604,10 @@ _UNNAMED_SUBJECT = re.compile(
 )
 _QUOTED_SPAN = re.compile(r"[\"“]([^\"”]+)[\"”]")
 
-#: D12: a leaked internal finding-label group in a point's own text --
+#: A leaked internal finding-label group in a point's own text --
 #: "(F18, F28)" -- stripped together with the space before it. Deterministic
 #: to detect, unlike the model's own compliance rule, and the point is never
-#: refused for carrying one (spec §6.4's own D12 fix).
+#: refused for carrying one.
 _LABEL_GROUP = re.compile(r"\s*\(\s*F\d{2,3}(?:\s*,\s*F\d{2,3})*\s*\)")
 
 
@@ -1634,18 +1622,17 @@ def _has_unnamed_subject(text: str) -> bool:
     return any(_UNNAMED_SUBJECT.match(match.group(1).strip()) for match in _QUOTED_SPAN.finditer(text))
 
 
-#: Audit D1 fix (a): a point that states a fact but names no one behind it
-#: (run 7's S043, credited to nobody one line after its own refutation).
-#: RevZ2 P2-b: matched case-sensitively -- these are the writer's own
+#: The verbs that credit a point to someone. Matched case-sensitively --
+#: these are the writer's own
 #: lowercase, mid-sentence citation verbs ("Example Register states
 #: that ..."); capitalised ("States", "Records") is a sentence-initial
 #: common word or a proper noun ("United States"), never a credit.
-#: RevZ2 P2-a: past-tense and plural forms added, plus the forecast
+#: Past-tense and plural forms are included, plus the forecast
 #: verbs the section rule already asks for ("projects", "expects",
 #: "forecasts") -- a forecast sentence credits its issuer through that
 #: verb, not a separate one. These are the writer's own established
 #: reporting verbs: any subject but a bare determiner credits (the
-#: determiner rule below), the same rule ReRevZ2 P2 added.
+#: determiner rule below).
 _REPORTING_VERB_WORDS = (
     "states", "state", "reports", "report", "says", "said", "writes", "wrote",
     "argues", "argued", "notes", "noted", "records", "record", "finds", "found",
@@ -1657,14 +1644,13 @@ _REPORTING_VERB_WORD = re.compile(
     r"\b(?:" + "|".join(re.escape(word) for word in _REPORTING_VERB_WORDS) + r")\b"
 )
 
-#: ReRevZ2 R1: the writer's own reply-example verbs the guard did not yet
-#: accept ("Example Tester rates ...", "... names Model B ..."), plus the
-#: bottom-line vocabulary the section guard shares no verb with. ReRevZ2b
-#: P1 on R1: unlike the reporting verbs above, these are ordinary action
-#: verbs any subject can take ("The data shows a steady increase.", "Rome
-#: holds the record ...") -- "isn't a bare determiner" is not enough, so
-#: ``_action_verb_credits`` requires the words directly before the verb
-#: to actually look like a name.
+#: The writer's own reply-example verbs ("Example Tester rates ...",
+#: "... names Model B ..."), plus the bottom-line vocabulary the section
+#: guard shares no verb with. Unlike the reporting verbs above, these are
+#: ordinary action verbs any subject can take ("The data shows a steady
+#: increase.", "Rome holds the record ...") -- "isn't a bare determiner" is
+#: not enough, so ``_action_verb_credits`` requires the words directly
+#: before the verb to actually look like a name.
 _ACTION_VERB_WORDS = (
     "rates", "names", "measured", "measures", "shows", "traces", "attributes",
     "holds", "calls", "lists", "puts", "concludes", "cites", "quotes", "claims",
@@ -1674,11 +1660,11 @@ _ACTION_VERB_WORD = re.compile(
     r"\b(?:" + "|".join(re.escape(word) for word in _ACTION_VERB_WORDS) + r")\b"
 )
 #: Both tiers combined, for ``_AUTHOR_VERB_WORDS`` below: the title-author
-#: construction (ReRevZ2 P1) is already gated on the exact segment name
+#: construction is already gated on the exact segment name
 #: sitting directly beside the verb, so it needs no separate subject rule.
 _CREDIT_VERB_WORDS = _REPORTING_VERB_WORDS + _ACTION_VERB_WORDS
 
-#: ReRevZ2 P2: a determiner or possessive immediately before the
+#: A determiner or possessive immediately before the
 #: matched word makes it the noun ("The dates of the change are
 #: uncertain."), not the verb -- unlike "state(s)" above, no common
 #: nationality-adjective pattern applies to every word in this list,
@@ -1707,7 +1693,7 @@ def _credit_verb_match(pattern: re.Pattern[str], text: str) -> re.Match[str] | N
     return None
 
 
-#: ReRevZ2b P1 on R1: the run of consecutive capitalised words ending
+#: The run of consecutive capitalised words ending
 #: right before an action verb -- "Example Institute" out of "... In
 #: 2024, Example Institute measured ...", stopping at the comma before
 #: "2024" since a digit is never `[A-Z]`.
@@ -1747,12 +1733,12 @@ _CREDIT_PHRASE = re.compile(
     re.IGNORECASE,
 )
 
-#: RevZ2 P2-b, generalised after the run-7 probe: "state(s)" is the
+#: "state(s)" is the
 #: codebase's own primary crediting verb ("Wikipedia states the crisis
 #: was..."), so it stays in the verb list above, but a determiner can
 #: never sit directly in front of a verb -- "the [Adjective] state(s)"
 #: is always the geopolitical noun ("the United States", "the Roman
-#: state", run 7's S043), never a credited claim, whichever determiner
+#: state"), never a credited claim, whichever determiner
 #: introduces it and whether or not one capitalised modifier (a
 #: nationality or proper adjective) sits between them. "member states"
 #: is the one common exception with no determiner at all. Stripped
@@ -1766,7 +1752,7 @@ _MULTIWORD_NAME_EXCLUSION = re.compile(
     r"|\b(?i:member)\s+(?i:states?)\b"
 )
 
-#: RevZ2 P1-a: the separators a page's own `<title>` uses between its
+#: The separators a page's own `<title>` uses between its
 #: article headline and its site name.
 _TITLE_SEPARATORS = (" | ", " - ", " « ", " — ")
 
@@ -1791,7 +1777,7 @@ def _host_site_name(url: str) -> list[str]:
     """The host's own site-name label(s), its "www." and its TLD
     stripped -- "en.wikipedia.org" and "www.bbc.co.uk" both name
     "wikipedia" and "bbc", the whole name a point actually uses.
-    ReRevZ2 R1: a hyphenated host ("example-institute.test") also
+    A hyphenated host ("example-institute.test") also
     yields its words with spaces ("example institute"), since prose
     credits an organisation by its own name, never by its domain's own
     hyphenation."""
@@ -1805,7 +1791,7 @@ def _host_site_name(url: str) -> list[str]:
     return names
 
 
-#: RevZ2 S005 follow-up: name particles a primary-source title's author
+#: Name particles a primary-source title's author
 #: segment may carry ("Erasmus of Rotterdam", "Ludwig von Mises").
 _NAME_PARTICLES = frozenset({"de", "von", "van", "of", "the"})
 
@@ -1823,8 +1809,8 @@ def _title_author_segment(title: str) -> str | None:
     credit by itself: "Climate, the great challenge of our age" is
     exactly as name-shaped as "Sallust, Catiline's War" ("Climate" is
     one capitalised word); ``_credits_the_title_author`` below is what
-    actually decides whether a point uses it as an author (ReRevZ2
-    P1) -- callers must never treat this segment as a plain
+    actually decides whether a point uses it as an author -- callers must
+    never treat this segment as a plain
     substring."""
     first, comma, _ = title.partition(",")
     if not comma:
@@ -1842,9 +1828,9 @@ def _title_author_segment(title: str) -> str | None:
     return first.strip() if has_capitalised else None
 
 
-#: ReRevZ2 P1: the verbs an authorial sentence uses beyond the plain
+#: The verbs an authorial sentence uses beyond the plain
 #: credit verbs above -- a title's author segment is name-shaped as
-#: often as it is a person (S005's "Sallust, Catiline's War" and "the
+#: often as it is a person ("Sallust, Catiline's War" and "the
 #: great challenge of our age"'s "Climate" are equally name-shaped),
 #: so it is only ever a credit when the text actually uses it as an
 #: author, never as a bare substring.
@@ -1857,7 +1843,7 @@ _AUTHOR_POSSESSIVE_NOUNS = ("account", "view", "words", "narrative", "history", 
 
 
 def _credits_the_title_author(text: str, segment: str) -> bool:
-    """ReRevZ2 P1: does ``text`` actually use ``segment`` as an author,
+    """Does ``text`` actually use ``segment`` as an author,
     not merely contain it? Three constructions: the segment directly
     before an authorial verb, at most one word (an adverb, "also")
     between them; the segment's own possessive before "account",
@@ -1881,18 +1867,18 @@ def _credits_the_title_author(text: str, segment: str) -> bool:
 
 def _source_name_phrases(finding: Finding) -> list[str]:
     """Every whole name a point could credit this finding to as a
-    plain substring (audit D1 fix (a), RevZ2 P1-a): never a single
+    plain substring: never a single
     shared word, since a page's title always shares the subject's own
-    words with any point about it -- run 7's S043 passed the old
-    token-overlap guard on "roman" and "bce" alone, refusing 0 of 46
-    statements. The page's own site-name segment, its host's site
+    words with any point about it, so a token-overlap guard on "roman"
+    and "bce" alone would let almost any point through. The page's own
+    site-name segment, its host's site
     name, its attributed issuer (an admitted figure issuer or a quoted
-    author -- the same field carries both, W1's rule), and every kept
-    figure's own organisation (RevZ2 P2-a: the registry line's own
+    author -- the same field carries both), and every kept
+    figure's own organisation (the registry line's own
     "organisation ..." clause). The title's own "Author, Work" author
-    segment (S005) is deliberately excluded here: it is only ever a
-    credit through ``_credits_the_title_author``'s named constructions
-    (ReRevZ2 P1), never through a plain substring check."""
+    segment is deliberately excluded here: it is only ever a
+    credit through ``_credits_the_title_author``'s named constructions,
+    never through a plain substring check."""
     phrases = [_site_name_segment(finding.source_title), *_host_site_name(finding.source_url)]
     if finding.attributed_issuer:
         phrases.append(finding.attributed_issuer)
@@ -1904,7 +1890,7 @@ def _source_name_phrases(finding: Finding) -> list[str]:
 
 
 def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
-    """Audit D1 fix (a): does this point name the source it rests on --
+    """Does this point name the source it rests on --
     by a credit verb or attribution phrase, by a whole name its cited
     findings actually carry, or by a cited finding's title-author
     segment used as an author? A point that states a fact naming none
@@ -1936,22 +1922,22 @@ def _names_a_source(text: str, findings: Sequence[Finding]) -> bool:
     return False
 
 
-#: Whole-branch review P2-1: a small, general verdict lexicon -- a drafted
+#: A small, general verdict lexicon -- a drafted
 #: title carrying one of these (or a digit/quantity) prints raw as an
 #: options-table column header, so it falls back to the sub-topic's own
 #: title instead. Matched on whole words only, with simple inflections
 #: (\w* lets "recommended"/"recommends", "tops"/"topped", "winners" through).
 _VERDICT_WORDS = r"best|worst|top\w*|winner\w*|leading|recommend\w*"
 _TITLE_VERDICT_WORD = re.compile(rf"\b(?:{_VERDICT_WORDS}|pick\w*)\b", re.IGNORECASE)
-#: The short title's own set (notes-progress-report spec §7.2, final-wave ruling): the
-#: lexicon above without ``pick\w*``, because the §7.1 prompt's own example short title is
-#: "Published picks" -- a label that names a part of the question, not a pick made.
+#: The short title's own set: the lexicon above without ``pick\w*``,
+#: because the section prompt's own example short title is "Published
+#: picks" -- a label that names a part of the question, not a pick made.
 _SHORT_TITLE_VERDICT_WORD = re.compile(rf"\b(?:{_VERDICT_WORDS})\b", re.IGNORECASE)
 _TITLE_DIGIT = re.compile(r"\d")
 
 
 def _section_short_title(drafted_short_title: str, title: str) -> str:
-    """Notes-progress-report spec §7.2: the drafted short title when it has one to
+    """The drafted short title when it has one to
     three words, at most 24 characters, no digit and no verdict word (the short
     title's own set, which leaves out ``pick\\w*``); otherwise the section's own
     title stands in."""
@@ -1968,10 +1954,10 @@ def _section_short_title(drafted_short_title: str, title: str) -> str:
 
 
 def _section_title(drafted_title: str, sub_topic_title: str) -> str:
-    """Spec §6.4 rule 7's title, cut at ``_SECTION_TITLE_CHARS`` on a word
-    boundary; a title stating a digit/quantity or a verdict word (spec §17's
-    own concern: a raw, unchecked title becomes an options-table column
-    header) falls back to the sub-topic's own title instead."""
+    """The section's title, cut at ``_SECTION_TITLE_CHARS`` on a word
+    boundary; a title stating a digit/quantity or a verdict word (a raw,
+    unchecked title becomes an options-table column header) falls back to
+    the sub-topic's own title instead."""
     title = " ".join(drafted_title.split())
     if not title or _TITLE_DIGIT.search(title) or _TITLE_VERDICT_WORD.search(title):
         return sub_topic_title
@@ -1993,7 +1979,7 @@ def _lead_in(text: str, cuts: Sequence[re.Match[str]]) -> str:
     """The point's own introduction, verbatim: up to its colon, else its first clause.
 
     A piece cut after a ';' begins mid-sentence -- "… (c) keep track of …" with
-    no subject and none of the conditions the sentence opened with (F3) -- so
+    no subject and none of the conditions the sentence opened with -- so
     such a piece is printed with this introduction in front of it. The colon a
     list hangs from is the list's own introduction, so everything up to and
     including it is the lead; a clause-separated point with no colon is
@@ -2011,10 +1997,10 @@ def _split_oversize_point(text: str, limit: int = MAX_POINT_CHARS) -> list[str] 
     A drafted point longer than the bound is split at a sentence boundary
     into pieces that keep its citations, rather than dropped. A piece that
     begins mid-sentence -- after a ';' inside a list -- is printed with the
-    point's own introduction (F3), so no piece stands without its subject or
+    point's own introduction, so no piece stands without its subject or
     its conditions. A point whose own clause is longer than the bound, or
     whose introduction plus one clause is, cannot be cut into pieces that
-    stand alone: it returns ``None`` and the caller refuses it as before,
+    stand alone: it returns ``None`` and the caller refuses it,
     rather than print a fragment.
     """
     cuts = list(_CLAUSE_BOUNDARY.finditer(text))
@@ -2043,10 +2029,10 @@ def _split_oversize_point(text: str, limit: int = MAX_POINT_CHARS) -> list[str] 
 
 
 class _Verdict(Protocol):
-    """Structural shape of ``evidence_verifier.StatementVerdictDraft`` (D8).
+    """Structural shape of ``evidence_verifier.StatementVerdictDraft``.
 
     Read by attribute only, never imported: the verdict is applied by code
-    without re-judging the wording (spec §5.4), so this module depends on the
+    without re-judging the wording, so this module depends on the
     shape of the checker's reply rather than on the checker's own type -- and
     the tests' fake verdicts satisfy it without importing anything.
     """
@@ -2068,20 +2054,19 @@ class _Candidate:
     findings: list[Finding]
     items: list[ItemMarkDraft]
     had_label_group: bool = False
-    """D12/P3-3: whether the drafted text carried a leaked finding-label
+    """Whether the drafted text carried a leaked finding-label
     group that ``_strip_label_groups`` removed -- the note this earns is
     recorded by ``_finalize_candidate`` only once the candidate is kept, so
     a refused candidate (whose key never reaches a printed S-id) never
     leaves an orphaned note in the log."""
     disputes: bool = False
-    """Z1/Z2 item 3: the writer's own ``point.disputes`` -- a point marked
+    """The writer's own ``point.disputes`` -- a point marked
     ``disputes: true`` states a disagreement or dispute among the sources.
     Read by ``_run_part`` for a *kept* candidate to compute the part's
-    disputed labels (ReRevZ2 C7), which the bottom line reads to list
-    disputed steps and to guard a sentence that states one as settled
-    (audit D1)."""
+    disputed labels, which the bottom line reads to list
+    disputed steps and to guard a sentence that states one as settled."""
     outcome: bool = False
-    """Run-8 D4/D5: the writer's own ``point.outcome`` -- a point marked
+    """The writer's own ``point.outcome`` -- a point marked
     ``outcome: true`` states the mechanism's own last step, the outcome
     the question's subject reached. Read by ``_run_part`` for a *kept*
     candidate to record the part's outcome statement ids, which the
@@ -2092,7 +2077,7 @@ class _Candidate:
 def _finding_label(finding: Finding) -> str:
     """Every kept figure's reader label for one finding, joined into one
     string -- the Statement Check gets one label string per cited finding,
-    not one per figure (D8)."""
+    not one per figure."""
     labels: list[str] = []
     for result in finding.verification.figure_results if finding.verification else []:
         if result.kept and result.context is not None:
@@ -2155,12 +2140,10 @@ def _consider_section_point(
     ]
 
 
-#: Audit D1 fix (b): a bottom-line sentence that touches a disputed target
-#: must say so -- run 7's D1 (the disputed step carried into the bottom
-#: line with no dispute) and D7 (the dispute rule with no materiality
-#: test). RevZ2 P1-b: matched as stems, not exact words -- the old
-#: exact-word list missed "disputes", "disputed", "differently",
-#: "rejected", "questioned" and every other inflection, so it refused
+#: A bottom-line sentence that touches a disputed target
+#: must say so. Matched as stems, not exact words -- an
+#: exact-word list would miss "disputes", "disputed", "differently",
+#: "rejected", "questioned" and every other inflection, and so refuse
 #: exactly the sentences the disagreement-first rule asks the writer to
 #: produce.
 _DIFFERENCE_MARKER = re.compile(
@@ -2225,7 +2208,7 @@ def _consider_topic_line(
     seen_topics: set[str], cited_by_sections: Mapping[str, Finding], disputed_labels: set[str],
     numbers: Iterator[int], rejected: list[RejectedDraftPoint], key_prefix: str,
 ) -> list[_Candidate]:
-    """Notes-progress-report spec §7.1: one topic line. Refused when its topic is
+    """One topic line. Refused when its topic is
     not one the request listed, when its topic already has a line, or when it
     cites a label its own topic's kept statements do not; then every rule a
     bottom-line sentence follows. A topic line is one line, so it is never split:
@@ -2260,7 +2243,7 @@ def _consider_topic_line(
 
 @dataclass(frozen=True)
 class _LineLayout:
-    """The kept bottom line's shape by temporary statement key (spec §7.2):
+    """The kept bottom line's shape by temporary statement key:
     the answer's keys, then ``(coverage_id, key)`` for each topic line."""
 
     answer_keys: tuple[str, ...]
@@ -2293,13 +2276,13 @@ def _apply_marks(
     label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
     dropped: list[tuple[str, str]], statement_key: str,
 ) -> list[ItemMark]:
-    """Rule 8: each name/verdict a verbatim span of the final text, at most
+    """Each name/verdict a verbatim span of the final text, at most
     ``_MARK_SPAN_CHARS``; ``by`` resolved only among the point's own cited
     ``labels`` -- never the whole registry, or a mark could credit a page the
     sentence and its Statement Check never rested on. A failing mark is
-    dropped -- the point stays -- and recorded (spec §5).
+    dropped -- the point stays -- and recorded.
 
-    R-2: ``finding_id`` is resolved from ``by`` (or, when the point cites
+    ``finding_id`` is resolved from ``by`` (or, when the point cites
     only one finding, that finding), never guessed from whichever finding
     happens to share the mark's page -- a page can carry more than one
     finding, and the table must not credit a pick to the wrong one of them.
@@ -2375,7 +2358,7 @@ def _finalize_candidate(
         return None, verdict_string
     stated_rows.update(rows)
 
-    # §6.13: a statement's target ids are explicit bindings only -- a
+    # A statement's target ids are explicit bindings only -- a
     # fallback answer (no target id of its own) is stated but never claims a
     # target it never named.
     explicit_targets = sorted({
@@ -2408,9 +2391,9 @@ async def _check(
     part: tuple[str, str] | None = None,
 ) -> tuple[Mapping[str, _Verdict | None], list[ResearchError]]:
     """Run the Statement Check over one part's (or the bottom line's)
-    candidates, through the shared gate (spec §6.5, D8, PD-12).
+    candidates, through the shared gate.
 
-    Inside a composition (notes-progress-report spec §6.2), each settled batch
+    Inside a composition, each settled batch
     is counted and published live, under ``part`` -- ``(coverage_id, section
     title)`` -- or, when ``part`` is ``None``, under the bottom line. Once the
     check returns, a key no batch reported is counted from the verdicts
@@ -2422,11 +2405,14 @@ async def _check(
     section = _BOTTOM_LINE_SECTION if part is None else part[1]
     if progress is not None and part is None:
         progress.bottom_line_drafted([candidate.key for candidate in candidates])
-    # Imported at call time, not at module scope: the unit tests and the
-    # offline audit harness both substitute the checker by assigning
+    # Imported at call time, not at module scope: the unit tests
+    # substitute the checker by assigning
     # ``evidence_verifier.check_statements``, and a module-level ``from``
     # would bind the real function before that assignment could be seen.
-    from deep_research.agents.evidence_verifier import StatementCheckItem, check_statements
+    from deep_research.agents.evidence_verifier import (
+        StatementCheckItem,
+        check_statements,
+    )
 
     items = [
         StatementCheckItem(label=c.key, text=c.text, findings=c.findings,
@@ -2454,7 +2440,7 @@ async def _check(
     return verdicts, errors
 
 
-# --- the section and bottom-line draft calls (F10's retry ladder) ----------
+# --- the section and bottom-line draft calls (the retry ladder) -------------
 
 
 async def _attempt_section_draft(
@@ -2538,7 +2524,7 @@ async def _attempt_bottom_line_draft(
     return None, errors
 
 
-# --- per-part orchestration (spec §6.5, §6.8, §6.9) -------------------------
+# --- per-part orchestration -------------------------------------------------
 
 
 @dataclass
@@ -2551,24 +2537,22 @@ class _PartOutcome:
     rejected: list[RejectedDraftPoint] = field(default_factory=list)
     dropped_marks: list[tuple[str, str]] = field(default_factory=list)
     disputed_labels: frozenset[str] = frozenset()
-    """ReRevZ2 C7 (was Z1/Z2 item 4's target-scoped set): the finding
-    labels of every *kept* point this part wrote with ``disputes: true``
-    -- ``_run_bottom_line`` unions this across every part, then expands
-    it (ReRevZ2 C11's exclusive hop) to every other checked statement
+    """The finding labels of every *kept* point this part wrote with
+    ``disputes: true`` -- ``_run_bottom_line`` unions this across every part,
+    then expands it (an exclusive hop) to every other checked statement
     sharing one of those labels, for each label no statement outside
-    the dispute also cites, before the bottom line ever runs (RevZ2
-    P2-c: the writer's own kept marks are the whole signal now, not a
-    finding-level one).
+    the dispute also cites, before the bottom line ever runs. The writer's
+    own kept marks are the whole signal, not a finding-level one.
     Label-scoped, not target-scoped: a required target can carry a
-    dozen statements, and target scoping told the guard every one of
+    dozen statements, and target scoping would tell the guard every one of
     them was disputed the moment any one was marked."""
     disputed_statement_ids: frozenset[str] = frozenset()
-    """RevZ2 P1-c: the statement ids of the same kept, writer-marked
+    """The statement ids of the same kept, writer-marked
     points -- which *specific* point in this part was the mark, so the
-    §6.8 fallback can prefer it over a naive first pick that only touches
+    bottom-line fallback can prefer it over a naive first pick that only touches
     one of the disputed labels without stating the dispute."""
     outcome_statement_ids: frozenset[str] = frozenset()
-    """Run-8 D4/D5: the statement ids of this part's kept points marked
+    """The statement ids of this part's kept points marked
     ``outcome: true`` -- the mechanism's own last step. ``_run_bottom_line``
     unions this across every part to build the "# Outcome" block and the
     guard that re-asks once when a mechanism's bottom line names no
@@ -2585,7 +2569,7 @@ async def _run_part(
         return _PartOutcome(job=job, section=None, status="empty", errors=[], verdicts={})
 
     if not job.redraft and job.previous is not None:
-        # §6.9: carried over unchanged -- same points, verdicts and marks, no call.
+        # Carried over unchanged -- same points, verdicts and marks, no call.
         verdicts = {}
         if task.previous is not None:
             for point in job.previous.points:
@@ -2597,7 +2581,7 @@ async def _run_part(
     # A redraft with no defect routed here still drafts the part when it has
     # no previous section to carry over -- it failed, or every one of its
     # points was refused, last pass. Silently relabelling it "empty" would
-    # drop a required target's only answer without disclosing it (P2-1).
+    # drop a required target's only answer without disclosing it.
 
     messages = section_messages(task, job)
     async with section_gate:
@@ -2664,7 +2648,7 @@ async def _run_part(
         title=title, short_title=_section_short_title(draft.short_title, title),
         points=points, coverage_id=job.coverage_id,
     ) if points else None
-    # P1-3: a draft that kept nothing (every point refused) is undisclosed
+    # A draft that kept nothing (every point refused) is undisclosed
     # and unwritten, not "written" -- "written" with no section silently
     # hides a part that had findings, so the every-part-failed wording never
     # fires and the per-part evidence-log pointer never prints for it.
@@ -2689,28 +2673,28 @@ def _bottom_line_fallback(
     self_descriptions: Mapping[str, str] | None = None,
     any_above_floor: bool = False,
 ) -> tuple[list[ReportPoint], dict[str, str], set[str], list[str]]:
-    """D14 (notes-progress-report spec §7.3): one kept checked point per topic, in
+    """One kept checked point per topic, in
     plan order, note topics included -- each part's first ``consistent`` or
     ``corrected`` point, moved into the bottom line as that topic's line, as a
     new statement with its own flight key and the source statement's real
-    verdict, never a section's own id and never a hard-coded "consistent"
-    (P1-a). No answer sentence and no cap: a part with no eligible point has no
+    verdict, never a section's own id and never a hard-coded "consistent".
+    No answer sentence and no cap: a part with no eligible point has no
     line. Returns the fallback points, their verdicts, the source statement ids
-    to remove from their sections (spec's "move": a sentence is printed once),
+    to remove from their sections (a "move": a sentence is printed once),
     and each point's coverage id.
 
-    RevZ2 P1-c, ReRevZ2 C7: the naive first kept point of a part can
+    The naive first kept point of a part can
     itself be silent about a dispute one of its own cited findings
     carries -- the fallback existing only to stand in for an unchecked
     bottom line must not then print a disputed step as settled. When the
     naive pick cites one of ``disputed_labels`` but is not itself the
     part's marked ``disputes: true`` point, the marked point (when kept)
     is preferred instead. Label-scoped, not target-scoped: a required
-    target can carry a dozen statements, and target scoping preferred
+    target can carry a dozen statements, and target scoping would prefer
     the marked point over every one of them, not only the ones that
     actually cite a disputed finding.
 
-    Run-8 D1/D6/D7: the fallback exists only to stand in for an
+    The fallback exists only to stand in for an
     unchecked bottom line, and must honour the same per-statement floor
     the checked path does -- a below-floor or declared-derivative
     statement stays in its section rather than being picked here,
@@ -2770,12 +2754,12 @@ def _statement_meets_authority_floor(
     sources: Mapping[str, ScoredSource], authority_floor: float,
     self_descriptions: Mapping[str, str] | None = None,
 ) -> bool:
-    """D6/D7 bullet 3, and D8/D9's inclusive floor: whether one of
+    """Whether one of
     ``finding_ids``' sources is citable and above ``authority_floor`` -- the
-    bottom line's own per-statement floor test (Y2.1: ``is_context_only``
-    no longer makes a comparison like this one; this filter is unchanged).
+    bottom line's own per-statement floor test (``is_context_only``
+    makes no comparison like this one).
 
-    Run-8 D1: a finding whose read declares itself derivative or teaching
+    A finding whose read declares itself derivative or teaching
     content counts as below the floor, whatever its host's own
     ``authority_score`` reads -- the same guard a low-confidence or
     sub-floor source already gets, so a role-play's own high host score
@@ -2804,24 +2788,24 @@ async def _check_and_finalize_bottom_line(
     listed_topics: Mapping[str, frozenset[str]] = _NO_TOPICS,
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
           list[tuple[str, str]], list[tuple[str, str]], bool, dict[str, str]]:
-    """One bottom-line draft's candidates, checked and finalized (spec §6.6):
+    """One bottom-line draft's candidates, checked and finalized:
     at most ``MAX_ANSWER_SENTENCES`` answer sentences, then one line per listed
-    topic (notes-progress-report spec §7.1).
+    topic.
 
     Returns (points, verdict_map, check_errors, rejected, dropped_marks,
     statement_check_refusals, fully_checked, topic_of), ``topic_of`` mapping a
     topic line's flight key to its coverage id. ``statement_check_refusals``
     is (drafted text, reason) for every candidate the Statement Check itself
-    refused (verdict "inconsistent"), the D1/D2 re-ask's own input.
+    refused (verdict "inconsistent"), the re-ask's own input.
     ``fully_checked`` is True only when this draft had at least one
     candidate, no check error, no mechanical or Statement Check rejection,
-    and a "consistent" or "corrected" verdict for every one of them (P1-2):
+    and a "consistent" or "corrected" verdict for every one of them:
     the re-ask adopts its own result only then, so a check outage or a
     partial refusal never swaps a checked bottom line for unchecked text.
-    ``disputed_labels`` (audit D1 fix (b), ReRevZ2 C7) is the caller's own
+    ``disputed_labels`` is the caller's own
     set, scoped to the writer's own kept ``disputes: true`` points' finding
-    labels plus the exclusive hop ReRevZ2 C11 adds (RevZ2 P2-c);
-    ``_run_bottom_line`` passes the same set to the D1/D2 re-ask too, so a
+    labels plus the exclusive hop;
+    ``_run_bottom_line`` passes the same set to the re-ask too, so a
     re-asked sentence is guarded exactly as the first attempt's was.
     """
     numbers = iter(range(1, 100))
@@ -2835,7 +2819,7 @@ async def _check_and_finalize_bottom_line(
             numbers=numbers, rejected=rejected, key_prefix=key_prefix,
         ))
 
-    # P3-2: cap before the check, so an overflow sentence never spends one,
+    # Cap before the check, so an overflow sentence never spends one,
     # and record its refusal with the real F-labels, not finding fingerprints.
     candidates, overflow_candidates = (
         candidates[:MAX_ANSWER_SENTENCES], candidates[MAX_ANSWER_SENTENCES:],
@@ -2863,8 +2847,8 @@ async def _check_and_finalize_bottom_line(
         source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
     )
 
-    # A topic line may restate the answer's fact when its topic has no other
-    # (spec §7.1, example 1), so the answer and the topic lines each keep their
+    # A topic line may restate the answer's fact when its topic has no other,
+    # so the answer and the topic lines each keep their
     # own restatement guard.
     answer_rows: set[str] = set()
     topic_rows: set[str] = set()
@@ -2886,10 +2870,10 @@ async def _check_and_finalize_bottom_line(
             if verdict_obj is not None and verdict_obj.verdict == "inconsistent":
                 refusals.append((candidate.text, verdict_obj.reason))
 
-    # RevZ2 P1-c: a sentence the disputed-target guard refused (never
+    # A sentence the disputed-target guard refused (never
     # reaching the Statement Check at all) must feed the one re-ask the
     # same way a Statement Check refusal does -- otherwise the step it
-    # was guarding is simply dropped, the exact loss D1/D2's re-ask
+    # was guarding is simply dropped, the exact loss the re-ask
     # exists to prevent.
     refusals.extend(
         (entry.text, entry.reason) for entry in rejected
@@ -2910,15 +2894,15 @@ def _bottom_line_disputed_labels(
     checked_sections: Sequence[ReportSection], label_by_finding_id: Mapping[str, str],
     marked_labels: frozenset[str], marked_statement_ids: frozenset[str],
 ) -> frozenset[str]:
-    """ReRevZ2 C7/C11: the finding labels a bottom-line sentence must
+    """The finding labels a bottom-line sentence must
     carry a difference marker to cite -- the writer's own kept, marked
-    ``disputes: true`` points' labels (``marked_labels``), plus Fable's
+    ``disputes: true`` points' labels (``marked_labels``), plus an
     exclusive hop: a *sharing* statement's own label (a checked
     statement, other than a marked point, that cites one of
     ``marked_labels``) joins only when no *other* checked statement --
     one that is neither a marked point nor itself a sharing statement
     -- also cites it. A finding only the disputed step's own statements
-    cite is part of the dispute (the D1 path: a bottom-line sentence
+    cite is part of the dispute (a bottom-line sentence
     citing a pro-side source only that step's statement cites); a
     widely cited finding never joins, since a sentence citing it alone
     states an ordinary fact, not the step the "Disputed" block names --
@@ -2956,11 +2940,11 @@ async def _run_bottom_line(
     batch_size: int, label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
           list[tuple[str, str]], set[str], _LineLayout | None]:
-    """The bottom-line call (spec §6.6), started once every part task has
+    """The bottom-line call, started once every part task has
     finished. Returns (points, temp verdicts, errors, rejected, dropped_marks,
     moved_statement_ids -- source section statement ids a fallback moved into
     the bottom line, so the caller removes them from their sections and a
-    sentence is never printed twice, P1-a -- and the kept points' layout,
+    sentence is never printed twice -- and the kept points' layout,
     ``None`` when nothing is kept)."""
     findings_by_id = {finding_fingerprint(f): f for f in task.findings}
     src_by_url = sources_by_url(task.sources)
@@ -2986,7 +2970,7 @@ async def _run_bottom_line(
         ):
             any_above_floor = True
 
-    # D6/D7 bullet 3: once at least one checked statement cites a finding at
+    # Once at least one checked statement cites a finding at
     # or above the floor, a statement resting only on below-floor findings
     # is withheld from the bottom line's own candidate pool -- it stays
     # printed in its own section (this loop never touches ``outcome.section``
@@ -3012,7 +2996,7 @@ async def _run_bottom_line(
                 if label:
                     cited_by_sections[label] = dict(task.registry)[label]
 
-    # Notes-progress-report spec §7.1: each listed topic and the labels its
+    # Each listed topic and the labels its
     # kept statements cite -- a topic line may cite only those.
     listed_topics = {
         section.coverage_id: frozenset(
@@ -3022,10 +3006,10 @@ async def _run_bottom_line(
         )
         for section in checked_sections if section.coverage_id
     }
-    # RevZ2 P2-c: scoped to the writer's own kept ``disputes: true`` marks
+    # Scoped to the writer's own kept ``disputes: true`` marks
     # only, not every ``Finding.disputes`` -- that field still reaches the
     # writer on the registry line ("disputes: yes"), but folding it into
-    # this set too let the materiality rule and the guard disagree (a
+    # this set too would let the materiality rule and the guard disagree (a
     # finding can date or qualify a step the writer correctly judged
     # immaterial to the bottom line and so never marked).
     marked_labels = frozenset().union(*(outcome.disputed_labels for outcome in outcomes))
@@ -3033,7 +3017,7 @@ async def _run_bottom_line(
     disputed_labels = _bottom_line_disputed_labels(
         checked_sections, label_by_finding_id, marked_labels, marked_statement_ids,
     )
-    # Run-8 D4/D5: the mechanism's own last step, the same way disputed_labels
+    # The mechanism's own last step, the same way disputed_labels
     # scopes the dispute guard -- the kept, writer-marked ``outcome: true``
     # statements' own labels, computed from ``checked_sections`` so the
     # guard below never demands a citation to something the floor already
@@ -3050,14 +3034,14 @@ async def _run_bottom_line(
     outcome_labels = frozenset(outcome_labels)
 
     if not checked_sections:
-        # P1-b(i): a part whose draft succeeded but whose Statement Check
-        # never came back (D8) is "written", not "failed" -- only every
+        # A part whose draft succeeded but whose Statement Check
+        # never came back is "written", not "failed" -- only every
         # non-empty part actually failing earns the "no bottom line" error
-        # below. P1-3 made an all-refused draft "failed" too (so the
-        # renderer discloses it), which means this branch now covers two
-        # different causes that must not share one verdict (R-5): a real
+        # below. An all-refused draft is "failed" too (so the
+        # renderer discloses it), which means this branch covers two
+        # different causes that must not share one verdict: a real
         # provider/draft failure (``report_writer_section_failed`` on the
-        # outcome) is still the non-recoverable ``report_writer_provider_error``,
+        # outcome) is the non-recoverable ``report_writer_provider_error``,
         # but a part whose draft succeeded and whose points were all
         # explicitly refused is a content outcome, not a provider failure --
         # a recoverable ``report_writer_all_parts_refused`` instead.
@@ -3079,9 +3063,9 @@ async def _run_bottom_line(
                 )
             return [], {}, [error], [], [], set(), None
         if non_empty:
-            # P1-b(iii): sections are printed, so the bottom line is left
+            # Sections are printed, so the bottom line is left
             # honestly empty rather than claiming "no source could be
-            # checked" (§10 is for no citable finding at all, not this).
+            # checked" (that wording is for no citable finding at all, not this).
             error = agent_error(
                 agent_name=REPORT_WRITER_NAME, error_type="report_writer_bottom_line_unchecked",
                 message="No section statement was checked and kept; the bottom line is left empty.",
@@ -3131,16 +3115,16 @@ async def _run_bottom_line(
         )
     )
 
-    # Run-8 D4/D5: a mechanism answer whose kept bottom line cites no
+    # A mechanism answer whose kept bottom line cites no
     # outcome-marked statement's finding is missing the mechanism's own
     # last step -- the same one re-ask the dispute guard uses, merged
-    # into a single re-ask rather than two. RevV2 P1: gated on
+    # into a single re-ask rather than two. Gated on
     # ``outcome_labels`` (built from ``checked_sections``, after the floor
     # and verdict filter), never the writer's raw ``outcome_statement_ids``
     # -- when every outcome-marked point rests only on a sub-floor or
     # declared-derivative source, or was never checked ``consistent`` or
     # ``corrected``, no "# Outcome" block is ever printed, and gating on
-    # the unfiltered set demanded a citation to a block that does not
+    # the unfiltered set would demand a citation to a block that does not
     # exist, on every mechanism answer.
     missing_outcome = (
         task.answer_kind == "explanation" and bool(outcome_labels)
@@ -3153,15 +3137,15 @@ async def _run_bottom_line(
         )
     )
 
-    # D1/D2: one re-ask, carrying the Statement Check's own refusal reasons
+    # One re-ask, carrying the Statement Check's own refusal reasons
     # the same way a redraft carries defects, when it refused a drafted
-    # sentence -- the run-5 refusal dropped a mechanism step with no retry.
+    # sentence, so a refusal never drops a mechanism step with no retry.
     # The re-ask's own result replaces this attempt's only when it is fully
-    # checked (P1-2: no check error, no rejection, a consistent or corrected
+    # checked (no check error, no rejection, a consistent or corrected
     # verdict for every one of its own candidates) -- never on a check
     # outage or a partial refusal, which would otherwise swap a checked
     # bottom line for unchecked or worse text. Attempt 1's own refusal
-    # records stay in the log either way (P2-1).
+    # records stay in the log either way.
     if refusals or missing_outcome:
         reask_defects = [
             ReviewDefect(
@@ -3220,10 +3204,10 @@ async def _run_bottom_line(
                 check_errors = [*check_errors, *reask_check_errors]
 
     if not points:
-        # P1-b(ii): a drafted bottom line that ends up with nothing kept
+        # A drafted bottom line that ends up with nothing kept
         # (every sentence refused by the label-subset rule, the Statement
-        # Check, or rule 5) still gets the §6.8 fallback, not a silent
-        # empty summary.
+        # Check, or another mechanical rule) still gets the fallback, not a
+        # silent empty summary.
         fallback_points, fallback_verdicts, moved, fallback_topics = _bottom_line_fallback(
             outcomes, disputed_labels=disputed_labels,
             label_by_finding_id=label_by_finding_id,
@@ -3246,7 +3230,7 @@ async def _run_bottom_line(
     layout = _drafted_layout(points, topic_of)
     errors = [*draft_errors, *check_errors]
     if layout is not None and not layout.answer_keys:
-        # Phase C review P2-1: topic lines kept, no answer sentence. The renderer prints
+        # Topic lines kept, no answer sentence. The renderer prints
         # its own disclosure line; this keeps the loss in the run's record too, in plain
         # words (no provider text).
         errors.append(agent_error(
@@ -3262,10 +3246,10 @@ async def _run_bottom_line(
 def _with_moved_points_restored(
     previous: ReportComposition | None, titles: Mapping[str, str],
 ) -> ReportComposition | None:
-    """Final review P2-1: the previous composition as its parts wrote it, when its bottom
+    """The previous composition as its parts wrote it, when its bottom
     line was the fallback's.
 
-    The fallback (§7.3) *moves* one point of every topic out of its section into the
+    The fallback *moves* one point of every topic out of its section into the
     bottom line, and a later pass (a note pass, a redraft) carries each part's previous
     section over while it drafts the bottom line afresh -- so every moved point would
     vanish from the report, its line having gone with the old bottom line. Each topic
@@ -3301,7 +3285,7 @@ def _with_moved_points_restored(
 
 
 def _topic_line_order(coverage_id: str, task: ReportWriterTask) -> tuple[int, int]:
-    """Spec §7.2: the plan's topics in plan order, then the active notes' topics
+    """The plan's topics in plan order, then the active notes' topics
     in receipt order (``n1`` first)."""
     if coverage_id in task.note_labels:
         return (1, int(coverage_id.removeprefix(f"{NOTE_COVERAGE_PREFIX}n")))
@@ -3312,7 +3296,7 @@ def _topic_line_order(coverage_id: str, task: ReportWriterTask) -> tuple[int, in
 def _ordered_bottom_line(
     points: Sequence[ReportPoint], layout: _LineLayout | None, task: ReportWriterTask,
 ) -> tuple[list[ReportPoint], list[tuple[str, str]]]:
-    """The kept bottom line in the order the report prints it (spec §7.2): the
+    """The kept bottom line in the order the report prints it: the
     answer, then the topic lines; and the topic lines' ``(coverage_id, key)``."""
     if layout is None:
         return list(points), []
@@ -3325,7 +3309,7 @@ def _ordered_bottom_line(
 def _renumber(
     bottom_line_points: list[ReportPoint], sections: list[ReportSection],
 ) -> tuple[list[ReportPoint], list[ReportSection], dict[str, str]]:
-    """Spec §6.7: statement ids renumbered S001… in render order (bottom
+    """Statement ids renumbered S001… in render order (bottom
     line, then sections in plan order), so the output is identical whatever
     order the calls completed in."""
     remap: dict[str, str] = {}
@@ -3347,7 +3331,7 @@ def _renumber(
     return new_summary, new_sections, remap
 
 
-# --- §6.7 assembly (T4 compose): the table, page credits, unreachable ------
+# --- assembly: the table, page credits, unreachable -------------------------
 
 
 def _findings_by_url(findings: Sequence[Finding]) -> dict[str, Finding]:
@@ -3364,13 +3348,13 @@ def _page_credit(
     url: str, *, findings_by_url: Mapping[str, Finding], reads: Mapping[str, ReadRecord],
     sources: Sequence[ScoredSource],
 ) -> PageCredit:
-    """Spec §6.7/§8: the publisher from the page's own words (or the host),
+    """The publisher from the page's own words (or the host),
     and the date in order: the read's own ``page_updated`` when it is later
-    than its ``page_published`` (D8, ``date_kind`` marks which); else
+    than its ``page_published`` (``date_kind`` marks which); else
     ``page_published``; else ``page_updated``; else the Source Evaluator's
     validated ``publication_date``, used only when the page carries no
     metadata date of its own -- the evaluator sees only excerpts and can
-    admit a date the page's text merely mentions (P1-2: a content date
+    admit a date the page's text merely mentions (a content date
     such as a product's release date is not the page's own date) -- never
     a figure's ``statement_date`` or its vintage: those are the figure's,
     not the page's.
@@ -3384,7 +3368,7 @@ def _page_credit(
     read = reads.get(finding.read_id) if finding is not None else None
     publisher = page_owner(read) if read is not None else publisher_identity(url)
     if read is not None:
-        # D8: a page's own later update outranks its original publication --
+        # A page's own later update outranks its original publication --
         # credited with the existing "(updated YYYY-MM-DD)" rendering, so a
         # reader is never told a page updated since is decades stale by its
         # creation date alone.
@@ -3403,7 +3387,7 @@ def _page_credit(
 def _unreachable_pages(
     sub_topics: Sequence[SubTopic], acquisition_state_by_target: Mapping[str, AcquisitionState],
 ) -> list[UnreachablePage]:
-    """Spec §6.7/§10: for each sub-topic with >= 1 required target, its own
+    """For each sub-topic with >= 1 required target, its own
     denied URLs with the candidate record's title and denial reason,
     deduplicated, in plan order."""
     pages: list[UnreachablePage] = []
@@ -3429,19 +3413,19 @@ def _unreachable_pages(
 
 
 def _assemble_composition(composition: ReportComposition, task: ReportWriterTask) -> ReportComposition:
-    """Spec §6.7's remaining bullets, in the stated order: the table (driven
+    """Assemble, in order: the table (driven
     by ``answer_kind``, already frozen on ``composition``), then page
     credits for every URL the table or a kept statement now cites, then the
     unreachable pages. Table builders and citation order are pure functions
-    of ``composition`` alone (T2/T3); nothing here re-reads a page.
+    of ``composition`` alone; nothing here re-reads a page.
 
     The table and the credits are mutually dependent: ``build_table`` reads
     ``composition.page_credits`` to name a relayed or unattributed row's
     publisher (``report_table._who_text``/``_recommended_by_cell``), but the
     final credits are keyed on ``written_citations(composition)``, which
     itself reads the table (the citation order is the bottom line, then the
-    sections, then the table, as the report prints them: notes-progress-report
-    spec §7.5). So a provisional map -- every finding URL's credit, the same
+    sections, then the table, as the report prints them). So a provisional
+    map -- every finding URL's credit, the same
     ``_page_credit`` call the final map uses -- is set before the table is
     built; the final map then only re-keys it to the table's own citations,
     never recomputing a credit.
@@ -3476,9 +3460,9 @@ async def compose_written_report(
 ) -> ReportComposition:
     """Partition, draft every part in parallel, pipeline each part's
     Statement Check off its own draft, then write the bottom line last from
-    the checked section statements (spec §6). A redraft re-asks only the
-    parts a material defect names (§6.9), and a draft after a note pass only
-    the notes' own parts (notes-progress-report spec §5.4); every other part
+    the checked section statements. A redraft re-asks only the
+    parts a material defect names, and a draft after a note pass only
+    the notes' own parts; every other part
     is carried over unchanged. ``batch_size``/``concurrency`` are the Statement Check's
     bounds (``None`` uses this module's defaults); ``section_concurrency``
     bounds how many section drafts run at once.
@@ -3542,10 +3526,10 @@ async def compose_written_report(
         targets_here = targets_by_coverage[placement.coverage_id]
         previous_section = previous_sections_by_coverage.get(placement.coverage_id)
         if task.note_pass_coverage_ids:
-            # notes-progress-report spec §5.4 (D4): after a note pass only the
+            # After a note pass only the
             # notes' own parts are drafted; every other part is carried over
             # unchanged, and one with no previous section is still drafted
-            # (P2-1, ``_run_part``).
+            # (see ``_run_part``).
             redraft_this = placement.coverage_id in task.note_pass_coverage_ids
             defects_here = []
         elif not is_redraft:
@@ -3561,7 +3545,7 @@ async def compose_written_report(
             part_weight_sum=part_weight_sum,
         ))
 
-    # notes-progress-report spec §6.2: Writing's counts, published live from here
+    # Writing's counts, published live from here
     # on; the part tasks below copy this context, so each of them reads them too.
     progress = _WritingProgress(sum(1 for job in jobs if _drafts_this_pass(job)))
     _WRITING_PROGRESS.set(progress)
@@ -3602,7 +3586,7 @@ async def compose_written_report(
     if progress.fraction < 1.0:
         progress.publish()
 
-    # P1-a's "move": a point the §6.8 fallback promoted into the bottom line
+    # A point the bottom-line fallback promoted into the bottom line
     # is removed from its section, so it is never printed twice; a section
     # left with no points is dropped, matching how a fully-refused section
     # is already dropped elsewhere.
@@ -3779,12 +3763,11 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         src_by_url = sources_by_url(state.evaluated_sources)
         findings_by_id = {finding_fingerprint(f): f for f in citable}
         authority_floor = self.config.writer_authority_floor
-        # §6.13: the Not-found computation excludes context-only answers, so
+        # The Not-found computation excludes context-only answers, so
         # a required target answered only that way reads as unconfirmed; the
         # gate's own ``answered`` (below, unfiltered) still accounts for it.
-        # Y2.1: a *bound* finding is never context-only (the target-level
-        # authority gate was reverted), so this can still exclude only an
-        # unbound finding matched here through the sub-topic fallback.
+        # A *bound* finding is never context-only, so this can exclude only
+        # an unbound finding matched here through the sub-topic fallback.
         answered_for_report: dict[str, list[str]] = {}
         for target_id, finding_ids in answered.items():
             kept = [
@@ -3793,7 +3776,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             ]
             if kept:
                 answered_for_report[target_id] = kept
-        # D11: the frozen contract's own requested length when the question
+        # The frozen contract's own requested length when the question
         # asked for one, else the config's reader-length default -- the
         # per-part point budget's own word count (section_messages).
         budget_words = (
@@ -3801,8 +3784,8 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             if state.answer_contract and state.answer_contract.requested_word_limit is not None
             else self.config.report_target_words
         )
-        # notes-progress-report spec §5.4 (D4): after a note pass only the
-        # notes' own parts and the bottom line are drafted; the rest is carried.
+        # After a note pass only the notes' own parts and the bottom line
+        # are drafted; the rest is carried.
         note_pass_coverage_ids = _note_pass_coverage_ids(state)
         return ReportWriterTask(
             instruction=state.original_question,
@@ -3839,7 +3822,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
                 f"{NOTE_COVERAGE_PREFIX}{note.note_id}": note_label(note)
                 for note in active_reader_notes(state.reader_notes)
             },
-            # notes-progress-report spec §5.1: the steering views only; a note whose
+            # The steering views only; a note whose
             # only kind is new_angle is its own part of the report instead.
             reader_notes=render_reader_notes(
                 steering_notes(active_reader_notes(state.reader_notes)),
@@ -3937,7 +3920,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         *,
         findings: Sequence[tuple[str, Mapping[str, object]]],
     ) -> ToolResult:
-        """Save every cited finding in one memory write (latency audit O2).
+        """Save every cited finding in one memory write.
 
         Called only by the terminal finalizer, for an accepted report. A
         failed result -- any finding refused, or a memory tool without a batch
@@ -3964,7 +3947,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
         zero iterations and zero tool calls. ``stop_reason`` is
         ``"provider_error"`` only when there was something to cite, every
         non-empty part failed, and at least one of them is a genuine
-        provider/draft failure (spec §6.8, R-5): an empty verified snapshot
+        provider/draft failure: an empty verified snapshot
         is not a failure, it is an honest report of no evidence, and a part
         whose draft succeeded but whose points were all refused is a content
         outcome the recoverable ``report_writer_all_parts_refused`` records
@@ -3992,7 +3975,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             errors=list(composition.errors),
         )
         written = report_written_event(result)
-        publish_live(written)  # live-briefs spec E3; returned below as well
+        publish_live(written)  # returned below as well
         return AgentRun(
             agent_name=self.name,
             result=result,

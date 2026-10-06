@@ -1,4 +1,4 @@
-"""Tests for the §7.3 run telemetry: the collector and its two renderings."""
+"""Tests for the run telemetry: the collector and its two renderings."""
 
 from __future__ import annotations
 
@@ -321,7 +321,7 @@ def test_the_cap_advice_names_the_key_of_the_operation_that_is_full() -> None:
 def test_the_advised_knob_belongs_to_the_agent_at_the_peak(
     agent: str, expected: str
 ) -> None:
-    """The four concurrency caps of spec §7.3 and §6.10; any other agent at
+    """The four per-agent concurrency caps; any other agent at
     the peak falls back to the researcher's, the cap that bounds the widest
     fan-out."""
     telemetry = RunTelemetry(
@@ -332,8 +332,8 @@ def test_the_advised_knob_belongs_to_the_agent_at_the_peak(
     )
 
 
-def test_the_snapshot_carries_the_four_groups_of_the_spec() -> None:
-    """All four §7.3 groups reach the record, not just the arithmetic."""
+def test_the_snapshot_carries_all_four_groups() -> None:
+    """All four groups reach the record, not just the arithmetic."""
     collector = RunTelemetryCollector()
     collector.note_call_starting("researcher")
     collector.observe_budget(_update("attempt_reserved"))
@@ -383,7 +383,6 @@ def test_the_line_reports_cache_hits_when_input_tokens_were_reported() -> None:
 
 # ---------------------------------------------------------------------------
 # Per-attempt records, reasoning tokens, and the event-loop lag monitor
-# (stall-fix-brief.md P1-B).
 # ---------------------------------------------------------------------------
 
 
@@ -562,7 +561,7 @@ def test_the_line_renders_loop_lag_with_no_blocks_and_no_longest() -> None:
 
 
 def test_each_call_keeps_its_own_record_with_its_label() -> None:
-    """Latency audit O8: a stage keeps one record per call, in the order the
+    """A stage keeps one record per call, in the order the
     calls returned -- the operation name its caller bound, or the call's own
     operation when none was bound -- with its start and its tokens."""
     collector = RunTelemetryCollector()

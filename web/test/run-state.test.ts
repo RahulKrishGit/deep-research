@@ -41,7 +41,7 @@ describe("the port is the prototype's core", () => {
   });
 });
 
-describe("the run state holds only what the page reads (Phase 2 final review R6)", () => {
+describe("the run state holds only what the page reads", () => {
   it("has no pass cap, loop tag or blurbs, exports no BLURB, and graph.session.started changes nothing", () => {
     const run = newRunState();
     expect(Object.keys(run).sort()).toEqual([
@@ -57,7 +57,7 @@ describe("the run state holds only what the page reads (Phase 2 final review R6)
   });
 });
 
-describe("a reader note's kinds and its own thread (notes-progress-report spec §5.7)", () => {
+describe("a reader note's kinds and its own thread", () => {
   it("keeps the reading's kinds, strings only, and marks the thread started from its own started event only", () => {
     const run = newRunState();
     applyEvent(run, { type: "session.note.received", metadata: { note_id: "n1", text: "Pastries too" } });
@@ -143,7 +143,7 @@ describe("(c) the redraft", () => {
   });
 });
 
-describe("(e) the halted run (the prototype's HALTED_EVENTS, index.html:2829-2838)", () => {
+describe("(e) the halted run (the prototype's HALTED_EVENTS)", () => {
   const md = (m: Record<string, unknown>) => m;
   const halted = [
     { type: "graph.session.started", metadata: md({ session_id: "2ad900b1", max_extra_passes: 1, checkpointing: false }) },
@@ -168,7 +168,7 @@ describe("(e) the halted run (the prototype's HALTED_EVENTS, index.html:2829-283
   });
 });
 
-describe("the chip's step (live-briefs spec §4.2)", () => {
+describe("the chip's step", () => {
   it("stepLabel names the row a node runs on; hops read as the row they lead back to", () => {
     expect(stepLabel("researcher")).toBe("Researching");
     expect(stepLabel("finalize_report")).toBe("Publishing");
@@ -207,7 +207,7 @@ describe("the chip's step (live-briefs spec §4.2)", () => {
   });
 });
 
-/* live-briefs spec §4.3: the step briefs' state, proven on the regenerated live captures. */
+/* The step briefs' state, proven on the regenerated live captures. */
 type Planned = { coverage_id: string; title: string };
 const md = <T,>(e: ResearchEvent, key: string) => e.metadata[key] as T;
 
@@ -244,7 +244,7 @@ describe("(f) the Researching checklist follows the live topic events", () => {
           expect(snaps[k].findingsSoFar).toBe(kept);
         }
         if (e.event_type === "researcher.research.completed") {
-          expect(kept).toBe(md<number>(e, "findings")); // the spec's topic-findings-sum inference, on the stream
+          expect(kept).toBe(md<number>(e, "findings")); // the topics' findings sum to the research total, on the stream
           expect(snaps[k].findingsSoFar).toBe(md<number>(e, "findings"));
           expect(snaps[k].passFindings).toBe(md<number>(e, "findings"));
           expect(snaps[k].outcomes.researcher).toBe([
@@ -290,21 +290,21 @@ describe("(g) loops reopen rows with the reason", () => {
 });
 
 describe("(h) every row's outcome line", () => {
-  it("reads the spec's templates at the end of each capture", () => {
+  it("reads each row's outcome template at the end of each capture", () => {
     for (const capture of [extraPass, redraft]) {
       const events = capture.events;
       const run = replayRun(events);
       const last = (type: string) => events.filter((e) => e.event_type === type).at(-1)!;
       const e = last("source_evaluator.evaluation.completed");
       const unrated = md<number>(e, "unscored_cap_count") + md<number>(e, "unscored_provider_count") + md<number>(e, "unscored_missing_count");
-      // notes-progress-report spec §6.4: the scored sources and their split, never a score.
+      // The scored sources and their split, never a score.
       expect(run.outcomes.source_evaluator).toBe(`${plural(md<number>(e, "scored_count"), "source rated", "sources rated")} · ${md<number>(e, "strong_count")} strong · `
         + `${md<number>(e, "fair_count")} fair · ${md<number>(e, "weak_count")} weak` + (unrated > 0 ? ` · ${unrated} not rated` : ""));
       const v = last("evidence_verifier.verification.completed");
       expect(run.outcomes.evidence_verifier).toBe(`${md<number>(v, "verified")} verified · ${md<number>(v, "verified_corrected")} corrected · ${md<number>(v, "dropped")} dropped`);
       const w = last("report_writer.report.written");
       expect(run.outcomes.report_writer).toBe(`Report drafted · ${md<number>(w, "statements")} sentences · ${md<number>(w, "citations")} citations`);
-      // §6.7: the accepted review's outcome names its criteria, never its score.
+      // The accepted review's outcome names its criteria, never its score.
       expect(run.outcomes.report_reviewer).toBe("Accepted · all 5 met");
       expect(run.outcomes.finalize_report).toBe("Published");
     }
@@ -320,7 +320,7 @@ describe("(i) burst-safety: a late subscriber paints the same briefs", () => {
   }
 });
 
-describe("(j) the one-time check (live-briefs spec §4.4-§4.5)", () => {
+describe("(j) the one-time check", () => {
   const questions = [
     { id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], best_guess: "Global" },
     { id: "q2", dimension: "period", text: "How recent should the sources be?", short: "Period", options: ["Last 12 months", "Since 2023", "Any time"], best_guess: "Since 2023" },
@@ -365,7 +365,7 @@ describe("(j) the one-time check (live-briefs spec §4.4-§4.5)", () => {
   });
 });
 
-describe("session.stopped (notes-progress-report spec §8.4)", () => {
+describe("session.stopped", () => {
   it("records the step, the time and the seconds; leaves no row active and no loop lit; keeps every mark", () => {
     const events = extraPass.events;
     const decided = at(events, (e) => e.event_type === "graph.route.decided" && e.metadata.destination === "extra_pass");

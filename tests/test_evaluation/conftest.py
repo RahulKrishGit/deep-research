@@ -32,7 +32,6 @@ from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     ReportWriterAgent,
 )
-from deep_research.utils.types import BottomLineDraft, Finding, SectionDraft, WriterPointDraft
 from deep_research.agents.researcher import FindingDraft, SubTopicFindingsDraft
 from deep_research.agents.steps import ReActDecision
 from deep_research.evaluation.cases import (
@@ -81,6 +80,12 @@ from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import OpenAIProviderError
 from deep_research.utils.config import ConfigSettings
+from deep_research.utils.types import (
+    BottomLineDraft,
+    Finding,
+    SectionDraft,
+    WriterPointDraft,
+)
 from tests.agent_fakes import ScriptedCompleter
 from tests.evaluation_fakes import (
     FakeEvaluateRunner,
@@ -88,18 +93,6 @@ from tests.evaluation_fakes import (
     FakeStructuredProvider,
 )
 from tests.research_fakes import report_writer_tools
-
-
-@pytest.fixture
-def tracker() -> Tracker:
-    """Records locally and never opens a LangSmith client."""
-    return Tracker(
-        LangSmithRuntimeConfig(
-            tracing_enabled=False,
-            project="evaluation-tests",
-            api_key=None,
-        )
-    )
 
 
 @pytest.fixture
@@ -116,17 +109,15 @@ def all_cases():
 def controlled_case_for():
     """The registry's first controlled case for an agent.
 
-    The registry is empty until Tasks 10–15 land the case files, so an
-    empty lookup skips rather than failing: the tests that need a case
-    start running the moment that agent's cases exist.
+    An empty lookup skips rather than failing, so a test that needs a case
+    starts running the moment that agent's cases exist.
     """
 
     def factory(agent_name):
         available = cases_for(agent_name, "controlled")
         if not available:
             pytest.skip(
-                f"no controlled cases registered for {agent_name} yet; "
-                "cases land in Tasks 10-15"
+                f"no controlled cases registered for {agent_name}"
             )
         return available[0]
 
@@ -138,7 +129,7 @@ def live_case_for():
     """The registry's first live case for an agent.
 
     Same empty-registry contract as ``controlled_case_for``: an empty
-    lookup skips rather than failing, so the tests that need a case start
+    lookup skips rather than failing, so a test that needs a case starts
     running the moment that agent's live cases exist.
     """
 
@@ -146,8 +137,7 @@ def live_case_for():
         available = cases_for(agent_name, "live")
         if not available:
             pytest.skip(
-                f"no live cases registered for {agent_name} yet; "
-                "cases land in Tasks 10-15"
+                f"no live cases registered for {agent_name}"
             )
         return available[0]
 
@@ -443,7 +433,7 @@ def experiment_result(repetition_result) -> ExperimentResult:
     )
 
 
-# --- Task 18: per-agent output builders for the agent-specific gate tests ---
+# --- Per-agent output builders for the agent-specific gate tests ---
 
 
 def _read_trajectory(urls: list[str]) -> list[TrajectoryStep]:
@@ -750,55 +740,6 @@ class EvidenceVerifierOutput(TargetOutput):
 class ReportWriterOutput(TargetOutput):
     """A report-writer repetition with builder helpers."""
 
-    def with_report_citing(self, url: str) -> "ReportWriterOutput":
-        result = dict(self.result or {})
-        report = str(result.get("markdown") or "")
-        state_update = dict(self.state_update)
-        report = f"{report}\n\nSee {url} for details."
-        return self.model_copy(
-            update={
-                "result": {
-                    **result,
-                    "markdown": report,
-                },
-                "state_update": {**state_update, "report": report},
-            }
-        )
-
-    def with_refused_point(
-        self,
-        *,
-        text: str,
-        reason: str,
-        where: str = "summary[0]",
-        finding_labels: Sequence[str] = (),
-    ) -> "ReportWriterOutput":
-        """Record one refused drafted point on the composition.
-
-        Kept in both halves §6.1 item 7 requires: the composition's own
-        reason list and the full record the evidence log prints. A helper
-        that wrote only one of them would let a fixture "pass" a refusal
-        check the artifact never had to satisfy.
-        """
-        result = dict(self.result or {})
-        composition = dict(result.get("composition") or {})
-        composition["rejected"] = [
-            *(composition.get("rejected") or []),
-            reason,
-        ]
-        composition["rejected_points"] = [
-            *(composition.get("rejected_points") or []),
-            {
-                "where": where,
-                "text": text,
-                "reason": reason,
-                "finding_labels": list(finding_labels),
-            },
-        ]
-        return self.model_copy(
-            update={"result": {**result, "composition": composition}}
-        )
-
     def without_refused_sentences(self) -> "ReportWriterOutput":
         """Cut the evidence log's refusal section out of the artifact."""
         result = dict(self.result or {})
@@ -844,16 +785,6 @@ class ReportWriterOutput(TargetOutput):
             }
         )
 
-    def with_report_text(self, text: str) -> "ReportWriterOutput":
-        result = dict(self.result or {})
-        state_update = dict(self.state_update)
-        return self.model_copy(
-            update={
-                "result": {**result, "markdown": text},
-                "state_update": {**state_update, "report": text},
-            }
-        )
-
     def with_references(self, urls: Sequence[str]) -> "ReportWriterOutput":
         """Rewrite the reference list, leaving the prose and its markers.
 
@@ -888,8 +819,7 @@ def controlled_case_for_id():
             if case.case_id == case_id:
                 return case
         pytest.skip(
-            f"no controlled case {case_id!r} registered for {agent_name} yet; "
-            "cases land in Tasks 10-15"
+            f"no controlled case {case_id!r} registered for {agent_name}"
         )
 
     return factory
@@ -900,7 +830,7 @@ def source_evaluator_case(controlled_case_for):
     return controlled_case_for("source_evaluator")
 
 
-# Task 12's high-risk cases are looked up by id with ``case_by_id``, not
+# High-risk cases are looked up by id with ``case_by_id``, not
 # through ``controlled_case_for_id``: that factory skips when a case is
 # missing, and a test whose whole subject is one of these cases has to fail
 # loudly when the case it measures is not registered.
@@ -1026,7 +956,7 @@ def _stamped_target(
 ) -> dict[str, object]:
     """One evidence target as the Planner's artifact carries it, id stamped.
 
-    The final shape (spec 7.1): the measure the obligation asks for beside the
+    The final shape: the measure the obligation asks for beside the
     question it answers, and the structured fields its evidence has to state.
     """
     return {
@@ -1515,7 +1445,7 @@ def work_role_output(work_role_case) -> SourceEvaluatorOutput:
     )
 
 
-# --- Task 19: judge fixtures ---
+# --- Judge fixtures ---
 
 
 @pytest.fixture
@@ -1577,7 +1507,7 @@ def failed_target_output(planner_case) -> TargetOutput:
     )
 
 
-# --- Task 21: build_target harnesses ----------------------------------------
+# --- ``build_target`` harnesses ---
 
 
 def _finish_decision(answer: str = "Scoping complete.") -> ReActDecision:
@@ -1609,9 +1539,9 @@ def _planner_draft(*titles: str) -> ResearchPlanDraft:
                         # up with the calls.
                         question=f"What does {title} measure?",
                         # The question names each of these three parts, so
-                        # every obligation is required (Task 5.2: the draft's
-                        # own flag replaces ``critical``, which never decided
-                        # ``required`` for a target no hygiene rule touched).
+                        # every obligation is required -- the draft's own
+                        # flag replaces critical, which never decided required
+                        # for a target no hygiene rule touched.
                         required=True,
                         measure=title,
                     )
@@ -1752,11 +1682,9 @@ def live_target_harness(tracker, settings, tmp_path):
     """A ``build_target`` over a live researcher case.
 
     ``search_client`` is a fake so no network call is ever made;
-    ``embeddings=object()`` mirrors Task 8's own live-dependency tests
-    (memory is never queried by this scripted run, so the placeholder is
-    never called).
+    ``embeddings=object()`` is a placeholder (memory is never queried by this
+    scripted run, so the placeholder is never called).
     """
-
     class _FakeSearchClient:
         def search(self, *, query, search_depth, max_results):
             del query, search_depth, max_results
@@ -1835,7 +1763,7 @@ def live_target_harness(tracker, settings, tmp_path):
     return factory
 
 
-# --- Task 23: runner harnesses -----------------------------------------------
+# --- Runner harnesses ---
 
 
 @pytest.fixture
@@ -2002,9 +1930,9 @@ def failing_case(repetitions_at):
 def _judge_verdict(value: float = 0.85) -> JudgeVerdict:
     """A generic, schema-valid judge verdict for the async harness tests.
 
-    The exact score is not asserted by any Task 23 test; only
-    ``status == "scored"`` is. Kept high and uniform on purpose so nothing
-    here accidentally trips a threshold test elsewhere.
+    The exact score is not asserted; only ``status == "scored"`` is.
+    Kept high and uniform on purpose so nothing here accidentally trips a
+    threshold test elsewhere.
     """
     return JudgeVerdict(
         scores=JudgeScores(
@@ -2093,7 +2021,7 @@ def evaluation_harness(tracker, settings):
     )
 
 
-# --- Task 24: reporting fixtures --------------------------------------------
+# --- Reporting fixtures ---
 
 _REPORTING_METADATA = {
     "target_model": "deepseek-v4-flash",
@@ -2301,7 +2229,7 @@ def leaking_experiment_result() -> ExperimentResult:
 
     The failure message is built from text that originally carried a
     real-looking secret and a traceback-shaped fragment, then run through
-    the same ``redact_secrets`` helper Task 5 uses before anything is ever
+    the same ``redact_secrets`` helper used before anything is ever
     attached to a typed ``EvaluationFailure`` -- so by the time it is part
     of this ``ExperimentResult``, it is already clean, and this fixture
     exists to prove ``write_experiment_artifact`` never reintroduces the
@@ -2455,7 +2383,7 @@ def partially_failing_harness(tracker, settings):
     )
 
 
-# --- Task 25: CLI runner fixtures -------------------------------------------
+# --- CLI runner fixtures ---
 #
 # cli.main's `runner` keyword is injected with a callable matching the
 # calling convention cli._dispatch uses for the `agent` command:
@@ -2716,7 +2644,7 @@ def leaking_runner():
     return runner
 
 
-# --- Task 26: suite harnesses and fixtures ----------------------------------
+# --- Suite harnesses and fixtures ----------------------------------
 #
 # ``run_suite_evaluation`` builds its own per-agent ``EvaluationRuntimeConfig``,
 # real cases (via ``cases_for``), and real target/judge ``OpenAIChatProvider``
@@ -2734,8 +2662,8 @@ def leaking_runner():
 @dataclass
 class _SuiteHarness:
     """A shared fake LangSmith runner plus ``run_suite_evaluation`` kwargs,
-    scoped across all six agents -- the suite-level analogue of
-    ``_EvaluationHarness`` (Task 23), which was scoped to one agent."""
+    scoped across all six agents -- the suite-level analogue of a per-agent
+    harness, which was scoped to one agent."""
 
     runner: FakeEvaluateRunner
     factory_kwargs: dict = field(default_factory=dict)
@@ -2993,7 +2921,7 @@ def _statement_check_reply(messages, schema) -> StatementCheckDraft:
     """Answer one batch of the Statement Check by the labels it lists.
 
     A label is a flight key -- ``P{part:02d}.{n}`` for a section's own batch,
-    ``B{n}`` for the bottom line's (spec §6.7) -- renumbered to the reader's
+    ``B{n}`` for the bottom line -- renumbered to the reader's
     ``S001…`` only after every check finishes, so the check itself never
     sees an ``S`` label from the real writer's own pass.
     """
@@ -3033,11 +2961,10 @@ class _ScriptedWriterProvider:
     many Statement Check batches they send.
 
     The parallel writer makes one call per plan part plus one bottom-line
-    call (spec §6), so a single static draft can no longer answer every
-    ``SectionDraft`` request the way the old single-call writer's could: the
-    default section reply restates each of *that part's own* registry
-    findings (one point per finding, quoting its content, read from the
-    request's own ``# Verified findings for this part`` block) and the
+    call, so a single static draft cannot answer every ``SectionDraft``
+    request: the default section reply restates each of *that part's own*
+    registry findings (one point per finding, quoting its content, read from
+    the request's own ``# Verified findings for this part`` block) and the
     default bottom-line reply restates up to 4 of the checked section
     statements the request's own ``# Checked statements`` block lists.
     ``section``/``bottom_line`` override the default for every call of that

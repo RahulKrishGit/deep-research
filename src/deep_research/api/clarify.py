@@ -1,4 +1,4 @@
-"""The one-time check (live-briefs spec §4.4): before planning, ask the reader.
+"""The one-time check: before planning, ask the reader.
 
 When the question leaves something material open, the session asks the reader
 up to three questions before the planner starts, each with a few options and
@@ -43,7 +43,6 @@ CLARITY_MAX_TOKENS = 4096
 """The check's output cap: at most three short questions, with thinking off."""
 
 CLARITY_TRACE_SESSION = "clarity-check"
-MAX_TYPED_ANSWER_CHARS = 200
 
 
 class ClarityQuestionDraft(BaseModel):
@@ -67,7 +66,7 @@ class ClarityCheckDraft(BaseModel):
 
 
 class ClarityQuestion(BaseModel):
-    """One question the reader is asked (spec §4.4 ``ClarityCheck`` contract)."""
+    """One question the reader is asked (the ``ClarityCheck`` contract)."""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
 
@@ -133,7 +132,7 @@ def validated_check(draft: ClarityCheckDraft) -> ClarityCheck:
     """Stamp ``q1``..``qn`` on the drafted questions, or ask nothing at all.
 
     More than three questions, a best guess that is not one of its options, or
-    any other invalid field drops the whole output (spec §4.4): a check that
+    any other invalid field drops the whole output: a check that
     cannot be trusted asks nothing rather than asking something half-formed.
     """
     try:
@@ -185,7 +184,7 @@ def clarity_messages(question: str) -> list[ChatMessage]:
 
 
 def clarity_llm_config(llm: LLMConfig) -> LLMConfig:
-    """The configured provider and model, with thinking disabled (spec §4.4)."""
+    """The configured provider and model, with thinking disabled."""
     return llm.model_copy(update={"thinking_mode": "disabled"})
 
 
@@ -264,7 +263,7 @@ REPLAY_CLARITY_CHECK = ClarityCheck(
         ),
     ]
 )
-"""The fixed set the replay checker asks when ``X-Replay-Clarify: on`` (pick 4B's own copy)."""
+"""The fixed set the replay checker asks when ``X-Replay-Clarify: on``."""
 
 
 async def scripted_clarity_check(question: str, settings: object) -> ClarityCheck:

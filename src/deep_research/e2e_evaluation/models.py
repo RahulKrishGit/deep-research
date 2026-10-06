@@ -1,9 +1,6 @@
 """Typed contracts for the offline real-agent replay matrix.
 
-The retired scripted-double harness's contracts (the six-agent campaign,
-its whole-report judge, and its deterministic evaluation of claim-era state)
-are gone: PD-14 replaces that harness entirely with the real-agent replay
-matrix, which judges a run by its own declared result and invariants
+A run is judged by its own declared result and invariants
 (``e2e_evaluation.replay.expectation_failures``), not by a bounded judge
 adapter over a scripted double's state.
 """

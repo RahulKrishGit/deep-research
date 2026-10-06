@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("resize", sync);
   }, [sidebar]);
   useEffect(() => {
-    // index.html:1908-1912 — Escape closes the drawer (the popover closes itself; see SettingsPopover).
+    // Escape closes the drawer (the popover closes itself; see SettingsPopover).
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (window.matchMedia("(max-width:1080px)").matches && sidebar === "expanded") setSidebar("collapsed");

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -14,21 +13,21 @@ from pydantic import ValidationError
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
+    _PLAN_REPLY_EXAMPLES,
     MAX_PLAN_REVIEW_CALLS,
     MAX_SUB_TOPICS,
     MIN_SUB_TOPICS,
     PLAN_INSTRUCTION,
-    _PLAN_REPLY_EXAMPLES,
     EvidenceTargetDraft,
     PlannerAgent,
     PlanReviewDraft,
     ResearchPlan,
     ResearchPlanDraft,
     SubTopicDraft,
+    _draft_targets,
     answer_kind_for,
     apply_answer_contract,
     derive_answer_contract,
-    _draft_targets,
     format_plan_problems,
     frozen_contract_for,
     geographic_scope_for,
@@ -42,7 +41,7 @@ from deep_research.agents.planner import (
     target_problems,
     validate_plan_draft,
 )
-from deep_research.agents.prompts import AgentTask, STRUCTURED_REQUEST_END
+from deep_research.agents.prompts import STRUCTURED_REQUEST_END, AgentTask
 from deep_research.agents.steps import ReActObservation, ReActRun, ReActStep
 from deep_research.cli import render_warnings
 from deep_research.graph.live import bind_live_sink
@@ -617,12 +616,12 @@ def test_the_field_schema_still_asks_the_model_for_an_array_of_strings(
 
 
 # ``SubTopicDraft.model_json_schema()`` as the provider is handed it, minus
-# the ``description`` that the class docstring renders into. Task 2 added
-# ``evidence_targets`` on purpose — the plan now has to say what each
-# sub-topic owes — and added no constraint keyword with it, so the schema
-# still carries only ``type``, ``title``, ``items``, ``additionalProperties``,
+# the ``description`` that the class docstring renders into.
+# ``evidence_targets`` is there on purpose — the plan has to say what each
+# sub-topic owes — and brings no constraint keyword with it, so the schema
+# carries only ``type``, ``title``, ``items``, ``additionalProperties``,
 # ``required``, and ``properties``.
-_PLAN_SCHEMA_BEFORE_THE_FIX: dict[str, object] = {
+_SUB_TOPIC_DRAFT_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
     "properties": {
         "evidence_targets": {
@@ -670,7 +669,7 @@ def test_the_plan_schema_the_model_is_handed_is_unchanged() -> None:
     schema.pop("description", None)
     schema.pop("$defs", None)
 
-    assert schema == _PLAN_SCHEMA_BEFORE_THE_FIX
+    assert schema == _SUB_TOPIC_DRAFT_SCHEMA
     structural = json.dumps(
         {
             key: value
@@ -1118,9 +1117,8 @@ async def test_a_plan_that_stays_invalid_fails_the_session(
     """A second structurally invalid plan is still fatal, and labelled.
 
     Nothing in either attempt could be handed to the researcher, so the run
-    fails as it did before the gate policy changed. The two attempts' problems
-    stay distinguishable: the merged, unlabelled list is what made the live run
-    3 diagnosis read draft defects as the repaired plan's.
+    fails. The two attempts' problems stay distinguishable: a merged,
+    unlabelled list would read draft defects as the repaired plan's.
     """
     completer = ScriptedCompleter(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
@@ -1282,7 +1280,7 @@ async def test_a_target_level_structural_defect_falls_back_to_a_valid_repair(
 async def test_a_failed_lint_repair_keeps_a_usable_draft(tracker: Tracker) -> None:
     """A repair that cannot be produced does not end a run whose draft is usable.
 
-    Repairs are the heaviest plan request — live run 2 truncated on one — and a
+    Repairs are the heaviest plan request — one can truncate — and a
     draft that is structurally researchable is worth more than no report at all.
     The failed repair is recorded against the repair, and the draft's own
     advisory defect is removed with the target it named rather than recorded: a
@@ -1354,8 +1352,8 @@ async def test_the_lint_repair_request_carries_unlabelled_problems(
 
     repair_request = completer.calls[1][2][1].content
     # The plan the problems name is printed above the repair list, so an id in
-    # that list names something the model can see and correct: the defect Fable
-    # blocked on, pinned on the request the provider actually receives.
+    # that list names something the model can see and correct: pinned on the
+    # request the provider actually receives.
     assert "# Plan under repair (return this plan corrected, not unchanged)" in (
         repair_request
     )
@@ -1752,7 +1750,7 @@ def test_planner_regression_plan_instruction_permits_real_search_terms() -> None
 
 
 def test_plan_instruction_kind_is_content_anchored_not_date_anchored() -> None:
-    """D4 (RevW4Extract P1): ``kind`` reads what the question asks for, not a
+    """``kind`` reads what the question asks for, not a
     date relative to the as-of date -- a projected, expected or targeted
     outcome stays forecast whatever its date, so a target whose outlook
     period the as-of date has already passed still keeps kind=forecast and
@@ -1778,11 +1776,10 @@ def test_plan_instruction_kind_is_content_anchored_not_date_anchored() -> None:
 def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -> None:
     """Balanced coverage is asked for when the question asks for it, and only then.
 
-    The instruction used to *require* a benefits-and-risks sub-topic for any
-    technology question, which is the scope widening the plan's own review
-    rules against ("Name any target that widens the scope"). The two prompts
-    contradicted each other, and the plan-file reader has no way to tell which
-    one won.
+    The instruction must not require a benefits-and-risks sub-topic for any
+    technology question: that is the scope widening the plan's own review
+    rules against ("Name any target that widens the scope"), and the two
+    prompts would contradict each other.
     """
     task = AgentTask(instruction="Some research question.")
     messages = plan_messages(task, _run())
@@ -1797,13 +1794,13 @@ def test_planner_regression_plan_instruction_scopes_benefits_to_the_question() -
 
 
 def test_planner_regression_plan_instruction_names_no_support_policy() -> None:
-    """PD-16: no part of the plan request asks the model for a policy.
+    """No part of the plan request asks the model for a policy.
 
-    The draft field, the instruction paragraph and the reply example that
-    taught the vocabulary are gone with the Fact Checker, so a plan can no
-    longer propose a policy — while the guidance that keeps the plan inside
-    the question (no second publisher where one issuer settles the fact, and
-    no metadata dimension the question never asked for) stays.
+    The plan carries no policy field and neither the instruction nor the reply
+    examples teach the vocabulary, so a plan cannot propose a policy — while
+    the guidance that keeps the plan inside the question (no second publisher
+    where one issuer settles the fact, and no metadata dimension the question
+    never asked for) stays.
     """
     task = AgentTask(instruction="Some research question.")
     messages = plan_messages(task, _run())
@@ -1822,9 +1819,9 @@ def test_planner_regression_plan_instruction_names_no_support_policy() -> None:
     )
 
 
-# --- Task 2: answer-shaped, scoped, feasible, production-configured plans ----
+# --- Answer-shaped, scoped, feasible, production-configured plans ----
 
-# The September 2026 session the baseline measured. Pinned so every assertion
+# A fixed September 2026 session date. Pinned so every assertion
 # below is about the planner and not about the day this suite runs.
 _CLOCK_NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
 
@@ -1897,8 +1894,8 @@ def test_a_question_that_names_a_year_keeps_that_year_as_its_period() -> None:
     A question about 2021 is answered about 2021 — that is what the evidence
     period says — but the *cutoff* the user never stated is not inferred from
     it: the contract reads from the latest evidence the run can reach, so a
-    later revision of the 2021 figure stays usable (user decision 2, review
-    rank 4). Only an explicit "as of <date>" freezes the date.
+    later revision of the 2021 figure stays usable. Only an explicit
+    "as of <date>" freezes the date.
     """
     contract = _contract("What did the 2021 capacity market rules require?")
 
@@ -2007,7 +2004,7 @@ def test_targets_carry_locally_stamped_ids() -> None:
     first = stamped[0].evidence_targets[0]
     assert first.coverage_id == "topic-01"
     assert first.required is True
-    # The draft's own fields stand: the contract no longer adds a dimension.
+    # The draft's own fields stand: the contract adds no dimension.
     assert first.measure == "interconnection constraints"
     assert target_problems(stamped, contract) == []
 
@@ -2206,13 +2203,13 @@ def test_a_forecast_verb_naming_no_edition_is_not_flagged() -> None:
     )
 
 
-def test_audit2_forecast_vintages_stay_flagged() -> None:
-    """The real audit-2 topic-02 and topic-04 targets still name unrequested editions.
+def test_forecast_vintages_naming_unrequested_editions_stay_flagged() -> None:
+    """Targets that name unrequested editions are still flagged.
 
-    Real targets from the audited run: topic-02 pins the January 2025 STEO
+    Topic-02 pins the January 2025 STEO
     edition, topic-04 pins the Q1 2025 US Energy Storage Monitor edition, and
     the original question names neither. Both are genuine, intended flags
-    that must survive every false-positive fix above.
+    that must survive every false-positive exemption above.
     """
     contract = _contract(
         "How much grid-scale battery storage capacity was added in the "
@@ -2533,7 +2530,7 @@ def test_parallel_multiword_year_work_keeps_both_historical_periods(
 
     Both years are the periods the answer is *about*; the contract's as-of date
     is the session clock, because the observation years are not a cutoff the
-    user stated (user decision 2).
+    user stated.
     """
     contract = _contract(question)
 
@@ -2575,7 +2572,7 @@ def test_count_framed_parallel_year_work_keeps_every_historical_period(
     """Parallel year/work evidence outranks an overlapping count operand.
 
     The periods are the question's own; the as-of date is the session clock,
-    which is not inferred from them (user decision 2).
+    which is not inferred from them.
     """
     contract = _contract(question)
 
@@ -2737,26 +2734,26 @@ def test_stale_year_anchors_are_reported_only_in_a_currency_frame() -> None:
     ) == []
 
 
-# The question the four live CLI runs used. It names 2024 as the period it is
-# about and asks for 2025 forecasts. The observation years are the question's
+# A question that names 2024 as the period it is about and asks for 2025
+# forecasts. The observation years are the question's
 # subject, not an evidence cutoff, so the contract reads from the run clock —
 # which is why a target that mirrors the question's own wording names a year
-# the as-of date has left behind, and why the co-occurrence rule reported it.
-_AUDIT_QUESTION = (
+# the as-of date has left behind, and why the co-occurrence rule reports it.
+_CAPACITY_QUESTION = (
     "How much grid-scale battery storage capacity was added in the United "
     "States in 2024, and what do the latest forecasts project for 2025?"
 )
 
-# The day the audit runs were made, so the contract below is the live one.
-_AUDIT_NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
+# A fixed day, so the contract below is the same whenever the suite runs.
+_CAPACITY_NOW = datetime(2026, 9, 23, 12, 0, tzinfo=timezone.utc)
 
 
-def _audit_contract():
-    return derive_answer_contract(question=_AUDIT_QUESTION, now=_AUDIT_NOW)
+def _capacity_contract():
+    return derive_answer_contract(question=_CAPACITY_QUESTION, now=_CAPACITY_NOW)
 
 
-def _mirroring_audit_plan() -> ResearchPlanDraft:
-    """Run 4's shape: the first topic mirrors the question's own framing."""
+def _mirroring_plan() -> ResearchPlanDraft:
+    """The first topic mirrors the question's own framing."""
     return ResearchPlanDraft(
         sub_topics=[
             _draft(
@@ -2783,15 +2780,15 @@ def _mirroring_audit_plan() -> ResearchPlanDraft:
 def test_the_year_the_question_itself_names_is_never_a_stale_anchor() -> None:
     """The question's own period is its subject, not a currency claim.
 
-    The audit question is *about* 2024 under a 2026-09-23 contract, so a target
+    The capacity question is *about* 2024 under a 2026-09-23 contract, so a target
     that mirrors the question's wording names a year below the as-of date. The
-    co-occurrence rule reported exactly those targets — and criteria — in live
-    runs 3 and 4, and because a reported anchor was fatal, both runs ended
-    before any research started.
+    co-occurrence rule would report exactly those targets — and criteria — and
+    because a reported anchor is fatal, the run would end before any research
+    started.
     """
-    contract = _audit_contract()
+    contract = _capacity_contract()
     assert contract.as_of_date == "2026-09-23"
-    sub_topics, problems = validate_plan_draft(_mirroring_audit_plan())
+    sub_topics, problems = validate_plan_draft(_mirroring_plan())
     assert problems == []
 
     stamped = apply_answer_contract(sub_topics, contract)
@@ -2800,15 +2797,15 @@ def test_the_year_the_question_itself_names_is_never_a_stale_anchor() -> None:
 
 
 def test_the_questions_observation_years_are_not_an_evidence_cutoff() -> None:
-    """User decision 2: "for 2025" is the period, not a knowledge cutoff.
+    """A period named "for 2025" is not a knowledge cutoff.
 
-    ``derive_answer_contract`` inferred 2025-12-31 from the observation years,
-    so every target's binding evidence period said "as of 2025-12-31 and never
-    substitute today's figures" — a cutoff the user never asked for, which
-    forbids the later revisions and the published 2025 outturn the reader needs
-    (review rank 4).
+    ``derive_answer_contract`` must not infer 2025-12-31 from the observation
+    years: every target's binding evidence period would say "as of 2025-12-31
+    and never substitute today's figures" — a cutoff the user never asked for,
+    which forbids the later revisions and the published 2025 outturn the
+    reader needs.
     """
-    contract = _audit_contract()
+    contract = _capacity_contract()
 
     assert contract.as_of_date == "2026-09-23"
     assert "2025-12-31" not in contract.scope_statement
@@ -2847,9 +2844,9 @@ def test_an_explicit_as_of_date_still_freezes_the_contract() -> None:
 def test_an_explicit_as_of_phrase_freezes_the_contract(question: str) -> None:
     """A cutoff written in words freezes the date exactly like an ISO one.
 
-    User decision 2: an explicit "as of" still freezes the date, whether it
+    An explicit "as of" still freezes the date, whether it
     names a full date, "the end of" a year, or a bare year following "as
-    of" — the last two meaning that year's end (review rank 2).
+    of" — the last two meaning that year's end.
     """
     contract = _contract(question)
 
@@ -2876,8 +2873,7 @@ def test_a_future_explicit_as_of_is_capped_at_the_clock() -> None:
 
 
 def test_a_bare_observation_year_still_earns_no_explicit_cutoff() -> None:
-    """User decision 2, restated for the natural-language reader: a bare
-    "for 2025" at a 2026 clock names the period, not a cutoff — only a
+    """A bare "for 2025" at a 2026 clock names the period, not a cutoff — only a
     cutoff phrase freezes anything."""
     contract = _contract("What were battery storage additions for 2025?")
 
@@ -2888,11 +2884,11 @@ def test_a_bare_observation_year_still_earns_no_explicit_cutoff() -> None:
 def test_a_year_the_question_does_not_name_is_still_a_stale_anchor() -> None:
     """The exemption is the question's own years, not every older year.
 
-    The TR-04 defect is a plan that treats an earlier year as today. 2023 is
-    not a year the audit question names, so a target that anchors currency to
+    A plan that treats an earlier year as today is the defect. 2023 is
+    not a year the capacity question names, so a target that anchors currency to
     it is still reported under that contract.
     """
-    contract = _audit_contract()
+    contract = _capacity_contract()
     sub_topics, _ = validate_plan_draft(
         ResearchPlanDraft(
             sub_topics=[
@@ -2937,7 +2933,7 @@ async def test_a_plan_mirroring_the_questions_own_years_reaches_the_review(
     def _run_4_reply(messages, schema):
         del messages
         return (
-            _mirroring_audit_plan()
+            _mirroring_plan()
             if schema is ResearchPlanDraft
             else _review()
         )
@@ -2946,10 +2942,10 @@ async def test_a_plan_mirroring_the_questions_own_years_reaches_the_review(
         decisions=[finish("No lookup needed.", "Three angles matter.")],
         outputs=[_run_4_reply, _run_4_reply, _run_4_reply],
     )
-    agent = _planner(tracker, completer, clock=lambda: _AUDIT_NOW)
+    agent = _planner(tracker, completer, clock=lambda: _CAPACITY_NOW)
 
     async with tracker.session_span("session-1", "q"):
-        outcome = await agent.run(_state(_AUDIT_QUESTION))
+        outcome = await agent.run(_state(_CAPACITY_QUESTION))
 
     assert outcome.result is not None
     assert [call[0] for call in completer.calls] == [
@@ -2962,11 +2958,10 @@ async def test_a_plan_mirroring_the_questions_own_years_reaches_the_review(
 def test_a_question_about_the_clock_year_is_answered_as_of_today() -> None:
     """Naming the clock's own year is a currency frame, not a closed period.
 
-    A 2026 question asked on 2026-09-16 was being stamped
+    A 2026 question asked on 2026-09-16 must not be stamped
     ``as_of_date = 2026-12-31`` — a date three and a half months in the future,
     frozen into the contract and copied into every target's binding evidence
-    period. That is the defect class this contract exists to remove, so the
-    regression is pinned with the probe that found it.
+    period. That is the defect class this contract exists to remove.
     """
     contract = _contract("What are the 2026 interconnection rules?")
 
@@ -3002,7 +2997,7 @@ def test_no_question_can_be_stamped_with_a_future_as_of_date(
 
 
 def test_a_geography_alias_is_matched_on_token_boundaries() -> None:
-    """The reviewer's probes: "tell us", "Indiana", and the "us" pronoun.
+    """Words that merely contain or sound like an alias: "tell us", "Indiana", and the "us" pronoun.
 
     A wrong jurisdiction is stamped into every target's geography dimension,
     where nothing downstream can see the error, so an unrecognized name must
@@ -3090,7 +3085,7 @@ def test_an_unrelated_derived_word_does_not_match_standard_constraint_marker() -
 
 
 def test_an_obligations_question_gets_the_constraints_answer_form() -> None:
-    """A "what obligations…" question is a constraints question (spec Q2).
+    """A "what obligations…" question is a constraints question.
 
     "obligation"/"obligations" names a binding constraint exactly as
     "requirement"/"rule" already do: a question asking what a body's
@@ -3220,7 +3215,7 @@ async def test_a_stale_anchor_in_a_plan_is_reported_and_repaired_not_accepted(
     assert "ask for the latest available evidence instead" in repair_request
 
     # What binds the reader is the contract the plan request prints, not a
-    # dimension stamped onto a target (Task 5.2 stamps only the id and
+    # dimension stamped onto a target (which carries only the id and
     # ``required``): the session's own as-of date and evidence period.
     plan_request = completer.calls[0][2][1].content
     assert (
@@ -3515,12 +3510,12 @@ async def test_a_surviving_advisory_target_is_dropped_not_recorded(
 ) -> None:
     """A plan does not ship the target its own repair was told about.
 
-    The live nine-question probe's P3, P4 and P6 plans ended with
-    planner_plan_defects_unresolved: an advisory naming a target the plan
-    kept anyway, so the shipped plan carried a defect a reader has to read and
-    the target it named stayed in the run's obligations. A plan that ignores the
+    A plan that keeps a target an advisory named would end with
+    planner_plan_defects_unresolved: the shipped plan would carry a defect a
+    reader has to read and the target it named would stay in the run's
+    obligations. A plan that ignores the
     one correction it was given loses the target instead, and the pass records
-    nothing about it — while a *structural* defect keeps today's behaviour
+    nothing about it — while a *structural* defect is repaired once and then refused
     (test_an_infeasible_target_batch_is_repaired_once_then_refused).
     """
     draft = _tolerance_plan()
@@ -3593,8 +3588,8 @@ async def test_a_plan_that_would_owe_nothing_keeps_a_required_target(
 ) -> None:
     """Dropping the defective target must not leave a plan that owes nothing.
 
-    The probe re-run measured the failure mode of a plan with no required
-    target: a report could omit every part and still pass. So when the target an
+    A plan with no required target lets a report omit every part and still pass.
+    So when the target an
     advisory names was the whole of what the plan owed, the first obligation of
     every sub-topic that survived is required again — the plan still ships
     without the target its repair was told about, and its dimensions are owed.
@@ -3626,8 +3621,8 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
 ) -> None:
     """A repair request that cannot be completed keeps the plan it repairs.
 
-    Live run 2 died exactly here: the third structured call hit the output cap,
-    ``ProviderOutputLimitError`` is not repairable by design, and the run ended
+    The third structured call can hit the output cap,
+    ``ProviderOutputLimitError`` is not repairable by design, and the run would end
     with no plan and nothing published. The plan the review judged is still
     structurally researchable, so it is the plan the run continues with — and
     the findings the review made against *that* plan are recorded too, because
@@ -3693,12 +3688,12 @@ async def test_a_truncated_review_repair_falls_back_to_the_reviewed_plan(
 async def test_a_first_plan_review_that_cannot_be_produced_keeps_the_plan(
     tracker: Tracker,
 ) -> None:
-    """The one tool-free planning request that could still end a live run.
+    """The first plan review is guarded like every other plan-side request.
 
     A provider failure, a truncation or a schema failure on the *first* plan
-    review raised out of ``finalize``: the run ended at ``graph_planning_failed``
-    with nothing published, while the confirming review, the lint repair and the
-    review repair were each already guarded. The review is a request like any
+    review does not raise out of ``finalize`` and end the run at ``graph_planning_failed``
+    with nothing published, just as for the confirming review, the lint repair and the
+    review repair. The review is a request like any
     other, so its failure is recorded as an ordinary plan defect and the plan it
     never judged — structurally valid, and researched nothing yet — stands.
     """
@@ -3811,11 +3806,6 @@ async def test_a_recorded_plan_defect_reaches_the_warning_block(
     reaches the CLI's warning block the way every recoverable error does. It is
     deliberately not a halt: the enumerated types that stop a run are
     unchanged, so the report-level gates judge the consequences.
-
-    The evidence ledger and the quality record are not asserted here because
-    both renderers are mid-cutover in this wave (Task 4.5 rewrites the quality
-    record) and the claim-era reader path fails on a field Task 4.1 renamed —
-    a failure owned by that file, not by the planner's record.
     """
     premise = "the query assumes storage already caused the outage"
     question = "What limits grid-scale battery storage deployment?"
@@ -4233,7 +4223,7 @@ def test_the_inventory_excludes_the_reserved_omission_reference() -> None:
 async def test_a_second_planning_pass_cannot_re_anchor_the_frozen_contract(
     tracker: Tracker,
 ) -> None:
-    """Section 2.3: the question, scope, and as-of date are frozen.
+    """The question, scope, and as-of date are frozen.
 
     A later planning pass — a refinement, a resume, a replan after a failure —
     must not move a session's as-of date or widen its scope: every target
@@ -4268,8 +4258,8 @@ async def test_a_second_planning_pass_cannot_re_anchor_the_frozen_contract(
     assert outcome.result.answer_contract.geographic_scope == "United States"
     assert outcome.result.answer_contract.as_of_date == "2026-09-16"
     # Every newly stamped obligation is planned inside the frozen contract,
-    # which the request prints: the plan no longer restates its scope or date
-    # on a target (Task 5.2 stamps only the id and ``required``).
+    # which the request prints: the plan does not restate its scope or date
+    # on a target (a stamped target carries only the id and ``required``).
     plan_request = completer.calls[0][2][1].content
     assert "- Scope: United States" in plan_request
     assert "- As of: 2026-09-16" in plan_request
@@ -4417,7 +4407,7 @@ async def test_the_plan_and_review_calls_carry_distinct_fingerprints(
 async def test_a_second_non_extension_pass_cannot_replace_the_live_topic_list(
     tracker: Tracker,
 ) -> None:
-    """Carried from Task 2's review: the live topics and the inventory agree.
+    """The live topics and the inventory agree.
 
     ``initial_target_ids`` is union-protected, so a second non-extension pass
     that re-emitted a whole topic list would append a second ``topic-01``
@@ -4457,15 +4447,8 @@ async def test_a_second_non_extension_pass_cannot_replace_the_live_topic_list(
 
 
 # --------------------------------------------------------------------------
-# T2: the plan is answerable, in scope, and priced for the evidence
+# The plan is answerable, in scope, and priced for the evidence
 # --------------------------------------------------------------------------
-
-# The live audit question, verbatim: the run that produced zero answered
-# targets planned against this one.
-_AUDIT_QUESTION = (
-    "How much grid-scale battery storage capacity was added in the United "
-    "States in 2024, and what do the latest forecasts project for 2025?"
-)
 
 
 def _stamped_plan(
@@ -4495,10 +4478,10 @@ def _stamped(question: str, target: EvidenceTargetDraft) -> EvidenceTarget:
     return first
 
 
-# The target the run's plan gave the forecast's publication date. Its own
+# A target for the forecast's publication date. Its own
 # measure is a metadata obligation the question never asks for, and
 # ``dimension_is_answered`` refuses metadata the question did not ask about —
-# so no claim could ever be bound to it (replay C10).
+# so no claim could ever be bound to it.
 _FORECAST_DATE_TARGET = _target(
     "When was the latest forecast document published?",
     measure="publication date of the forecast document",
@@ -4539,13 +4522,13 @@ _MEASURED_TARGET = _target(
 
 
 def test_a_subtopic_the_question_never_asked_for_is_named() -> None:
-    """The instruction used to *mandate* a benefits-and-risks sub-topic.
+    """A sub-topic the question never asked for, such as benefits and risks, is named.
 
     That is the widening the plan review rules against, so the check names it
     instead of the planner asking for it.
     """
     stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
+        _CAPACITY_QUESTION,
         title="Costs, benefits and risks",
         criteria=["Benefits and risks are quantified for both options."],
         target=_MEASURED_TARGET,
@@ -4553,18 +4536,18 @@ def test_a_subtopic_the_question_never_asked_for_is_named() -> None:
 
     named = [
         problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        for problem in target_problems(stamped, _contract(_CAPACITY_QUESTION))
         if "never asks about" in problem
     ]
 
     assert [problem.split()[0] for problem in named] == ["topic-01"]
 
 
-# The live P4 probe's EU AI Act plan: the statute's own term for the models it
+# The EU AI Act question: the statute's own term for the models it
 # regulates is "systemic risk", so a sub-topic the question itself calls for
-# carried that word, the widening lint fired, and a max-effort repair call was
-# bought for a plan the model then kept — with the documented D14 risk that a
-# repair deletes the very dimension the question asked for.
+# carries that word. The widening lint must not fire on it: that would buy a
+# max-effort repair call for a plan the model would keep anyway, with the
+# risk that a repair deletes the very dimension the question asked for.
 _AI_ACT_QUESTION = (
     "What obligations does the EU AI Act impose on providers of "
     "general-purpose AI models?"
@@ -4668,7 +4651,7 @@ def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
     planned optional here, with an advisory naming why (change 6).
     """
     stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
+        _CAPACITY_QUESTION,
         title="EIA additions",
         criteria=["The energy added in 2024 is stated with its issuer."],
         target=_target(
@@ -4685,7 +4668,7 @@ def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
 
     named = [
         problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        for problem in target_problems(stamped, _contract(_CAPACITY_QUESTION))
         if "energy figure" in problem
     ]
     assert [problem.split()[0] for problem in named] == ["topic-01-target-01"]
@@ -4694,7 +4677,7 @@ def test_an_energy_measure_the_capacity_question_never_named_is_optional() -> (
 def test_a_capacity_measure_the_question_asked_for_is_not_named() -> None:
     """The control: a target asking for the same power unit the question does."""
     stamped = _one_topic_plan(
-        _AUDIT_QUESTION,
+        _CAPACITY_QUESTION,
         title="EIA additions",
         criteria=["The capacity added in 2024 is stated with its issuer."],
         target=_target(
@@ -4709,7 +4692,7 @@ def test_a_capacity_measure_the_question_asked_for_is_not_named() -> None:
     assert target.required is True
     assert [
         problem
-        for problem in target_problems(stamped, _contract(_AUDIT_QUESTION))
+        for problem in target_problems(stamped, _contract(_CAPACITY_QUESTION))
         if "energy figure" in problem
     ] == []
 
@@ -4745,7 +4728,7 @@ def test_an_energy_measure_an_energy_question_names_is_not_downgraded() -> (
 def test_a_question_naming_energy_duration_or_hours_in_words_is_not_downgraded(
     energy_word: str,
 ) -> None:
-    """P1-c: a question may name the energy family in words, not only units.
+    """A question may name the energy family in words, not only units.
 
     "How much ... capacity was added" still reads as a power question, but a
     question that also asks about the storage's energy, duration, or hours of
@@ -4783,16 +4766,15 @@ def test_a_question_naming_energy_duration_or_hours_in_words_is_not_downgraded(
 def test_every_plan_example_the_model_is_shown_passes_every_plan_check(
     label: str, payload: str
 ) -> None:
-    """Each example is a plan the planner would accept (D10: two shapes, neither the benchmark's)."""
+    """Each example is a plan the planner would accept."""
     question = label.split("Example input:", 1)[1].strip().rstrip(".")
     sub_topics, problems = validate_plan_draft(ResearchPlanDraft.model_validate_json(payload))
     assert problems == []
     assert target_problems(sub_topics, _contract(question)) == []
 
 
-# The live ``topic-02-target-01`` question from the 1-iteration run whose report
-# failed all five criteria. Its figure is one agency's own outlook number, and
-# the two bodies the plan named publish differently scoped ones (review rank 2).
+# A forecast-target question whose figure is one agency's own outlook number,
+# while the two bodies the plan named publish differently scoped ones.
 _LIVE_FORECAST_TARGET_QUESTION = (
     "What 2025 addition of utility-scale battery storage capacity in the "
     "United States, in megawatts, does the federal energy statistical "
@@ -4887,13 +4869,12 @@ def test_a_draft_target_without_a_measure_is_a_plan_problem() -> None:
     assert any("check these fields: measure" in problem for problem in problems)
 
 
-# The live nine-question planning probe's P5 and P8 plans marked planner-added
-# aims as required. The fix for that is the instruction's own sentence, not a
-# code test: the probe *re-run* measured what a word test costs — a
-# majority-of-distinctive-words rule removed ``required`` from all eleven
-# targets of the headphones question, whose measures paraphrase it, so the plan
-# owed nothing. The rule this pair pins is therefore the model's flag being
-# stamped as the draft gives it, whichever wording its measure uses.
+# Planner-added aims marked required are the instruction's own sentence to
+# prevent, not a code test's: a majority-of-distinctive-words rule removed
+# ``required`` from all eleven targets of the headphones question, whose
+# measures paraphrase it, so the plan owed nothing. The rule this pair pins is
+# therefore the model's flag being stamped as the draft gives it, whichever
+# wording its measure uses.
 _BATTERY_QUESTION = (
     "How much grid-scale battery storage capacity was added in the United "
     "States in 2024, and what do the latest forecasts project for 2025?"
@@ -4917,8 +4898,8 @@ def test_a_required_flag_the_draft_set_is_stamped_however_the_measure_is_worded(
 ) -> None:
     """A paraphrase is still the question's part, and an aid is the model's call.
 
-    Both directions of the probe re-run's regression: a legitimate part whose
-    measure only paraphrases the question keeps ``required``, and an aid the
+    A legitimate part whose measure only paraphrases the question keeps
+    ``required``, and an aid the
     model marked required keeps it too — the sentence in the plan instruction is
     what makes an added aid optional, and a word test cannot tell the two apart.
     """
@@ -4966,7 +4947,7 @@ def test_the_plan_instruction_states_the_floor() -> None:
 
 
 def test_the_plan_instruction_orders_optional_sub_topics_after_required_ones() -> None:
-    """D17: a sub-topic beyond the question's own parts must never outrank a
+    """A sub-topic beyond the question's own parts must never outrank a
     sub-topic that answers a part, so research always reaches the required
     parts before anything the plan added.
     """
@@ -4981,21 +4962,21 @@ def test_the_plan_instruction_orders_optional_sub_topics_after_required_ones() -
         assert phrase in PLAN_INSTRUCTION
 
 
-# The live P3/P4 plan probe stamped bodies the question never named by
+# A plan that stamps bodies the question never named by
 # *describing* them where a body's name belongs — "the manufacturer of
 # semaglutide" for the maker of a drug, and a join of two institutions for the
-# bodies that enacted a rule. §6.6 binds a target's answer to a finding through
-# the strict ``same_organisation`` match, and neither phrase is any page's own
-# organisation label, so the target was reported Not found for the whole run
-# while the report held its answer, and an extra pass was bought for it.
+# bodies that enacted a rule — fails the target for the whole run: a target's
+# answer binds to a finding through the strict ``same_organisation`` match, and
+# neither phrase is any page's own organisation label, so the target would be
+# reported Not found while the report held its answer, and an extra pass would
+# be bought for it.
 _QUESTION_NAMING_NO_BODY = (
     "How much did semaglutide sales grow in 2024, and what is projected for 2025?"
 )
 
 # A body the plan may only have *described*: lower-case prose naming a role,
-# with or without a clause. The re-review's probe found the shapes a role-word
-# list missed — every one of them was still being stamped, so the target was
-# still pre-failed for the whole run.
+# with or without a clause. A role-word list would miss these shapes — each would
+# be stamped, and the target would be pre-failed for the whole run.
 _DESCRIBED_BODIES = (
     "the manufacturer of semaglutide",
     "the drug's maker",
@@ -5047,7 +5028,7 @@ def test_a_body_the_plan_names_is_stamped_by_name(organisation: str) -> None:
 
     The question names no body in either case, so every one of these is the
     plan's own inference of the body that publishes the primary record — which
-    the plan instruction asks for and §6.6 is then able to match against a
+    the plan instruction asks for and the organisation match is then able to match against a
     page's own label. A guard that emptied these would refuse that inference
     and loosen every figure target's provenance: an emptied organisation drops
     that conjunct from ``verified_facts._figure_answers``, so another body's
@@ -5080,8 +5061,8 @@ def test_the_plan_request_puts_its_requirements_before_the_question() -> None:
 def test_a_reasons_question_drops_a_quantity_target_of_its_own() -> None:
     """A the-planner-added "how many" on a why-question is optional and formless.
 
-    The final probe's P6 plan added "the number of senators reported as
-    proscribed under Sulla" to a why-question. The question asks for no
+    A plan that adds "the number of senators reported as
+    proscribed under Sulla" to a why-question: the question asks for no
     quantity, so the target carries no figure (rule 4's first half) and no
     obligation: a figure the evidence holds belongs inside the reason's finding.
     """
@@ -5105,8 +5086,8 @@ def test_a_reasons_question_drops_a_quantity_target_of_its_own() -> None:
 def test_a_magnitude_word_inside_a_measure_is_not_a_quantity_ask() -> None:
     """The measure's own wording alone never demotes: only an ask does.
 
-    This is the shape the probe re-run caught — a word list reading "totals"
-    inside a sub-topic's own words removed ``required`` from a legitimate target.
+    A word list reading "totals"
+    inside a sub-topic's own words would remove ``required`` from a legitimate target.
     """
     stamped = _stamped(
         "What are the current interconnection constraints?",
@@ -5120,10 +5101,10 @@ def test_a_magnitude_word_inside_a_measure_is_not_a_quantity_ask() -> None:
 
 
 def test_a_figure_target_carries_the_window_the_question_bounds() -> None:
-    """The P7 defect: the window the question states, on every figure target.
+    """The window the question states is stamped on every figure target.
 
-    Two of that plan's three sea-level targets carried "since 1993" and the third
-    was left empty, which the reviewer then had to repair.
+    A figure target left without it (where a plan's other sea-level targets
+    carry "since 1993") would be left for the reviewer to repair.
     """
     stamped = _stamped(
         "How much has global mean sea level risen since 1993, and what are the "
@@ -5155,11 +5136,11 @@ def test_a_year_the_question_does_not_bound_is_not_a_period() -> None:
 
 
 def test_the_instruction_says_which_targets_are_optional_and_which_body_is_the_authority() -> None:
-    """The final probe's grade, pinned where code can pin it.
+    """The instruction's three sentences, pinned where code can pin them.
 
     The three sentences are instruction text: the required flag and the body a
-    measure's authority is are the model's call, and the controller's ruling
-    removed code judgement of a target's wording. What code can pin is that each
+    measure's authority is are the model's call, and code does not judge a
+    target's wording. What code can pin is that each
     sentence is in the instruction *and* in the request the model reads.
     """
     for phrase in (
@@ -5307,7 +5288,7 @@ async def test_a_retry_that_fails_validation_keeps_its_diagnostics_as_a_redacted
 async def test_the_planner_publishes_its_events_live_and_lists_the_planned_titles(
     tracker: Tracker,
 ) -> None:
-    """live-briefs spec E3 and AC2: the three planner events are published live as the
+    """The three planner events are published live as the
     objects the run returns, and planning.completed lists every planned sub-topic's
     coverage id and title, in plan order."""
     completer = ScriptedCompleter(
@@ -5322,7 +5303,7 @@ async def test_the_planner_publishes_its_events_live_and_lists_the_planned_title
             outcome = await agent.run(_state())
 
     events = outcome.state_update["events"]
-    # notes-progress-report spec §4 item 1: planner.progress is published live
+    # planner.progress is published live
     # and never returned; every other event is published live as the object returned.
     progress = [event for event in received if event.event_type == "planner.progress"]
     assert [event.metadata["step"] for event in progress] == ["drafting", "checking"]
@@ -5364,7 +5345,7 @@ def test_planning_completed_caps_each_title_at_160_characters() -> None:
 async def test_every_plan_side_call_is_named_for_the_call_records(
     tracker: Tracker,
 ) -> None:
-    """Latency audit O8: each plan-side request is named in the run's call
+    """Each plan-side request is named in the run's call
     records -- the draft, the lint repair, the review, the review repair and
     the confirming review -- so a slow planner call can be attributed."""
     lint_repair = LabelRecordingCompleter(

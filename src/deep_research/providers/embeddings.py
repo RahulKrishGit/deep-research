@@ -118,7 +118,7 @@ class LocalEmbeddingProvider:
     function, which is the object that would download the model.
 
     Without one, the provider builds chromadb's ``ONNXMiniLM_L6_V2`` once and
-    keeps it (latency audit O2). That is the model chromadb's own
+    keeps it. That is the model chromadb's own
     ``DefaultEmbeddingFunction`` builds afresh on every call, which reloaded the
     ONNX session and tokenizer for every write and every query; the vectors are
     the same, only the reload is gone. Calls run one at a time under a lock,

@@ -1,4 +1,4 @@
-// notes-progress-report spec §7.5-§7.6 (D16, D28, D32; AC27): the report as section cards with a
+// The report as section cards with a
 // contents list, on the replay server. The default case (missing-target-triggers-one-extra-pass)
 // publishes seven sections: the bottom line, three topics, Key figures, What we couldn't confirm and
 // Sources. Replay never applies a reader note (api-gaps 3.9), so the note lines' look is checked on a
@@ -72,7 +72,7 @@ for (const [width, mode] of [[1920, "rail"], [1568, "chips"], [1252, "chips"]] a
   test.describe(`at ${width} px with the sidebar expanded`, () => {
     test.use({ viewport: { width, height: 853 }, reducedMotion: "reduce" });
 
-    test(`the contents list is ${mode === "rail" ? "a rail left of the cards" : "a row of chips above the cards"} (D28)`, async ({ page, request }) => {
+    test(`the contents list is ${mode === "rail" ? "a rail left of the cards" : "a row of chips above the cards"}`, async ({ page, request }) => {
       await openReport(page, request);
       await expect(page.locator("#app")).toHaveAttribute("data-sidebar", "expanded");
       await expect(page.locator(".rep-layout")).toHaveAttribute("data-contents", mode);
@@ -153,7 +153,7 @@ const NOTED_OUTLINE = [
 test.describe("the bottom line's note lines", () => {
   test.use({ viewport: { width: 1252, height: 853 }, reducedMotion: "reduce" });
 
-  test("print one row per note, the mark in its key: ✓ ok, ✗ warn, none when not checked (AC23)", async ({ page, request, context }) => {
+  test("print one row per note, the mark in its key: ✓ ok, ✗ warn, none when not checked", async ({ page, request, context }) => {
     const id = await submit(page, "q");
     await waitTerminal(request, id);
     await context.route(new RegExp(`/api/research/${id}/report$`), (route) => route.fulfill({ body: NOTED_REPORT, contentType: "text/markdown; charset=utf-8" }));

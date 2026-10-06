@@ -1,10 +1,10 @@
-"""Reader notes on the real graph, offline (live-briefs spec §4.6).
+"""Reader notes on the real graph, offline.
 
 Every request of a replay run is recorded by the scripted completer as
 ``(agent:schema, text)``. Without notes the whole run's requests are pinned as
-one digest per case — the value at the end of Phase 2 — so no Phase 3 change
-can alter a single byte of a run that has no notes (spec §4.8 "Replay mode").
-With notes on a bound board, each consumer's requests are read back.
+one digest per case, so a notes change cannot alter a single byte of a run
+that has no notes. With notes on a bound board, each consumer's requests are
+read back.
 """
 
 from __future__ import annotations
@@ -31,35 +31,9 @@ from tests.graph_fakes import fake_reader_note
 from tests.test_api.replay_support import EXTRA_PASS_CASE, REDRAFT_CASE, guarded
 
 # sha256[:16] over the sorted "agent:schema sha256[:16]" lines of every request a
-# run sent, and how many requests that was: observed at the end of Phase 2 and
-# unchanged by Phase 3, because every notes section is added only when there are
-# notes.
+# run sent, and how many requests that was. Every notes section is added only
+# when there are notes, so a run without notes keeps its digest.
 PINNED_RUN_DIGESTS = {
-    # notes-progress-report Phase C re-pinned these values: its writer requests and the report
-    # the review reads changed (spec §7.1, §7.4, §7.5).
-    # Latency plan Task 8 (audit O9): this row reaches its forced last turn,
-    # where the replay's script reads a page the prompt tells it not to; with
-    # that turn never asked the page is read on the extra pass. Was
-    # ("03e113e5584707da", 46);
-    # tests/test_e2e_evaluation/test_request_digests.py shows that a model
-    # obeying the instruction loses only the forced turn's own request.
-    # Latency plan Task 12 (audit O4): research loops no longer wait for each
-    # other's fetches, so a page extraction's request catches the loop's
-    # acquisition state a step later; every request outside research is
-    # byte-identical and every research request is identical up to that
-    # snapshot (tests/test_e2e_evaluation/test_request_digests.py, whose
-    # timing_free and outside_research pins did not move). Were
-    # ("8e5192b96744de3d", 46) and ("875313d15f3325f2", 29).
-    # Merge of origin/main (the latency work) into notes-progress-report-stop: the two
-    # moves above both apply, and each count is the baseline's own, unchanged by either.
-    # The branch moved the writer's, the Statement Check's and the reviewer's requests
-    # (Phase C); main moved the researcher's acquisition-state snapshot (O4) in both rows
-    # and, in the extra-pass row, the evidence the last review reads (O9). Against the
-    # branch's tree only researcher requests differ, plus the extra-pass row's last
-    # review; against main's tree only the writer's, the Statement Check's and the
-    # reviewers' requests differ. Moved `d92891c23a2cfe2e` (branch) / `d74a9e4a54496615`
-    # (main) -> `238ecc7b6e499434` and `9ac8c34e25224206` (branch) / `a40595f2464f3177`
-    # (main) -> `46213021a769e933`.
     EXTRA_PASS_CASE: ("238ecc7b6e499434", 46),
     REDRAFT_CASE: ("46213021a769e933", 29),
 }
@@ -158,9 +132,9 @@ async def test_without_notes_every_request_of_a_replay_run_is_byte_identical(tmp
 
 @pytest.mark.asyncio
 async def test_the_planner_and_every_research_turn_carry_the_notes(tmp_path: Path) -> None:
-    """spec §4.6: planning reads every note; a running research loop reads the board
-    before each decision, so a note that lands mid-loop steers the loop's next turn,
-    and a ``new_angle`` note never reaches a running loop."""
+    """Planning reads every note; a running research loop reads the board
+    before each decision, so a note that lands mid-loop steers the loop's next
+    turn, and a ``new_angle`` note never reaches a running loop."""
     board = noted_board(EMPHASIS, ANGLE)
     late = fake_reader_note("n3", kinds=["exclude"], restatement="leave out pumped hydro")
 
@@ -190,11 +164,10 @@ async def test_the_planner_and_every_research_turn_carry_the_notes(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Path) -> None:
-    """spec §4.6: the scoring request's ``# Context`` slot carries the notes, for
+    """The scoring request's ``# Context`` slot carries the notes, for
     relevance only; the writer's section and bottom-line requests carry
     ``# Reader notes`` right after the answer form. A note whose only kind is
-    new_angle reaches neither: it is researched as its own topic instead
-    (notes-progress-report spec §5.1)."""
+    new_angle reaches neither: it is researched as its own topic instead."""
     with guarded():
         status, sequence, _ = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE))
 
@@ -217,9 +190,9 @@ async def test_the_source_evaluator_and_the_writer_carry_the_notes(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does(tmp_path: Path) -> None:
-    """AC16 / D10: the notes block reaches the planner, every research turn, the
-    source evaluator, the writer and the review — and never an evidence-verifier
+async def test_every_consumer_reads_the_notes_and_no_verifier_request_does(tmp_path: Path) -> None:
+    """The notes block reaches the planner, every research turn, the source
+    evaluator, the writer and the review — and never an evidence-verifier
     request, whichever agent sends it."""
     with guarded():
         status, sequence, state = await replay_packets(tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE))
@@ -251,10 +224,11 @@ async def test_ac16_every_consumer_reads_the_notes_and_no_verifier_request_does(
 
 @pytest.mark.asyncio
 async def test_steering_views_per_request(tmp_path: Path) -> None:
-    """notes-progress-report spec §5.1 table (D20): the planner's requests print every note with
-    all its kinds. Every research turn, extraction, scoring, writing and review request prints
-    the steering notes, and each mixed note as a steering note with new_angle left out; a note
-    whose only kind is new_angle reaches none of them, and no verifier request carries a note."""
+    """The planner's requests print every note with all its kinds. Every
+    research turn, extraction, scoring, writing and review request prints the
+    steering notes, and each mixed note as a steering note with new_angle left
+    out; a note whose only kind is new_angle reaches none of them, and no
+    verifier request carries a note."""
     with guarded():
         status, sequence, state = await replay_packets(
             tmp_path, EXTRA_PASS_CASE, board=noted_board(EMPHASIS, ANGLE, MIXED)
@@ -291,10 +265,10 @@ async def test_steering_views_per_request(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_mixed_kind_note_steers_and_researches(tmp_path: Path) -> None:
-    """notes-progress-report spec AC34 (D20), on the real graph: a mixed note read before
-    planning joins the plan as its own topic, which the run researches; the planner's requests
-    print both its kinds; every loop, extraction, scoring, writing and review request carries it
-    as an exclude note; and the review's verdict on it is kept."""
+    """A mixed note read before planning joins the plan as its own topic, which
+    the run researches; the planner's requests print both its kinds; every loop,
+    extraction, scoring, writing and review request carries it as a steering
+    note; and the review's verdict on it is kept."""
     alone = fake_reader_note(
         "n1", kinds=["new_angle", "exclude"], received_during="planner", restatement="recycling, leaving out exports",
         new_questions=["How are battery cells recycled without exporting them?"],

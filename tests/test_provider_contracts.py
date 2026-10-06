@@ -57,10 +57,8 @@ def test_a_native_tool_turn_carries_a_tool_call() -> None:
 def test_a_native_tool_turn_accepts_two_tool_calls() -> None:
     """Two or more calls in one turn are a normal part of the protocol.
 
-    This contract used to require exactly one call, and the second live release
-    gate attempt lost 4 of 30 turns to that rule: the provider returned two
-    native calls in a single turn and the whole turn was discarded. Parallel
-    tool calls are well formed, so the accepted shape is now one *or more*
+    A provider may return two native calls in a single turn, and parallel
+    tool calls are well formed, so the accepted shape is one *or more*
     calls, and a turn carrying several is a first-class result.
     """
     turn = NativeToolTurn(
@@ -299,7 +297,7 @@ def test_an_unrebuildable_provider_error_falls_back_to_the_base_type() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-attempt records and reasoning tokens (stall-fix-brief.md P1-B).
+# Per-attempt records and reasoning tokens.
 # ---------------------------------------------------------------------------
 
 

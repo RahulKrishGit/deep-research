@@ -104,22 +104,22 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       const held = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator("#stage-submitted")).toBeVisible();
       await shoot(page, `02-submitted${suffix}`);
-      // live-briefs spec §6: 03-running is taken with the Researching brief open and a topic done.
+      // 03-running is taken with the Researching brief open and a topic done.
       await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"] .ps-topics [data-topic="done"]')).toHaveCount(2, { timeout: 15_000 });
       // The ✓ and fact of each done topic have settled together, and the subtitle has stopped counting, before the shot.
       await shootSettled(page, `03-running${suffix}`, (snap) => expect(snap.done, "03-running shows its done topics").toBe(2));
       expect((await request.post(`${API}/research/${held}/stop`)).status()).toBe(202);
       // Held after the extra pass's own researcher.sub_topic.started (the 4th: the first pass starts three): at
-      // replay pacing the extra pass ends before D39's hold does, so the run would be past Researching and it
+      // replay pacing the extra pass ends before Reviewing's hold does, so the run would be past Researching and it
       // would never reopen (as in briefs.spec.ts's arc test). Held here, the reopened row shows its topic.
       await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Hold-After": "researcher.sub_topic.started#4" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
       await expect(page.locator('#spineWrap[data-loop="settled"][data-arc="extra_pass"]')).toBeVisible({ timeout: 30_000 });
-      // Decision D39: Reviewing holds its verdict for HANDOFF_HOLD_MS first; 09 shows Researching reopened.
+      // Reviewing holds its verdict for HANDOFF_HOLD_MS first; 09 shows Researching reopened.
       await expect(page.locator('#spine li[data-stage="researcher"][data-open="1"]')).toBeVisible();
-      // The row is still opening when data-open flips: its lines rise after the height (spec §6.1), so wait for the reason line.
+      // The row is still opening when data-open flips: its lines rise after the height, so wait for the reason line.
       await expect(page.locator('#spine li[data-stage="researcher"] .b-why')).toHaveCSS("opacity", "1");
-      // The extra pass's one topic, running: the design reference's subject (the reopened row with its topic row).
+      // The extra pass's one topic, running: the reopened row with its topic row.
       const topic = page.locator('#spine li[data-stage="researcher"] .ps-topics > .ln');
       await expect(topic).toHaveCount(1);
       await expect(topic).toHaveAttribute("data-topic", "running");
@@ -138,7 +138,7 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await shoot(page, `08-evidence${suffix}`);
     });
 
-    // notes-progress-report spec §11.3: the report as section cards, reached through the one-time check
+    // The report as section cards, reached through the one-time check
     // so its evidence line carries the reader's answers (the phone shortens it to "{date} · {n} sources").
     test(`18-report-cards${suffix}`, async ({ page, request, context }) => {
       await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
@@ -158,7 +158,7 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await shoot(page, `05-failed${suffix}`);
     });
 
-    // live-briefs spec §6: the one-time check's card, on question 1 of 3 (pick 4B).
+    // The one-time check's card, on question 1 of 3.
     test(`10-clarify${suffix}`, async ({ page, request, context }) => {
       await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
       const id = await submit(page, "What is the current state of grid-scale battery storage?");
@@ -168,9 +168,9 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await waitTerminal(request, id);
     });
 
-    // live-briefs spec §6: a note acknowledged at the top of the running Researching row, with the
-    // note line at the card's foot (pick 6A); then the report as cards, with no "Your notes" block
-    // (notes-progress-report spec §7.6): replay never applies a note (api-gaps 3.9).
+    // A note acknowledged at the top of the running Researching row, with the
+    // note line at the card's foot; then the report as cards, with no "Your notes" block:
+    // replay never applies a note (api-gaps 3.9).
     // 11 is taken from a run held after its second topic completes, for the reason 03's test gives: the
     // acknowledgement arrives through the session's own stream, so the hold does not delay it. 12 needs a
     // run that goes on to its report, so it is a second run.
@@ -203,7 +203,7 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
       await shoot(page, `12-report-notes${suffix}`);
     });
 
-    // notes-progress-report spec §11.3: the confirmation over the running stage, then the stopped stage.
+    // The confirmation over the running stage, then the stopped stage.
     // The popover opens as Researching starts; the stop is confirmed the moment a topic is done, so the
     // stopped row carries Researching's facts (about 1.2 s of Researching remain then).
     test(`19-stop-confirm${suffix}, 20-stopped${suffix}`, async ({ page, context }) => {
@@ -221,7 +221,7 @@ for (const [suffix, viewport] of [["", null], ["-phone", PHONE]] as const) {
   });
 }
 
-// notes-progress-report spec §11.3 (D28): at 1920px the report stage holds the contents rail, the
+// At 1920px the report stage holds the contents rail, the
 // cards and the Review rail side by side.
 test.describe("captures at 1920", () => {
   test.use({ viewport: { width: 1920, height: 1080 } });
@@ -235,8 +235,8 @@ test.describe("captures at 1920", () => {
   });
 });
 
-// notes-progress-report spec §11.3: each step's brief, held with X-Replay-Hold-After (§6.10) at a moment
-// that shows its body, then stopped (Phase D's POST /stop). Planning also at phone width.
+// Each step's brief, held with X-Replay-Hold-After at a moment
+// that shows its body, then stopped (POST /stop). Planning also at phone width.
 const BRIEFS = [
   { name: "13-planning-brief", hold: "planner.progress#2", stage: "planner", ready: ".ps-slots > .ln[data-topic='running']" },
   { name: "14-evaluating-brief", hold: "source_evaluator.progress#2", stage: "source_evaluator", ready: ".stats .v" },

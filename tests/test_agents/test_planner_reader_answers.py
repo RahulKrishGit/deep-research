@@ -1,4 +1,4 @@
-"""The reader's answers to the one-time check, as the planner reads them (live-briefs spec §4.4)."""
+"""The reader's answers to the one-time check, as the planner reads them."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from deep_research.observability import Tracker
 from deep_research.utils.config import ConfigSettings
 from deep_research.utils.types import ReaderAnswer, ResearchState
 from tests.agent_fakes import ScriptedCompleter, finish
-from tests.test_api.replay_support import EXTRA_PASS_CASE, guarded
 from tests.test_agents.test_planner import (
     _CLOCK_NOW,
     _planner,
@@ -34,6 +33,7 @@ from tests.test_agents.test_planner import (
     _run,
     _sorting_plan,
 )
+from tests.test_api.replay_support import EXTRA_PASS_CASE, guarded
 
 QUESTION = "What are the current constraints on grid-scale battery storage deployment?"
 REGION = ReaderAnswer(
@@ -145,27 +145,15 @@ async def test_the_planner_reads_the_answers_from_its_state_into_both_requests_a
 
 
 # The two answer-contract consumers' packets for the default case, session "s1",
-# with no answers, as sha256[:16] of the exact text: identical before this work
-# (8994d5a, a00ef0a) and after it, because the check adds sections only when
-# there are answers (spec §4.4 "Replay").
+# with no answers, as sha256[:16] of the exact text: the check adds sections only
+# when there are answers, so these stay fixed without them.
 PINNED_PACKETS = {
-    # notes-progress-report Phase C re-pinned these values: its writer requests and the report
-    # the review reads changed (spec §7.1, §7.4, §7.5).
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    # Latency plan Task 8 (audit O9): the last review's packet moved because
-    # the forced last research turn is never asked (see
+    # The last review reads the report the writer drafted over the evidence a run
+    # that never asks its forced last research turn leaves (see
     # tests/test_graph/test_reader_notes_replay.py); no answer is involved.
-    # Was "824e2b4aa04d2944".
-    # Merge of origin/main (the latency work) into notes-progress-report-stop: both
-    # moves above apply to this one packet. The last review reads the report the
-    # writer drafted (Phase C's moves, `824e2b4aa04d2944` -> `ba466f328de6eb67` on the
-    # branch) over the evidence a run that never asks its forced last research turn
-    # leaves (the latency plan's O9, `824e2b4aa04d2944` -> `a173c40737e32644` on main).
-    # With ``SKIP_FINAL_ANSWER_TURN`` put back to False the merged tree prints the
-    # branch's `ba466f328de6eb67` again; the three planner packets are unchanged.
-    # Moved `ba466f328de6eb67` (branch) / `a173c40737e32644` (main) -> `79717e2e3e6a9ae0`.
     "report_reviewer:ReportReviewDraft": "79717e2e3e6a9ae0",
 }
 
@@ -194,13 +182,13 @@ async def test_without_answers_the_replay_packets_are_byte_identical(tmp_path: P
 
     assert status == "completed"
     assert {key: hashlib.sha256(packets[key].encode("utf-8")).hexdigest()[:16] for key in PINNED_PACKETS} == PINNED_PACKETS
-    # The section, not the bottom line's rule that names it (notes-progress-report spec §7.1).
+    # The section, not the bottom line's rule that names it.
     assert not any("\n# Reader answers\n" in text for text in packets.values())
 
 
 @pytest.mark.asyncio
 async def test_the_readers_answers_reach_the_planners_packets(tmp_path: Path) -> None:
-    """AC11: the planner's packet contains ``# Reader answers``, and the run completes."""
+    """The planner's packet contains ``# Reader answers``, and the run completes."""
     with guarded():
         status, packets = await _replay_packets(tmp_path, (REGION.model_copy(update={"value": "United States"}),))
 

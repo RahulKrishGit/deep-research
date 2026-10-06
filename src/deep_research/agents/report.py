@@ -4,12 +4,12 @@ One writer pass composes ``ReportComposition``, and this module turns it into
 the reader's three artifacts, all pure functions of that composition (and, for
 the quality record, the state and the review):
 
-* :func:`render_written_report` — spec §3, as notes-progress-report spec §7.5
-  orders it: title, evidence line, bottom line, part sections, Key figures or
+* :func:`render_written_report` — the reader report, in order:
+  title, evidence line, bottom line, part sections, Key figures or
   Options compared, what could not be confirmed, and sources -- every citation
   numbered in the order a reader meets it (bottom line, then the sections, then
   the table); :func:`report_outline` names those headings for the web;
-* :func:`render_finding_log` — spec §9: the audit trail -- an "About this
+* :func:`render_finding_log` — the audit trail -- an "About this
   report" block (counts, scope, exact as-of, the parts, the table's shape),
   every verified figure, every recorded finding with its snippet and its
   Evidence Verifier result, every drop, every refusal, every dropped option
@@ -65,6 +65,7 @@ from deep_research.utils.types import (
     Citation,
     EvidenceTarget,
     FactRow,
+    FigureAttribution,
     FigureContext,
     FigureKind,
     Finding,
@@ -120,13 +121,13 @@ __all__ = [
 
 _CELL_EMPTY = "—"
 
-#: What ends a sentence in prose the renderer builds itself (§10 fallbacks,
+#: What ends a sentence in prose the renderer builds itself (fallbacks,
 #: ``report_scope``'s own sentence joins). A part that already ends with one
 #: keeps it, so a sentence the plan supplies is never given two stops.
 _SENTENCE_ENDS = (".", "!", "?", "…")
 
 #: What a drafted point's own final character may be, for the purpose of
-#: moving its citation markers to just before it (§3.1 rule 3 and rule 5): a
+#: moving its citation markers to just before it: a
 #: full stop most of the time, but a compound sentence may end a clause on a
 #: semicolon, colon or comma before its citations and continue.
 _STOP_CHARS = ".!?;:,…"
@@ -162,8 +163,8 @@ _DETAILED_ERROR_TYPES = frozenset(
 #: rejected write would lose the artifact.
 _FILENAME_SAFE = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 
-#: §10: the plain-words reading of one denied candidate's enumerated reason
-#: (I2). A reason outside this map, other than the ``unusable_*`` family,
+#: The plain-words reading of one denied candidate's enumerated reason.
+#: A reason outside this map, other than the ``unusable_*`` family,
 #: prints no reason at all rather than guessing at one.
 _UNREACHABLE_REASON_TEXT: dict[str, str] = {
     "access_denied": "access was denied",
@@ -173,7 +174,7 @@ _UNREACHABLE_REASON_TEXT: dict[str, str] = {
     "malformed": "the page's content could not be read",
 }
 
-#: §10 Q5: up to this many unreachable pages print in the reader report; the
+#: Up to this many unreachable pages print in the reader report; the
 #: rest (and every one of them, uncapped) are in the evidence log.
 _MAX_UNREACHABLE_LINES = 5
 
@@ -254,8 +255,8 @@ def report_scope(sub_topics: Sequence[SubTopic]) -> str:
 
     The plan's sub-topics are the only scope the system was given, so naming
     them is the honest declaration an auditor needs before reading a ranking
-    as advice (spec §9's evidence-log "About this report" block; the reader
-    report no longer prints this line at all — spec §3.1 rule 9 cuts it).
+    as advice (the evidence log's "About this report" block; the reader
+    report does not print this line).
     They are named by their titles alone: a coverage id ("topic-01") and the
     plan's own count of its sub-topics are the run's bookkeeping, which
     nothing here ever prints. Everything else the report prints is bounded by
@@ -366,13 +367,13 @@ def distinct_retention_counts(
     state: ResearchState,
     composition: ReportComposition | None,
 ) -> dict[str, int]:
-    """Distinct counts, each of a different thing (Sections 2.3 and 2.5).
+    """Distinct counts, each of a different thing.
 
     Kept apart on purpose. A physical read call is not a unique validated work
     (two reads can serve one document), a source URL is not a work (a mirror is
     a transport relation), a finding is not a source, and "every assessed
-    source" is not "every cited assessed source" — the last run assessed ten
-    and cited eight, and one number cannot report both.
+    source" is not "every cited assessed source" — a run can assess ten
+    and cite eight, and one number cannot report both.
 
     ``unique_works`` is ``retained_work_count``: the identity-resolved count
     over already-retained sources, which resolves an unknown read to its own
@@ -431,10 +432,10 @@ def _review_record(review: ReportReview | None) -> dict[str, JsonValue] | None:
     dimensions, and ``None`` without a full set — so the record cannot
     disagree with the acceptance helper that judged the same review. A defect
     keeps its recorded id, kind, severity, materiality and its *whole*
-    problem text (D19: never clamped -- no field this module publishes is),
+    problem text (never clamped -- no field this module publishes is),
     along with the ``resolution`` a scoped re-review recorded for it
     (``"resolved"``, ``"unresolved"``, or ``None`` for one no scoped review
-    has judged yet) and the coverage ids it carries (T5 addendum item 4)
+    has judged yet) and the coverage ids it carries
     — the record is the surface a replay checks it on. A review nobody made
     is ``None`` rather than an empty object that reads as a judgement with
     nothing to report.
@@ -491,7 +492,7 @@ def _table_record(table: ReportTable | None) -> dict[str, JsonValue] | None:
 def _sources_record(
     composition: ReportComposition, index: Sequence[Citation]
 ) -> list[dict[str, JsonValue]]:
-    """Every printed source, as the Sources line prints it (§8, §9)."""
+    """Every printed source, as the Sources line prints it."""
     rows: list[dict[str, JsonValue]] = []
     for citation in index:
         credit = composition.page_credits.get(normalize_source_url(citation.url))
@@ -521,7 +522,7 @@ def _part_record(part: ReportPart) -> dict[str, JsonValue]:
 
 def _statement_part_map(composition: ReportComposition) -> dict[str, str]:
     """Each statement id to the part that renders it: ``"bottom_line"`` or a
-    coverage id (spec §9)."""
+    coverage id."""
     mapping: dict[str, str] = {}
     for point in composition.summary:
         if point.statement is not None:
@@ -564,7 +565,7 @@ def render_quality_record(
       defects; ``mean_score`` is the review's own property, so two artifacts
       cannot disagree about it, and a review nobody made is ``None`` rather
       than a clean bill of health.
-    * **nothing here is clamped (D19; no strong limits).** A refused sentence
+    * **nothing here is clamped (no strong limits).** A refused sentence
       carries the drafted text whole, a review defect's ``problem`` prints
       whole, and every recorded error prints its message and source whole: a
       replay has to be able to tell which drafted sentence tripped which
@@ -645,14 +646,14 @@ def render_quality_record(
             if state.quality is not None
             else {}
         ),
-        # The run's own §7.3 reading, as the terminal finalizer stamped it: the
+        # The run's own telemetry reading, as the terminal finalizer stamped it: the
         # run's collector, not this pass's, so the record describes the run the
         # report belongs to. Every number here came from a provider seam, and
         # the config key beside each operation is the knob an operator would
         # raise. ``None`` for a run with no collector, because a row of zeroes
         # would publish a measurement nobody took -- and zeros here would read
         # as an idle run rather than as an unmeasured one. Nothing reads this
-        # block back: the run never tunes itself (§12).
+        # block back: the run never tunes itself.
         "telemetry": (
             state.run_telemetry.model_dump(mode="json")
             if state.run_telemetry is not None
@@ -827,10 +828,9 @@ def figure_label(
     """The evidence ledger's per-finding label: who, kind (with a forecast's
     release), edition, unchecked.
 
-    Cut from the reader-facing report (spec §3.1 rule 8): kept here because
-    the evidence log's per-finding blocks still print it (spec §9) and
-    ``report_reviewer.py`` still reads it through ``_row_label``/
-    ``_figure_label_for`` for the packet it shows the reviewer (R1).
+    Not printed in the reader-facing report; the evidence log's per-finding
+    blocks print it, and ``report_reviewer.py`` reads it through
+    ``_row_label``/``_figure_label_for`` for the packet it shows the reviewer.
     """
     if attribution == "own":
         who = f"{organisation}'s own figure"
@@ -839,7 +839,7 @@ def figure_label(
     else:
         who = "source does not attribute it"
     if kind == "forecast":
-        # PD-24 (F5): a forecast with no release says so, never silently "forecast"
+        # A forecast with no release says so, never silently "forecast"
         parts = [who, f"forecast ({release})" if release else "forecast (release not stated on the page)"]
     else:
         parts = [who, kind]
@@ -880,7 +880,7 @@ def _row_finding_ids(row: FactRow) -> list[str]:
     """Every finding whose page a number in this row comes from, the row's own first.
 
     A row prints its own value and each earlier edition's, so every printed
-    number is traceable only when both pages are cited (PD-9).
+    number is traceable only when both pages are cited.
     """
     return list(dict.fromkeys([row.finding_id, *(edition.finding_id for edition in row.earlier)]))
 
@@ -889,7 +889,7 @@ def _states_period(text: str, period: str | None) -> bool:
     """Whether ``text`` states ``period``: every word of the period, not only its year.
 
     The period test the writer's restatement guard needs to tell two rows of
-    one value apart (PD-9). A period this test cannot read in the sentence
+    one value apart. A period this test cannot read in the sentence
     ("FY2024" for a row's "2024") is simply not stated, which leaves the row
     in play rather than ruling it out.
     """
@@ -917,7 +917,7 @@ def _cited_figure_context(finding: Finding, row: FactRow) -> FigureContext | Non
 
 
 def _row_label_for(row: FactRow, cited_ids: set[str], by_id: Mapping[str, Finding]) -> str:
-    """The row's label as the sentence's own citations read it (D13).
+    """The row's label as the sentence's own citations read it.
 
     A sentence that cites a duplicate of a row's fact -- the relayed copy of it,
     say -- carries *that* page's label, not the row primary's: the reader's
@@ -946,14 +946,14 @@ def _carried_rows(
     """The fact rows a sentence carries: cited, same value, its subject, its period.
 
     The one rule the writer's restatement guard and the unchecked-sentence
-    provenance suffix (§3.1 rule 8) both ask of a sentence (Task 5.6c's seam,
-    kept as one rule). A row is carried when the sentence cites it or a
+    provenance suffix both ask of a sentence (kept as one rule). A row is
+    carried when the sentence cites it or a
     duplicate of it, states its quantity, is about its subject rather than a
     rival's, and -- where the sentence states a period one of those rows
     carries -- states that row's period: two periods of one value are two
-    facts (PD-9), so "grew 12 percent in 2024" carries the 2024 row and never
+    facts, so "grew 12 percent in 2024" carries the 2024 row and never
     the 2025 one. A sentence that states no such period leaves every row in
-    play, as before.
+    play.
     """
     stated = quantities_in(text)
     candidates = [
@@ -978,12 +978,11 @@ def _findings_by_id(composition: ReportComposition) -> dict[str, Finding]:
 def written_citations(composition: ReportComposition) -> list[Citation]:
     """Only the pages the report cites, numbered as a reader meets them.
 
-    Notes-progress-report spec §7.5: bottom line, then the sections, then the
-    table, which now prints after the topics. Nothing here
-    walks ``fact_rows``: the Key Facts table that used to draw citations from
-    every fact row is gone from the reader report (moved, unfiltered, to the
-    evidence log, spec §9); the only fact rows the reader report cites are the
-    ones the question-shaped table prints, through its cells' page entries and
+    The order is the bottom line, then the sections, then the table, which
+    prints after the topics. Nothing here walks ``fact_rows``: the Key Facts
+    table of every fact row (unfiltered) lives in the evidence log, not the
+    reader report; the only fact rows the reader report cites are the ones
+    the question-shaped table prints, through its cells' page entries and
     finding ids.
     """
     by_id = _findings_by_id(composition)
@@ -1058,8 +1057,7 @@ def _reader_as_of(value: str) -> str:
 
 
 def _evidence_date(as_of: str) -> str | None:
-    """The UTC date of ``as_of``, or ``None`` when it is empty or unparseable
-    (spec §3.1 rule 2)."""
+    """The UTC date of ``as_of``, or ``None`` when it is empty or unparseable."""
     if not as_of.strip():
         return None
     try:
@@ -1070,9 +1068,9 @@ def _evidence_date(as_of: str) -> str | None:
 
 
 def _evidence_line(composition: ReportComposition, index: Sequence[Citation]) -> str:
-    """§3.1 rule 2: ``Evidence as of {date} · {n} source(s)``, then `` · {answer}``
-    for each of the reader's answers to the one-time check (notes-progress-report
-    spec §7.5); or the honest fallback when no evidence date can be read."""
+    """``Evidence as of {date} · {n} source(s)``, then `` · {answer}``
+    for each of the reader's answers to the one-time check; or the honest
+    fallback when no evidence date can be read."""
     date = _evidence_date(composition.as_of)
     if date is None:
         return "No source could be checked."
@@ -1082,7 +1080,7 @@ def _evidence_line(composition: ReportComposition, index: Sequence[Citation]) ->
 
 #: A trailing closing quote or paren the sentence's own stop can sit inside
 #: of ("the best.\"", "5 GW.)"): markers land before the stop, and this run
-#: stays after it, unchanged (§3.1 rule 3 P3).
+#: stays after it, unchanged.
 _CLOSING_RUN = re.compile(r'["”’)]*$')
 
 #: An ASCII ellipsis is one unit, not three stops in a row: the markers land
@@ -1091,7 +1089,7 @@ _ELLIPSIS = "..."
 
 
 def _sentence_with_markers(text: str, markers: str) -> str:
-    """Move ``markers`` to just before ``text``'s own final stop (§3.1 rule 3).
+    """Move ``markers`` to just before ``text``'s own final stop.
 
     A deterministic move of trailing punctuation that leaves the verified
     words unchanged: whatever punctuation the drafted point already ends with
@@ -1120,10 +1118,10 @@ def _who_text_for(
     row: FactRow, cited_ids: set[str], by_id: Mapping[str, Finding],
     page_credits: Mapping[str, PageCredit],
 ) -> str:
-    """The row's Who/when text as the sentence's own citation reads it (D13).
+    """The row's Who/when text as the sentence's own citation reads it.
 
     Mirrors ``_row_label_for``, but builds the findings table's own Who
-    wording (``_who_text``) instead of the old ``figure_label`` style: a
+    wording (``_who_text``) instead of the ``figure_label`` style: a
     sentence that cites a duplicate of a row's fact -- the relayed copy of
     it, say -- gets that page's own attribution, organisation and dates, not
     the row primary's. A synthetic row-with-the-duplicate's-context is built
@@ -1153,12 +1151,12 @@ def _who_text_for(
 
 
 def _unchecked_provenance(point: ReportPoint, composition: ReportComposition) -> str:
-    """§3.1 rule 8's one exception: an ``unchecked`` sentence that carries a
+    """The one exception: an ``unchecked`` sentence that carries a
     fact row ends with a deterministic provenance line, in the findings
-    table's own Who wording (§4.3) -- the only sentence printed without an
+    table's own Who wording -- the only sentence printed without an
     independent check keeps a provenance line, so the exception is visible.
-    The Who text is built from the finding the sentence actually cites
-    (D13), never a duplicate's primary the report may not even cite.
+    The Who text is built from the finding the sentence actually cites,
+    never a duplicate's primary the report may not even cite.
     """
     if point.statement is None:
         return ""
@@ -1177,19 +1175,18 @@ def _unchecked_provenance(point: ReportPoint, composition: ReportComposition) ->
 
 
 def _point_labels(point: ReportPoint, composition: ReportComposition) -> list[str]:
-    """The rows a sentence carries: its cited row's quantity, subject and period (D11).
+    """The rows a sentence carries: its cited row's quantity, subject and period.
 
-    No longer printed beside a reader-facing sentence (spec §3.1 rule 8 cuts
-    the suffix ``_written_point`` used to append); kept because
-    ``report_reviewer.py`` reads it to show the reviewer model the same
-    provenance words the reader used to see (R1). Only the row whose own
+    Not printed beside a reader-facing sentence; ``report_reviewer.py`` reads
+    it to show the reviewer model the provenance words for a sentence. Only
+    the row whose own
     subject and period the sentence states carries its label, and where the
     candidates' subjects are different things -- a target that names both
     options, say -- the sentence must also name what distinguishes that row
-    from each rival, so "Kettle K1 scored 4.5" never takes Kettle K2's label
-    (Task 5.6c). Each label is the label of the page the sentence cites, so a
+    from each rival, so "Kettle K1 scored 4.5" never takes Kettle K2's label.
+    Each label is the label of the page the sentence cites, so a
     sentence that cites the relay of a fact carries the relay's label rather
-    than the own page's (D13).
+    than the own page's.
     """
     cited = set(point.statement.finding_ids) if point.statement is not None else set()
     targets = [t for topic in composition.sub_topics for t in topic.evidence_targets]
@@ -1206,7 +1203,7 @@ def _rendered_point(
     point: ReportPoint, composition: ReportComposition, index: Sequence[Citation]
 ) -> str:
     """One printed sentence: its markers before its final stop, plus the one
-    unchecked-sentence provenance exception (§3.1 rules 3, 5, 8)."""
+    unchecked-sentence provenance exception."""
     markers = citation_markers(point.source_urls, index)
     return _sentence_with_markers(point.text, markers) + _unchecked_provenance(point, composition)
 
@@ -1218,10 +1215,10 @@ def _written_bullet(
 
 
 def _has_citable_finding(composition: ReportComposition) -> bool:
-    """Whether any recorded finding could be cited (spec §4: every status
+    """Whether any recorded finding could be cited (every status
     except ``dropped``) -- keeps the "nothing answered" sentence honest when
     a vanished part (a redraft carry-over, or every drafted point refused)
-    leaves a verified finding unstated rather than truly absent (P1-3).
+    leaves a verified finding unstated rather than truly absent.
     """
     return any(
         finding.verification is not None and finding.verification.status != "dropped"
@@ -1229,12 +1226,12 @@ def _has_citable_finding(composition: ReportComposition) -> bool:
     )
 
 
-#: Notes-progress-report spec §7.5 item 3: the paragraph an assembled bottom line prints.
+#: The paragraph an assembled bottom line prints.
 _ASSEMBLED_BOTTOM_LINE = (
     "*Assembled from the sections below; the summary could not be written this time.*"
 )
 
-#: Review P2-1 (controller-ruled wording): the italic line a layout prints above its topic
+#: The italic line a layout prints above its topic
 #: lines when no direct-answer sentence printed (none named, or none found in the summary).
 _NO_ANSWER_LINE = (
     "*The direct answer could not be checked this time; each topic's checked line "
@@ -1243,11 +1240,11 @@ _NO_ANSWER_LINE = (
 
 
 def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]) -> str:
-    """Notes-progress-report spec §7.5 items 3-4: the ``## Bottom line`` body -- the
+    """The ``## Bottom line`` body -- the
     answer paragraph (or, for an assembled bottom line, or one whose answer could
     not be checked, the line that says so), then one ``- **{label}:** {line}`` per
-    topic line, then one line per reader note once publication has stamped them
-    (spec §7.2); a note's own topic line prints only as its note's line. A
+    topic line, then one line per reader note once publication has stamped them;
+    a note's own topic line prints only as its note's line. A
     composition without a layout prints one paragraph (``_plain_bottom_line``),
     then the note lines."""
     by_id = {point.statement_id: point for point in composition.summary if point.statement is not None}
@@ -1274,12 +1271,12 @@ def _bottom_line_block(composition: ReportComposition, index: Sequence[Citation]
     return "\n\n".join(block for block in (paragraph, "\n".join(items)) if block)
 
 
-#: Spec §7.2's marks: a note half not found or not followed.
+#: The outcomes that mark a note half as not found or not followed.
 _NOTE_MISSED = frozenset({"not_found", "not_addressed"})
 
 
 def _note_mark(line: ReportNoteLine) -> str:
-    """Spec §7.2 (D20, D37): ``✗`` when any half of the note was not found or not
+    """``✗`` when any half of the note was not found or not
     followed, ``✓`` when every half is covered, no mark otherwise."""
     outcomes = [line.outcome] + ([line.steering_outcome] if line.steering_outcome else [])
     if any(outcome in _NOTE_MISSED for outcome in outcomes):
@@ -1293,7 +1290,7 @@ def _note_line_item(
     line: ReportNoteLine, by_id: Mapping[str, ReportPoint], composition: ReportComposition,
     index: Sequence[Citation],
 ) -> str:
-    """Spec §7.5 item 4: ``- **{note label}:** {✓ |✗ }{line}``, the line being the
+    """``- **{note label}:** {✓ |✗ }{line}``, the line being the
     note's kept topic line, its code-written text, or the one then the other."""
     stated = (
         _rendered_point(by_id[line.statement_id], composition, index)
@@ -1305,20 +1302,19 @@ def _note_line_item(
 
 
 def _plain_bottom_line(composition: ReportComposition, index: Sequence[Citation]) -> str:
-    """§3.1 rule 3 and §10: one paragraph, or a fallback when nothing was
-    written -- the bottom line of a composition without a layout
-    (notes-progress-report spec §7.5).
+    """One paragraph, or a fallback when nothing was
+    written -- the bottom line of a composition without a layout.
 
     The "nothing answered" sentence is reserved for a pass that cites
     nothing at all and holds no citable finding either: an empty ``index``,
     no table, no section with kept points, and no citable finding recorded.
-    P1-3's belt and braces -- a required part whose points all vanished,
+    A belt and braces -- a required part whose points all vanished,
     through a redraft carry-over or an all-refused draft, must never read as
     "no source answers this" while a verified finding for it exists. An
     empty bottom line over a pass that does cite or hold something gets its
     own honest sentence instead: the every-part-failed wording only when a
-    part actually failed (R-7: an ``empty`` part is not a failure -- its
-    findings were simply never placed there, spec §6.1 -- so that wording
+    part actually failed (an ``empty`` part is not a failure -- its
+    findings were simply never placed there -- so that wording
     would be inaccurate); when nothing failed but no section kept a point
     either, a plain unplaced-findings sentence; else the summary-missing
     sentence (some section was written, only the bottom line was not).
@@ -1361,7 +1357,7 @@ def _publisher_for(url: str, composition: ReportComposition) -> str:
 
 
 def _date_suffix(credit: PageCredit | None) -> str:
-    """§8's date rule, rendered: a published date as ``(<date>)``, an
+    """The date rule, rendered: a published date as ``(<date>)``, an
     updated-only date as ``(updated <date>)``, and nothing when there is none.
     """
     if credit is None or not credit.date:
@@ -1376,7 +1372,7 @@ def _entry_date_suffix(url: str, composition: ReportComposition) -> str:
 def _option_part_cell_text(
     cell: TableCell, composition: ReportComposition, index: Sequence[Citation]
 ) -> str:
-    """§4.2: a part cell's page entries, verdict text then the page's marker,
+    """A part cell's page entries, verdict text then the page's marker,
     a bare marker for a page beyond the cap."""
     if not cell.entries:
         return _CELL_EMPTY
@@ -1394,8 +1390,8 @@ def _option_part_cell_text(
 def _recommended_by_text(
     cell: TableCell, composition: ReportComposition, index: Sequence[Citation]
 ) -> str:
-    """§4.2: the distinct picking pages, ``{Publisher} ({date}) [n]`` -- or,
-    when the mark's own entry text credits a relay (R-1: a page reporting
+    """The distinct picking pages, ``{Publisher} ({date}) [n]`` -- or,
+    when the mark's own entry text credits a relay (a page reporting
     another body's pick), that credit instead of the bare publisher, so a
     relayed pick is never printed as if the relaying page made it itself.
     """
@@ -1426,9 +1422,9 @@ def _table_cell_text(
     index: Sequence[Citation],
     by_id: Mapping[str, Finding],
 ) -> str:
-    """One printed cell, by column position and table shape (§4.2, §4.3). A
-    figures table's last column prints its text, then its markers
-    (notes-progress-report spec §7.4 item 5: Key figures' Source)."""
+    """One printed cell, by column position and table shape. A figures
+    table's last column (Key figures' Source) prints its text, then its
+    markers."""
     if shape == "findings":
         if position == last:
             text = _table_cell(cell.text) if cell.text else ""
@@ -1446,7 +1442,7 @@ def _table_cell_text(
 def _table_lines(
     table: ReportTable, composition: ReportComposition, index: Sequence[Citation]
 ) -> list[str]:
-    """§3.1 rule 4, §4: the question-shaped table, then its italicised caption."""
+    """The question-shaped table, then its italicised caption."""
     by_id = _findings_by_id(composition)
     last = len(table.columns) - 1
     lines = [
@@ -1479,7 +1475,7 @@ _URL_ESCAPES = {" ": "%20", "(": "%28", ")": "%29", "<": "%3C", ">": "%3E"}
 
 
 def _markdown_safe_title(title: str) -> str:
-    """A page title made safe as literal ``[...]`` link text (spec §8)."""
+    """A page title made safe as literal ``[...]`` link text."""
     for character, escaped in _TITLE_ESCAPES:
         title = title.replace(character, escaped)
     return title
@@ -1491,7 +1487,7 @@ def _markdown_safe_url(url: str) -> str:
 
 
 def _stripped_title(title: str, publisher: str) -> str:
-    """§8: the page's title minus a first or last segment naming the publisher."""
+    """The page's title minus a first or last segment naming the publisher."""
     segments = title_segments(title)
     if len(segments) < 2:
         return title
@@ -1509,7 +1505,7 @@ def _stripped_title(title: str, publisher: str) -> str:
 
 
 def _printed_title(citation_title: str, publisher: str) -> str:
-    """The title exactly as it prints: publisher-segment stripped (§8), then
+    """The title exactly as it prints: publisher-segment stripped, then
     made Markdown-safe for the ``[...]`` position it prints in -- the one
     title text both the Sources line and the quality JSON's "title as
     printed" field use, so the two can never disagree about what was
@@ -1519,7 +1515,7 @@ def _printed_title(citation_title: str, publisher: str) -> str:
 
 
 def _source_line(citation: Citation, composition: ReportComposition) -> str:
-    """§8: ``n. Publisher — [Title](url) (date)``."""
+    """``n. Publisher — [Title](url) (date)``."""
     credit = composition.page_credits.get(normalize_source_url(citation.url))
     publisher = credit.publisher if credit is not None else publisher_identity(citation.url)
     title = _printed_title(citation.title, publisher)
@@ -1528,7 +1524,7 @@ def _source_line(citation: Citation, composition: ReportComposition) -> str:
 
 
 def _unreachable_reason_text(reason: str) -> str:
-    """§10: a denial reason (I2) in plain words, or ``""`` when none is recorded."""
+    """A denial reason in plain words, or ``""`` when none is recorded."""
     if not reason:
         return ""
     if reason in _UNREACHABLE_REASON_TEXT:
@@ -1549,7 +1545,7 @@ def _unreachable_line(page: UnreachablePage) -> str:
 def answered_not_stated_targets(composition: ReportComposition) -> list[str]:
     """Required targets a verified finding answers -- an explicit binding or
     a fallback through the sub-topic -- but that no printed statement states
-    and that are not already listed under Not found (spec §10's disclosure
+    and that are not already listed under Not found (the disclosure
     group). The one place this set is computed: :func:`_could_not_confirm_groups`
     and ``quality.compute_report_quality``'s ``unaccounted_required_targets``
     gate both call this, so the reader's disclosure and the gate that
@@ -1576,7 +1572,7 @@ def _note_groups(
     *,
     already_named: Collection[str] = (),
 ) -> list[list[str]]:
-    """live-briefs spec §4.6: one line, ``lead`` then the note as the run read
+    """One line, ``lead`` then the note as the run read
     it, per reader-note sub-topic with a target in ``target_ids``, in plan order.
 
     A note's targets are listed by the note, never by question: the reader
@@ -1594,10 +1590,10 @@ def _note_groups(
 
 
 def _could_not_confirm_groups(composition: ReportComposition) -> list[list[str]]:
-    """§10: each present group, in order -- searched targets, unsearched
-    targets, the reader's uncovered notes (live-briefs spec §4.6),
+    """Each present group, in order -- searched targets, unsearched
+    targets, the reader's uncovered notes,
     answered-but-unstated targets, the reader's answered-but-unstated notes,
-    failed parts, unreachable pages (capped at 5, Q5)."""
+    failed parts, unreachable pages (capped at 5)."""
     groups: list[list[str]] = []
     rows = [
         target
@@ -1658,8 +1654,8 @@ def report_filename(*, session_id: str, iteration: int) -> str:
     """Return a traversal-free ``.md`` filename for one reader report.
 
     ``session_id`` reaches this from state and may hold anything, so it is
-    slugged rather than trusted. Moved here from ``report_writer.py`` (spec
-    §3.1 rule 8): the renderer links the artifact family it renders, and
+    slugged rather than trusted. It lives here, not in ``report_writer.py``:
+    the renderer links the artifact family it renders, and
     ``report_writer`` imports ``report``, not the reverse.
     """
     if iteration < 0:
@@ -1696,12 +1692,12 @@ def quality_report_filename(*, session_id: str, iteration: int) -> str:
 
 
 def report_outline(composition: ReportComposition) -> list[ReportOutlineEntry]:
-    """Notes-progress-report spec §7.5: one entry per ``##`` heading of the
+    """One entry per ``##`` heading of the
     reader report, in order. ``render_written_report`` prints its headings from
     this list, so the web's contents list and cards pair with them exactly.
 
     Topics are the sections with points, numbered among themselves -- a section
-    the bottom-line fallback emptied prints no heading and takes no number (§7.3).
+    the bottom-line fallback emptied prints no heading and takes no number.
     A note's topic is labelled ``{short} (your note)``.
     """
     entries = [ReportOutlineEntry(heading="Bottom line", kind="bottom_line", label="Bottom line")]
@@ -1732,14 +1728,14 @@ def report_outline(composition: ReportComposition) -> list[ReportOutlineEntry]:
 
 
 def render_written_report(composition: ReportComposition) -> str:
-    """Spec §3's answer-first skeleton, in notes-progress-report spec §7.5's order.
+    """The answer-first skeleton.
 
     Title, evidence line, bottom line, one section per part with points, Key
     figures or Options compared, what could not be confirmed, and sources --
     each ``##`` heading taken from :func:`report_outline`, and every citation
-    numbered in the order a reader meets it. Cut entirely: the old Executive
-    summary, Key facts, Not found, header counts and scope (spec §3.1 rule 9);
-    those move to the evidence log (§9).
+    numbered in the order a reader meets it. The reader report carries no
+    Executive summary, Key facts, Not found list, header counts or scope;
+    those are in the evidence log.
     """
     index = written_citations(composition)
     groups = _could_not_confirm_groups(composition)
@@ -1770,7 +1766,7 @@ def render_written_report(composition: ReportComposition) -> str:
 def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | None, Finding]]:
     """Pair each recorded finding with its own registered label, in order.
 
-    R2: ``composition.finding_labels`` maps label -> finding id, and two
+    ``composition.finding_labels`` maps label -> finding id, and two
     distinct revision editions of one page (an unchanged URL, sub-topic and
     content; only the structured figure or its release differ) share a
     ``finding_fingerprint``. Inverting the dict to id -> label collapses
@@ -1793,7 +1789,7 @@ def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | 
     return pairs
 
 
-# D15: a spelled duration value ("a century", "sixteen years or more")
+# A spelled duration value ("a century", "sixteen years or more")
 # already states its own unit; appending "years" beside it restates what
 # the value already says ("a century years"). A figure's separate
 # value/unit pair is checked simply: whether a duration word appears
@@ -1803,8 +1799,8 @@ def _finding_registry_pairs(composition: ReportComposition) -> list[tuple[str | 
 # row's already-fused value string has no such separator, though, so the
 # same check cannot be reused as-is: "2 days per year" split naively on
 # its trailing word alone would see "year" as the unit and "days" earlier
-# in "2 days per" as a duplicate, stripping the rate down to "2 days per"
-# (RevZ3 P2) -- "per" there is what makes "year" a rate's period, not a
+# in "2 days per" as a duplicate, stripping the rate down to "2 days per":
+# "per" there is what makes "year" a rate's period, not a
 # repeated duration. A fact row's trailing duration word is only ever a
 # repeat when the word right before it is itself a duration word (as in "3
 # years years"), or when the value already ends on a duration-bearing
@@ -1835,7 +1831,7 @@ def _value_part_already_spells_the_unit(value_part: str, unit: str) -> bool:
     """Whether ``value_part`` -- the words of a fact row's fused value
     before its trailing ``unit`` word -- itself already ends by spelling
     that kind of unit, rather than merely containing a duration word
-    somewhere earlier (D15 P2): 'a century' and 'sixteen years or more'
+    somewhere earlier: 'a century' and 'sixteen years or more'
     really do already end on the unit they would be doubling, while '2
     days per' (from '2 days per year') never does -- 'per' marks a rate's
     period, not a repeated duration.
@@ -1854,7 +1850,7 @@ def _value_part_already_spells_the_unit(value_part: str, unit: str) -> bool:
 
 def _figure_value_text(figure: FindingFigure) -> str:
     """``figure``'s value with its unit appended, unless the value already
-    spells the same kind of unit (D15)."""
+    spells the same kind of unit."""
     if _value_already_spells_a_unit(figure.value, figure.unit):
         return figure.value
     return f"{figure.value} {figure.unit}"
@@ -1863,8 +1859,8 @@ def _figure_value_text(figure: FindingFigure) -> str:
 def _deduplicated_fact_value(value: str) -> str:
     """``value`` -- a fact row's already-combined "value unit" string -- with
     a trailing unit word dropped when the value it follows already spells
-    that same kind of unit (D15): 'a century years' -> 'a century' -- but
-    never when the word before it is a rate connective (D15 P2): '2 days
+    that same kind of unit: 'a century years' -> 'a century' -- but
+    never when the word before it is a rate connective: '2 days
     per year' is a rate, not a doubled duration, and stays unchanged.
     """
     words = value.split()
@@ -1878,7 +1874,7 @@ def _deduplicated_fact_value(value: str) -> str:
 
 
 def _finding_label_map(composition: ReportComposition) -> dict[str, str]:
-    """Each finding id to its first-registered label (§9's Verified figures
+    """Each finding id to its first-registered label (the Verified figures
     Source column prints labels, not citation markers)."""
     mapping: dict[str, str] = {}
     for label, finding_id in composition.finding_labels.items():
@@ -1887,14 +1883,14 @@ def _finding_label_map(composition: ReportComposition) -> dict[str, str]:
 
 
 def _verified_figures_lines(composition: ReportComposition) -> list[str]:
-    """§9: today's Key Facts table, unchanged, moved to the evidence log --
+    """The Key Facts table of the evidence log --
     every verified figure a statement or the reader report's own
     question-shaped table actually cites, including one that answers no
-    planned target (decision #4's "full fact-row table"), with finding
+    planned target (the full fact-row table), with finding
     labels in the Source column. A verified figure no bottom-line or
     section statement cites, and no table cell reaches either directly
     (``cell.finding_ids``) or through a fact row (``cell.row_ids``), stays
-    out of this table (D11c, run 8; RevV4 P2 follow-up): it is a candidate
+    out of this table: it is a candidate
     the writer never used anywhere the reader report prints, and this
     table is the report's own evidence, not everything the Evidence
     Verifier merely confirmed. It still prints under its own finding in
@@ -1949,7 +1945,7 @@ def _verified_figures_lines(composition: ReportComposition) -> list[str]:
 
 
 def _findings_counts_line(composition: ReportComposition) -> str:
-    """§9: the findings counts, moved from the old header and reworded."""
+    """The findings counts."""
     statuses = [f.verification for f in composition.findings if f.verification is not None]
     verified = sum(1 for v in statuses if v.status == "verified")
     corrected = sum(1 for v in statuses if v.status == "verified_corrected")
@@ -1971,7 +1967,7 @@ def _question_form_line(composition: ReportComposition) -> str:
 
 
 def _part_lines(composition: ReportComposition) -> list[str]:
-    """§9: coverage id, sub-topic title, printed title, status, finding count,
+    """Coverage id, sub-topic title, printed title, status, finding count,
     context-only count."""
     printed_titles = {
         section.coverage_id: section.title
@@ -1995,7 +1991,7 @@ def _table_summary_line(table: ReportTable | None) -> str:
 
 
 def _about_this_report_lines(composition: ReportComposition) -> list[str]:
-    """§9's new "About this report" block: evidence as of, printed on, scope,
+    """The "About this report" block: evidence as of, printed on, scope,
     the question form, the findings counts, the parts and the table."""
     lines = [
         "## About this report", "",
@@ -2012,7 +2008,7 @@ def _about_this_report_lines(composition: ReportComposition) -> list[str]:
 
 
 def _unplaced_findings_lines(composition: ReportComposition) -> list[str]:
-    """§9's new Unplaced findings: findings no part's partition placed --
+    """The Unplaced findings block: findings no part's partition placed --
     recorded, not written."""
     placed = {
         fingerprint
@@ -2039,16 +2035,16 @@ def _unplaced_findings_lines(composition: ReportComposition) -> list[str]:
 
 
 def _dropped_marks_lines(composition: ReportComposition) -> list[str]:
-    """§9's new Dropped option marks: each already a project-generated
-    sentence naming the statement and the span that failed §6.4 rule 8."""
+    """The Dropped option marks block: each already a project-generated
+    sentence naming the statement and the span that failed the mark checks."""
     if not composition.dropped_marks:
         return []
     return ["## Dropped option marks", "", *[f"- {mark}" for mark in composition.dropped_marks]]
 
 
 def _pages_could_not_be_opened_lines(composition: ReportComposition) -> list[str]:
-    """§9's new Pages that could not be opened: every one of them, uncapped
-    (the reader report caps at 5, Q5; the ledger never does)."""
+    """The Pages that could not be opened block: every one of them, uncapped
+    (the reader report caps at 5; the ledger never does)."""
     if not composition.unreachable:
         return []
     return [
@@ -2058,12 +2054,12 @@ def _pages_could_not_be_opened_lines(composition: ReportComposition) -> list[str
 
 
 def render_finding_log(composition: ReportComposition) -> str:
-    """Spec §9: the audit trail.
+    """The audit trail.
 
     "About this report" (counts, scope, exact as-of, the parts, the table's
-    shape and caption), "Verified figures" (today's Key Facts table, moved
-    here unfiltered), every recorded finding with its snippet and its
-    Evidence Verifier result, "Not found" (unchanged), every page that could
+    shape and caption), "Verified figures" (the Key Facts table, unfiltered),
+    every recorded finding with its snippet and its
+    Evidence Verifier result, "Not found", every page that could
     not be opened (uncapped), every refused sentence, every dropped option
     mark, and every unplaced finding.
     """
@@ -2096,14 +2092,13 @@ def render_finding_log(composition: ReportComposition) -> str:
                   f'- Snippet: "{finding.snippet or ""}"']
         passage = composition.statement_passages.get(finding_id)
         if passage:
-            # Review F5: a snippet is cut at its passage's boundary, so a
+            # A snippet is cut at its passage's boundary, so a
             # verdict can rest on the sentence just past the cut. The ledger
             # prints the same bounded passage the Statement Check read.
             lines.append(f'- Passage: "{passage}"')
         if finding.disputes:
-            # Audit observability (run 8; RevV4 P3 follow-up): before
-            # Verification, so an audit can tell whether the dissent
-            # re-ask (D2's `disputes=True` findings) fired on this
+            # Printed before Verification, so an audit can tell whether the
+            # dissent re-ask (the `disputes=True` findings) fired on this
             # finding, without re-deriving it from the model's own
             # replies, and without splitting Verification from its own
             # nested figure lines.
@@ -2130,7 +2125,7 @@ def render_finding_log(composition: ReportComposition) -> str:
         lines.append("")
     if composition.not_found:
         # The reader report states each unanswered question and how the search
-        # went, without the log; the log is where the log belongs (ev-1 audit A6).
+        # went, without the log; the log is where the log belongs.
         lines += ["## Not found", "",
                   "Each planned question no checked finding answers, with every query made and "
                   "every page read for it.", ""]

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -291,9 +291,9 @@ async def test_a_run_attaches_session_metadata_and_routes_to_the_trace() -> None
     assert completed[0].metadata["session_id"] == "session-1"
     assert completed[0].metadata["success"] is True
 
-    # The whole trace surface the spec asks for lands on the session run:
-    # identity, final status, the route decisions, and every count. A wrong
-    # key or a dropped field fails here rather than shipping silently.
+    # The session run's trace contains its identity, final status, the route
+    # decisions, and every count. A wrong key or a dropped field fails here
+    # rather than shipping silently.
     session_run = trace_factory.managers[0].run
     assert run.trace_url == session_run.trace_url
     assert session_run.end_calls[-1]["outputs"] == {
@@ -809,8 +809,8 @@ def test_the_graph_config_default_matches_the_graph_module_default() -> None:
 async def test_a_terminal_checkpoint_written_before_event_ids_publishes_each_event_once(
     tracker: Tracker,
 ) -> None:
-    """live-briefs spec E1: an old checkpoint's events get fresh ids once, on load, and
-    each is still published exactly once, in state order, with the completion last."""
+    """An old checkpoint's events get fresh ids once, on load, and each is
+    still published exactly once, in state order, with the completion last."""
     agents = fake_research_agents()
     graph = compile_research_graph(agents, checkpointer=build_checkpointer(enabled=True))
     first = await run_research_graph(

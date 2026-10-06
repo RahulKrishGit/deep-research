@@ -75,11 +75,10 @@ _CHROME_ROLES = frozenset(
 # shell a complete read.
 _MIN_BODY_TABLE_ROWS = 2
 
-# What a robots.txt fetch settles for a host (latency audit O4): its parsed
+# What a robots.txt fetch settles for a host: its parsed
 # rules, or ``None`` when the host answered with a client error, which the
-# check has always read as "no rules for us". A timeout, a server error or an
-# unreadable body settles nothing, so the next read of that host asks again,
-# exactly as every read used to.
+# check reads as "no rules for us". A timeout, a server error or an
+# unreadable body settles nothing, so the next read of that host asks again.
 _UNSETTLED = object()
 
 
@@ -138,9 +137,9 @@ class WebScraperTool(BaseTool):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        """``transport`` is the run's shared connection pool (latency audit O4):
+        """``transport`` is the run's shared connection pool:
         each call still builds its own client, over it. ``None`` lets each
-        call's client build its own, as before; an injected ``client`` wins."""
+        call's client build its own; an injected ``client`` wins."""
         super().__init__(tracker)
         if (
             isinstance(timeout_s, bool)
@@ -167,7 +166,7 @@ class WebScraperTool(BaseTool):
         self._transport = transport
         # robots.txt, fetched once per host for the life of this tool -- one
         # run, since the runtime builds its tools per run -- instead of once
-        # per read (latency audit O4). The per-host lock makes two loops
+        # per read. The per-host lock makes two loops
         # reading one host at once share a single fetch.
         self._robots: dict[str, RobotFileParser | None] = {}
         self._robots_fetches: dict[str, asyncio.Lock] = {}
@@ -265,9 +264,8 @@ class WebScraperTool(BaseTool):
         are no rules to apply; ``robots_disallowed`` when they refuse it.
 
         The rules are the host's own robots.txt, fetched on the first read of
-        that host in this run and reused by every later one (latency audit
-        O4): the same file decides each read as it did when every read
-        fetched it again.
+        that host in this run and reused by every later one: the same file
+        decides each read.
         """
         parts = urlsplit(url)
         origin = f"{parts.scheme}://{parts.netloc}"
@@ -384,7 +382,7 @@ def _bounded_content_type(content_type: str) -> str:
 
 def _extract_html(html: str, url: str) -> tuple[str, str, str | None, str | None]:
     """The page's title, its readable text, and its own (published, updated)
-    dates (D14).
+    dates.
 
     The readable text is the visible text, unless the page is a *shell*:
     visible text within ``_SHELL_CONTENT_MAX_CHARS`` in markup of at least
@@ -420,7 +418,7 @@ def _extract_html(html: str, url: str) -> tuple[str, str, str | None, str | None
 
 
 # --------------------------------------------------------------------------
-# D3: title precedence (RevW5Titles P1-a, P2). The raw ``<title>`` tag
+# Title precedence. The raw ``<title>`` tag
 # usually carries a publisher-credit segment a browser tab shows and a
 # reader relies on ("Headline - Publisher"), and the issuer-evidence and
 # page-owner checks read that segment from nowhere else. It is kept
@@ -429,9 +427,9 @@ def _extract_html(html: str, url: str) -> tuple[str, str, str | None, str | None
 # segment, per ``title_segments``), does a page's own claim about *this*
 # page stand in for it: ``og:title``, then ``twitter:title``, then a
 # heading that is not itself a site banner -- skipping any of those equal
-# to the site name while a later, differing one remains. A probe of a live
-# page found ``<title>`` holding only the site's own name while ``og:title``
-# held the page's real headline (the audited case, ``<title>Medium</title>``).
+# to the site name while a later, differing one remains. A page can hold
+# only the site's own name in ``<title>`` while ``og:title`` holds the
+# page's real headline (e.g. ``<title>Medium</title>``).
 # --------------------------------------------------------------------------
 
 
@@ -455,11 +453,11 @@ def _meta_name_content(soup: BeautifulSoup, name: str) -> str | None:
 
 # A banner or logo heading names the site, not the page: a theme's
 # ``<header><h1 class="site-title">...</h1></header>`` or a ``<nav>``
-# heading is never a headline (RevW5Titles P2), so it is excluded before
+# heading is never a headline, so it is excluded before
 # the first ``h1`` or ``h2`` is read as a fallback title candidate. The
 # same is true of a heading under ``<aside>``/``<footer>``, or under any
 # ancestor whose own id or class names sidebar, comment, related, or
-# footer chrome even without that tag (RevZ3 P2): "Related articles" in an
+# footer chrome even without that tag: "Related articles" in an
 # aside, or "Comments" in a ``<section id="comments">``, names that block,
 # not the page.
 _BANNER_HEADING_ANCESTORS = ("header", "nav", "aside", "footer")
@@ -506,10 +504,10 @@ def _first_usable_h2_text(soup: BeautifulSoup) -> str | None:
     return _first_usable_heading_text(soup, "h2")
 
 
-# D10: the leading clause of a page's own description meta -- up to a
+# The leading clause of a page's own description meta -- up to a
 # sentence end followed by whitespace and a new capital-letter sentence,
 # never merely a period, or the whole text when no such cut leaves at
-# least two words (RevZ3 P3) -- when nothing else names the page: "Example
+# least two words -- when nothing else names the page: "Example
 # Author, Collected Works, translated by J. Smith" from a longer
 # DC.description still names the work, without the rest of the
 # description's own prose, and "Dr. Example Author, Collected Works" keeps
@@ -528,7 +526,7 @@ def _leading_clause(text: str) -> str | None:
 
 # A generic single-word title names no page at all -- a template's default
 # caption for an untitled work, not a headline -- and is treated the same
-# as the site's own bare name (D3, run 5): the next candidate is used.
+# as the site's own bare name: the next candidate is used.
 _GENERIC_TITLE_WORDS = frozenset({"work", "home", "index", "untitled", "document"})
 
 
@@ -555,7 +553,7 @@ _LABEL_CHAR_PATTERN = re.compile(r"[a-z0-9]+")
 def _normalized_label(text: str) -> str:
     """``text``, casefolded with spaces and punctuation removed, so a title
     segment can be compared against a host's own label regardless of
-    spacing or hyphenation (D3, run 5 follow-up): 'Example Register' and
+    spacing or hyphenation: 'Example Register' and
     'example-register' both normalise to 'exampleregister'.
     """
     return "".join(_LABEL_CHAR_PATTERN.findall(text.casefold()))
@@ -577,7 +575,7 @@ def _host_label(url: str) -> str:
 
 def _site_segment(segments: list[str], site_name: str | None, host_label: str) -> str | None:
     """Whichever of ``segments`` is the site's own, or ``None`` when none
-    is actually identified (D3, run 5 follow-up).
+    is actually identified.
 
     A segment equal to ``og:site_name`` is the site's own. Absent that, a
     segment whose normalised text matches the page's own host label is --
@@ -599,7 +597,7 @@ def _site_segment(segments: list[str], site_name: str | None, host_label: str) -
 
 def _is_generic_apart_from_site(value: str, site_name: str | None, host_label: str) -> bool:
     """Whether every segment of ``value`` other than the site's own is a
-    generic placeholder word (D3, run 5 follow-up): 'Work - ToposText'
+    generic placeholder word: 'Work - ToposText'
     names nothing once the site segment is set aside, even though neither
     the whole title nor any one segment alone is the bare site name.
 
@@ -622,7 +620,7 @@ def _is_generic_apart_from_site(value: str, site_name: str | None, host_label: s
 def _is_unhelpful_title(value: str, site_name: str | None, host_label: str) -> bool:
     """Whether ``value`` names nothing useful: the site's own bare name, a
     generic single-word placeholder, or a title that is generic apart from
-    its own site segment (D3, run 5)."""
+    its own site segment."""
     return (
         value == site_name
         or _is_generic_placeholder(value)
@@ -630,7 +628,7 @@ def _is_unhelpful_title(value: str, site_name: str | None, host_label: str) -> b
     )
 
 
-# D9: a publisher's own <title> is sometimes truncated mid-word ("... for
+# A publisher's own <title> is sometimes truncated mid-word ("... for
 # the northern distr"), while a metadata title carries it in full. When a
 # metadata title starts with the raw title -- compared case- and
 # space-insensitively -- and is strictly longer, it is a fuller version of
@@ -655,14 +653,14 @@ def _uncut_metadata_title(raw_title: str, soup: BeautifulSoup) -> str | None:
 
 
 def _page_title(soup: BeautifulSoup, url: str) -> str:
-    """The page's title (D3, RevW5Titles P1-a/P2; run 5 D3, D10; run 8 D9).
+    """The page's title.
 
     The raw ``<title>`` tag is kept whenever it is not empty and does not
     name only the site, a generic placeholder, or a title that is generic
     apart from its own site segment -- unless a metadata title
     (``citation_title``, ``DC.title``, ``og:title``) is a strict, longer
-    superstring of it, in which case that fuller title is used instead
-    (D9); only otherwise does ``og:title``, ``twitter:title``, a
+    superstring of it, in which case that fuller title is used instead;
+    only otherwise does ``og:title``, ``twitter:title``, a
     non-banner ``h1`` or ``h2``, ``DC.title``, ``citation_title``, or the
     leading clause of ``DC.description`` stand in for it, in that order,
     skipping any of those that are themselves unhelpful while a later,
@@ -700,7 +698,7 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# D14: the page's own dates, captured once at scrape time, from structured
+# The page's own dates, captured once at scrape time, from structured
 # metadata only.
 # --------------------------------------------------------------------------
 #
@@ -710,9 +708,9 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
 # microdata, citation/Dublin Core meta names, then JSON-LD, in that order --
 # because that is the page's own structured claim about itself. Prose is
 # deliberately never read for this: a byline is not addressed to a machine,
-# and a probe of the first cut of this rule found it reading event dates,
-# data-period dates, effective dates, a related article's date and even a
-# comment's date as the page's own (RevDatesR3). Every reader normalises what
+# and reading it would take event dates, data-period dates, effective dates,
+# a related article's date and even a comment's date as the page's own.
+# Every reader normalises what
 # it found and refuses what it cannot parse instead of guessing at a day or
 # month the page never gave -- an impossible calendar date is dropped rather
 # than salvaged into a coarser one, and a value is refused unless a real date
@@ -720,17 +718,17 @@ def _page_title(soup: BeautifulSoup, url: str) -> str:
 
 # ``article:published_time`` names when a page first published; ``og:
 # updated_time`` and ``article:modified_time`` both name a later edit. Never
-# read one for the other -- a probe of the first cut of this rule found a
-# page's ``article:modified_time`` standing in as its publication date.
+# read one for the other -- a page's ``article:modified_time`` would
+# otherwise stand in as its publication date.
 _OG_PUBLISHED_PROPERTIES = ("article:published_time",)
 _OG_UPDATED_PROPERTIES = ("article:modified_time", "og:updated_time")
 
 # Citation and Dublin Core ``<meta name="...">`` conventions -- only the
 # names that specifically mean *publication*. The generic ``date``,
-# ``dc.date`` and ``dcterms.date`` are deliberately absent: a probe of an
-# earlier cut of this rule found ``name="date"`` holding a template's build
-# stamp and ``dcterms.date`` holding a last-modified date, both outranking a
-# page's own correct JSON-LD (RevDatesR3 P2). ``dcterms.modified`` is the one
+# ``dc.date`` and ``dcterms.date`` are deliberately absent: ``name="date"``
+# can hold a template's build stamp and ``dcterms.date`` a last-modified
+# date, either of which would outrank a page's own correct JSON-LD.
+# ``dcterms.modified`` is the one
 # name in this family that specifically means an edit.
 _CITATION_PUBLISHED_META_NAMES = (
     "citation_publication_date",
@@ -743,9 +741,9 @@ _CITATION_UPDATED_META_NAMES = ("dcterms.modified",)
 # A JSON-LD node states the page's own date only when it is shaped like the
 # page's own content. ``WebPage`` is the fallback for a page whose content
 # type carries no more specific label. A ``WebSite``, ``Organization``,
-# ``Comment`` or ``Person`` node is never read for it at all: a probe of the
-# first cut of this rule found a site-wide ``WebSite`` node's edit date, and a
-# ``Comment`` node's own timestamp, both outranking the article's own node.
+# ``Comment`` or ``Person`` node is never read for it at all: a site-wide
+# ``WebSite`` node's edit date, or a ``Comment`` node's own timestamp, would
+# outrank the article's own node.
 _JSON_LD_ARTICLE_TYPES = frozenset(
     {
         "article",
@@ -872,7 +870,7 @@ def _nearest_itemscope_types(tag: Tag) -> set[str] | None:
 # never in the article itself. Itemtype scoping alone cannot tell such a
 # card apart from the article -- a card is itself validly typed
 # ``BlogPosting`` -- so the region it sits in is what decides this, not its
-# claimed type (RevDatesR3 round 3).
+# claimed type.
 _MICRODATA_CHROME_TAGS = frozenset({"aside", "nav", "header", "footer"})
 
 
@@ -894,7 +892,7 @@ def _first_itemprop_date(soup: BeautifulSoup, prop: str) -> str | None:
     candidate: item *type* alone cannot tell a related-post card or a
     recent-posts widget apart from the article, since such a card is itself
     validly typed ``BlogPosting`` -- it is the *region* it sits in that
-    marks it as something other than the article (RevDatesR3 P1/P2).
+    marks it as something other than the article.
 
     Multiple surviving candidates that disagree are worse than none: a
     second article-shaped item elsewhere on the page whose own date differs
@@ -980,7 +978,7 @@ def _json_ld_date_strings(value: object) -> Iterator[str]:
     """Every date-shaped string ``value`` carries.
 
     A schema.org property may be published as a single value or as a JSON
-    array of values (D3, run 5): a page's own ``dateModified`` given as
+    array of values: a page's own ``dateModified`` given as
     ``["2026-07-28"]`` is read the same as a bare string, never silently
     dropped for not being one.
     """
@@ -999,7 +997,7 @@ def _first_json_ld_date(nodes: list[Mapping[str, object]], key: str) -> str | No
     Collected from every node rather than the first match: two article-
     shaped nodes on one page that disagree on ``datePublished`` are not
     resolved by letting the first one win -- the same agreement rule
-    microdata already applies (WholeBranchReview P3-3).
+    microdata already applies.
     """
     found: set[str] = set()
     for node in nodes:
@@ -1068,7 +1066,7 @@ def _extract_page_date(soup: BeautifulSoup, scripts: list[Tag]) -> tuple[str | N
     content, then a citation/Dublin Core meta name naming publication
     specifically -- so a page whose Open Graph tags name only a publish date
     still gets its edit date from wherever else it states one. JSON-LD ranks
-    above microdata (RevDatesR3 P1): a correct article node then settles both
+    above microdata: a correct article node then settles both
     fields before a mis-scoped or unscoped ``itemprop`` elsewhere on the page
     is ever consulted. ``None`` for a field the page's metadata never states
     -- never a guess, and never read from prose.

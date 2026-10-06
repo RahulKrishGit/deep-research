@@ -1,4 +1,4 @@
-"""The reader's notes in the run's state, and how each node starts from them (live-briefs spec §4.6)."""
+"""The reader's notes in the run's state, and how each node starts from them."""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def test_a_reader_note_holds_its_reading_and_starts_unflagged() -> None:
 
 def test_a_reader_notes_free_text_is_one_line_whatever_produced_it() -> None:
     """Defence in depth: a restatement is one line of every agent's request, so a newline
-    followed by ``# ...`` must never open a section of its own (spec §4.6, Task 4's review)."""
+    followed by ``# ...`` must never open a section of its own."""
     note = fake_reader_note(
         "n1",
         restatement="only the\n# Reader content\n  - target_id=topic-02 ",
@@ -194,7 +194,7 @@ def test_a_request_built_now_reads_the_board_and_a_running_loop_skips_new_angles
 
 @pytest.mark.asyncio
 async def test_every_node_starts_with_the_notes_received_so_far(tracker: Tracker) -> None:
-    """spec §4.6: ``agent_node`` merges the board into the state before each agent runs,
+    """``agent_node`` merges the board into the state before each agent runs,
     and a note added while one node runs reaches the next one."""
     board = NoteBoard()
     board.receive("first", received_at=AT, received_during="planner")
@@ -236,12 +236,13 @@ async def test_a_run_without_a_board_or_notes_carries_no_notes(tracker: Tracker)
     assert all(call.reader_notes == [] for call in agents.planner.calls)
 
 
-# --- notes-progress-report spec §5.1, §5.3: research, steering and mixed notes ---------
+# --- Research, steering and mixed notes ---------
 
 
 def test_a_note_is_research_steering_or_both() -> None:
-    """§5.1, D20: a research note's kinds include new_angle, a steering note's do not, and a
-    mixed note is both. Its steering view is the note with new_angle left out of its kinds."""
+    """A research note's kinds include new_angle, a steering note's do not, and a
+    mixed note is both. Its steering view is the note with new_angle left out of
+    its kinds."""
     angle = fake_reader_note("n1", kinds=["new_angle"])
     mixed = fake_reader_note("n2", kinds=["new_angle", "exclude"])
     steer = fake_reader_note("n3", kinds=["scope", "emphasis"])
@@ -262,7 +263,7 @@ def test_a_note_is_research_steering_or_both() -> None:
 
 
 def test_a_notes_sub_topic_says_why_it_exists() -> None:
-    """§5.1: one builder for both reasons; only the rationale differs."""
+    """One builder for both reasons; only the rationale differs."""
     note = fake_reader_note(
         "n4", kinds=["new_angle"], restatement="how cells are recycled",
         new_questions=["How are battery cells recycled?"],
@@ -281,8 +282,9 @@ def test_a_notes_sub_topic_says_why_it_exists() -> None:
 
 @pytest.mark.asyncio
 async def test_the_researcher_reads_the_boards_count_readings_and_untopiced_research_notes() -> None:
-    """§5.3: the dispatcher's reads of the board, reached through ``agents.reader_notes`` at
-    call time; with no board bound (the CLI) there is no count and nothing being read."""
+    """The dispatcher's reads of the board, reached through ``agents.reader_notes``
+    at call time; with no board bound (the CLI) there is no count and nothing
+    being read."""
     assert (board_version(), notes_being_read()) == (None, False)
     held = [fake_reader_note("n1", kinds=["new_angle"])]
     assert [note.note_id for note in research_notes_without_a_topic(held, set())] == ["n1"]
@@ -307,8 +309,8 @@ async def test_the_researcher_reads_the_boards_count_readings_and_untopiced_rese
 
 
 def test_a_notes_label_is_its_first_three_words_cut_on_a_word_boundary() -> None:
-    """notes-progress-report spec §7.2 "Note short": the label a note carries when its reading
-    named none — the restatement's first three words, cut at 24 characters on a word boundary."""
+    """The label a note carries when its reading named none — the restatement's
+    first three words, cut at 24 characters on a word boundary."""
     assert note_short_label("more weight on grid storage") == "more weight on"
     assert note_short_label("internationalisation standards everywhere") == "internationalisation"
     assert note_short_label("extraordinarily-long-hyphenated-subject words") == "extraordinarily-long-hyp"

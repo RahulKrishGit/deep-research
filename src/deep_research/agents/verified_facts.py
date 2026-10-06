@@ -1,10 +1,10 @@
-"""Facts from verified findings (spec §5.3, §6.1, §6.4, §6.6).
+"""Facts from verified findings.
 
 Deterministic and field-driven: target answering, duplicates and revisions,
 the Not found list and number tracing read verified fields and structured
 figures only, with one exception -- a fallback-bound finding's own
 ``content`` is read for one thing alone: whether it states what the target
-it would answer through the sub-topic fallback actually asks (D9). An
+it would answer through the sub-topic fallback actually asks. An
 explicitly bound finding never reaches that check.
 """
 
@@ -30,8 +30,8 @@ from deep_research.utils.types import (
     EarlierEdition,
     EvidenceTarget,
     FactRow,
-    Finding,
     FigureContext,
+    Finding,
     FindingFigure,
     NotFoundTarget,
     SubTopic,
@@ -46,7 +46,7 @@ _LEGAL_SUFFIXES = frozenset(
     {"inc", "llc", "ltd", "corp", "corporation", "co", "association", "institute", "council", "agency"}
 )
 # A host label may stand for an organisation's name only on a suffix whose
-# label is the organisation's own choice or an institution's (PD-18): never on
+# label is the organisation's own choice or an institution's: never on
 # a suffix anyone buys to look like someone else ("eia.news").
 _NAMEABLE_SUFFIXES = frozenset({"gov", "edu", "int", "mil", "com", "org"})
 _YEAR = re.compile(r"(?:19|20)\d{2}")
@@ -68,13 +68,13 @@ _MONTH_YEAR = re.compile(
 )
 _ISO_DATE = re.compile(r"\b((?:19|20)\d{2})(?:-(\d{1,2})(?:-(\d{1,2}))?)?\b")
 _MEASURE_BY_DIMENSION = {"power": "power capacity", "energy": "energy capacity", "percent": "share"}
-# The dimensions figures.py scales (spec §6.6). A target naming any other word
-# (D10: currency, count, ...) is answered by a figure in a unit the parser does
+# The dimensions figures.py scales. A target naming any other word
+# (currency, count, ...) is answered by a figure in a unit the parser does
 # not scale, so its period, kind and organisation are still checked.
 _SCALED_DIMENSIONS: frozenset[str] = frozenset(get_args(UnitDimension))
 _ATTRIBUTION_RANK = {"own": 0, "relayed": 1, "unattributed": 2}
-# "grid-scale" and "utility-scale" name the same segment in practice (spec
-# §6.6 gap): a target asking for one is answered by a figure stating the
+# "grid-scale" and "utility-scale" name the same segment in practice: a target
+# asking for one is answered by a figure stating the
 # other. No other pair of ``wording.SCOPE_TERMS`` is treated as equivalent.
 _SCOPE_EQUIVALENTS = {"grid-scale": "utility-scale"}
 
@@ -93,7 +93,7 @@ class VerifiedFigure:
 
 
 def citable_findings(findings: Sequence[Finding]) -> list[Finding]:
-    """§4: only verified and verified_corrected findings can be cited."""
+    """Only verified and verified_corrected findings can be cited."""
     return [f for f in findings if f.verification is not None and f.verification.status != "dropped"]
 
 
@@ -128,7 +128,7 @@ def _tokens(value: str) -> list[str]:
 
 # A legal form is the registration's word, not the organisation's: a filing's
 # "Apple Inc." and a newsroom's "Apple" are one organisation, and a page whose
-# own name is spelled the other way is still that organisation's page (F4).
+# own name is spelled the other way is still that organisation's page.
 _LEGAL_FORMS = frozenset({
     "inc", "incorporated", "corp", "corporation", "co", "company", "ltd", "limited",
     "plc", "llc", "llp", "lp", "ag", "sa", "se", "nv", "bv", "gmbh", "kg", "ab",
@@ -212,7 +212,7 @@ def _trailing_legal_form(value: str) -> str | None:
     """The legal-form word ``value`` ends with, or ``None``.
 
     "Siemens AG" carries ag and "Siemens SA" carries sa: two registrations of one
-    brand, which the trailing-form fold must not merge (N2). A name that writes
+    brand, which the trailing-form fold must not merge. A name that writes
     no form returns ``None``, so it still matches its formed spelling ("Apple" is
     "Apple Inc.").
     """
@@ -230,7 +230,7 @@ def same_organisation(left: str, right: str) -> bool:
     if left_form is not None and right_form is not None and left_form != right_form:
         # Two formed names whose forms differ are different legal entities
         # ("Siemens AG" is not "Siemens SA"), so their figures are never one
-        # fact and neither is an earlier edition of the other (N2). A name with
+        # fact and neither is an earlier edition of the other. A name with
         # no form at all is still its formed spelling.
         return False
     if _HOST.fullmatch(left.strip().casefold()) and _HOST.fullmatch(right.strip().casefold()):
@@ -272,7 +272,7 @@ def _acronym_leads_the_name(left: str, right: str) -> bool:
 
     "TIOBE" is "TIOBE Software" and "IEEE" is "IEEE Spectrum": an
     organisation's acronym leads its own name. This is an *answering* rule, not
-    a name identity (RevFF1p2's D-1): it says a figure whose own organisation is
+    a name identity: it says a figure whose own organisation is
     "TIOBE" may answer a target the plan addressed to "TIOBE Software", and it
     deliberately does not reach the matcher every merge, fold and page label
     reads, where "IEA" and "IEA PVPS" are two bodies with different numbers for
@@ -308,8 +308,8 @@ def _answers_organisation(target_organisation: str, name: str) -> bool:
     """Whether ``name`` answers a target's organisation (the answering paths only).
 
     Two rules, and nothing else: ``same_organisation``'s identity, and the
-    acronym that leads an organisation's own name. The second is answering-only
-    (RevFF1p2's D-1/D-2), so no merge, revision fold, page label or attribution
+    acronym that leads an organisation's own name. The second is answering-only,
+    so no merge, revision fold, page label or attribution
     resolution reads it.
     """
     return same_organisation(target_organisation, name) or _acronym_leads_the_name(
@@ -324,7 +324,7 @@ def _period_key(value: str | None) -> str | None:
     return " ".join(words) or None
 
 
-# One period, spelled as the planner asked and as the page writes it (I4):
+# One period, spelled as the planner asked and as the page writes it:
 # "FY2025" is "fiscal 2025", "Q4 2025" is "fourth quarter of 2025", "H1 2025"
 # is "first half of 2025". The abbreviation is split from its number first, so
 # "FY2025" and "FY 2025" are one spelling, and a fiscal year is folded onto
@@ -394,9 +394,8 @@ def same_period(left: str | None, right: str | None) -> bool:
 # starts in. A *date* continues the same way and does state its year
 # ("2024-01-15", "2024-1-5", "2024/01/15"), so the two readings are separate
 # patterns: a run is skipped only when the continuation is a span and not a date
-# (ReRevFF1r5's finding 1 -- stacking the date reading into the span pattern
-# suppressed the guard entirely, and a three-year span stated its start year
-# again).
+# (stacking the date reading into the span pattern would suppress the guard
+# entirely, and a three-year span would state its start year again).
 _RANGE_CONTINUATION = re.compile(r"^\s*[-/\u2013]\s*(?:\d{2}|\d{4})(?!\d)")
 _DATE_CONTINUATION = re.compile(
     r"^\s*[-/\u2013]\s*(?:0?[1-9]|1[0-2])\s*[-/\u2013]\s*(?:0?[1-9]|[12]\d|3[01])(?!\d)"
@@ -415,7 +414,7 @@ def _period_stated_in(text: str, period: str | None) -> bool:
     states the period a page or a reply writes "Q1 2025".
 
     A run the text continues as a range does not count: "FY2024-25" states the
-    fiscal year the range ends in, not "fiscal 2024" (RevFF1r3's Important 2).
+    fiscal year the range ends in, not "fiscal 2024".
     """
     key = _period_key(period)
     if key is None:
@@ -435,20 +434,20 @@ def _period_stated_in(text: str, period: str | None) -> bool:
     return False
 
 
-# Fable §8.6 step 2's filler words, less "a" and "an": a single letter can be a
+# The filler words a subject drops, less "a" and "an": a single letter can be a
 # model's name ("Model A"), and the subset rule already tolerates an article.
 _SUBJECT_FILLER = frozenset({"the", "of", "for", "in", "on", "and", "or", "its", "this", "that"})
 # An article is filler in a *target's* words but never in a subject's: "Model A"
 # and "Model B" differ by one letter, so a question's "a kettle" must not erase
-# it (fix round 1, CRITICAL 1).
+# it.
 _ARTICLE = frozenset({"a", "an"})
 
 # The words that say *how much*, never *what about*: a subject and a target's
-# measure sharing only these are not about the same thing. The live pre-flight
-# printed the EIA's 2025 forecasts for utility-scale solar (32.5 GW), wind
-# (7.7 GW) and natural gas (4.4 GW) under the measure "projected grid-scale
+# measure sharing only these are not about the same thing. Without them, the
+# EIA's 2025 forecasts for utility-scale solar (32.5 GW), wind (7.7 GW) and
+# natural gas (4.4 GW) would all answer the measure "projected grid-scale
 # battery storage capacity additions", because every field but the subject
-# matched (review-02).
+# matches.
 _MEASURE_FILLER = frozenset({
     "capacity", "addition", "additions", "added", "projected", "projection",
     "projected", "forecast", "forecasts", "value", "total", "number", "amount",
@@ -474,7 +473,7 @@ _SCOPE_WORDS = frozenset(
 
 
 def _subject_tokens(text: str | None) -> tuple[str, ...]:
-    """Fable §8.6 step 2, in order: casefolded words, "U.S." as "us", punctuation as spaces, filler dropped."""
+    """Casefolded words, "U.S." as "us", punctuation as spaces, filler dropped, in that order."""
     if not text or not text.strip():
         return ()
     folded = re.sub(r"\bu\.s\.", "us", text.casefold())
@@ -486,7 +485,7 @@ def _subject_words(text: str | None) -> frozenset[str]:
 
 
 def _stated_words(*texts: str | None) -> frozenset[str]:
-    """The words a target states in these texts, less its articles (fix round 1, CRITICAL 1)."""
+    """The words a target states in these texts, less its articles."""
     words: set[str] = set()
     for text in texts:
         words |= _subject_words(text)
@@ -494,15 +493,15 @@ def _stated_words(*texts: str | None) -> frozenset[str]:
 
 
 def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]) -> frozenset[str]:
-    """Fable §8.6 step 3: the words *every* one of these targets states.
+    """The words *every* one of these targets states.
 
     A subject that only restates what its targets already say ("United States"
     on a target about the United States) names nothing, so it matches any
-    subject. The words are the shared ones, not the pooled ones (fix round 1,
-    IMPORTANT 2): of two sibling targets asking one thing of two places
+    subject. The words are the shared ones, not the pooled ones: of two sibling
+    targets asking one thing of two places
     ("Spain", "Italy"), each name belongs to one target alone, so neither
     subject is stripped. With one shared target this is that target's words.
-    Articles never count (fix round 1, CRITICAL 1), so "Model A" keeps its "A"
+    Articles never count, so "Model A" keeps its "A"
     even when the target's question says "a kettle".
     """
     wanted = set(target_ids)
@@ -516,7 +515,7 @@ def subject_context(target_ids: Iterable[str], targets: Iterable[EvidenceTarget]
 
 @dataclass(frozen=True)
 class _TargetFields:
-    """What the targets two sides share state as their own fields (Task 5.6c).
+    """What the targets two sides share state as their own fields.
 
     The distinguishing test maps each subject's give-away word to one field --
     the geography if it states the word, else the measure, else the rest of the
@@ -566,11 +565,11 @@ def _give_away_field(word: str, fields: _TargetFields) -> str:
 
 def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
                      context_words: frozenset[str] = frozenset()) -> bool:
-    """Fable §8.6 steps 4-5: either side names nothing beyond the context, or one contains the other.
+    """Either side names nothing beyond the context, or one contains the other.
 
     The comparison ``_subject_fits`` makes -- one subject against the words a
     target spells its own subject with -- is this rule alone. Two *subjects*
-    against each other also get Task 5.6c's distinguishing test first, in
+    against each other also get the distinguishing test first, in
     ``same_subject``, which is where a target that names both options is seen.
     """
     left_words = left - context_words
@@ -583,7 +582,7 @@ def _names_one_thing(left: frozenset[str], right: frozenset[str], *,
 def _told_apart(left: frozenset[str], right: frozenset[str], *,
                 context_words: frozenset[str] = frozenset(),
                 target_fields: _TargetFields = _TargetFields()) -> bool:
-    """Task 5.6c: whether the target names a give-away of each side in the *same* field.
+    """Whether the target names a give-away of each side in the *same* field.
 
     A target that names both options states a word only the one side carries
     and a word only the other does ("Kettle K1" and "Kettle K2"), and those
@@ -595,7 +594,7 @@ def _told_apart(left: frozenset[str], right: frozenset[str], *,
     target describes, and either side may carry extra words of the other's
     field ("battery storage capacity" against "United States"), so single-subject
     runs keep the rows they had. Only an article a target actually writes counts
-    as a give-away (fix round 1, Minor 3), and an article the *subject* carries
+    as a give-away, and an article the *subject* carries
     is a question word like any other.
     """
     stated = context_words | target_fields.articles
@@ -611,13 +610,13 @@ def _told_apart(left: frozenset[str], right: frozenset[str], *,
 def same_subject(left: str | None, right: str | None, *,
                  context_words: frozenset[str] = frozenset(),
                  target_fields: _TargetFields = _TargetFields()) -> bool:
-    """Fable §8.6 steps 1-5: whether two subjects can name one thing.
+    """Whether two subjects can name one thing.
 
     Compatible when either names nothing beyond the context, or when one set of
     words contains the other ("X200" and "Acme X200"). Overlap is not enough:
     "version 10.02" and "version 10.03" share "version" and stay apart. A
     target that names both sides' give-aways in one field tells the two
-    subjects apart even though it restates both of them (Task 5.6c).
+    subjects apart even though it restates both of them.
     """
     left_words = _subject_words(left)
     right_words = _subject_words(right)
@@ -631,13 +630,12 @@ def _periods_match(left_period: str | None, right_period: str | None,
                    left_subject: str | None, right_subject: str | None, *,
                    context_words: frozenset[str] = frozenset(),
                    target_fields: _TargetFields = _TargetFields()) -> bool:
-    """PD-9's period test, plus controller ruling N1.
+    """Whether two figures are about one period.
 
     Two figures that both state no period (a current price, a product rating)
     are one period only when both carry a subject and it is the same one, so
     one product's rating on its own page and on a relay is one fact and a
-    re-test folds as a revision. Without subjects, no period never matches, as
-    before, so a single-subject run is unchanged.
+    re-test folds as a revision. Without subjects, no period never matches.
     """
     if _period_key(left_period) is None and _period_key(right_period) is None:
         return bool(left_subject and right_subject) and same_subject(
@@ -649,7 +647,7 @@ def subject_named_in(text: str, subject: str | None, *,
                      context_words: frozenset[str] = frozenset()) -> bool:
     """Whether ``text`` names ``subject``: its distinctive words as one run of words.
 
-    A run, not a set (PlanCheck F9): "Model B scored a 4.5" does not name
+    A run, not a set: "Model B scored a 4.5" does not name
     "Model A", although both of its words occur there. True with no subject.
     """
     wanted = tuple(word for word in _subject_tokens(subject) if word not in context_words)
@@ -662,7 +660,7 @@ def subject_named_in(text: str, subject: str | None, *,
 def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
                           context_words: frozenset[str] = frozenset(),
                           target_fields: _TargetFields = _TargetFields()) -> bool:
-    """Whether ``text`` names what tells ``subject`` from ``rival`` (Task 5.6c).
+    """Whether ``text`` names what tells ``subject`` from ``rival``.
 
     A target that names both options ("the Kettle K1 and the Kettle K2") strips
     what either subject would say alone, so ``subject_named_in`` cannot tell the
@@ -672,7 +670,7 @@ def subject_distinguishes(text: str, subject: str | None, rival: str | None, *,
     are never refused here. A give-away that is nothing but an article
     distinguishes nothing on its own -- "Model A" against "Model B" leaves just
     the "a", which any sentence may carry -- so the whole name is required
-    instead ("model a"; fix round 1, Important 2).
+    instead ("model a").
     """
     if same_subject(subject, rival, context_words=context_words, target_fields=target_fields):
         return True
@@ -691,7 +689,7 @@ def subject_names_row(text: str, row: FactRow, rows: Sequence[FactRow],
     """Whether ``text`` is about ``row``: it names the row's subject, and tells it from each rival.
 
     The one rule both the reader's labels (``report._point_labels``) and the
-    writer's restatement guard ask of a sentence (Task 5.6c). A row with no
+    writer's restatement guard ask of a sentence. A row with no
     subject is named by any sentence. Where the candidate rows' subjects are
     different things -- a target that names both options, say -- a sentence
     counts for a row only when it states what distinguishes that row from every
@@ -727,7 +725,7 @@ def _item_shaped(per_target: Sequence[frozenset[str]]) -> bool:
     digits, and they share what the group does not ("Kettle"), so a correct
     subject for either is expected to state them. Two publishers ("RTINGS"
     against "Wirecutter") share nothing and carry no number, so no product's
-    subject can name either -- the case the deferral exists for (N1).
+    subject can name either -- the case the deferral exists for.
     """
     words = frozenset().union(*per_target)
     if any(any(character.isdigit() for character in word) for word in words):
@@ -739,13 +737,13 @@ def _item_shaped(per_target: Sequence[frozenset[str]]) -> bool:
 
 def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
                   plan_targets: Sequence[EvidenceTarget]) -> bool:
-    """D11 (Fable §8.5): of targets asking one thing of different subjects, a figure answers its own.
+    """Of targets asking one thing of different subjects, a figure answers its own.
 
     Siblings share measure, period, kind, unit dimension and organisation, so
     the words of a target's question and geography that not all of them share
     name its subject ("Spain", "Model A"). A plan without siblings, or a figure
     without a subject, is never refused here. The subject keeps its own
-    articles and the target's words do not (fix round 1, CRITICAL 1): a
+    articles and the target's words do not: a
     question's "in a lab" must not read as the "A" of "Model A".
     """
     siblings = [t for t in plan_targets if t.target_id != target.target_id and _asks_the_same(t, target)]
@@ -773,15 +771,15 @@ def _subject_fits(figure: VerifiedFigure, target: EvidenceTarget,
         # price targets no product's subject names either publisher of. The rule
         # has nothing to match on, so it defers to the extraction's own binding
         # rather than refusing both and printing "Not found" beside the report's
-        # answer (F3).
+        # answer.
         #
         # Two bounds keep that deferral from answering an obligation it should
-        # refuse (N1): the extraction must have bound exactly one member of the
+        # refuse: the extraction must have bound exactly one member of the
         # group (a finding bound to both cannot be the reason either is
         # answered), and the distinguishing words must not be identifiers a
         # subject *would* carry -- "Kettle K1" against "Kettle K2" is one family
         # of items, so a figure about "Kettle K3" is a wrong subject there and
-        # today's refusal stands.
+        # the refusal stands.
         return True
     return _names_one_thing(subject_words,
                             _stated_words(target.question, target.geography),
@@ -800,7 +798,7 @@ def canonical_scopes(text: str | None) -> set[str]:
 # variant: "utility-scale solar capacity" claims a quantity, "version 10.02"
 # says which edition of one. Only a measure-shaped subject can contradict a
 # target's measure, so only one is tested against it (``two-versions-one-target``
-# and the D11 sibling rows depend on the other kind answering).
+# and the sibling rows depend on the other kind answering).
 _MEASURE_WORDS = _MEASURE_FILLER | frozenset({
     "power", "energy", "price", "prices", "cost", "costs", "output", "production",
     "demand", "consumption", "emissions",
@@ -855,7 +853,7 @@ def _subject_names_the_measure(figure: VerifiedFigure, target: EvidenceTarget) -
 
     ``_subject_fits`` answers the sibling question (which of two targets asking
     one thing this figure is about) and never refuses a subject-less figure.
-    This answers the other one (review-02): a figure whose subject states a
+    This answers the other one: a figure whose subject states a
     *different* measure does not answer the target, however well its unit,
     period, kind and organisation fit. Two ways to fit are admitted — the
     subject and the measure share a distinctive word, or the subject names
@@ -865,8 +863,8 @@ def _subject_names_the_measure(figure: VerifiedFigure, target: EvidenceTarget) -
     A subject that is not a measure phrase at all is never tested: it says
     which entity or variant the figure is about ("version 10.02", "Kettle K1",
     "Spain"), which is what the sibling rule tells apart, and it cannot
-    contradict a measure it never claims. A figure with no subject answers
-    exactly as it did.
+    contradict a measure it never claims. A figure with no subject is never
+    refused here.
     """
     if not figure.context.subject:
         return True
@@ -893,7 +891,7 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         return False
     # A value the number parser cannot read -- a currency symbol, a sign, an
     # approximation, a range -- is still a figure in a unit the page wrote, so
-    # the unit's own dimension says what the figure is about (I3). An unknown
+    # the unit's own dimension says what the figure is about. An unknown
     # unit names no dimension, which is what a target asking for a currency or
     # a count asks for.
     dimension = (figure.quantity.dimension if figure.quantity is not None
@@ -902,11 +900,11 @@ def _figure_answers(figure: VerifiedFigure, target: EvidenceTarget,
         fits = dimension == target.unit_dimension
     else:
         fits = dimension is None
-        # D9: an unscaled target has no structural dimension check to gate a
+        # An unscaled target has no structural dimension check to gate a
         # fallback answer with, so a fallback-bound finding must also state
-        # what this target asks -- the run's date-figured, unbound findings
-        # named a "when" sub-topic and, with fits already true, answered both
-        # of its qualitative targets. An explicit binding skips this.
+        # what this target asks: without it, an unbound finding under a "when"
+        # sub-topic, with fits already true, would answer all of its
+        # qualitative targets. An explicit binding skips this.
         if fits and not figure.finding.target_ids:
             fits = _content_states_target(figure.finding, target, sub_topics)
     return (
@@ -959,8 +957,8 @@ def _sub_topic_evidence_targets(target: EvidenceTarget,
 # Words a target's own question or measure states purely as grammar, never as
 # what it asks about: shared by almost any two English questions, so their
 # presence in a finding's content proves nothing about which target it states
-# (P2 regression -- "from" in "From what date do the obligations apply?"
-# passed an unrelated warranty sentence that also happened to say "from").
+# (for instance "from" in "From what date do the obligations apply?" would
+# pass an unrelated warranty sentence that also happens to say "from").
 # Domain-neutral and short by design; not folded into ``_distinctive_words``
 # itself, which other callers use for a different question (what a *subject*
 # or a *measure* is about, not whether prose answers a specific target).
@@ -973,7 +971,7 @@ _QUESTION_FUNCTION_WORDS = frozenset({
 def _fallback_content_words(target: EvidenceTarget,
                             sub_topics: Sequence[SubTopic]) -> frozenset[str]:
     """The words a fallback answer to ``target`` must find in a finding's own
-    content (D9).
+    content.
 
     The words that single this target out among its own sub-topic's other
     targets, not every one of the target's own distinctive words: two targets
@@ -996,18 +994,16 @@ def _fallback_content_words(target: EvidenceTarget,
 
 def _content_states_target(finding: Finding, target: EvidenceTarget,
                            sub_topics: Sequence[SubTopic]) -> bool:
-    """Whether ``finding.content`` actually states what ``target`` asks (D9).
+    """Whether ``finding.content`` actually states what ``target`` asks.
 
-    Gates the sub-topic fallback alone (1A): naming the sub-topic is not
-    enough by itself -- the run's Shure findings named the mic-quality
-    sub-topic's coverage id and, with no check on what they actually said,
-    answered every required target that sub-topic owned. An explicit binding
+    Gates the sub-topic fallback alone: naming the sub-topic is not enough by
+    itself, or a finding that only names a sub-topic's coverage id would
+    answer every required target that sub-topic owns. An explicit binding
     is the extraction's own judgement of its own content and is never put
     through this. This gates only whether *this finding's own* ``target_ids``
     field may be read as answering ``target`` through the fallback --
     ``ReportStatement.target_ids`` still take a fallback answer too
-    (``report_writer.py``'s ``answered_target_ids`` call, owned by the format
-    work, D9's other half is not delivered by this slice).
+    (``report_writer.py``'s ``answered_target_ids`` calls).
     """
     wanted = _fallback_content_words(target, sub_topics)
     return bool(wanted & _distinctive_words(finding.content))
@@ -1019,9 +1015,9 @@ def _binds_target(finding: Finding, target: EvidenceTarget,
 
     The extraction's binding is the authority: a finding that names *any*
     target answers only the ones it names, and one that names none is answered
-    through its own sub-topic alone (improvement 1A). Never "answers
+    through its own sub-topic alone. Never "answers
     everything": a finding with no target id of a different sub-topic, or with
-    a target id that does not include this one, is refused exactly as before.
+    a target id that does not include this one, is refused.
     """
     if target.target_id in finding.target_ids:
         return True
@@ -1032,7 +1028,7 @@ def _binds_target(finding: Finding, target: EvidenceTarget,
 
 def answers_by_fallback(finding: Finding, target: EvidenceTarget,
                         sub_topics: Sequence[SubTopic]) -> bool:
-    """Whether this finding answers the target *only* through its own sub-topic (1A).
+    """Whether this finding answers the target *only* through its own sub-topic.
 
     The extraction's own binding is authoritative, so a finding that names this
     target answers it directly and this is ``False`` whatever else it names. The
@@ -1040,7 +1036,7 @@ def answers_by_fallback(finding: Finding, target: EvidenceTarget,
     belongs to the sub-topic the finding names. That is the answer a consumer
     has to keep honest -- it rests on the finding's sub-topic rather than on the
     extraction's reading of the target's question -- which is why the coverage
-    gate asks a fallback answer to reach the reader (review F2).
+    gate asks a fallback answer to reach the reader.
     """
     return (target.target_id not in finding.target_ids
             and finding.target_ids == []
@@ -1058,24 +1054,24 @@ def _finding_organisations(finding: Finding) -> list[str]:
 def finding_answers(finding: Finding, target: EvidenceTarget, *,
                     plan_targets: Sequence[EvidenceTarget] = (),
                     sub_topics: Sequence[SubTopic] = ()) -> bool:
-    """§6.6, plus PD-7 for a target with no unit dimension, D9's fallback content check, and D11's sibling rule."""
+    """Whether a finding answers a target: the figure checks, the qualitative-target path for a target with no unit dimension, the fallback content check, and the sibling-subject rule."""
     if finding.verification is None or finding.verification.status == "dropped":
         return False
     if not _binds_target(finding, target, sub_topics):
         return False
     if target.unit_dimension is None:
         # A qualitative target's organisation is the plan's preference, not a
-        # gate on the page's own statements (Defect C): a host name is not
+        # gate on the page's own statements: a host name is not
         # evidence of who a page speaks for (playvalorant.com is Riot Games's,
         # github.blog is GitHub's, every EU body is europa.eu), so requiring the
         # finding's own names to spell it refused the organisation's own pages
         # and reported the obligation "Not found" against its own evidence.
         #
         # A fallback-bound finding (no target ids of its own) must also state
-        # what this target asks (D9): naming the sub-topic is not enough by
-        # itself, or the run's Shure findings -- no target ids, mic-quality
-        # sub-topic named, no word of any of its targets' own questions --
-        # would answer every required target that sub-topic owned. An
+        # what this target asks: naming the sub-topic is not enough by
+        # itself, or a finding with no target ids that merely names a
+        # sub-topic, and no word of any of its targets' own questions,
+        # would answer every required target that sub-topic owns. An
         # explicit binding is the extraction's own judgement and skips this.
         if not finding.target_ids and not _content_states_target(finding, target, sub_topics):
             return False
@@ -1107,8 +1103,8 @@ def answered_target_ids(
 
     ``sub_topics`` is the plan the findings were extracted under: it is what
     resolves an unbound finding's own ``related_sub_topic`` to the coverage id
-    its targets carry (improvement 1A). A caller that omits it keeps the
-    extraction-binding-only behaviour every caller had before.
+    its targets carry. A caller that omits it gets the
+    extraction-binding-only behaviour.
     """
     answered: dict[str, list[str]] = {}
     for target in targets:
@@ -1170,7 +1166,7 @@ _DURATION_PREFIXES = frozenset({"over the", "during the"})
 # A comparison marker before the phrase means it names the base the figure is
 # *compared with*, not the period it applies to: "output rose 12 percent over
 # last year" measures this year, so resolving it to last year would file the
-# figure under a period the page never gave it (P2-1).
+# figure under a period the page never gave it.
 _COMPARISON_MARKERS = frozenset({"over", "than", "from", "vs", "versus", "compared", "since"})
 _COMPARISON_LOOKBACK = 3
 
@@ -1182,7 +1178,7 @@ def _names_a_comparison_base(evidence_words: str, match: re.Match[str]) -> bool:
 
 
 def resolve_relative_period(evidence_words: str, page_date: str | None) -> str | None:
-    """Spec §5.2 (D11): the period a relative phrase names, counted from the page's own date.
+    """The period a relative phrase names, counted from the page's own date.
 
     "this year" on a page dated 2026-02-20 is 2026 and "last quarter" is
     Q4 2025. ``None`` when the words carry no relative phrase, when there is no
@@ -1193,7 +1189,7 @@ def resolve_relative_period(evidence_words: str, page_date: str | None) -> str |
     a phrase the words themselves date ("the last quarter of 2024") states its
     period, so neither is resolved: an invented period would put a figure the
     page never stated into the report. A phrase used as a *comparison base* is
-    not a period either (P2-1).
+    not a period either.
     """
     key = _date_key(page_date)
     match = _RELATIVE_PERIOD.search(evidence_words or "")
@@ -1229,7 +1225,7 @@ def _value_text(figure: FindingFigure) -> str:
 
 def _shared_target_words(left_ids: Iterable[str], right_ids: Iterable[str],
                          by_id: Mapping[str, EvidenceTarget]) -> frozenset[str]:
-    """The words the two sides' shared targets state, less their articles (fix round 1)."""
+    """The words the two sides' shared targets state, less their articles."""
     return subject_context(set(left_ids) & set(right_ids), by_id.values())
 
 
@@ -1238,8 +1234,7 @@ def _rows_share_a_subject(left: FactRow, right: FactRow,
     """Whether two rows are one subject: ``same_subject`` over their shared targets' context.
 
     The duplicate gate and ``fact_rows`` ask the same question of a pair of rows,
-    so they build the context the same way -- words and fields alike (Task 5.6c
-    fix round 1).
+    so they build the context the same way -- words and fields alike.
     """
     shared = set(left.target_ids) & set(right.target_ids)
     return same_subject(left.subject, right.subject,
@@ -1263,7 +1258,7 @@ def _answered_targets(figure: VerifiedFigure, targets: Sequence[EvidenceTarget],
 
     "Binds" is ``_binds_target``: the extraction's own target ids, or -- for a
     finding extracted with none -- the targets of the sub-topic the finding
-    names (improvement 1A). The same rule ``fact_rows`` builds a row's own
+    names. The same rule ``fact_rows`` builds a row's own
     ``target_ids`` with, so what two figures share here is exactly the
     obligation their row would answer.
     """
@@ -1279,11 +1274,11 @@ def _same_fact(left: VerifiedFigure, right: VerifiedFigure,
                answered: Mapping[tuple[str, int], frozenset[str]] | None = None) -> bool:
     if left.context.kind != right.context.kind:
         return False
-    # PD-9's measure family is "the unit dimension plus the target the finding
-    # answers" (§5.3), so two figures that each answer a *different* obligation
-    # are two facts however equal their values (I6). A figure that answers no
+    # The measure family is "the unit dimension plus the target the finding
+    # answers", so two figures that each answer a *different* obligation
+    # are two facts however equal their values. A figure that answers no
     # target at all -- an unbound extraction, a unit no target asks for --
-    # carries no measure to compare and groups as it did.
+    # carries no measure to compare and groups on its other keys alone.
     targets = list(by_id.values())
     left_ids = _figure_answer_ids(left, targets, answered)
     right_ids = _figure_answer_ids(right, targets, answered)
@@ -1316,9 +1311,9 @@ def _figure_answer_ids(figure: VerifiedFigure, targets: Sequence[EvidenceTarget]
 
 
 def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
-    """§5.3: the organisation's own page ahead of a relay; then the latest release.
+    """The organisation's own page ahead of a relay; then the latest release.
 
-    A member that names a subject comes before one that does not (I2): the
+    A member that names a subject comes before one that does not: the
     group is one fact, so the row's own member is the one that can say what
     the fact is about, and a row built from a subject-less member would print
     no subject beside a named sibling's row.
@@ -1333,27 +1328,26 @@ def _primary(group: Sequence[VerifiedFigure]) -> VerifiedFigure:
 
 def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
               sub_topics: Sequence[SubTopic] = ()) -> list[FactRow]:
-    """§5.3 and PD-9: one row per fact; revisions folded; row ids K001, K002, ...
+    """One row per fact; revisions folded; row ids K001, K002, ...
 
     ``sub_topics`` is the plan the findings were extracted under; a row's
     ``target_ids`` then include the targets an unbound finding answers through
-    its own sub-topic (improvement 1A), which is what lets the writer cite that
+    its own sub-topic, which is what lets the writer cite that
     obligation from this row.
     """
     by_id = {target.target_id: target for target in targets}
     figures = verified_figures(findings)
     # What each figure answers, computed once: the group test and the row's own
-    # target ids ask the same question of the same figures (I6).
+    # target ids ask the same question of the same figures.
     answered = {(figure.finding_id, figure.index): _answered_targets(figure, list(targets), sub_topics)
                 for figure in figures}
     groups: list[list[VerifiedFigure]] = []
     for figure in figures:
         for group in groups:
-            # The first member's test is the BASE rule, so a run with no subjects
-            # groups exactly as before; the subject is then checked against every
+            # The first member's test is the base rule, so a run with no subjects
+            # groups on that rule alone; the subject is then checked against every
             # *member*, not only the first, so a subject-less figure cannot act as
-            # a wildcard that admits a second subject to one row (fix round 1,
-            # IMPORTANT 3).
+            # a wildcard that admits a second subject to one row.
             if _same_fact(group[0], figure, by_id, answered) and all(
                 _figures_share_a_subject(member, figure, by_id) for member in group
             ):
@@ -1366,7 +1360,7 @@ def fact_rows(findings: Sequence[Finding], targets: Sequence[EvidenceTarget],
     for group in groups:
         primary = _primary(group)
         # The row prints one subject, so its obligations are the ones its own
-        # subject-bearing members answer (I2). A member with no subject answers
+        # subject-bearing members answer. A member with no subject answers
         # every sibling target it fits, because nothing can refuse it -- it
         # cannot say which of two subjects it belongs to -- and letting that
         # ride into a named row answers the other subject's obligation with a
@@ -1425,9 +1419,9 @@ def _serves_another_body(finding: Finding, owner: str) -> str | None:
     A title names its own site first or last ("Battery report | EIA"), so a
     three-segment title carries a *middle* segment matching neither the page's
     own organisation nor its host: that segment is the work the page presents.
-    The live run's page wrote its own site label beside the act it reproduces,
-    and the figure it served was then published as the serving site's own
-    statement (improvement 7). ``None`` for every title that names nothing but
+    A page that writes its own site label beside the act it reproduces would
+    otherwise have the figure it serves published as the serving site's own
+    statement. ``None`` for every title that names nothing but
     its headline and its site.
     """
     segments = title_segments(finding.source_title)
@@ -1449,7 +1443,7 @@ def claimed_organisation(context: FigureContext | None, finding: Finding) -> str
     An ``unattributed`` figure's organisation is the page's owner, and a page
     serving another body's work is not the figure's organisation however the
     page's name reads: naming it beside the reader's "source does not attribute
-    it" label is the run's "<the site> states…" sentence (improvement 7). Such a
+    it" label is the run's "<the site> states…" sentence. Such a
     line claims no organisation. Every other attribution keeps the context's own
     organisation, which the verifier resolved and the reader's label prints.
     """
@@ -1469,13 +1463,13 @@ def _row_organisation(figure: VerifiedFigure) -> str:
 
 def _same_period_and_subject(left: FactRow, right: FactRow,
                              by_id: Mapping[str, EvidenceTarget]) -> bool:
-    """Whether two rows are about one thing in one period (PD-9, ruling N1, fix round 1).
+    """Whether two rows are about one thing in one period.
 
     A fold claims a release history, so the two subjects must name the *same*
     thing: their distinctive words equal once the shared targets' words are
     dropped. "X200" and "X200 Pro" are one mergeable fact but two subjects, so
-    they never fold; two rows with no subject at all are still one subject, as
-    at BASE, and merely nested spellings ("Acme X200" and "X200") still merge
+    they never fold; two rows with no subject at all are still one subject, and
+    merely nested spellings ("Acme X200" and "X200") still merge
     under ``_same_fact`` — they just do not earn a release history.
     """
     shared = set(left.target_ids) & set(right.target_ids)
@@ -1489,7 +1483,7 @@ def _same_period_and_subject(left: FactRow, right: FactRow,
 
 def _fold_revisions(rows: Sequence[tuple[FactRow, Finding]],
                     by_id: Mapping[str, EvidenceTarget]) -> list[FactRow]:
-    """PD-9: same organisation, target, period, subject and kind, both released, releases differ.
+    """Same organisation, target, period, subject and kind, both released, releases differ.
 
     Pairs a row with the ``Finding`` its own primary figure came from,
     rather than re-looking it up by ``finding_fingerprint`` afterward: two
@@ -1530,7 +1524,7 @@ def not_found_targets(
     answered: Mapping[str, list[str]],
     acquisition: Mapping[str, AcquisitionState],
 ) -> list[NotFoundTarget]:
-    """§6.1 item 5: each required target with no verified finding, and where it was searched."""
+    """Each required target with no verified finding, and where it was searched."""
     rows: list[NotFoundTarget] = []
     for topic in sub_topics:
         state = acquisition.get(topic.coverage_id)

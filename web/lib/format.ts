@@ -1,13 +1,13 @@
-// The prototype's display helpers, ported from docs/design/prototype/index.html:1704-1784,
-// :3267-3270, :3483-3485, :3708-3717. Bodies unchanged; types added; toSessionView adapts the
-// API's flat fields to the prototype's session shape so statusNote keeps its body.
+// The prototype's display helpers (docs/design/prototype/index.html), with types added;
+// toSessionView adapts the API's flat fields to the prototype's session shape so statusNote
+// keeps its body.
 import type { CoverageProgress, ResearchSessionResponse, SessionStatus } from "./api";
 
 export interface SessionView {
   status: SessionStatus;
   iteration: number;
-  /* The running row's label (live-briefs spec §4.2: "Running · {step}"), or the label of the step a
-     stopped session was stopped at (notes-progress-report spec §8.4: "Stopped by you · at {step}");
+  /* The running row's label ("Running · {step}"), or the label of the step a
+     stopped session was stopped at ("Stopped by you · at {step}");
      null when not known. */
   step: string | null;
   review: { status: string | null; score: number | null } | null;
@@ -24,7 +24,7 @@ export function toSessionView(s: ResearchSessionResponse, step: string | null = 
 
 /* Label and dot per API status (api/models.py, SessionStatus). The second clause is built by
    statusNote(). A session the reader stopped sits on a neutral dot: stopping is neither a failure
-   nor a warning (notes-progress-report spec D18). */
+   nor a warning. */
 export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "dot-ok" | "dot-warn" | "dot-danger" | "dot-neutral" }> = {
   running: { label: "Running", dot: "dot-live" },
   needs_input: { label: "Waiting for you", dot: "dot-warn" },
@@ -35,20 +35,20 @@ export const STATUS: Record<SessionStatus, { label: string; dot: "dot-live" | "d
   stopped: { label: "Stopped by you", dot: "dot-neutral" },
 };
 /* A session still in progress: running, or waiting for the reader's answers to the one-time check
-   (live-briefs spec §4.4: needs_input is not terminal). */
+   (needs_input is not terminal). */
 export function isLive(status: SessionStatus): boolean {
   return status === "running" || status === "needs_input";
 }
 
-/* index.html:1795-1811 (setQuestionFit) / DESIGN.md:401-405 — a short question sits in the middle
-   of the frame; the .ask-locked.q-center CSS rule (globals.css) does the actual centring. */
+/* The prototype's setQuestionFit(): a short question sits in the middle of the frame; the
+   .ask-locked.q-center CSS rule (globals.css) does the actual centring. */
 export const Q_CENTER_MAX = 80;
 export function qFitClass(q: string): string {
   return (q || "").length <= Q_CENTER_MAX ? " q-center" : "";
 }
-/* The report's pass fact in plain words (live-briefs spec §4.2, D15): the extra research passes the
-   run took (`iteration`, zero-based), then the passes it took for the reader's notes (`note_passes`,
-   added in Phase 3 — 0 until then). */
+/* The report's pass fact in plain words: the extra research passes the
+   run took (`iteration`, zero-based), then the passes it took for the reader's notes
+   (`note_passes`, 0 when there were none). */
 const times = (n: number) => (n === 1 ? "once" : n === 2 ? "twice" : n + " times");
 export function passFact(iteration: number, notePasses = 0): string {
   const research = iteration > 0 ? "Went back " + times(iteration) + " to fill gaps" : "One research round";
@@ -77,13 +77,6 @@ export function statusNote(s: SessionView): string {
     default: return s.step ?? "starting";
   }
 }
-export function fmtDur(a: string | null, b: string | null): string | null {
-  if (!a || !b) return null;
-  const ms = new Date(b).getTime() - new Date(a).getTime();
-  if (Number.isNaN(ms) || ms < 0) return null;
-  const s = Math.round(ms / 1000);
-  return Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s";
-}
 export function fmtSeconds(s: number | null): string | null {
   if (typeof s !== "number" || !Number.isFinite(s) || s < 0) return null;
   const t = Math.round(s);
@@ -104,7 +97,7 @@ export function meterClass(v: number): "ok" | "warn" | "danger" | null {
   if (Number.isNaN(v)) return null;
   return v > 0.8 ? "ok" : v >= 0.4 ? "warn" : "danger";
 }
-/* Halting types (graph/state.py:141-150) in plain words; the two api.research.* types are the
+/* Halting types (the graph's failure state) in plain words; the two api.research.* types are the
    API layer's own failures, which never emit graph.session.completed. */
 export const HALT_HEADLINES: Readonly<Record<string, string>> = {
   graph_planning_failed: "Planning failed",
@@ -120,7 +113,7 @@ export const PILL_TEXT: Readonly<Record<string, string>> = {
   verified: "verified", verified_corrected: "corrected", quoted: "quoted", dropped: "dropped",
   not_checked: "not checked", not_found: "not found", refused: "refused",
 };
-/* The evidence log's verbs (agents/report.py:1929-1933). */
+/* The evidence log's verbs (agents/report.py). */
 export const VERIFICATION_TEXT: Readonly<Record<string, string>> = {
   verified: "verified",
   verified_corrected: "verified with corrections",

@@ -366,8 +366,8 @@ def fake_research_state(**overrides: object) -> ResearchState:
 
 
 def fake_reader_note(note_id: str = "n1", **overrides: object) -> ReaderNote:
-    """One interpreted reader note (live-briefs spec §4.6): an emphasis, not yet
-    reviewed, passed or redrafted, unless a test says otherwise."""
+    """One interpreted reader note: an emphasis, not yet reviewed, passed or
+    redrafted, unless a test says otherwise."""
     payload: dict[str, object] = {
         "note_id": note_id,
         "text": f"Focus on grid storage ({note_id}).",
@@ -625,11 +625,10 @@ class FakeReviewer:
 
         Mirrors ``.review()``'s bookkeeping over ``scoped.base`` (the packet a
         full review of the same content would build), since that is what the
-        merged record is stamped against (T5 addendum). A queued
-        ``BaseException`` is raised instead of returned, the same contract
-        ``.review()`` and ``FakeAgent`` honour, so a graph test can script a
-        scoped call that fails outright (P2: the fallback-to-full-review
-        gate).
+        merged record is stamped against. A queued ``BaseException`` is raised
+        instead of returned, the same contract ``.review()`` and ``FakeAgent``
+        honour, so a graph test can script a scoped call that fails outright
+        (the fallback-to-full-review gate).
         """
         base = getattr(scoped, "base", scoped)
         fingerprint = getattr(base, "fingerprint", "")

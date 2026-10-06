@@ -291,7 +291,7 @@ def test_research_request_applies_safe_defaults() -> None:
 
 
 def test_research_request_accepts_zero_extra_passes() -> None:
-    """PD-15: the field keeps its name and zero is a legitimate ceiling."""
+    """The field keeps its name and zero is a legitimate ceiling."""
     request = ResearchRequest.model_validate(
         {"query": "Question", "max_iterations": 0}
     )
@@ -438,8 +438,8 @@ def test_session_response_reads_the_typed_measurements_a_pass_recorded() -> None
 
 
 def test_session_response_counts_quoted_findings_apart() -> None:
-    """D21: a quoted finding is neither verified nor dropped; the API's
-    evidence counts must carry it as its own reading, not silently drop it."""
+    """A quoted finding is neither verified nor dropped; the API's evidence counts
+    must carry it as its own reading, not silently drop it."""
     state = judged_state().model_copy(
         update={"quality": quality_snapshot(quoted_findings=5)}
     )
@@ -573,8 +573,8 @@ async def test_start_is_non_blocking_and_progress_updates_status() -> None:
     assert runner.calls[0]["config_overrides"] == {
         "output": {"directory": "api-output/"}
     }
-    # The request's ``max_iterations`` reaches the runner as the extra-pass
-    # ceiling, in the graph's own vocabulary (PD-15).
+    # The request's ``max_iterations`` reaches the runner as the extra-pass ceiling,
+    # in the graph's own vocabulary.
     assert runner.calls[0]["max_extra_passes"] == 2
 
     runner.release.set()
@@ -794,7 +794,7 @@ async def test_start_rejects_duplicate_session_ids() -> None:
         start_session(store)
 
 
-# --- iteration follows graph events only (spec A6) -------------------------
+# --- Iteration follows graph events only -------------------------
 
 
 def _graph_or_tool_event(event_type: str, **metadata: object) -> ResearchEvent:
@@ -832,8 +832,8 @@ def test_session_response_requires_query() -> None:
 
 
 def test_session_response_carries_the_report_outline() -> None:
-    """notes-progress-report spec §7.5: the published report's headings, in order,
-    from the composition the report was rendered from."""
+    """The published report's headings, in order, from the composition
+    the report was rendered from."""
     from deep_research.agents.report import render_written_report, report_outline
 
     state = judged_state()

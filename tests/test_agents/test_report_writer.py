@@ -1,7 +1,7 @@
-"""Spec §6: the parallel Report Writer -- one call per plan part, each part's
+"""The parallel Report Writer -- one call per plan part, each part's
 Statement Check pipelined off its own draft, a bottom line written last from
 the checked section statements, and a redraft that re-asks only the parts a
-defect names (§6.9). Every mechanical rule §6.4 keeps is judged here; every
+defect names. Every mechanical rule the writer keeps is judged here; every
 other question about a sentence's wording is the Statement Check's job."""
 
 from __future__ import annotations
@@ -26,23 +26,24 @@ from deep_research.agents.report_writer import (
     PartJob,
     ReportWriterAgent,
     ReportWriterTask,
-    WrittenReport,
     bottom_line_messages,
     compose_written_report,
     finding_registry,
     is_context_only,
-    material_defects,
     registry_lines,
     report_parts,
     section_messages,
     sources_by_url,
-    statement_passages,
 )
 from deep_research.agents.sources import normalize_source_url
 from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
-from deep_research.providers import ProviderOutputLimitError, ProviderResponseError, ProviderResponseTelemetry
+from deep_research.providers import (
+    ProviderOutputLimitError,
+    ProviderResponseError,
+    ProviderResponseTelemetry,
+)
 from deep_research.tools.base import BaseTool
 from deep_research.utils.config import AgentRuntimeConfig
 from deep_research.utils.types import (
@@ -67,7 +68,6 @@ from deep_research.utils.types import (
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.research_fakes import report_writer_tools
-
 
 EIA = "U.S. Energy Information Administration"
 
@@ -128,7 +128,7 @@ def _authority_source(url: str, *, authority: float, low_confidence: bool = Fals
     )
 
 
-# --- report_parts: the §6.1 partition -----------------------------------
+# --- report_parts: the partition ----------------------------------------
 
 
 def test_report_parts_places_a_finding_by_its_explicit_required_binding():
@@ -261,7 +261,7 @@ def test_report_parts_returns_empty_parts_in_plan_order_for_sub_topics_with_no_f
     assert unplaced == []
 
 
-# --- is_context_only (D16) -------------------------------------------------
+# --- is_context_only -------------------------------------------------------
 
 
 def test_is_context_only_for_an_unbound_low_relevance_source():
@@ -291,7 +291,7 @@ def test_is_context_only_true_for_a_low_confidence_source_regardless_of_relevanc
 
 @pytest.mark.asyncio
 async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer(writer, checker) -> None:
-    """Y2.1 regression: a weak source's own distinct fact is still written
+    """Regression: a weak source's own distinct fact is still written
     beside a stronger finding's answer to the same required target,
     rather than being hidden as context-only."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
@@ -334,7 +334,7 @@ async def test_a_weak_sources_distinct_fact_stays_citable_beside_a_strong_answer
 async def test_bottom_line_withholds_a_statement_resting_only_on_a_derivative_source(
     writer, checker, monkeypatch,
 ) -> None:
-    """Run-8 D1: a statement citing only a source whose read declares
+    """A statement citing only a source whose read declares
     itself derivative or teaching content is withheld from the bottom
     line's candidate pool whenever another statement meets the floor --
     it stays in its section."""
@@ -485,11 +485,11 @@ async def test_bottom_line_lets_everything_through_when_no_statement_meets_the_f
     assert composition.rejected_points == []
 
 
-# --- finding_registry: required-first, then authority (D1, D3) -------------
+# --- finding_registry: required-first, then authority ----------------------
 
 
 def test_finding_registry_orders_a_required_targets_answers_by_authority():
-    """D1, D3: within the required-target-answering group, the stronger
+    """Within the required-target-answering group, the stronger
     source's finding gets the lower label, not merely the one that
     extracted first -- so the strongest sources of a target get the
     first labels. ``unit_dimension=None`` so both findings actually
@@ -510,9 +510,9 @@ def test_finding_registry_orders_a_required_targets_answers_by_authority():
 
 
 def test_finding_registry_breaks_a_tie_by_the_targets_plan_order():
-    """RevV2 P2: within a tie (missing or equal authority), the required
+    """Within a tie (missing or equal authority), the required
     group still lists a target's answers in the targets' own plan
-    order, the tiebreak the pre-authority registry used -- not merely
+    order -- not merely
     input/citable order, which interleaves two required targets'
     answers when authority is absent or equal."""
     target_1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
@@ -528,7 +528,7 @@ def test_finding_registry_breaks_a_tie_by_the_targets_plan_order():
 
 
 def test_finding_registry_puts_a_required_targets_answer_first_over_a_stronger_optional_one():
-    """RevV2 P3: the required-group beats authority, not merely orders
+    """The required-group beats authority, not merely orders
     within it -- a weaker source answering the required target still
     outranks a stronger source that only answers an optional sibling."""
     required = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
@@ -549,7 +549,7 @@ def test_finding_registry_puts_a_required_targets_answer_first_over_a_stronger_o
     assert registry[0][1].source_url == "https://weak.test/1"
 
 
-# --- registry_lines: D5's content: and passage: lines ----------------------
+# --- registry_lines: content: and passage: lines ---------------------------
 
 
 def test_registry_lines_carry_the_findings_content_line():
@@ -560,7 +560,7 @@ def test_registry_lines_carry_the_findings_content_line():
 
 
 def test_registry_lines_print_disputes_yes_for_a_disputing_finding():
-    """Z1/Z2 shared contract (audit D2, CODE 1): the registry line prints
+    """The registry line prints
     ``disputes: yes`` for a finding the dissent re-ask returned."""
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA)
     finding = finding.model_copy(update={"disputes": True})
@@ -589,7 +589,7 @@ def test_registry_lines_omit_a_passage_line_for_a_kept_figure():
 
 
 def test_registry_lines_carry_the_sources_rationale_first_sentence():
-    """D8/D9: the registry line states the Source Evaluator's own
+    """The registry line states the Source Evaluator's own
     rationale, first sentence, as "source: ..."."""
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     source = ScoredSource(
@@ -609,7 +609,7 @@ def test_registry_lines_truncate_a_rationale_with_no_word_boundary_at_120_charac
         relevance_score=0.8, overall_score=0.5, rationale="A" * 200,
     )
     text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
-    line = next(l for l in text.splitlines() if l.startswith("source: "))
+    line = next(row for row in text.splitlines() if row.startswith("source: "))
     assert line[len("source: "):] == "A" * 120 + "…"
 
 
@@ -622,14 +622,14 @@ def test_registry_lines_truncate_a_long_rationale_at_a_word_boundary_with_an_ell
         relevance_score=0.8, overall_score=0.5, rationale=long_rationale,
     )
     text = "\n".join(registry_lines("F01", finding, sources=sources_by_url([source])))
-    line = next(l for l in text.splitlines() if l.startswith("source: "))
+    line = next(row for row in text.splitlines() if row.startswith("source: "))
     expected = ("An enthusiast site with no named author, no editorial review and no "
                "institutional backing for any of its historical")
     assert line[len("source: "):] == expected + "…"
 
 
 def test_registry_lines_do_not_split_the_rationale_at_an_abbreviation():
-    """P3-2: 'U.S. Department' is not two sentences."""
+    """'U.S. Department' is not two sentences."""
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     source = ScoredSource(
         url="https://a.test/1", title="A page", authority_score=0.5, recency_score=0.5,
@@ -641,7 +641,7 @@ def test_registry_lines_do_not_split_the_rationale_at_an_abbreviation():
 
 
 def test_registry_lines_omit_the_source_line_for_a_pipeline_generated_rationale():
-    """P3-2: a "Cited for: ..." rationale carries no source-evaluator
+    """A "Cited for: ..." rationale carries no source-evaluator
     judgement, so it never reaches the writer as the page's kind."""
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     source = ScoredSource(
@@ -660,7 +660,7 @@ def test_registry_lines_omit_the_source_line_when_no_sources_are_given():
 
 
 def test_registry_lines_print_a_self_description_when_the_read_declares_one():
-    """Run-8 D1: a finding whose read has a derivative self-description
+    """A finding whose read has a derivative self-description
     prints "self-description: <sentence>" on its registry block, so the
     writer sees what the document says about itself before it credits it."""
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
@@ -777,8 +777,8 @@ def test_section_messages_list_context_only_findings_under_their_own_heading():
 
 
 def test_section_messages_state_a_point_budget_for_this_part():
-    """D11: the reader-length budget divides ``target_words`` by this
-    part's weighted share (Y2.2), never fewer than 3 or fewer than the
+    """The reader-length budget divides ``target_words`` by this
+    part's weighted share, never fewer than 3 or fewer than the
     part's own required-target count."""
     task = _one_target_task()
     task = task.model_copy(update={"target_words": 900})
@@ -795,7 +795,7 @@ def test_section_messages_state_a_point_budget_for_this_part():
 
 
 def test_point_and_word_budget_weight_a_required_part_three_to_one():
-    """Y2.2 (audit D2, CODE 2): with 7 parts and 1 required, the required
+    """With 7 parts and 1 required, the required
     part's weight (3) is three quarters of the total weight (3 + 6 x 1 =
     9), so it gets about 667 of a 2000-word budget and about 15 points;
     each optional part gets about 222 words and about 5 points."""
@@ -933,7 +933,7 @@ def test_a_bottom_line_redraft_shows_its_previous_text():
 
 
 def test_section_messages_carry_the_own_voice_and_actual_outcome_rules():
-    """Fable prompt review (Required 1, Recommended 5): both new rules reach
+    """Both rules (own voice, actual outcome) reach
     the model, not just the constant."""
     task = _one_target_task()
     job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
@@ -948,7 +948,7 @@ def test_section_messages_carry_the_own_voice_and_actual_outcome_rules():
 
 
 def test_section_messages_explain_the_sub_topic_only_suffix():
-    """Fable prompt review (Recommended 4)."""
+    """The sub-topic-only suffix is explained to the model."""
     task = _one_target_task()
     job = PartJob(coverage_id="topic-01", sub_topic_title="Capacity added", order=0,
                  targets=task.targets, findings=task.findings, context_findings=[],
@@ -961,7 +961,7 @@ def test_section_messages_explain_the_sub_topic_only_suffix():
 
 
 def test_bottom_line_messages_carry_the_figure_credit_and_page_date_rules():
-    """Fable prompt review (Required 2, Recommended 3): both new rules reach
+    """Both rules (figure credit, page date) reach
     the model, not just the constant."""
     task = _one_target_task()
 
@@ -975,7 +975,7 @@ def test_bottom_line_messages_carry_the_figure_credit_and_page_date_rules():
 
 
 def test_answer_form_line_does_not_double_its_own_label():
-    """Fable prompt review (item 6): _ANSWER_FORM_REQUIREMENTS' values start
+    """_ANSWER_FORM_REQUIREMENTS' values start
     with their own literal "answer form: " prefix (for planner.py's inline
     use); printed under this module's own "# Answer form" heading unchanged,
     that doubled the label."""
@@ -1022,7 +1022,7 @@ def test_section_instruction_describes_the_option_marks():
 
 
 def test_section_instruction_defines_picked_and_by_for_a_relayed_recommendation():
-    """Whole-branch review P1-1: a relayed pick (a body the page reports as
+    """A relayed pick (a body the page reports as
     recommending an option, not the page's own voice) is not ambiguous, and
     `by` names the finding's *label* -- a body name in `by` gets the mark
     dropped by `_apply_marks` as citing no finding."""
@@ -1033,7 +1033,7 @@ def test_section_instruction_defines_picked_and_by_for_a_relayed_recommendation(
 
 
 def test_section_instruction_keeps_the_criterion_in_the_verdict_span():
-    """Whole-branch review P2-2: the "shortest span" rule must not cut the
+    """The "shortest span" rule must not cut the
     criterion the sentence states the verdict by, and states the
     `_MARK_SPAN_CHARS` cap that would otherwise silently drop the mark."""
     from deep_research.agents.report_writer import _MARK_SPAN_CHARS
@@ -1061,7 +1061,7 @@ def test_bottom_line_instruction_forbids_stating_a_pages_own_date():
     assert "a forecast's release is not a page date and stays" in BOTTOM_LINE_INSTRUCTION
 
 
-# --- generality (D10): no domain or probe wording in model-read text -------
+# --- generality: no domain or probe wording in model-read text --------------
 
 
 _FORBIDDEN_WORDS = ("headphone", "battery", "electoral", "kettle", "sony", "eia",
@@ -1125,7 +1125,7 @@ class _FakeChecker:
         self.gates: list[object] = []
         self.fail_all: bool = False
         """When set, every batch returns no verdicts at all (a Statement Check
-        outage, D8): every item is left ``None`` -- "unchecked" -- exactly as
+        outage): every item is left ``None`` -- "unchecked" -- exactly as
         a real batch failure leaves it, rather than this fake's own default
         of ``consistent``."""
 
@@ -1211,7 +1211,7 @@ async def test_one_non_empty_part_makes_one_section_call_and_one_bottom_line_cal
 
 @pytest.mark.asyncio
 async def test_a_findings_source_line_reaches_the_statement_check(writer, checker) -> None:
-    """W2: the Statement Check and the reviewer must see the same
+    """The Statement Check and the reviewer must see the same
     ``source:`` line the writer's own registry prints, so a sentence naming
     a weak page's kind can be judged against what it was shown, not
     invented against a block that never carried it."""
@@ -1271,7 +1271,7 @@ async def test_a_point_resting_only_on_context_only_findings_is_refused(writer, 
 async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
     tracker: Tracker, tmp_path: Path, checker,
 ) -> None:
-    """D6/D7 bullet 3: once a checked statement citing a finding at or
+    """Once a checked statement citing a finding at or
     above the authority floor exists, a statement resting only on
     below-floor findings is withheld from the bottom line's own candidate
     pool -- it stays printed in its own section."""
@@ -1319,7 +1319,7 @@ async def test_the_bottom_line_only_sees_above_floor_statements_when_one_exists(
 async def test_the_bottom_line_sees_every_checked_statement_when_none_reaches_the_floor(
     tracker: Tracker, tmp_path: Path, checker,
 ) -> None:
-    """D6/D7 bullet 3: when no checked statement cites a finding at or
+    """When no checked statement cites a finding at or
     above the floor, every one reaches the bottom line unchanged."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True, unit_dimension=None)
     t2 = make_target("topic-01-target-02", coverage_id="topic-01", required=True, unit_dimension=None)
@@ -1459,7 +1459,7 @@ def _scored_review(defects):
 async def test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P0-1: an extra research pass is a new iteration, not a writer
+    """An extra research pass is a new iteration, not a writer
     redraft, even though the prior iteration's review still has a material
     defect on file. Carrying that review's defects/previous section into a
     new iteration would silently carry a part over unchanged and drop the
@@ -1633,13 +1633,13 @@ async def test_the_statement_check_gate_is_shared_across_every_part_and_the_bott
     assert isinstance(checker.gates[0], asyncio.Semaphore)
 
 
-# --- D1 fix (a): a point must credit the source it rests on ----------------
+# --- a point must credit the source it rests on -----------------------------
 
 
 def test_consider_section_point_refuses_a_point_that_credits_no_source():
-    """Audit D1 fix (a): a bare fact naming neither a credit verb nor a
-    name from its cited finding is refused -- run 7's S043, stated as
-    settled fact one line after its own refutation, credited to nobody."""
+    """A bare fact naming neither a credit verb nor a
+    name from its cited finding is refused -- stated as settled fact one line
+    after its own refutation, credited to nobody."""
     from deep_research.agents.report_writer import _consider_section_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
     part_labels = {"F01": finding}
@@ -1677,12 +1677,10 @@ def test_consider_section_point_keeps_a_credited_point_with_the_same_facts():
 
 
 def test_consider_section_point_refuses_a_point_sharing_only_topic_words_with_the_title():
-    """RevZ2 P1-a: run 7's S043 shape -- a page's title always shares the
-    subject's own words with a point about it (Fable's audit found the
-    old token-overlap guard refused 0 of 46 real statements on exactly
-    this: a shared word like "roman" or "bce" used to count as crediting).
-    Sharing topic words is not naming a source; the point still credits
-    nobody."""
+    """A page's title always shares the subject's own words with a point
+    about it, so a shared word like "roman" or "bce" must not count as
+    crediting. Sharing topic words is not naming a source; the point still
+    credits nobody."""
     from deep_research.agents.report_writer import _consider_section_point
     read = make_read("Economic policy changed after new regional reform activity increased.",
                      url="https://a.test/1", title="Economic reform and regional policy change")
@@ -1707,10 +1705,9 @@ def test_consider_section_point_refuses_a_point_sharing_only_topic_words_with_th
 
 
 def test_names_a_source_accepts_past_tense_and_per_forms():
-    """RevZ2 P2-a: past-tense and "per" credit verbs, added after the
-    audit found "The EIA reported ...", "The EIA said ...", "The EIA
-    counted ..." and "..., per the EIA." all wrongly refused by the
-    present-tense-only list."""
+    """Past-tense and "per" credit verbs are accepted: "The EIA reported ...",
+    "The EIA said ...", "The EIA counted ..." and "..., per the EIA." are not
+    refused for lacking a present-tense verb."""
     from deep_research.agents.report_writer import _names_a_source
     assert _names_a_source("The EIA reported 10.4 GW in 2024.", [])
     assert _names_a_source("The EIA said capacity grew by 10.4 GW.", [])
@@ -1719,7 +1716,7 @@ def test_names_a_source_accepts_past_tense_and_per_forms():
 
 
 def test_names_a_source_accepts_the_kept_figures_organisation():
-    """RevZ2 P2-a: a kept figure's own organisation (the registry line's
+    """A kept figure's own organisation (the registry line's
     own "organisation ..." clause) names its source, even with no credit
     verb and no title or host overlap."""
     from deep_research.agents.report_writer import _names_a_source
@@ -1728,7 +1725,7 @@ def test_names_a_source_accepts_the_kept_figures_organisation():
 
 
 def test_names_a_source_accepts_the_titles_own_author_work_segment():
-    """RevZ2 S005 / ReRevZ2 P1: run 7's exact shape -- a primary-source
+    """A primary-source
     page's title follows the "Author, Work" convention and carries no
     ``attributed_issuer`` of its own, and the point uses the title's
     author segment directly before an authorial verb ("Sallust traced
@@ -1746,9 +1743,9 @@ def test_names_a_source_accepts_the_titles_own_author_work_segment():
 
 
 def test_names_a_source_refuses_a_titles_lower_case_opening_word_as_an_author():
-    """RevZ2 S005 guard: a first segment of one lower-case word (an
-    ordinary title's own opening clause, not a name) never counts, the
-    same way run 7's S043 stayed refused."""
+    """A first segment of one lower-case word (an
+    ordinary title's own opening clause, not a name) never counts, so the
+    point stays refused."""
     from deep_research.agents.report_writer import _names_a_source
     read = make_read("A summary.", url="https://a.test/1",
                      title="overview, a summary of regional findings")
@@ -1760,11 +1757,11 @@ def test_names_a_source_refuses_a_titles_lower_case_opening_word_as_an_author():
 
 
 def test_names_a_source_refuses_a_title_authors_bare_appearance_without_a_construction():
-    """ReRevZ2 P1: a "Surname, Forenames" title (a reference work's own
+    """A "Surname, Forenames" title (a reference work's own
     entry format, "Vale, Jordan (1901-1960)") makes "Vale" name-shaped,
     but the point must still use it as an author, not merely contain
-    it -- run 7's S043 shape again, this time through the title-author
-    path P1-a's own fix closed the door on."""
+    it -- a bare appearance does not credit the source through the
+    title-author path."""
     from deep_research.agents.report_writer import _names_a_source
     read = make_read("A biography.", url="https://a.test/1",
                      title="Vale, Jordan (1901-1960)")
@@ -1774,7 +1771,7 @@ def test_names_a_source_refuses_a_title_authors_bare_appearance_without_a_constr
 
 
 def test_names_a_source_refuses_a_titles_first_word_as_an_unused_topic_name():
-    """ReRevZ2 P1: "Climate, the great challenge of our age" is exactly
+    """"Climate, the great challenge of our age" is exactly
     as name-shaped as "Sallust, Catiline's War" ("Climate" is one
     capitalised word before the comma), but a point that merely shares
     that topic word, never using it as an author, credits nobody."""
@@ -1787,7 +1784,7 @@ def test_names_a_source_refuses_a_titles_first_word_as_an_unused_topic_name():
 
 
 def test_consider_section_point_refuses_a_point_naming_only_a_determiner_adjacent_verb():
-    """ReRevZ2 P2: a determiner immediately before the matched word
+    """A determiner immediately before the matched word
     makes it the noun, not the verb -- "the dates" is a topic, not a
     source, the same way "the state" and "the report" are; nobody is
     credited."""
@@ -1808,7 +1805,7 @@ def test_consider_section_point_refuses_a_point_naming_only_a_determiner_adjacen
 
 
 def test_consider_section_point_refuses_a_point_naming_only_the_united_states():
-    """RevZ2 P2-b: case-insensitive matching let "States" inside "United
+    """Case-insensitive matching would let "States" inside "United
     States" pass as the verb "states"; case-sensitive matching (plus the
     explicit exclusion) refuses a point that names no real source."""
     from deep_research.agents.report_writer import _consider_section_point
@@ -1828,7 +1825,7 @@ def test_consider_section_point_refuses_a_point_naming_only_the_united_states():
 
 
 def test_consider_section_point_refuses_a_sentence_initial_capitalised_common_noun():
-    """RevZ2 P2-b: case-insensitive matching also let a sentence-initial
+    """Case-insensitive matching would also let a sentence-initial
     capitalised common noun ("Records show ...") pass as the credit verb
     "records"; case-sensitive matching refuses it, since nobody is
     actually credited."""
@@ -1849,11 +1846,11 @@ def test_consider_section_point_refuses_a_sentence_initial_capitalised_common_no
 
 
 def test_consider_section_point_refuses_a_point_naming_only_the_political_state():
-    """Found by the run-7 probe (a follow-on to RevZ2 P1-a/P2-b): "state"
+    """The word "state"
     is the writer's own primary crediting verb ("Wikipedia states the
     crisis was..."), so it must stay in the verb list, but a determiner
     never sits directly in front of a verb -- "the state" is always the
-    geopolitical noun, credited to nobody, run 7's S043 shape exactly
+    geopolitical noun, credited to nobody
     ("... had to be paid by the Roman state.")."""
     from deep_research.agents.report_writer import _consider_section_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=[])
@@ -1879,8 +1876,8 @@ def test_names_a_source_still_accepts_a_named_source_using_states():
     assert _names_a_source("Example Institute states the total was 10.4 GW.", [])
 
 
-def test_names_a_source_accepts_fables_probe_rates():
-    """ReRevZ2 R1 (Fable's probe): "rates" is a real credit verb, not
+def test_names_a_source_accepts_the_credit_verb_rates():
+    """The credit verb "rates" counts, not
     only the writer's own established list -- a finding whose title has
     no separator and whose host does not name the subject at all, so
     only the verb can credit it."""
@@ -1891,8 +1888,8 @@ def test_names_a_source_accepts_fables_probe_rates():
     assert _names_a_source("Example Tester rates Model A 4.5 out of 5 for noise.", [finding])
 
 
-def test_names_a_source_accepts_fables_probe_measured():
-    """ReRevZ2 R1 (Fable's probe): "measured" credits too."""
+def test_names_a_source_accepts_the_credit_verb_measured():
+    """The credit verb "measured" counts too."""
     from deep_research.agents.report_writer import _names_a_source
     read = make_read("A review.", url="https://a.test/1", title="A field report")
     finding = make_finding(read, "A review.", target_ids=[])
@@ -1902,8 +1899,8 @@ def test_names_a_source_accepts_fables_probe_measured():
     )
 
 
-def test_names_a_source_accepts_fables_probe_attributes():
-    """ReRevZ2 R1 (Fable's probe): "attributes" credits too, not only
+def test_names_a_source_accepts_the_credit_verb_attributes():
+    """The credit verb "attributes" counts too, not only
     inside the title-author construction."""
     from deep_research.agents.report_writer import _names_a_source
     read = make_read("A review.", url="https://a.test/1", title="A field report")
@@ -1912,8 +1909,8 @@ def test_names_a_source_accepts_fables_probe_attributes():
     assert _names_a_source("Example Institute attributes the cost rise to a 2019 regulation.", [finding])
 
 
-def test_names_a_source_accepts_fables_probe_names():
-    """ReRevZ2 R1 (Fable's probe): "names" credits too -- and, matched
+def test_names_a_source_accepts_the_credit_verb_names():
+    """The credit verb "names" counts too -- and, matched
     case-sensitively like the rest of the list, never collides with the
     plural noun "names" the way "States"/"Records" would capitalised."""
     from deep_research.agents.report_writer import _names_a_source
@@ -1924,7 +1921,7 @@ def test_names_a_source_accepts_fables_probe_names():
 
 
 def test_names_a_source_matches_a_hyphenated_host_with_its_spaces_restored():
-    """ReRevZ2 R1: "example-institute.test" also yields "example
+    """The host "example-institute.test" also yields "example
     institute" -- prose credits an organisation by its own name, never
     by its domain's own hyphenation, so a host-only match needs the
     space back. No credit verb in the point text, so only the host
@@ -1937,10 +1934,10 @@ def test_names_a_source_matches_a_hyphenated_host_with_its_spaces_restored():
 
 
 def test_names_a_source_refuses_an_action_verb_with_an_ordinary_subject():
-    """ReRevZ2b P1 on R1: the R1 action verbs (rates, names, measured,
+    """The action verbs (rates, names, measured,
     ...) are ordinary action verbs any subject can take -- unlike the
-    established reporting verbs, "isn't a bare determiner" let ordinary
-    prose through uncredited. None of these names anyone."""
+    established reporting verbs, a subject that merely "isn't a bare determiner"
+    must not let ordinary prose through uncredited. None of these names anyone."""
     from deep_research.agents.report_writer import _names_a_source
     assert not _names_a_source("The data shows a steady increase.", [])
     assert not _names_a_source("Rome holds the record for the longest aqueduct.", [])
@@ -1959,11 +1956,11 @@ def test_names_a_source_accepts_an_action_verb_with_a_name_shaped_subject():
     assert _names_a_source("In 2024, Example Institute measured a rise in storage capacity.", [])
 
 
-# --- D12: no finding labels leak into point text ----------------------------
+# --- no finding labels leak into point text ----------------------------------
 
 
 def test_consider_section_point_strips_a_parenthesised_label_group_without_refusing():
-    """D12: a leaked label group is stripped, together with the space
+    """A leaked label group is stripped, together with the space
     before it, and the point survives -- never refused for it."""
     from deep_research.agents.report_writer import _consider_section_point
     finding_18 = _statement_finding("https://a.test/18", "Pressure one.", target_ids=[])
@@ -2028,14 +2025,14 @@ def test_consider_bottom_line_point_strips_a_parenthesised_label_group_without_r
     assert rejected == []
 
 
-# --- Z1/Z2 item 4: the disputed-target guard --------------------------------
+# --- the disputed-target guard ------------------------------------------------
 
 
 def test_consider_bottom_line_point_refuses_a_disputed_label_with_no_difference_marker():
-    """Audit D1 fix (b), ReRevZ2 C7: a sentence that cites a finding a
+    """A sentence that cites a finding a
     marked point disputes, with no marker of difference, is refused --
-    run 7's D1 (the disputed step carried into the bottom line as
-    settled fact). Label-scoped, not target-scoped."""
+    the disputed step must not be carried into the bottom line as
+    settled fact. Label-scoped, not target-scoped."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
     cited_by_sections = {"F01": finding}
@@ -2076,7 +2073,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_with_a_diffe
 
 
 def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_disputes():
-    """RevZ2 P1-b: the marker regex matches stems, so "disputes" (not
+    """The marker regex matches stems, so "disputes" (not
     only bare "dispute") counts as a difference marker."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
@@ -2098,7 +2095,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_disput
 
 
 def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_differently():
-    """RevZ2 P1-b: "differently" (not only bare "differ") counts too."""
+    """The word "differently" (not only bare "differ") counts too."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     finding = _statement_finding("https://a.test/1", "A claim.", target_ids=["topic-01-target-01"])
     cited_by_sections = {"F01": finding}
@@ -2119,7 +2116,7 @@ def test_consider_bottom_line_point_keeps_a_disputed_label_sentence_using_differ
 
 
 def test_bottom_line_messages_lists_a_marked_statement_under_disputed_first():
-    """Audit D1 fix (b), ReRevZ2 C7: a checked statement the writer
+    """A checked statement the writer
     marked ``disputes: true`` is listed again under "Disputed", first,
     as the dispute itself -- so the bottom line can state both sides or
     leave the step out."""
@@ -2152,7 +2149,7 @@ def test_bottom_line_messages_omit_the_disputed_heading_when_nothing_disputes():
 
 
 def test_bottom_line_messages_lists_a_marked_statement_under_outcome():
-    """Run-8 D4/D5 (c): a checked statement the writer marked
+    """A checked statement the writer marked
     ``outcome: true`` is listed under "# Outcome" so the bottom line can
     end on it, credited and dated as it states it."""
     task = _one_target_task()
@@ -2169,13 +2166,13 @@ def test_bottom_line_messages_lists_a_marked_statement_under_outcome():
 
 
 def test_bottom_line_dispute_scope_is_the_labels_the_marked_point_cites_not_its_target():
-    """ReRevZ2 C7's own proving test: a part with a marked point citing
+    """A part with a marked point citing
     F01+F02 and an undisputed dating point citing F03 on the same
     target. A bottom-line sentence citing F03 alone is kept without a
     marker; one citing F01 without a marker is refused; and the block
     lists the marked point first, with F03 nowhere in it -- target
     scoping would have listed F03 too and refused a sentence stating it
-    alone (run 7's topic-01 wrote 13 points on one target)."""
+    alone."""
     from deep_research.agents.report_writer import _consider_bottom_line_point
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding_1 = _statement_finding("https://a.test/1", "The annual assessment states enrollment fell steeply.",
@@ -2246,7 +2243,7 @@ def test_bottom_line_dispute_scope_is_the_labels_the_marked_point_cites_not_its_
 
 
 def test_bottom_line_disputed_labels_is_the_exclusive_hop_not_the_plain_one():
-    """ReRevZ2 C11 (Fable's second pass): the one-hop expansion must be
+    """The one-hop expansion must be
     exclusive -- a sharing statement's own label joins ``disputed_labels``
     only when no *other* checked statement (neither a marked point nor
     itself a sharing statement) also cites it, or the guard reaches one
@@ -2257,7 +2254,10 @@ def test_bottom_line_disputed_labels_is_the_exclusive_hop_not_the_plain_one():
     (F03 sits outside the dispute); one citing F06 alone is refused;
     one citing F01 is refused; one citing F05 (cited nowhere) is kept.
     The block lists S001, S004 and S006, never S002."""
-    from deep_research.agents.report_writer import _bottom_line_disputed_labels, _consider_bottom_line_point
+    from deep_research.agents.report_writer import (
+        _bottom_line_disputed_labels,
+        _consider_bottom_line_point,
+    )
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding_1 = _statement_finding("https://a.test/1", "The annual assessment states enrollment fell steeply.",
                                    target_ids=["topic-01-target-01"])
@@ -2368,11 +2368,11 @@ def test_bottom_line_disputed_labels_is_the_exclusive_hop_not_the_plain_one():
 
 @pytest.mark.asyncio
 async def test_a_writer_marked_disputing_point_guards_the_bottom_line(writer, checker) -> None:
-    """Z1/Z2 items 3-4 end to end, and RevZ2 P1-c: a section point the
+    """End to end: a section point the
     writer marks ``disputes: true`` makes its own target's bottom-line
     sentence need a difference marker; a first draft with none is
     refused, which triggers the one re-ask, and the re-ask's own marked
-    sentence is adopted (the same loss D1/D2's re-ask was built to
+    sentence is adopted (the same loss the re-ask was built to
     prevent, this time from the disputed-step guard rather than the
     Statement Check)."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
@@ -2407,7 +2407,7 @@ async def test_a_writer_marked_disputing_point_guards_the_bottom_line(writer, ch
 
 
 def test_finalize_candidate_never_records_a_strip_note_for_a_refused_point():
-    """P3-3: a refused candidate's key never reaches a printed S-id, so its
+    """A refused candidate's key never reaches a printed S-id, so its
     strip note must never be recorded -- an unconditional note would orphan
     itself under the evidence log's dropped-marks heading."""
     from deep_research.agents.report_writer import _Candidate, _finalize_candidate
@@ -2447,7 +2447,7 @@ def test_finalize_candidate_records_the_strip_note_for_a_kept_point():
 
 @pytest.mark.asyncio
 async def test_a_leaked_label_group_is_stripped_from_the_printed_point(writer, checker) -> None:
-    """D12: the compose pipeline strips a leaked label group from a
+    """The compose pipeline strips a leaked label group from a
     point's printed text end to end, without refusing the point."""
     state = _one_part_state()
     task = writer.build_task(state)
@@ -2489,7 +2489,7 @@ async def test_a_corrected_verdict_replaces_the_sentence(writer, checker) -> Non
 
 @pytest.mark.asyncio
 async def test_a_title_with_a_digit_falls_back_to_the_sub_topic_title(writer, checker) -> None:
-    """Whole-branch review P2-1: a drafted title prints raw and becomes an
+    """A drafted title prints raw and becomes an
     options-table column header, so a quantity in it falls back to the
     sub-topic's own title instead of printing unchecked."""
     state = _one_part_state()
@@ -2507,7 +2507,7 @@ async def test_a_title_with_a_digit_falls_back_to_the_sub_topic_title(writer, ch
 
 @pytest.mark.asyncio
 async def test_a_title_with_a_verdict_word_falls_back_to_the_sub_topic_title(writer, checker) -> None:
-    """Whole-branch review P2-1: a verdict word in a drafted title (a small
+    """A verdict word in a drafted title (a small
     general lexicon) falls back the same way a quantity does."""
     state = _one_part_state()
     task = writer.build_task(state)
@@ -2523,7 +2523,7 @@ async def test_a_title_with_a_verdict_word_falls_back_to_the_sub_topic_title(wri
 
 
 def test_section_title_cuts_at_a_word_boundary_not_mid_word():
-    """Whole-branch review P2-1: spec §6.4 rule 7's 80-character bound is a
+    """The 80-character section-title bound is a
     word-boundary cut, never a mid-word one."""
     from deep_research.agents.report_writer import _section_title
     long_title = ("A" * 75) + " " + ("B" * 20)
@@ -2549,7 +2549,7 @@ async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> Non
 
     assert composition.sections == []
     assert composition.rejected_points[0].reason == "not in the findings"
-    # P1-3: a part whose every drafted point was refused is undrafted, not
+    # A part whose every drafted point was refused is undrafted, not
     # silently "written" with nothing to show -- the renderer's per-part and
     # every-part-failed disclosures both key off this.
     assert composition.parts[0].status == "failed"
@@ -2559,9 +2559,9 @@ async def test_an_inconsistent_verdict_refuses_the_point(writer, checker) -> Non
 async def test_a_report_with_only_refused_points_discloses_it_not_the_no_source_fallback(
     writer, checker,
 ) -> None:
-    """P1-3 repro (b): with a verified finding on file but every drafted
+    """With a verified finding on file but every drafted
     point refused, the report must say its sections could not be written --
-    never the §10 "no source we could check answers this question" sentence,
+    never the "no source we could check answers this question" sentence,
     which is reserved for a pass that cites nothing at all."""
     state = _one_part_state()
     task = writer.build_task(state)
@@ -2583,7 +2583,7 @@ async def test_a_report_with_only_refused_points_discloses_it_not_the_no_source_
 async def test_all_parts_refused_is_recoverable_and_the_run_still_finishes(
     writer, checker, tracker: Tracker,
 ) -> None:
-    """R-5: every drafted point being refused is a content outcome, not a
+    """Every drafted point being refused is a content outcome, not a
     provider failure -- the composition's error must be accurately named and
     recoverable, and the synthetic ReActRun must not report
     stop_reason='provider_error' (agents.steps.ReActRun.succeeded reads that
@@ -2614,7 +2614,7 @@ async def test_all_parts_refused_is_recoverable_and_the_run_still_finishes(
 async def test_a_genuine_provider_failure_on_every_part_keeps_the_provider_error(
     writer, checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """R-5: a real provider/draft failure on every part must still be the
+    """A real provider/draft failure on every part must still be the
     non-recoverable report_writer_provider_error, with stop_reason
     'provider_error' -- only the refused-content case changes."""
     def route(messages, schema):
@@ -2658,7 +2658,7 @@ async def test_a_point_citing_no_known_label_is_refused_without_calling_the_chec
 
 @pytest.mark.asyncio
 async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Path) -> None:
-    """Spec §6.13: a statement's target_ids are explicit bindings only."""
+    """A statement's target_ids are explicit bindings only."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True,
                          question="How much battery storage capacity was added in the United States in 2024?")
     read = make_read("The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
@@ -2679,7 +2679,6 @@ async def test_statement_target_ids_exclude_a_fallback_only_answer(tmp_path: Pat
             text="The EIA reported that storage capacity grew by 10.4 GW in the United States in 2024.",
             finding_labels=["F01"])]),
     ])
-    from deep_research.agents.evidence_verifier import StatementCheckItem
     import deep_research.agents.evidence_verifier as ev
 
     async def fake_check(provider, items, *, question, fingerprint=None, batch_size=None, concurrency=None, gate=None, on_batch=None):
@@ -2705,12 +2704,12 @@ def _offline_langsmith():
 
 @pytest.mark.asyncio
 async def test_build_task_excludes_a_context_only_answer_from_the_not_found_computation(checker, tmp_path: Path) -> None:
-    """Spec §6.13: a required target answered only by a context-only finding
+    """A required target answered only by a context-only finding
     is listed under What we couldn't confirm, though the gate's own answered
     set still includes it."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     # This finding's content must actually state the target's own words to
-    # answer it through the sub-topic fallback (D9's content-states-target gate).
+    # answer it through the sub-topic fallback (the content-states-target gate).
     read = make_read("How much battery storage capacity was added in the United States in 2024?",
                      url="https://a.test/9")
     context_finding = make_finding(
@@ -2739,7 +2738,7 @@ async def test_build_task_excludes_a_context_only_answer_from_the_not_found_comp
 
 
 def test_build_task_resolves_the_reader_length_from_the_config_default(writer) -> None:
-    """D11: with no frozen word limit, the config default feeds the point budget."""
+    """With no frozen word limit, the config default feeds the point budget."""
     state = _one_part_state()
 
     task = writer.build_task(state)
@@ -2750,7 +2749,7 @@ def test_build_task_resolves_the_reader_length_from_the_config_default(writer) -
 def test_build_task_resolves_the_reader_length_from_the_contracts_word_limit(
     tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """D11: a frozen requested word limit overrides the config default."""
+    """A frozen requested word limit overrides the config default."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "The EIA reported 10.4 GW in 2024.", "10.4", "GW",
                        organisation=EIA)
@@ -2770,11 +2769,11 @@ def test_build_task_resolves_the_reader_length_from_the_contracts_word_limit(
     assert task.target_words == 500
 
 
-# --- T4 compose (spec §6.7): the table, page credits, unreachable ----------
+# --- compose: the table, page credits, unreachable --------------------------
 
 
 def test_page_credit_prefers_a_later_updated_date_over_the_published_date():
-    """D8: when a page's own updated date is later than its published date,
+    """When a page's own updated date is later than its published date,
     credit the updated date, rendered as such."""
     from deep_research.agents.report_writer import _page_credit
     read = make_read("Text.", url="https://a.test/1")
@@ -2791,7 +2790,7 @@ def test_page_credit_prefers_a_later_updated_date_over_the_published_date():
 
 
 def test_page_credit_keeps_the_published_date_when_it_is_the_later_one():
-    """D8: the existing precedence stays when the published date is not
+    """The existing precedence stays when the published date is not
     older than the updated date."""
     from deep_research.agents.report_writer import _page_credit
     read = make_read("Text.", url="https://a.test/1")
@@ -2812,7 +2811,7 @@ def test_page_credit_keeps_the_published_date_when_it_is_the_later_one():
 async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_page_through_to_rendering(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Spec §6.7: build_table, page_credits (a published date and an
+    """build_table, page_credits (a published date and an
     updated-only date) and unreachable all reach the composition and render."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     published_read = make_read("10.4 GW in 2024.", url="https://a.test/1", title="Org One page")
@@ -2878,7 +2877,7 @@ async def test_a_composed_report_carries_its_table_page_credits_and_unreachable_
 async def test_the_pages_own_metadata_date_outranks_the_evaluators_admitted_date(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P1-2: the Source Evaluator sees only excerpts and can admit a content
+    """The Source Evaluator sees only excerpts and can admit a content
     date (a date the page's own text merely mentions) as the publication
     date; the page's own read metadata, when the page carries one, is never
     second-guessed by it."""
@@ -2922,7 +2921,7 @@ async def test_the_pages_own_metadata_date_outranks_the_evaluators_admitted_date
 async def test_the_table_is_built_after_page_credits_exist_not_before(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Spec §6.7: page credits must exist before the table is built, so a
+    """Page credits must exist before the table is built, so a
     relayed row's Who cell names the page's own credited publisher
     ("Utility Dive"), never the raw host ("utilitydive.com") that page
     credits has not been filled in yet would fall back to."""
@@ -2967,7 +2966,7 @@ async def test_the_table_is_built_after_page_credits_exist_not_before(
 async def test_a_relayed_figures_attribution_survives_into_the_bottom_line(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Fable prompt review: SECTION_INSTRUCTION's relay-credit phrase
+    """SECTION_INSTRUCTION's relay-credit phrase
     ("according to <organisation>, as reported by <site>") reaches the
     bottom line's own request unchanged (the checked-statements block copies
     a kept point's text verbatim) and survives the Statement Check and
@@ -3012,7 +3011,7 @@ async def test_a_relayed_figures_attribution_survives_into_the_bottom_line(
 async def test_a_figures_statement_date_never_becomes_a_page_credits_date(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Spec §6.7/§8: never a figure's statement_date or its vintage -- those
+    """Never a figure's statement_date or its vintage -- those
     are the figure's dates, not the page's."""
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation="Org One",
                        target_ids=["topic-01-target-01"], statement_date="2020-06-15")
@@ -3045,11 +3044,8 @@ def test_the_statement_check_correction_cap_follows_max_point_chars() -> None:
     assert "600 characters" not in STATEMENT_CHECK_INSTRUCTION
 
 
-# --- review round (RevFormatT1T2/RevFormatT4) -------------------------------
-
-
 def test_apply_marks_drops_a_mark_whose_by_the_point_does_not_cite() -> None:
-    """P0: ``by`` must resolve only among the point's own cited labels, never
+    """``by`` must resolve only among the point's own cited labels, never
     the whole registry -- otherwise a mark can credit a page the sentence and
     its Statement Check never rested on."""
     from deep_research.agents.report_writer import _apply_marks
@@ -3087,7 +3083,7 @@ def test_apply_marks_still_resolves_by_when_it_is_one_of_the_points_own_labels()
 
 
 def test_apply_marks_resolves_finding_id_from_by_even_when_findings_share_one_page() -> None:
-    """R-2: the table decides whether a pick is relayed from the mark's own
+    """The table decides whether a pick is relayed from the mark's own
     finding, never from whichever finding happens to come last on a shared
     page -- so a mark's ``finding_id`` is resolved from its own ``by``, even
     when two cited findings share one URL."""
@@ -3112,8 +3108,8 @@ def test_apply_marks_resolves_finding_id_from_by_even_when_findings_share_one_pa
 async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """RevZ2 P1-c, ReRevZ2 C7: the naive first-kept-point pick the
-    fallback used to make could itself be silent about a dispute one of
+    """The naive first-kept-point pick the
+    fallback makes could itself be silent about a dispute one of
     its own cited findings carries; when it cites one of the marked
     point's own labels but is not itself the part's marked point, the
     marked point is preferred instead, so the fallback never prints a
@@ -3152,7 +3148,7 @@ async def test_bottom_line_fallback_prefers_the_parts_own_marked_disputing_point
 async def test_a_bottom_line_fallback_gives_each_point_its_own_id_and_real_verdict(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P1-a: the fallback must not reuse a section's own flight key or
+    """The fallback must not reuse a section's own flight key or
     hard-code 'consistent'; the source section must not print it again."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
@@ -3185,9 +3181,9 @@ async def test_a_bottom_line_fallback_gives_each_point_its_own_id_and_real_verdi
 async def test_a_statement_check_outage_leaves_a_recoverable_error_not_a_false_every_part_failed(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P1-b(i): a Statement Check outage marks the part 'written' (its draft
+    """A Statement Check outage marks the part 'written' (its draft
     succeeded), so the composition must not report a non-recoverable 'every
-    part failed' error, and the bottom line must not print the §10 fallback
+    part failed' error, and the bottom line must not print the no-source fallback
     sentence while the (unchecked) section still stands."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
@@ -3220,9 +3216,9 @@ async def test_a_statement_check_outage_leaves_a_recoverable_error_not_a_false_e
 async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """D1/D2: the Statement Check refusing a bottom-line sentence buys one
+    """The Statement Check refusing a bottom-line sentence buys one
     re-ask carrying the refusal reason; its own result replaces the
-    refused attempt when every one of its sentences passes, and (P2-1)
+    refused attempt when every one of its sentences passes, and
     attempt 1's own refusal record stays in the evidence log."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
@@ -3252,7 +3248,7 @@ async def test_a_bottom_line_re_ask_adopts_a_fully_passing_retry(
 async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line(
     tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P1-2: when the re-ask's own Statement Check fails (a provider outage
+    """When the re-ask's own Statement Check fails (a provider outage
     returns no verdicts at all, exactly as ``_check`` leaves every
     candidate on a real failure), the re-ask is never adopted -- a checked
     bottom line is never swapped for unchecked text."""
@@ -3300,7 +3296,7 @@ async def test_a_re_ask_whose_check_fails_does_not_replace_a_checked_bottom_line
 async def test_a_mechanism_bottom_line_without_the_outcome_re_asks_and_adopts_it(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Run-8 D4/D5 (c): a mechanism answer whose kept section carries a
+    """A mechanism answer whose kept section carries a
     point marked ``outcome: true`` buys one re-ask when attempt 1's
     bottom line cites no label of that outcome statement -- the same
     one re-ask the dispute guard uses. The re-ask's own outcome
@@ -3350,7 +3346,7 @@ async def test_a_mechanism_bottom_line_without_the_outcome_re_asks_and_adopts_it
 async def test_a_non_mechanism_bottom_line_without_the_outcome_never_re_asks(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Run-8 D4/D5 (c): the same missing-outcome bottom line on a
+    """The same missing-outcome bottom line on a
     non-mechanism answer form never triggers the re-ask -- only two
     scripted replies are queued, so a wrongly triggered re-ask fails
     loudly on a missing scripted response."""
@@ -3393,7 +3389,7 @@ async def test_a_non_mechanism_bottom_line_without_the_outcome_never_re_asks(
 async def test_a_mechanism_bottom_line_that_already_cites_the_outcome_never_re_asks(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Run-8 D4/D5 (c): a mechanism bottom line whose attempt 1 already
+    """A mechanism bottom line whose attempt 1 already
     cites a label of the outcome-marked statement never re-asks for it
     -- only two scripted replies are queued, so a wrongly triggered
     re-ask fails loudly on a missing scripted response."""
@@ -3441,9 +3437,9 @@ async def test_a_mechanism_bottom_line_that_already_cites_the_outcome_never_re_a
 async def test_a_mechanism_bottom_line_never_re_asks_when_its_only_outcome_is_below_the_floor(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """RevV2 P1: an outcome-marked point resting only on a sub-floor
+    """An outcome-marked point resting only on a sub-floor
     source is withheld from the bottom line's own candidate pool the
-    same way any below-floor statement is (item 2) -- so its label
+    same way any below-floor statement is -- so its label
     never reaches ``outcome_labels``, and the guard must gate on that
     filtered set, not the writer's raw marks, or it demands a citation
     to a "# Outcome" block that is never printed. Only two scripted
@@ -3491,8 +3487,8 @@ async def test_a_mechanism_bottom_line_never_re_asks_when_its_only_outcome_is_be
 async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_section_points(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P1-b(ii): a drafted-but-empty-after-refusal bottom line still gets the
-    §6.8 fallback, not a silent empty summary -- even after the D1/D2
+    """A drafted-but-empty-after-refusal bottom line still gets the
+    section-point fallback, not a silent empty summary -- even after the
     re-ask, when the re-ask's own sentence is refused too."""
     target = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     finding = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
@@ -3523,7 +3519,7 @@ async def test_a_bottom_line_with_every_sentence_refused_falls_back_to_checked_s
 async def test_a_redraft_still_drafts_a_part_that_has_findings_but_no_previous_section(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """P2-1: a part that failed (or was fully refused) last pass, and that no
+    """A part that failed (or was fully refused) last pass, and that no
     defect routes to on this redraft, must still be drafted -- not silently
     relabelled 'empty', losing its required-target answer."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
@@ -3575,7 +3571,7 @@ async def test_a_redraft_still_drafts_a_part_that_has_findings_but_no_previous_s
 
 
 def test_target_line_does_not_credit_a_label_placed_in_another_part() -> None:
-    """P2-2: a target's answering labels must be filtered to the part's own
+    """A target's answering labels must be filtered to the part's own
     (non-context) findings, never the whole registry."""
     from deep_research.agents.report_writer import _target_line
 
@@ -3614,7 +3610,7 @@ def test_target_line_credits_a_label_that_is_one_of_the_parts_own_findings() -> 
 async def test_the_report_written_event_is_published_live(
     checker, tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """live-briefs spec E3: report.written, live, as the object returned."""
+    """``report.written`` is published live, as the object returned."""
     def route(messages, schema):
         del messages, schema
         raise ProviderResponseError(
@@ -3632,7 +3628,7 @@ async def test_the_report_written_event_is_published_live(
 
     [written] = run.state_update["events"]
     assert written.event_type == "report_writer.report.written"
-    # notes-progress-report spec §4 item 1: the progress events are live-only.
+    # The progress events are live-only.
     progress = [event.metadata for event in received if event.event_type == "report_writer.progress"]
     assert [event.event_id for event in received if event.event_type != "report_writer.progress"] == [written.event_id]
     # The bottom line never reaches the check here (no section was checked), so the
@@ -3644,8 +3640,8 @@ async def test_the_report_written_event_is_published_live(
 
 @pytest.mark.asyncio
 async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, tmp_path: Path) -> None:
-    """notes-progress-report spec §5.4, D4, AC6: after a note pass the writer drafts the notes'
-    own parts, any part with no previous section (P2-1) and the bottom line — fresh, with no
+    """After a note pass the writer drafts the notes'
+    own parts, any part with no previous section and the bottom line — fresh, with no
     defect fed back — and carries every other part over unchanged, with its verdicts."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
@@ -3664,7 +3660,7 @@ async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, t
     previous_section = ReportSection(title="First", coverage_id="topic-01",
                                      points=[ReportPointFor("10.4 GW in 2024.", previous_statement)])
     # The note's own part already holds a section, so only the coverage-id rule (not the
-    # no-previous-section rule, P2-1) can make the writer redraft it.
+    # no-previous-section rule) can make the writer redraft it.
     previous_note_section = ReportSection(title="Your note: how much was recycled", coverage_id="note-n1",
                                           points=[])
     from deep_research.utils.types import ReportComposition
@@ -3718,7 +3714,7 @@ async def test_writer_carries_parts_after_note_pass(checker, tracker: Tracker, t
     assert _arrived_via_redraft_hop([marker]) is False  # the review after a note pass is a full one
 
 
-# --- notes-progress-report spec §6.1, §6.2, §6.6: Writing's live progress ----------
+# --- Writing's live progress ---------------------------------------------------
 
 SECRET_VERDICT = "SECRET-VERDICT-REASON"
 
@@ -3773,7 +3769,7 @@ def _two_part_route(messages, schema):
 
 @pytest.mark.asyncio
 async def test_writer_progress_fraction_monotonic(tracker: Tracker, tmp_path: Path) -> None:
-    """AC17: one event when the jobs are built, one per returned part, one per Statement
+    """One event when the jobs are built, one per returned part, one per Statement
     Check batch and one when the bottom line starts; samples are real drafted sentences
     with their check's verdict (the corrected text when corrected); ``fraction`` never
     decreases and reaches 1; never the check's reason text."""
@@ -3834,7 +3830,7 @@ async def test_writer_progress_counts_what_a_substituted_checker_returns(
 
 
 def test_writing_progress_counts_a_sentence_once() -> None:
-    """Review M13: a batch reported as two halves, then whole, counts each label once."""
+    """A batch reported as two halves, then whole, counts each label once."""
     from deep_research.agents.report_writer import _WritingProgress
 
     progress = _WritingProgress(parts_total=1)
@@ -3871,7 +3867,7 @@ async def test_writer_progress_fills_when_a_part_draft_fails(checker, tracker: T
     assert [(m["parts_returned"], m["sentences_drafted"], m["fraction"]) for m in progress] == [
         (0, 0, 0.0), (1, 0, 0.5), (1, 0, 1.0),
     ]
-    # Owner decision O1: the failed part still counts as returned (the fraction above is
+    # The failed part still counts as returned (the fraction above is
     # unchanged), and ``parts_failed`` says it did not come back written.
     assert [(m["parts_returned"], m["parts_failed"]) for m in progress] == [(0, 0), (1, 1), (1, 1)]
 
@@ -3899,7 +3895,7 @@ def _first_part_all_refused_route(messages, schema):
 async def test_writer_progress_counts_a_part_whose_every_point_was_refused_as_failed(
     tracker: Tracker, tmp_path: Path,
 ) -> None:
-    """Owner decision O1, the second failure exit: a draft that returned but whose every point
+    """The second failure exit: a draft that returned but whose every point
     the Statement Check refused ends ``failed`` (nothing of it is written), so ``parts_failed``
     counts it too. It was already in ``parts_returned``, so ``failed <= returned``, the fraction
     is the one a settled part always had, and the bar still ends full."""
@@ -3933,7 +3929,7 @@ async def test_writer_progress_counts_a_part_whose_every_point_was_refused_as_fa
 
 @pytest.mark.asyncio
 async def test_writer_progress_names_the_parts_that_failed(tracker: Tracker, tmp_path: Path) -> None:
-    """Owner decision O1: ``parts_failed`` counts each part whose draft failed, as it settles.
+    """``parts_failed`` counts each part whose draft failed, as it settles.
     ``parts_returned`` keeps meaning settled (written or failed), so the bar's arithmetic is
     untouched and the page can print written = returned - failed; the bar still ends full, and
     nothing the provider said is in any event."""

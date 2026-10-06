@@ -87,7 +87,7 @@ def _stem(token: str) -> str:
 def _expanded_terms(query: str) -> set[str]:
     """Every comparable form one of the query's own words may take.
 
-    Light and domain-neutral, by design (D1): a token's own casefolded form
+    Light and domain-neutral, by design: a token's own casefolded form
     and its conservative stem cover plural/singular and -ing/-ed agreement,
     and hyphen/space agreement is already folded in by :func:`_tokens`.
     Nothing here maps one word to a *different* one -- no domain word list,
@@ -106,9 +106,8 @@ def _expanded_terms(query: str) -> set[str]:
 # lede detection: structure, not stop-word ratio
 # ---------------------------------------------------------------------------
 #
-# The run-3 fix-round review measured this module's original detector against
-# the audited run's real chunk-0s (SoundGuys, CNET, Business Insider, What
-# Hi-Fi, Tom's Hardware) and found the opposite of what it needed both ways:
+# A stop-word ratio cannot separate navigation from prose (measured on the
+# first chunks of real review sites):
 # a page's masthead and nav rail routinely quotes short connective phrases
 # ("How we test", "What to look for", "Best on a budget"), so the *share* of
 # connective words in real navigation (0.10-0.18) sits above real spec and
@@ -183,7 +182,7 @@ def is_link_dense(text: str) -> bool:
     Used only to keep a read's own opening passage from being *forced in* as
     its lede when it is chrome, not a header (``acquisition.select_passages_with_lede``):
     ranking itself never calls this, so a navigation-shaped passage elsewhere
-    on the page still competes for a slot on its own relevance (D1 fix-round).
+    on the page still competes for a slot on its own relevance.
     """
     raw = _WORD.findall(text.translate(_APOSTROPHE_TABLE))
     if len(raw) < _LINK_DENSE_MIN_WORDS:
@@ -205,7 +204,7 @@ def is_link_dense(text: str) -> bool:
 #
 # A plain count of term occurrences let a chunk repeating one query word many
 # times outrank a chunk that actually covers most of the query once each --
-# the run-3 fix-round review measured this on the real pages: a nav rail
+# on real pages a nav rail
 # repeating "Headphones"/"Best" outscored the passage that named the
 # microphone verdict. Distinct coverage has to dominate repetition, so each
 # term's own contribution saturates (``_SATURATION_K``): a fifth repeat of
@@ -351,9 +350,9 @@ def select_passages_by_budget(
 ) -> list[str]:
     """Return every locator whole-page admission keeps within ``budget`` chars.
 
-    A page's chunks vary sharply in length (D1): a fixed passage *count*
-    either starves a page of many short, on-topic chunks -- the audited run
-    admitted twelve of a page's 208 chunks and deferred several that answered
+    A page's chunks vary sharply in length: a fixed passage *count*
+    either starves a page of many short, on-topic chunks -- one real page
+    admitted twelve of its 208 chunks and deferred several that answered
     the question -- or spends the whole allowance on a few long ones. Ranking
     is exactly :func:`select_relevant_passages`'s; only the cutover differs:
     passages are taken in rank order, each one kept only while it still fits,

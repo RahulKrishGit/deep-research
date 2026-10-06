@@ -84,8 +84,8 @@ def build_tools(
     copied: ``RequestBudget`` holds mutable counters, and a copy per tool
     would spend a second set of them.
 
-    ``http_transport`` is the run's shared connection pool (latency audit
-    O4), lent to both readers; ``None`` keeps a client per call.
+    ``http_transport`` is the run's shared connection pool, lent to both
+    readers; ``None`` keeps a client per call.
     """
     return [
         WebSearchTool(
@@ -319,7 +319,7 @@ class ResearchRuntime:
     long_term: LongTermMemory | None
     procedural: ProceduralMemory | None
     run_telemetry: RunTelemetryCollector | None = None
-    """The run's §7.3 collector, or ``None`` for a runtime that has none.
+    """The run's telemetry collector, or ``None`` for a runtime that has none.
 
     Created beside ``request_budget`` and handed to the providers and the
     graph, so every provider call of the run reports to one object. It is
@@ -334,7 +334,7 @@ class ResearchRuntime:
     carry instead of a case it cannot express.
     """
     connection_pool: SharedConnectionPool | None = None
-    """The run's shared HTTP connection pool (latency audit O4), which
+    """The run's shared HTTP connection pool, which
     ``run_research`` closes when the run ends; ``None`` for a runtime whose
     reads build their own clients (an injected ``http_client``, a proxy in
     the environment, a test double)."""
@@ -429,7 +429,7 @@ async def build_runtime(
     request_budget = RequestBudget(settings.request_budget)
 
     # Exactly one telemetry collector for the whole run, for the same reason
-    # there is one budget: §7.3's peak is a figure about calls that overlap
+    # there is one budget: the peak is a figure about calls that overlap
     # each other, so a collector per collaborator would report a peak of one
     # forever. It is handed to the providers exactly as the budget is, and to
     # the graph, whose terminal finalizer stamps its snapshot into the state.
@@ -462,7 +462,7 @@ async def build_runtime(
         ) from error
 
     bridge = LongTermMemoryBridge(long_term, session_id=session_id)
-    # One connection pool for the run's reads (latency audit O4), unless the
+    # One connection pool for the run's reads, unless the
     # caller injected its own client.
     connection_pool = shared_connection_pool() if http_client is None else None
     tools = build_tools(

@@ -12,7 +12,7 @@ const python = process.env.DEEP_RESEARCH_PYTHON ?? path.resolve(repo, ".venv", "
 if (!existsSync(python)) {
   throw new Error(`DEEP_RESEARCH_PYTHON must point at the venv interpreter (…/.venv/Scripts/python.exe); ${python} does not exist`);
 }
-// M8: the API server's temp root lives here — outside test-results/, which Playwright clears at
+// The API server's temp root lives here — outside test-results/, which Playwright clears at
 // the start of a run — so a forced kill leaks nothing into %TEMP% and nothing is swept away
 // mid-run. That same "forced kill skips cleanup" is why this directory accumulates one leaked
 // replay root per local run otherwise: clear it before a run starts. This runs at config

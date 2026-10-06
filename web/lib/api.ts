@@ -1,12 +1,12 @@
-// Mirrors src/deep_research/api/models.py (+ query, SessionListResponse, the E1 models).
-/* "needs_input": the one-time check is waiting for the reader (live-briefs spec §4.4); not terminal.
-   "stopped": the reader stopped the run (notes-progress-report spec §8); terminal, nothing published. */
+// Mirrors src/deep_research/api/models.py (+ query, SessionListResponse, the event models).
+/* "needs_input": the one-time check is waiting for the reader; not terminal.
+   "stopped": the reader stopped the run; terminal, nothing published. */
 export type SessionStatus = "running" | "needs_input" | "completed" | "max_iterations" | "incomplete" | "failed" | "stopped";
 export type ApiMode = "live" | "replay";
 
 /* No `max_iterations`: the console never sends one, so the API uses the configured extra-pass
-   budget (live-briefs spec §4.2, D15). The API itself still accepts the field.
-   `ask_clarifying_questions` is the settings row "Ask me when the question is unclear" (D16). */
+   budget. The API itself still accepts the field.
+   `ask_clarifying_questions` is the settings row "Ask me when the question is unclear". */
 export interface ResearchRequest {
   query: string;
   output_format: "markdown";
@@ -27,14 +27,14 @@ export interface EvidenceCounts {
   verified_findings: number; corrected_findings: number; quoted_findings: number; dropped_findings: number;
   context_unchecked_findings: number; cited_findings: number;
 }
-/* notes-progress-report spec §7.5: one "## " heading of the published report, in order. */
+/* One "## " heading of the published report, in order. */
 export type ReportOutlineKind = "bottom_line" | "topic" | "key_figures" | "options" | "not_confirmed" | "sources";
 export interface ReportOutlineEntry {
   heading: string; kind: ReportOutlineKind; label: string;
   topic_index: number | null; topic_count: number | null; note_id: string | null;
 }
 export interface ResearchSessionResponse {
-  /* The published report's headings (spec §7.5, §7.6). Optional because a response recorded before
+  /* The published report's headings. Optional because a response recorded before
      the report became cards (the replay captures under test/fixtures) carries none. */
   report_outline?: ReportOutlineEntry[] | null;
   session_id: string; query: string; status: SessionStatus; current_agent: string | null; iteration: number;
@@ -43,21 +43,20 @@ export interface ResearchSessionResponse {
   evidence_path: string | null; quality_path: string | null; quality_contract_version: string | null;
   semantic_review_status: string | null; semantic_review_score: number | null; duration_seconds: number | null;
   coverage: CoverageProgress | null; evidence_counts: EvidenceCounts | null;
-  /* live-briefs spec §4.6: the reader's notes, how many more the run takes (D11a), the note passes
+  /* The reader's notes, how many more the run takes, the note passes
      it bought and the one-time check it asked. Optional because a response recorded before notes
      existed (the replay captures under test/fixtures) carries none of them. */
   notes?: ReaderNoteRecord[]; notes_remaining?: number; note_passes?: number; clarification?: ClarificationRecord | null;
-  /* notes-progress-report spec §8.4: the step the reader stopped the run at — "check" or a pipeline
+  /* The step the reader stopped the run at — "check" or a pipeline
      row's node id — on a stopped session, null otherwise. Optional because a response recorded before
      Stop existed carries none. */
   stopped_step?: string | null;
 }
 /* One accepted note: as the reader wrote it, the run's reading once interpreted, and what the run
    concluded — "not_addressed" when the report still does not follow it after its one redraft; with
-   nothing to judge it by, "pending" while the session goes on and "not_checked" once it has ended
-   (notes-progress-report spec §4 item 2). */
+   nothing to judge it by, "pending" while the session goes on and "not_checked" once it has ended. */
 export type ReaderNoteOutcome = "covered" | "not_found" | "not_addressed" | "pending" | "not_checked" | "replaced";
-/* steering_outcome (notes-progress-report spec §5.6, D20): a mixed note's steering half; null for every other
+/* steering_outcome: a mixed note's steering half; null for every other
    note, and absent from a response recorded before the field existed. */
 export interface ReaderNoteRecord { note_id: string; text: string; restatement: string | null; outcome: ReaderNoteOutcome; steering_outcome?: ReaderNoteOutcome | null }
 export interface ClarificationRecord {
@@ -71,7 +70,7 @@ export interface SessionListResponse { sessions: ResearchSessionResponse[] }
    exactly one of an offered choice or the reader's own text (at most 200 characters). */
 export type ClarificationAnswer = { question_id: string; choice: string } | { question_id: string; text: string };
 export interface ClarificationAnswersRequest { answers: ClarificationAnswer[]; skip: boolean }
-/* `event_id` is the event's identity (live-briefs spec E1); the web app does not read it yet. */
+/* `event_id` is the event's identity; the web app does not read it yet. */
 export interface ResearchEvent {
   event_type: string; source: string; message: string; timestamp: string; metadata: Record<string, unknown>; event_id: string;
 }
@@ -150,19 +149,19 @@ export async function getEvidence(sessionId: string): Promise<ApiResult<Evidence
   const r = await request(`/api/research/${id(sessionId)}/evidence`);
   return { data: (await r.json()) as EvidenceResponse, mode: modeOf(r) };
 }
-/* The one-time check's answers, posted once (live-briefs spec §4.5): a 409 not_waiting_for_input
+/* The one-time check's answers, posted once: a 409 not_waiting_for_input
    means the check already started on best guesses. */
 export async function submitAnswers(sessionId: string, body: ClarificationAnswersRequest): Promise<ApiResult<ResearchSessionResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/answers`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return { data: (await r.json()) as ResearchSessionResponse, mode: modeOf(r) };
 }
-/* One reader note, posted once (live-briefs spec §4.6-§4.7): 409 notes_closed once publishing has
+/* One reader note, posted once: 409 notes_closed once publishing has
    begun, 409 note_limit_reached past the tenth note. */
 export async function addNote(sessionId: string, text: string): Promise<ApiResult<NoteAcceptedResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/notes`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
   return { data: (await r.json()) as NoteAcceptedResponse, mode: modeOf(r) };
 }
-/* Stop a session, posted once with no body (notes-progress-report spec §8.1): 202 with the stopped
+/* Stop a session, posted once with no body: 202 with the stopped
    session; 409 not_stoppable once it has ended, is publishing or the service is closing. */
 export async function stopResearch(sessionId: string): Promise<ApiResult<ResearchSessionResponse>> {
   const r = await request(`/api/research/${id(sessionId)}/stop`, { method: "POST" });

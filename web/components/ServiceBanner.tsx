@@ -1,4 +1,4 @@
-// ServiceBanner.tsx — S4 "API unreachable": the sentence (I) and a Retry; nothing is disabled.
+// ServiceBanner.tsx — "API unreachable": the sentence and a Retry; nothing is disabled.
 "use client";
 export function ServiceBanner({ target, onRetry }: { target: string; onRetry: () => void }) {
   return (

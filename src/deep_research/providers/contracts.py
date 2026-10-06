@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from itertools import islice
-from typing import Annotated, Literal, Protocol, TypeAlias
+from typing import Annotated, Literal, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -153,7 +153,7 @@ class ProviderResponseTelemetry(ProviderContract):
     request_attempt: PositiveInt
     structured_attempt: PositiveInt | None = None
     attempts: tuple[CallAttemptTelemetry, ...] = ()
-    """Each transport attempt this call made, in order (P1-B). Empty for a
+    """Each transport attempt this call made, in order. Empty for a
     single-attempt call or one recorded before per-attempt records existed."""
 
 
@@ -240,19 +240,6 @@ class StructuredRepairRecord(ProviderContract):
     )
 
 
-class StructuredRepairSource(Protocol):
-    """A provider that can hand back the repairs it performed.
-
-    Structural and optional: a caller that needs the diagnostics asks for this
-    method and degrades to no diagnostics when the provider does not implement
-    it, so no provider is forced to grow a recorder it has no use for.
-    """
-
-    def drain_structured_repairs(self) -> tuple[StructuredRepairRecord, ...]:
-        """Return the repairs recorded since the last drain, and clear them."""
-        ...
-
-
 class ProviderError(RuntimeError):
     """Base caller-facing error for every chat provider boundary."""
 
@@ -317,11 +304,6 @@ class ProviderResponseError(ProviderError):
         self.failure_origin = failure_origin
         self.http_status_code = http_status_code
 
-    @property
-    def status_code(self) -> int | None:
-        """Compatibility alias for the safe HTTP status value."""
-        return self.http_status_code
-
     def redacted_copy(self, message: str) -> "ProviderResponseError":
         """Keep the typed failure fields while dropping provider content."""
         return ProviderResponseError(
@@ -370,11 +352,6 @@ class StructuredOutputError(ProviderError):
             for item in islice(diagnostics, _MAX_STRUCTURED_DIAGNOSTICS)
         )
         super().__init__(message)
-
-    @property
-    def validation_diagnostics(self) -> tuple[StructuredValidationDiagnostic, ...]:
-        """Compatibility alias for callers that name the validation records."""
-        return self.diagnostics
 
     def redacted_copy(self, message: str) -> "StructuredOutputError":
         """Keep the provider-free diagnostics; only the message is replaced."""

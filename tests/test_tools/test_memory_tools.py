@@ -215,7 +215,7 @@ class _BatchMemory(FakeMemory):
 
 @pytest.mark.asyncio
 async def test_save_many_writes_a_batch_in_one_backend_call_and_one_span() -> None:
-    """Latency audit O2: several findings, one backend write, one tool span."""
+    """A tool saves multiple findings in one backend call with one tool span."""
     memory = _BatchMemory()
     tracker = RecordingTracker()
     tool = SaveToMemoryTool(tracker, memory)  # type: ignore[arg-type]

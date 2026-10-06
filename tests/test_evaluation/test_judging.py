@@ -200,7 +200,7 @@ def test_agent_specific_dimensions_do_not_change_the_score(
     assert judge_quality(with_extra.scores) == pytest.approx(0.5)
 
 
-def test_the_judge_input_carries_exactly_what_the_spec_permits(
+def test_the_judge_input_carries_exactly_what_the_judge_may_see(
     planner_case, clean_target_output, clean_gate_report
 ) -> None:
     judge_input = build_judge_input(
@@ -1011,7 +1011,7 @@ def test_the_judge_bands_cover_the_whole_declared_range_without_overlap_or_gaps(
     evidence_verifier_live_case,
     evidence_verifier_live_output,
 ) -> None:
-    """Step 3: [0.0, 1.0] with no hole and no score claimed twice.
+    """Judge bands cover [0.0, 1.0] with no hole and no score claimed twice.
 
     Contiguity is asserted as exact adjacency of endpoints: one band closes where
     the next opens, so every score in the declared range has exactly one band's
@@ -1042,7 +1042,7 @@ def test_every_example_score_sits_inside_its_band_and_brackets_the_threshold(
     runtime_config_for,
     evidence_verifier_live_output,
 ) -> None:
-    """Step 3: the labelled pair straddles the threshold the release gate uses.
+    """The labelled pair straddles the threshold the release gate uses.
 
     Both examples must be complete, schema-valid verdicts whose scores fall in
     the band their own label claims, and the pair must straddle the live
@@ -1087,7 +1087,7 @@ def test_the_weighted_formula_matches_the_frozen_table_exactly(
     evidence_verifier_live_case,
     evidence_verifier_live_output,
 ) -> None:
-    """Step 3: the stated formula is the weight table, term for term.
+    """The stated formula is the weight table, term for term.
 
     Which dimension carries which weight is a scoring decision, so the prompt
     states it as arithmetic. Every common dimension must appear exactly once

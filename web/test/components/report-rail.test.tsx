@@ -25,7 +25,7 @@ describe("ReportRail", () => {
     expect(text).not.toMatch(/NaN/);
     expect(container.querySelector("#repFactPass")!.textContent).toBe("One research round");
   });
-  it("paints a 0.80 meter yellow and lists not-found targets with their question once E1 loaded", () => {
+  it("paints a 0.80 meter yellow and lists not-found targets with their question once the evidence has loaded", () => {
     const status = { ...base, status: "max_iterations" as const, semantic_review_status: "scored", semantic_review_score: 0.8,
       coverage: { required_targets: 3, answered_targets: 2, missing_required_target_ids: [], not_found_target_ids: ["topic-01-target-01"] },
       evidence_counts: { read_records: 5, network_reads: 4, cache_reads: 1, unique_works: 4, publishers: 3, source_urls: 4, findings: 6, assessed_sources: 5, cited_assessed_sources: 4, verified_findings: 3, corrected_findings: 1, quoted_findings: 1, dropped_findings: 1, context_unchecked_findings: 1, cited_findings: 4 } };

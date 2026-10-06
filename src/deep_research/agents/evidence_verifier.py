@@ -1,27 +1,25 @@
-"""The Evidence Verifier (spec §5, D8): Figure Match, then the Context Check.
+"""The Evidence Verifier: Figure Match, then the Context Check.
 
-Figure Match is code: only the finding's snippet must be on its read (spec
-§5.1 step 1). It never parses ``content`` and never searches a whole page for
-a number, and it no longer judges any individual figure -- every figure of a
-snippet-matched finding goes to the Context Check, which now carries that
-whole judgement itself (D8, spec d34fd21): the AI rejects a figure its
-snippet or passage does not actually state, and code enforces only that a
-kept figure's ``evidence_words`` are on the page, that any correction is
-supported by ``evidence_words`` alone, and every attribution rule (PD-8,
-PD-18, PD-25).
+Figure Match is code: only the finding's snippet must be on its read. It never
+parses ``content`` and never searches a whole page for a number, and it judges
+no individual figure -- every figure of a snippet-matched finding goes to the
+Context Check, which carries that whole judgement itself: the AI rejects a
+figure its snippet or passage does not actually state, and code enforces only
+that a kept figure's ``evidence_words`` are on the page, that any correction is
+supported by ``evidence_words`` alone, and every attribution rule.
 
 The Context Check is one batched, tool-free provider call per
 ``agents.verifier_batch_size`` findings, at most
 ``agents.verifier_concurrency`` batches in flight (shared with
 ``check_statements`` below; the module constants of the same shapes are only
-the defaults, PD-12). A finding whose
+the defaults). A finding whose
 batch fails, or whose figure the reply never names, keeps a figure only when
 deterministic code can confirm the snippet itself states it
 (``figures.figure_in_text``); that kept figure carries its recorded fields
 and the finding is marked ``context_unchecked``, and a figure the snippet
-does not state is dropped with ``context_unavailable`` (PD-26, P1-2).
+does not state is dropped with ``context_unavailable``.
 
-``check_statements`` (spec §6.2, D8) is the sibling check for the Report
+``check_statements`` is the sibling check for the Report
 Writer's drafted sentences: the same batching, checking whether a sentence
 states only what the verified findings it cites actually carry.
 """
@@ -111,10 +109,10 @@ EVIDENCE_VERIFIER_NAME = "evidence_verifier"
 
 @dataclass(frozen=True)
 class FigureMatch:
-    """Spec §5.1 step 1: is the finding's snippet on its page?
+    """Whether the finding's snippet is on its page.
 
-    D8: code no longer judges any individual figure here -- the Context
-    Check's own AI verdict carries that whole judgement now.
+    Code judges no individual figure here -- the Context
+    Check's own AI verdict carries that whole judgement.
     """
 
     read_found: bool
@@ -138,7 +136,7 @@ def figure_match(finding: Finding, reads: Mapping[str, ReadRecord]) -> FigureMat
 
 # The two Context Check bounds are the *defaults* for
 # ``agents.verifier_batch_size`` and ``agents.verifier_concurrency``, which the
-# Evidence Verifier reads from its own config (PD-12, PD-27); the Statement
+# Evidence Verifier reads from its own config; the Statement
 # Check takes the same two values from its caller. They stay module constants
 # only so a direct caller and the module's own tests have a defined default.
 CONTEXT_CHECK_BATCH_SIZE = 5
@@ -215,11 +213,10 @@ CONTEXT_CHECK_INSTRUCTION = (
 
 _CONTEXT_CHECK_REPLY_EXAMPLES = (
     (
-        # The block's own field names (review VER-2 defect 8), so the recorded
+        # The block's own field names, so the recorded
         # scope is visible and a fill is not taught as a correction.
         # The recorded-fields line omits empty fields, as the real block does, so
-        # the example shows the shape the model is shown and no more (re-round 1,
-        # EXTRA-3 note).
+        # the example shows the shape the model is shown and no more.
         "Example input: page: Example report (Example Institute) | page date: "
         "2025-03-12 (the finding's release date) | recorded fields: period: 2024 "
         "| figure 1: 12 percent | recorded period 2024 | recorded kind actual | "
@@ -269,8 +266,8 @@ class ContextItem:
     passage: str
     match: FigureMatch
     """``figure_match`` for this finding, whose snippets every figure here shares."""
-    issuer: str | None = None   # evaluated_issuer(...) for the read (PD-25)
-    page_date: str | None = None   # evaluated_page_date(...) for the read (D11, D12)
+    issuer: str | None = None   # evaluated_issuer(...) for the read
+    page_date: str | None = None   # evaluated_page_date(...) for the read
 
 
 class VerifiedFindings(ContractModel):
@@ -360,7 +357,7 @@ def _name_prefixes(candidate: str) -> list[str]:
 def page_owner(read: ReadRecord) -> str:
     """The page's own organisation, when the page's own words name it.
 
-    PD-18's sibling for the byline itself: a title, opening (the same
+    The byline itself: a title, opening (the same
     bounded first-3-passages/2000-char window authorship reads), or
     copyright line naming an organisation is used only when
     ``verified_facts.same_organisation`` confirms that name is the same
@@ -403,7 +400,7 @@ def page_owner(read: ReadRecord) -> str:
     return host
 
 
-# D5: a passage that ends right before its own qualifier hides the page's
+# A passage that ends right before its own qualifier hides the page's
 # hedge or rejection of the very claim it states. When the bounded window
 # ends on a sentence that begins with one of these connectives, it is
 # extended through that sentence -- wherever it continues, even into the
@@ -432,7 +429,7 @@ def _last_sentence_end(text: str) -> int:
 
 def _extended_through_qualifier(text: str, full_text: str) -> str:
     """``text``, extended through a trailing sentence that begins with a
-    contrastive connective (D5), within ``CONTEXT_PASSAGE_CHARS``.
+    contrastive connective, within ``CONTEXT_PASSAGE_CHARS``.
 
     The connective can already be dangling at ``text``'s own end (a passage
     cut right after "However,"), in which case its continuation is found in
@@ -462,7 +459,7 @@ def _extended_through_qualifier(text: str, full_text: str) -> str:
 
 
 def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) -> str:
-    """§5.2's bounded passage: every passage the snippet actually spans, centred on it."""
+    """The bounded passage: every passage the snippet actually spans, centred on it."""
     full_text = read_text(read)
     text = snippet_span_text(read, locator or "", snippet or "") or full_text
     if len(text) <= CONTEXT_PASSAGE_CHARS:
@@ -479,7 +476,7 @@ def context_passage(read: ReadRecord, locator: str | None, snippet: str | None) 
 
 
 def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None:
-    """PD-25: the issuer the Source Evaluator validated for this read, if any.
+    """The issuer the Source Evaluator validated for this read, if any.
 
     ``identity_anchors`` holds only the anchors the read was shown to evidence,
     so this name is the page's own organisation, not a guess from its host.
@@ -497,10 +494,10 @@ def evaluated_issuer(sources: Sequence[ScoredSource], read: ReadRecord) -> str |
 
 
 def evaluated_page_date(sources: Sequence[ScoredSource], read: ReadRecord) -> str | None:
-    """D11: the publication date the Source Evaluator validated for this read, if any.
+    """The publication date the Source Evaluator validated for this read, if any.
 
     The one date a relative period ("this year") may be resolved against, and
-    the one every Context Check block prints (D12), so every batch a figure
+    the one every Context Check block prints, so every batch a figure
     lands in resolves it from the same basis.
     """
     urls = {read.requested_url, read.resolved_url}
@@ -512,7 +509,7 @@ def evaluated_page_date(sources: Sequence[ScoredSource], read: ReadRecord) -> st
 
 
 def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
-    """The date a relative period resolves against, and where it came from (D11, D12).
+    """The date a relative period resolves against, and where it came from.
 
     The block prints what ``_checked`` resolves from, so one helper gives both
     of them the same basis and the same words for it: a batch reads the date
@@ -520,7 +517,7 @@ def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
     date is admitted by the researcher's own quote rule; its statement date is
     checked here, because the extraction copies that draft field straight
     through, so an off-page one would resolve a relative period against a date
-    the page cannot support (I7).
+    the page cannot support.
     """
     if item.page_date:
         return item.page_date, "from the Source Evaluator"
@@ -533,12 +530,12 @@ def _page_date_basis(item: ContextItem) -> tuple[str | None, str]:
 
 
 def _owns_page(read: ReadRecord, organisation: str, issuer: str | None) -> bool:
-    """PD-18's own-page rule, then PD-25's validated issuer with the page's own word.
+    """The own-page rule, then the validated issuer with the page's own word.
 
-    The page has to *be* this organisation's. PD-18 answers that from the read
+    The page has to *be* this organisation's. The own-page rule answers that from the read
     itself: the organisation's own registrable host, or an institutional domain
     whose label spells it while the page names it. The Source Evaluator's
-    validated issuer (PD-25) is a judgement about the read, so an identity-words
+    validated issuer is a judgement about the read, so an identity-words
     match with it counts only beside the page's own credit of itself -- a body
     merely mentioned somewhere on the page is not its publisher.
     """
@@ -569,7 +566,7 @@ _NAME_BEFORE_CUE_PATTERN = re.compile(
 
 
 def _title_names_the_body(read: ReadRecord, name: str) -> bool:
-    """Whether the page's own title carries this body's name (review VER-2 defect 2).
+    """Whether the page's own title carries this body's name.
 
     The reproduced-document case: a page serving another body's instrument needs
     no attribution cue, because its own title says whose document it is
@@ -579,7 +576,7 @@ def _title_names_the_body(read: ReadRecord, name: str) -> bool:
     return any(same_organisation(segment, name) for segment in title_segments(read.title))
 
 
-# D11b (run 8; RevV4 P1 follow-up): a determiner, pronoun or single function
+# A determiner, pronoun or single function
 # word never names a body, wherever the verifier would otherwise accept a
 # name -- the model's own proposal, a name read back out of the Context
 # Check's evidence words ("That number, however, grew ..." reads "That" as
@@ -602,8 +599,8 @@ def _body_credited_in_words(words: str | None) -> str | None:
     The Context Check can leave a relay unresolved while the words it quoted
     state the credit plainly ("based on the latest reporting from the U.S.
     Energy Information Administration"), and the label then contradicts the
-    sentence the writer quotes from the page (the live pre-flight's
-    review-01). Code reads the same cues back out of those words, in both
+    sentence the writer quotes from the page. Code reads the same cues back
+    out of those words, in both
     directions, so the label agrees with the page's own sentence.
     """
     if not words:
@@ -629,9 +626,9 @@ def resolve_attribution(
     issuer: str | None,
     words: str | None = None,
 ) -> tuple[FigureAttribution, str]:
-    """PD-8: the Context Check proposes, the page's own words decide.
+    """The Context Check proposes, the page's own words decide.
 
-    ``issuer`` is ``evaluated_issuer(...)`` for the read (PD-25), or ``None``.
+    ``issuer`` is ``evaluated_issuer(...)`` for the read, or ``None``.
     ``words`` are the Context Check's own evidence words for this figure, when
     there are any: a verdict that leaves the attribution unresolved is repaired
     from them, so the label never contradicts the sentence the page states.
@@ -648,7 +645,7 @@ def resolve_attribution(
             # A page that reproduces another body's document (an instrument, a
             # standard, a recital) needs no cue beside the figure: the document's
             # body is named in the page's own title, and the reply's credit is
-            # those words (review VER-2 defect 2). The page's own owner never
+            # those words. The page's own owner never
             # arrives here -- _owns_page answered that above.
             return "relayed", name
     admitted = finding.attributed_issuer
@@ -658,7 +655,7 @@ def resolve_attribution(
         proposed == "relayed" and name and not same_organisation(name, admitted)
     ):
         # The finding-level admission is the whole snippet's issuer, and one
-        # finding can state two bodies' figures (C1): when the Context Check
+        # finding can state two bodies' figures: when the Context Check
         # proposes a *different* body and the page carries no cue for it, the
         # admitted issuer is not this figure's, and crediting it would print a
         # figure that body never issued as its relay.
@@ -685,7 +682,7 @@ def resolve_attribution(
         return "own", owner
     if proposed == "own":
         if issuer and same_organisation(name, issuer):
-            # PD-25: the body the Source Evaluator validated for this read is the
+            # The body the Source Evaluator validated for this read is the
             # page's own organisation, which is what the verdict proposed.
             return "own", name
         page_host = publisher_identity(read.resolved_url)
@@ -695,12 +692,12 @@ def resolve_attribution(
         ):
             # The verdict named this page's own owner -- as its name or as its
             # host (the Context Check's block prints the host) -- which is not "a
-            # body the host does not own": the own-page reading stands (N3).
+            # body the host does not own": the own-page reading stands.
             return "own", owner
-        # F2: otherwise the verdict named a body this page is not, so the page's
+        # Otherwise the verdict named a body this page is not, so the page's
         # own cue beside the figure decides whether it is that body's relay;
-        # nothing does, and the figure is attributed to nobody. Returning the
-        # host as its own organisation here presented a relay as the issuer.
+        # when nothing does, the figure is attributed to nobody, never to the
+        # host as its own organisation, which would present a relay as the issuer.
         if relay_attribution_on_page(read, finding.locator or "", finding.snippet or "", name):
             return "relayed", name
         return "unattributed", owner
@@ -711,10 +708,10 @@ def unchecked_context(finding: Finding, figure: FindingFigure, read: ReadRecord,
                       issuer: str | None) -> FigureContext:
     """The recorded fields, used when no Context Check reply exists for a figure.
 
-    Only a figure the snippet itself states reaches here (P1-2, in
+    Only a figure the snippet itself states reaches here (in
     ``verify_finding``); the finding keeps its Figure Match status (verified
     or verified_corrected) and carries ``context_unchecked``, and its label
-    says "unchecked context" (PD-26).
+    says "unchecked context".
     """
     attribution, organisation = resolve_attribution(
         proposed=None, organisation=None, finding=finding, read=read, issuer=issuer
@@ -742,8 +739,8 @@ def _period_stated(words: str, period: str | None) -> bool:
     """Whether the words state this period: literally, or in another spelling.
 
     One rule for every period test the enforcement makes: a page that dates its
-    figure "at the end of Q1'25" states the period a reply writes "Q1 2025"
-    (round 3's pre-flight evidence), and a period neither spelling states is
+    figure "at the end of Q1'25" states the period a reply writes "Q1 2025", and
+    a period neither spelling states is
     still unstated.
     """
     return bool(period) and (
@@ -755,10 +752,9 @@ def _agrees_with_the_years_the_words_state(words: str, resolved: str) -> bool:
     """Whether a relative period the code read agrees with the words' own years.
 
     The words can carry an explicit period and a relative phrase at once
-    ("Firms added 4 GW in 2024; this year they plan more"), and fix round 1
-    ruled only on the case where the *recorded* period is the explicit one. A
+    ("Firms added 4 GW in 2024; this year they plan more"). A
     resolution naming another year than the ones these words state is not the
-    period these words are about, so no correction is kept from it (P2-2).
+    period these words are about, so no correction is kept from it.
     """
     stated = {
         int(atom[:4])
@@ -773,20 +769,19 @@ def _agrees_with_the_years_the_words_state(words: str, resolved: str) -> bool:
 
 
 def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) -> FigureResult:
-    """§5.2's enforcement of one reply: the page decides every correction.
+    """The enforcement of one reply: the page decides every correction.
 
     A period or scope correction is kept only when ``evidence_words`` carry
     it, except a period the words date relatively that the page's own stated
-    date resolves to (D11), which is kept with the date it came from and only
-    when it agrees with any year the words state themselves (P2-2). A period
-    the words state themselves is never resolved relatively (fix round 1). A
+    date resolves to, which is kept with the date it came from and only
+    when it agrees with any year the words state themselves. A period
+    the words state themselves is never resolved relatively. A
     recorded period or subject the reply answers null on, under a `correct`
-    verdict, is not backed by the words and is cleared rather than printed
-    (I1). A subject is adopted only when the evidence words or the passage
-    name it (ruling N2). An unnamed proposal never drops a figure for a
+    verdict, is not backed by the words and is cleared rather than printed.
+    A subject is adopted only when the evidence words or the passage
+    name it. An unnamed proposal never drops a figure for a
     subject it restates or a subject the figure's own evidence words state; it
-    drops only a figure whose recorded subject its own words do not back (fix
-    rounds 1 and 2).
+    drops only a figure whose recorded subject its own words do not back.
     """
     words = reply.evidence_words.strip()
 
@@ -801,8 +796,8 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
     finding = item.finding
     period, scope, subject = figure.period or finding.data_period, finding.measure_scope, figure.subject
     corrected = False
-    resolved_from: str | None = None   # the page date a relative period came from (D11)
-    # A date is not a measure (improvement 9): the date the page states *is* the
+    resolved_from: str | None = None   # the page date a relative period came from
+    # A date is not a measure: the date the page states *is* the
     # figure, so a reply that proposes it as the "period" corrects nothing, and
     # the ISO spelling of a date the words spell out is that same date, never a
     # correction that is not on the page. The recorded fields stand unchanged and
@@ -812,23 +807,23 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         if not _period_stated(words, reply.period):
             page_date, _ = _page_date_basis(item)
             # An explicit period the words themselves state beats a relative
-            # reading (fix round 1): only a page that dates the figure
-            # relatively lets code resolve one. Fix round 1 guarded the
-            # *recorded* period; the words' own year is what has to agree, or a
-            # figure the words date 2024 is kept under a relative 2026 (P2-2).
+            # reading: only a page that dates the figure
+            # relatively lets code resolve one. The *recorded* period is guarded
+            # and the words' own year has to agree, or a
+            # figure the words date 2024 is kept under a relative 2026.
             dated_explicitly = _period_stated(words, period)
             resolved = None if dated_explicitly else resolve_relative_period(words, page_date)
             if (resolved is None or not same_period(resolved, reply.period)
                     or not _agrees_with_the_years_the_words_state(words, resolved)):
                 # A period the page never states is not published, whatever the
                 # reply's verdict: the figure's own period would then be one no
-                # page states (D11; the relative-period scenario's second page).
+                # page states.
                 return drop("correction_not_on_page")
             resolved_from = page_date
             period, corrected = reply.period, period is not None
         else:
             # The words state the proposal, so adopting it is a correction only
-            # where the figure had recorded a period at all (improvement 9): a
+            # where the figure had recorded a period at all: a
             # figure the extraction left undated, dated by the words the reply
             # quotes, is a fill, not a correction.
             period, corrected = reply.period, period is not None
@@ -836,7 +831,7 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         # The Context Check answers null as its prompt instructs ("null when
         # the page states none"), so a recorded period its own words do not
         # state is not verified by them: the figure keeps its value and its
-        # label reads "period not stated" (I1). A period the words do state
+        # label reads "period not stated". A period the words do state
         # stands -- the quote backs it.
         period, corrected = None, True
     if reply.scope and _differs(reply.scope, scope):
@@ -844,10 +839,9 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
             scope, corrected = reply.scope, True
         elif reply.verdict == "correct":
             # Only the verdict that asserts a correction may cost a figure its
-            # place (improvement 9). A reply confirming the figure that also
+            # place. A reply confirming the figure that also
             # volunteers a scope its own words do not carry leaves the recorded
-            # scope standing -- which is what the run's fourth date figure lost
-            # its place to.
+            # scope standing.
             return drop("correction_not_on_page")
     proposed = (reply.subject or "").strip()
     if proposed and _differs(proposed, subject):
@@ -856,13 +850,13 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
         elif subject and not (
             same_subject(proposed, subject) or excerpt_matches(words, subject)
         ):
-            # Neither subject is backed by this figure's own words (fix round 2):
+            # Neither subject is backed by this figure's own words:
             # the proposal cannot displace the recorded one, and the recorded one
             # is not what these words state. A passage that names another
             # figure's subject never backs this figure's.
             return drop("correction_not_on_page")
     elif reply.verdict == "correct" and subject and not excerpt_matches(words, subject):
-        # The same rule for the recorded subject (I1): the page names none the
+        # The same rule for the recorded subject: the page names none the
         # words carry, so nothing backs it and it is dropped rather than
         # printed as the thing this figure is about.
         subject, corrected = None, True
@@ -883,7 +877,7 @@ def _checked(item: ContextItem, figure: FindingFigure, reply: FigureCheckDraft) 
 def verify_finding(
     item: ContextItem, replies: Mapping[int, FigureCheckDraft] | None
 ) -> FindingVerification:
-    """§5.2's enforcement for one figure-bearing finding whose snippet is on its page.
+    """The enforcement for one figure-bearing finding whose snippet is on its page.
 
     ``replies`` maps a 1-based figure number to its reply; ``None`` means the
     batch's Context Check failed, and a figure the reply leaves out is that
@@ -892,7 +886,7 @@ def verify_finding(
     (``figures.figure_in_text``): the model may have left it out exactly
     because it cannot find it stated, so nothing else may promote it. A
     confirmed one keeps its recorded fields and marks the finding
-    ``context_unchecked`` (PD-26); an unconfirmed one is dropped with
+    ``context_unchecked``; an unconfirmed one is dropped with
     ``context_unavailable``.
     """
     results: list[FigureResult] = []
@@ -923,15 +917,15 @@ def verify_finding(
     )
 
 
-# --- notes-progress-report spec §6.1, §6.2, §6.5: Verifying's live progress ----
+# --- Verifying's live progress ----
 
-#: The sample a report shows (spec §6.2): the first finding, in report order, of
+#: The sample a report shows: the first finding, in report order, of
 #: the first of these statuses the report holds.
 _SAMPLE_ORDER: tuple[FindingStatus, ...] = ("verified_corrected", "dropped", "verified", "quoted")
 
 
 def _correction(finding: Finding, verification: FindingVerification) -> dict[str, JsonValue] | None:
-    """What the check changed, from the first figure it corrected or dropped (spec §6.1).
+    """What the check changed, from the first figure it corrected or dropped.
 
     ``field`` is ``period``, ``period_cleared``, ``scope``, ``subject``, ``kind``
     or ``figure`` (a figure the page did not carry); ``value`` is the kept
@@ -969,7 +963,7 @@ def _drop_reason(verification: FindingVerification) -> str | None:
 
 
 def _sample_host(url: str) -> str | None:
-    """The page's host, without ``www.``; never a path or a query (spec §4 item 1)."""
+    """The page's host, without ``www.``; never a path or a query."""
     try:
         return urlsplit(normalize_source_url(url)).hostname or None
     except ValueError:
@@ -980,7 +974,7 @@ def verification_sample(
     judged: Sequence[tuple[Finding, FindingVerification]],
     sources: Mapping[str, ScoredSource],
 ) -> dict[str, JsonValue] | None:
-    """Verifying's ticker sample for one report (spec §6.1, §6.2), or ``None``.
+    """Verifying's ticker sample for one report, or ``None``.
 
     ``sources`` maps a normalized source url to its assessment. The text is the
     finding's content, at most 160 characters; the verdict is the finding's
@@ -1006,12 +1000,12 @@ def verification_sample(
 
 
 class _VerifyProgress:
-    """One verification pass's running tally (spec §6.1).
+    """One verification pass's running tally.
 
     ``total`` is the findings this pass judges; a finding is counted once, the
     first time a report names it -- the Figure Match pass or a settled batch --
     so the tally never depends on how many events arrive or how findings were
-    batched (review M13).
+    batched.
     """
 
     def __init__(
@@ -1052,7 +1046,7 @@ class _VerifyProgress:
 
 
 def verification_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
-    """One ``evidence_verifier.progress`` event (spec §4 item 1, §6.1): live-only."""
+    """One ``evidence_verifier.progress`` event: live-only."""
     return agent_event(
         agent_name=EVIDENCE_VERIFIER_NAME,
         event_type="evidence_verifier.progress",
@@ -1067,9 +1061,9 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
     for item in items:
         finding = item.finding
         date, source = _page_date_basis(item)
-        # Only the fields this reply judges (review VER-2 defect 6): release
+        # Only the fields this reply judges: release
         # date, vintage and statement date have no field to be judged against and
-        # were printed as if verified. The relative-period basis they may carry is
+        # would read as verified. The relative-period basis they may carry is
         # still printed, on the page date line below, where code resolves from it.
         recorded = "; ".join(
             f"{name}: {value}"
@@ -1109,7 +1103,7 @@ def context_check_messages(items: Sequence[ContextItem]) -> list[ChatMessage]:
 
 
 class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
-    """Figure Match, then one batched, tool-free Context Check (spec §5)."""
+    """Figure Match, then one batched, tool-free Context Check."""
 
     name = EVIDENCE_VERIFIER_NAME
     description = "Check each finding's snippet and figures against its page, then their context."
@@ -1136,7 +1130,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
             finding for finding in deduplicate_findings(state.raw_findings)
             if (record := verified.get(finding_fingerprint(finding))) is None
             # A re-extraction can bind a target the verified record never
-            # carried (P2-4). The binding lives on the finding, so judging the
+            # carried. The binding lives on the finding, so judging the
             # record again is what lets the obligation it answers be read from
             # a verified record instead of staying Not found.
             or not set(finding.target_ids) <= set(record.target_ids)
@@ -1145,14 +1139,14 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         async with self.tracker.agent_span(self.name) as span:
             judged = await self.verify(
                 pending, state.read_records, errors, state.evaluated_sources,
-                # notes-progress-report spec §6.2: each tally, live-only.
+                # Each tally, live-only.
                 on_progress=lambda metadata: publish_live(verification_progress_event(metadata)),
             )
             span.set_outputs({"agent_name": self.name, "findings": len(judged)})
         snapshot = _merged_snapshot(state.verified_findings, judged)
         react = ReActRun(agent_name=self.name, stop_reason="finished", errors=errors)
         completed = evidence_verified_event(judged)
-        publish_live(completed)  # live-briefs spec E3; returned below as well
+        publish_live(completed)  # returned below as well
         return AgentRun(
             agent_name=self.name, result=VerifiedFindings(findings=judged), react=react,
             errors=errors,
@@ -1166,7 +1160,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                      on_progress: Callable[[dict[str, JsonValue]], None] | None = None) -> list[Finding]:
         """Figure Match every finding, then Context Check the figure-bearing ones.
 
-        ``on_progress`` (notes-progress-report spec §6.2) is called once after
+        ``on_progress`` is called once after
         the Figure Match pass, before the first Context Check -- its count
         already holds the findings Figure Match decided -- then once each batch
         settles, with the running tally and that report's sample.
@@ -1180,7 +1174,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
             elif not match.snippet_on_page:
                 results[key] = FindingVerification(status="dropped", dropped_reason="snippet_not_on_page")
             elif not finding.figures:
-                # D21: only a figure ever reaches the Context Check (a
+                # Only a figure ever reaches the Context Check (a
                 # finding with none "has nothing to judge"), and the
                 # Statement Check judges drafted report sentences, not raw
                 # findings -- so neither check ever judges this finding for
@@ -1230,14 +1224,14 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
                      split: bool) -> dict[str, dict[int, FigureCheckDraft] | None]:
         """One call; on truncation or an invalid reply, one re-ask in two halves.
 
-        The two halves are asked together (latency audit O10). Each records its
+        The two halves are asked together. Each records its
         errors in a list of its own, and the two lists are joined in half order,
-        so the run's records read as the one-after-another re-ask wrote them.
+        so the run's records read in a deterministic order.
         """
         labelled = [replace(item, label=f"F{number:02d}") for number, item in enumerate(batch, 1)]
         try:
             self.fingerprint_call(ContextCheckDraft.__name__)
-            with call_label("context_check"):  # latency audit O8
+            with call_label("context_check"):
                 reply = await self.provider.complete_structured(
                     context_check_messages(labelled), ContextCheckDraft,
                     agent_name=self.name,
@@ -1260,7 +1254,7 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
             return {finding_fingerprint(item.finding): None for item in labelled}
         except ProviderConfigurationError:
             # A rejected model or effort is a configuration fault the node halts
-            # on (P3-5): recording it as a failed batch would publish a report
+            # on: recording it as a failed batch would publish a report
             # whose every figure reads "unchecked context".
             raise
         except ProviderError as error:
@@ -1298,10 +1292,10 @@ def context_check_failed_error(batch_size: int, error: Exception) -> ResearchErr
 
 
 def _merged_snapshot(existing: Sequence[Finding], judged: Sequence[Finding]) -> list[Finding]:
-    """PD-4's snapshot, with a re-judged finding's newer verdict in its place.
+    """The snapshot, with a re-judged finding's newer verdict in its place.
 
     ``run`` judges a finding again only when a later extraction bound a target
-    the verified record did not carry (P2-4), so the newer verdict stands and
+    the verified record did not carry, so the newer verdict stands and
     both passes' bindings are kept -- the same argument
     ``deduplicate_findings`` makes for raw findings, and what keeps one record
     per finding, which is what readers of the snapshot count.
@@ -1338,7 +1332,7 @@ def evidence_verified_event(findings: Sequence[Finding]) -> ResearchEvent:
 
 
 # ---------------------------------------------------------------------------
-# check_statements (spec §6.2, D8): the Report Writer's sibling check
+# check_statements: the Report Writer's sibling check
 # ---------------------------------------------------------------------------
 
 STATEMENT_CHECK_SYSTEM_PROMPT = (
@@ -1442,19 +1436,19 @@ class StatementCheckItem(ContractModel):
     passages: dict[str, str] = Field(default_factory=dict)
     """Finding id (``finding_fingerprint``) -> the bounded passage of its page.
 
-    Improvement 8: a snippet is cut at the passage boundary, so the condition,
+    A snippet is cut at the passage boundary, so the condition,
     exception or object a reported rule attaches to is often just outside it --
     "released under an open licence that allows for" ends where the exception
     to that rule begins. The caller that holds the run's reads supplies
     ``context_passage`` for each cited finding, and the block shows it beside
     the snippet; a caller with no reads in hand leaves this empty and the block
-    is exactly what it was.
+    shows no passage.
     """
     source_lines: dict[str, str] = Field(default_factory=dict)
-    """Finding id (``finding_fingerprint``) -> its ``source:`` registry line
-    (W2), the run's own source evaluation of the page's kind, in that
+    """Finding id (``finding_fingerprint``) -> its ``source:`` registry line,
+    the run's own source evaluation of the page's kind, in that
     evaluation's own words. The same line the writer's registry shows beside
-    the finding, now shown here too: a sentence naming a weak page's kind is
+    the finding, shown here too: a sentence naming a weak page's kind is
     judged against this line, not invented against a block that never
     printed it. A finding with no rationale line, or whose caller has none in
     hand, is left out.
@@ -1481,7 +1475,7 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
 
     The ``page`` line is the read's own title with its host — the same title
     the writer's registry shows — so the checker can see the document a page
-    reproduces and let a sentence name it (review re-round 1, C1): without it the
+    reproduces and let a sentence name it: without it the
     writer names an instrument the checker cannot find and the point is refused
     by construction. A finding that kept no figure also carries who it belongs
     to: the admitted issuer (``attributed to``), or, when nothing was admitted,
@@ -1490,12 +1484,12 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
     not repeat the extraction-time issuer: its figure line already carries the
     verdict (``own``/``relayed``/``unattributed`` and the organisation named for
     it), so one page states its attribution once. Each kept figure's own line
-    also carries its ``release`` (Fable's final prompt review, High): a
+    also carries its ``release``: a
     forecast's release is part of the honesty rule "a forecast carries its
     issuer and release", so a sentence that states it correctly must be able
     to survive the check, and a correction must be able to recover it. A
-    ``source`` line, printed under ``page`` when the caller supplied one
-    (W2), is the run's own source evaluation of the page's kind, in that
+    ``source`` line, printed under ``page`` when the caller supplied one,
+    is the run's own source evaluation of the page's kind, in that
     evaluation's own words: the same words the writer's registry prints, so
     a sentence naming a weak page's kind can be judged against what it was
     actually shown.
@@ -1527,7 +1521,7 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
         lines.append(f'    snippet: "{finding.snippet or finding.content}"')
         passage = item.passages.get(finding_fingerprint(finding))
         if passage:
-            # The wider words the snippet was cut out of (improvement 8), so a
+            # The wider words the snippet was cut out of, so a
             # condition or exception just past the cut is judged, not guessed.
             lines.append(f'    passage: "{passage}"')
         if figures:
@@ -1546,11 +1540,11 @@ def _statement_cited_lines(item: StatementCheckItem) -> str:
 def _cited_attribution(context: FigureContext, finding: Finding) -> str:
     """The attribution a cited figure's line shows, with no body to claim for none.
 
-    ``claimed_organisation``'s rule for the one line the Statement Check reads
-    (improvement 7): an unattributed figure of a page that serves another body's
+    ``claimed_organisation``'s rule for the one line the Statement Check reads:
+    an unattributed figure of a page that serves another body's
     work has no organisation for this reporter to name, and naming the page's
     owner is what invites a sentence that credits the relaying site. Every other
-    figure keeps "attribution (organisation)" exactly as before.
+    figure keeps "attribution (organisation)".
     """
     organisation = claimed_organisation(context, finding)
     return f"{context.attribution} ({organisation})" if organisation else context.attribution
@@ -1562,7 +1556,7 @@ def statement_check_messages(
 ) -> list[ChatMessage]:
     """One batch's request: every sentence, its label, its cited findings' figures.
 
-    Static first (PD-29): the response contract and the reply format lead, so
+    Static first: the response contract and the reply format lead, so
     every batch of every sub-topic shares them as a cacheable prefix.
     """
     blocks = [
@@ -1623,13 +1617,13 @@ async def _check_statement_batch(
 ) -> dict[str, StatementVerdictDraft | None]:
     """One call; on truncation or an invalid reply, one re-ask in two halves.
 
-    The two halves are asked together (latency audit O10), each recording its
+    The two halves are asked together, each recording its
     errors in a list of its own, joined in half order afterwards.
     """
     if fingerprint is not None:
         fingerprint(StatementCheckDraft.__name__)
     try:
-        with call_label("statement_check"):  # latency audit O8
+        with call_label("statement_check"):
             reply = await provider.complete_structured(
                 statement_check_messages(batch, question=question),
                 StatementCheckDraft,
@@ -1658,7 +1652,7 @@ async def _check_statement_batch(
         errors.append(statement_check_failed_error(len(batch), error))
         return {item.label: None for item in batch}
     except ProviderConfigurationError:
-        # The same configuration fault as the Context Check's (P3-5): the run
+        # The same configuration fault as the Context Check's: the run
         # halts instead of keeping every sentence as an unchecked draft.
         raise
     except ProviderError as error:
@@ -1691,14 +1685,14 @@ async def check_statements(
         [Sequence[StatementCheckItem], Mapping[str, StatementVerdictDraft | None]], None
     ] | None = None,
 ) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
-    """Spec §6.2's Statement Check (D8): does a drafted sentence state only
+    """The Statement Check: does a drafted sentence state only
     what the verified findings it cites actually carry?
 
     Parallel batches of ``batch_size`` items, at most ``concurrency`` in
     flight — the same two bounds the Context Check runs under, and by default
     the module constants that stand in for them. The Report Writer passes its
     own configured ``agents.verifier_batch_size`` and
-    ``agents.verifier_concurrency`` (PD-12), so one config value bounds both
+    ``agents.verifier_concurrency``, so one config value bounds both
     checks. ``None`` means the item was not judged: its own batch
     failed outright, or the reply did not name its label. Either way the
     caller keeps the sentence as drafted and one
@@ -1706,20 +1700,20 @@ async def check_statements(
     batch. A reply's ``corrected`` verdict with a blank ``corrected_text``
     is treated as ``inconsistent``; nothing else is applied to the reply.
 
-    ``gate`` (spec §6.5) lets a caller share one semaphore across several
+    ``gate`` lets a caller share one semaphore across several
     calls to this function -- the parallel Report Writer's parts and its
     bottom line all pass the same ``asyncio.Semaphore(verifier_concurrency)``,
     so the whole pass never runs more than ``verifier_concurrency`` checks at
-    once. ``None`` (every other caller) keeps today's behaviour: a private
+    once. ``None`` (every other caller) uses a private
     semaphore scoped to this one call, sized from ``concurrency``.
 
-    ``on_batch`` (notes-progress-report spec §6.2) is called once each batch
+    ``on_batch`` is called once each batch
     settles -- its re-asked halves included -- with that batch's items and
     verdicts, so the Report Writer can count its sentences as they are judged.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
-    # Latency plan Task 16: the stage replay re-asks exactly these items at
+    # The stage replay re-asks exactly these items at
     # another batch size; nothing is written unless an experiment bound a
     # capture.
     capture_statement_check(question, items)

@@ -1,8 +1,8 @@
-// Issue 2, reduced motion (DESIGN.md:1485-1489; brief acceptance: "no flight box travel, the
-// stages still arrive"). Both handoffs' journeys are skipped under prefers-reduced-motion — no
+// Reduced motion (DESIGN.md §5.6, "The two handoffs"): no flight box travel, the
+// stages still arrive. Both handoffs' journeys are skipped under prefers-reduced-motion — no
 // .q-flight box is ever created, no header-slide transform is ever applied — while the ordinary
-// stage-change cross-fade (already handled by the verbatim CSS's own reduced-motion block,
-// globals.css:997-1020) still runs, so Submitted, Running and Report still each arrive.
+// stage-change cross-fade (already handled by the stylesheet's own reduced-motion block in
+// globals.css) still runs, so Submitted, Running and Report still each arrive.
 //
 // A single point-in-time check is not enough here: the CSS reduced-motion block zeroes the
 // .q-flight box's own transition-duration regardless of the JS gate this proves, so a box created

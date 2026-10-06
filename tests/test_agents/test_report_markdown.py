@@ -1,4 +1,4 @@
-"""The reader report's structure (notes-progress-report spec §7.5; AC23, AC26).
+"""The reader report's structure.
 
 The Markdown prints ``# question``, the evidence line, ``## Bottom line`` (the
 answer, then one line per topic), one ``##`` per topic section, ``## Key figures``
@@ -124,7 +124,7 @@ def test_report_outline_labels_and_numbers_the_topics() -> None:
 
 
 def test_the_outline_numbers_only_the_topic_sections_that_remain() -> None:
-    """Review M9 (AC24): a section the fallback emptied prints no heading and takes no number."""
+    """A section the fallback emptied prints no heading and takes no number."""
     topics = [e for e in report_outline(_composition(emptied=True)) if e.kind == "topic"]
     assert [(e.heading, e.topic_index, e.topic_count) for e in topics] == [("Part one in full", 1, 1)]
 
@@ -148,7 +148,7 @@ def test_an_assembled_bottom_line_says_so_above_its_topic_lines() -> None:
 
 
 def test_a_layout_with_no_printable_answer_says_so_above_its_topic_lines() -> None:
-    """Review P2-1: no answer line printed (none named, or none found in the summary) and not
+    """No answer line printed (none named, or none found in the summary) and not
     assembled -- the topic lines follow one italic disclosure line, never a silent gap."""
     topic_lines = [
         "- **Part one:** Agency One reports part one [1].",

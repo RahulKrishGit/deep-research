@@ -27,7 +27,7 @@ const OUTLINE: ReportOutlineEntry[] = [
   entry("Sources", "sources", "Sources"),
 ];
 
-describe("splitReport (notes-progress-report spec §7.6 Chunks)", () => {
+describe("splitReport", () => {
   it("splits at every '## ' line and lifts the evidence line out of the lead", () => {
     const { evidenceLine, chunks } = splitReport(MARKDOWN.replace(/\n/g, "\r\n"));
     expect(evidenceLine).toBe("Evidence as of 2026-09-30 · 3 sources · San Jose · Top 3");
@@ -68,7 +68,7 @@ describe("reportCards pairs chunks with report_outline by position", () => {
   });
 });
 
-describe("the evidence line's parts (spec §7.5, §7.6)", () => {
+describe("the evidence line's parts", () => {
   it("splits the date, the count and one part per reader answer", () => {
     expect(parseEvidenceLine("Evidence as of 2026-09-30 · 29 sources · San Jose plus nearby South Bay · a place to go now")).toEqual({
       date: "2026-09-30", count: "29 sources", answers: ["San Jose plus nearby South Bay", "a place to go now"],
@@ -88,7 +88,7 @@ describe("sourceIdsOf reads the Sources card's ids before any card renders", () 
   });
 });
 
-describe("the contents list (D28)", () => {
+describe("the contents list", () => {
   it("is a rail from a 1310 px report stage, chips below it", () => {
     expect(CONTENTS_RAIL_MIN).toBe(176 + 32 + 770 + 32 + 300);
     expect([contentsModeFor(1576), contentsModeFor(1310), contentsModeFor(1309), contentsModeFor(1224), contentsModeFor(358)]).toEqual([

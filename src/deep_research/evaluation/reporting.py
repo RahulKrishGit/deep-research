@@ -1,7 +1,7 @@
 """Terminal rendering and durable JSON artifacts for evaluation results.
 
 A pure rendering/serialization layer: it reads ``ExperimentResult`` /
-``SuiteResult`` (Task 4) and the local case registry (Task 9), and produces
+``SuiteResult`` and the local case registry, and produces
 either a list of terminal lines or a JSON file on disk. It never rounds a
 score anywhere but ``format_score``, and it never prints or writes a raw
 provider payload, a raw exception, or a secret -- the data it is handed is
@@ -151,11 +151,10 @@ def _parity_line(result: ExperimentResult) -> str | None:
     disclose" rather than a rendering crash -- so a ``None`` here silently
     omits the line instead of raising.
 
-    Two whole-branch reviews flagged that disclosure living only in the
-    JSON artifact's metadata block is not disclosure: it has to be in the
-    command's own terminal output too, and it has to say when a run was
-    forced onto (or off) production parity by a CLI flag rather than
-    simply inheriting config.yaml.
+    Disclosure living only in the JSON artifact's metadata block is not
+    disclosure: it has to be in the command's own terminal output too, and it
+    has to say when a run was forced onto (or off) production parity by a CLI
+    flag rather than simply inheriting config.yaml.
     """
     metadata = result.metadata
     parity = metadata.get("production_parity")

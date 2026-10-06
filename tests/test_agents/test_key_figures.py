@@ -1,8 +1,8 @@
-"""Key figures (notes-progress-report spec §7.4; AC25, D15, D36, D40).
+"""Key figures.
 
 The verified figures leave the bottom line for their own section after the topics:
-each row labelled ``item · measure`` (never a quoted snippet) -- a row with no named
-item by the source that reported it (D40) -- the values one passage states about one
+each row labelled ``item · measure`` (never a quoted snippet), or -- for a row with no
+named item -- by the source that reported it; the values one passage states about one
 item merged, one row per label, at most ten rows.
 """
 
@@ -165,7 +165,7 @@ def test_key_figures_measure_rule() -> None:
 
 
 def test_a_note_topics_row_is_labelled_by_the_notes_short_subject_not_its_question() -> None:
-    """Final review P3-1: a research note's target measure is its whole question
+    """A research note's target measure is its whole question
     (``reader_notes.note_sub_topic``), so a row it answered printed "Item · {whole question}".
     The label takes the note topic's title without "Your note: ", trimmed; the target the
     agents read keeps its measure."""
@@ -194,9 +194,9 @@ def test_a_note_topics_row_is_labelled_by_the_notes_short_subject_not_its_questi
 
 
 def test_a_note_topic_with_several_targets_keeps_one_row_per_target() -> None:
-    """Final review P3-1, round 1: the per-topic short subject would label two rows about one
+    """The per-topic short subject would label two rows about one
     item that answer different targets of one note alike, and the one-row-per-label rule
-    (D36) would drop the second. A note topic with several targets labels each row by its
+    would drop the second. A note topic with several targets labels each row by its
     own target's question, cut at 40 characters on a word boundary; one target keeps the
     topic's short subject."""
     def note_target(number: int, question: str) -> EvidenceTarget:
@@ -245,7 +245,7 @@ def test_a_note_topic_with_several_targets_keeps_one_row_per_target() -> None:
 
 def test_key_figure_labels_name_the_item_never_a_snippet() -> None:
     plan = ReportComposition(question="q", session_id="s")
-    # D40: with no named item -- no subject, or one that starts with a pronoun -- the
+    # With no named item -- no subject, or one that starts with a pronoun -- the
     # label names the source that reported the row.
     assert _labels(plan, _fact("K001", subject=None, measure="aggregate rating")) == [
         "Example Org \u00b7 Aggregate rating",
@@ -298,7 +298,7 @@ def _eligible_composition(rows: list[FactRow], **fields) -> ReportComposition:
 
 
 def test_key_figures_print_one_row_per_label() -> None:
-    """D36: two passages' rows under one label keep only the first; the rest stay in the evidence log."""
+    """Two passages' rows under one label keep only the first; the rest stay in the evidence log."""
     composition = _eligible_composition([
         _fact("K001", finding_id="a", subject="Starbucks", value="3.5 of 5"),
         _fact("K002", finding_id="b", subject="Starbucks", value="4.4 of 5"),
@@ -316,9 +316,9 @@ def test_key_figures_print_one_row_per_label() -> None:
 
 
 def test_a_row_with_no_named_item_is_labelled_by_its_source() -> None:
-    """D40: a row with no named item is labelled by the source that reported it, so
+    """A row with no named item is labelled by the source that reported it, so
     figures from different findings keep separate rows. One passage's values about it
-    still merge; under one label only the first row prints (D36); a relayed figure is
+    still merge; under one label only the first row prints; a relayed figure is
     labelled by the organisation it is credited to."""
     def unnamed(row_id: str, finding_id: str, organisation: str, value: str, **fields) -> FactRow:
         return _fact(row_id, finding_id=finding_id, subject=None, value=value, period="2024").model_copy(
@@ -368,7 +368,7 @@ def test_a_key_figures_source_prints_its_text_then_its_markers() -> None:
 
 
 def test_the_replay_default_case_labels_its_figures_by_their_sources(tmp_path: Path) -> None:
-    """D40 on the replay server's default case: its five figures name no item and come
+    """The replay server's default case: its five figures name no item and come
     from five findings, so each keeps its own row, labelled by its source -- where a
     measure-only label printed two rows of five."""
     table = replay_outcome(EXTRA_PASS_CASE, tmp_path).composition.table

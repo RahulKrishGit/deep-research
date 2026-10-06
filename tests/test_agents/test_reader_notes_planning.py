@@ -1,4 +1,4 @@
-"""The reader's notes in the planner's and the researcher's requests (live-briefs spec §4.6 table).
+"""The reader's notes in the planner's and the researcher's requests.
 
 Every consumer renders the same block — the step's own lead sentence, then one
 ``- {restatement} ({kinds})`` line per active note — and adds nothing at all
@@ -128,14 +128,14 @@ async def test_a_planner_with_no_notes_sends_the_requests_it_always_sent(tracker
 
 
 def test_planning_notes_text() -> None:
-    """notes-progress-report spec §5.2: the planner is told a new_angle note becomes a sub-topic
-    the run adds itself, so it plans none for it and its review reports no missing dimension (E4)."""
+    """The planner is told a new_angle note becomes a sub-topic
+    the run adds itself, so it plans none for it and its review reports no missing dimension."""
     assert PLANNING_NOTES == PLANNING_NOTES_TEXT
 
 
 @pytest.mark.asyncio
 async def test_planner_appends_research_notes(tracker: Tracker) -> None:
-    """notes-progress-report spec §5.2, AC1 (D1, D2): every research note read before the
+    """Every research note read before the
     planner's run returns joins the plan it is published with — one read before planning, and
     one (a mixed note) read while the plan request was in flight — as its own required sub-topic,
     after the plan's own, in receipt order; planning.completed lists both with their note ids;
@@ -199,7 +199,7 @@ async def test_planner_appends_research_notes(tracker: Tracker) -> None:
 async def test_planner_appends_nothing_without_a_plan(
     tracker: Tracker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """notes-progress-report spec §5.2 (review M10): a run that produced no plan appends no note
+    """A run that produced no plan appends no note
     topic; its update holds only its errors and events, and the note is the researcher's, or
     owes a note pass."""
 

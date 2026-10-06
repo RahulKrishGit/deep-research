@@ -659,7 +659,7 @@ def test_build_agents_uses_the_shared_constructor_mapping(
 async def test_a_bad_report_reviewer_override_fails_before_any_collaborator(
     tracker, monkeypatch
 ) -> None:
-    """Task 10: the extra service role is preflighted like an agent.
+    """The extra service role is preflighted like an agent.
 
     The report reviewer is not one of the five agents, but a run that cannot
     configure it cannot be accepted either, so the same fail-fast rule applies:
@@ -1020,14 +1020,9 @@ async def test_deepseek_chat_still_builds_the_configured_embedding_provider(
 ) -> None:
     """Chat and embedding vendor selection are independent of each other.
 
-    Renamed and updated from the branch's
-    ``test_deepseek_chat_still_builds_openai_embeddings``: that test
-    asserted OpenAI embeddings were built for DeepSeek chat, which assumed
-    OpenAI was the only embedding backend. Task 3 makes ``local`` the
-    default embedding provider, so the correct assertion is that
     ``build_embedding_provider`` is called with the configured provider and
     model -- ``local``/``text-embedding-3-small`` here -- alongside the
-    DeepSeek chat provider, not that OpenAI embeddings are always built.
+    DeepSeek chat provider; OpenAI embeddings are not always built.
     """
     built: list[tuple[str, object]] = []
     provider = RecordingProvider()
@@ -1533,7 +1528,7 @@ async def test_only_the_search_tool_receives_the_run_request_budget(
 async def test_a_runtime_lends_one_connection_pool_to_both_readers(
     tracker, tmp_path, monkeypatch
 ) -> None:
-    """Latency audit O4: without an injected client, the run owns one pool and
+    """Without an injected client, the run owns one pool and
     both readers build their clients over it; an injected client gets none."""
     monkeypatch.setattr("deep_research.tools.http_pool.getproxies", lambda: {})
     settings = ConfigSettings.model_validate({"output": {"directory": str(tmp_path)}})

@@ -1,10 +1,10 @@
-"""Task 4.9: every replay double answers the request its real agent builds.
+"""Every replay double answers the request its real agent builds.
 
 Each test feeds a double the request a *production* builder produced --
 ``context_check_messages``, ``statement_check_messages``, ``section_messages``,
 ``bottom_line_messages``, ``review_messages`` -- and asserts the reply. A
 double that keys its answer to a global order, or that answers a packet the
-agents do not build, fails here rather than in the matrix (Task 4.11).
+agents do not build, fails here rather than in the matrix.
 
 A label is a batch's own: the Evidence Verifier numbers each Context Check
 batch ``F01…`` from one (``agents/evidence_verifier.py``), so two batches both
@@ -14,10 +14,11 @@ instead of counting requests.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import re
+from collections.abc import Sequence
 
 import pytest
+
 from deep_research.agents.evidence_verifier import (
     ContextItem,
     FigureMatch,
@@ -27,11 +28,12 @@ from deep_research.agents.evidence_verifier import (
     context_passage,
     statement_check_messages,
 )
+from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.report import render_written_report
 from deep_research.agents.report_reviewer import (
     build_report_review_input,
     review_messages,
 )
-from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report_writer import (
     PartJob,
     ReportWriterTask,
@@ -39,7 +41,6 @@ from deep_research.agents.report_writer import (
     compose_written_report,
     section_messages,
 )
-from deep_research.agents.report import render_written_report
 from deep_research.e2e_evaluation.replay import (
     CaseExpectation,
     ReplayCompleter,
@@ -49,20 +50,16 @@ from deep_research.e2e_evaluation.replay import (
     ReplayTopic,
 )
 from deep_research.utils.types import (
-    BottomLineDraft,
     FigureContext,
     FigureResult,
     Finding,
     FindingVerification,
-    ItemMarkDraft,
     ReadRecord,
     ReportPoint,
     ReportSection,
     ReportStatement,
     ResearchState,
-    SectionDraft,
     SubTopic,
-    WriterPointDraft,
 )
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 
@@ -295,7 +292,7 @@ def test_the_context_double_keys_its_reply_to_the_labels_one_batch_carries() -> 
 
 
 def test_a_context_override_states_the_scope_attribution_kind_and_organisation() -> None:
-    """PD-25/PD-18's shape: code keeps the correction only because the words are the page's."""
+    """Code keeps the correction only because the words are the page's."""
     words = "The 18.9 gigawatts figure covers all segments of the market."
     harness = page(
         "woodmac",
@@ -360,10 +357,10 @@ def test_a_figure_whose_unit_is_more_than_one_word_is_read_by_the_context_double
 
 
 def test_the_context_double_reads_the_subject_a_figure_line_records() -> None:
-    """D11: the request's own `` | recorded subject …`` part decides the reply.
+    """The request's own `` | recorded subject …`` part decides the reply.
 
     The real line ends ``… | recorded kind actual | recorded subject Kettle K1``
-    only when the figure carries one (Task 5.7b), so a double that ignores the
+    only when the figure carries one, so a double that ignores the
     part would confirm a subject-less figure and the report would lose the one
     thing that keeps two equal values apart.
     """
@@ -386,7 +383,7 @@ def test_the_context_double_reads_the_subject_a_figure_line_records() -> None:
 
 
 def test_a_context_override_names_the_subject_and_the_period_it_resolves() -> None:
-    """The two D11 overrides: a proposal code keeps or drops on the page's words."""
+    """The two overrides: a proposal code keeps or drops on the page's words."""
     source = page(
         "resolved",
         value="4",
@@ -435,13 +432,13 @@ def test_the_writer_double_drafts_a_point_for_a_finding_with_no_figure() -> None
 
 
 def test_the_writer_double_names_a_registry_line_subject_first() -> None:
-    """D11: the drafted sentence names its own row's subject, and marks it.
+    """The drafted sentence names its own row's subject, and marks it.
 
     Two products rated the same value are two rows, and the writer's own
     restatement guard counts a row only for the subject the sentence names
     (``report_writer.py``), so a draft that omitted the subject would be
     refused as a restatement of the other row. The subject is also marked as
-    an option (spec §11.3), so a question-shaped table has a real cell to
+    an option, so a question-shaped table has a real cell to
     build from a replay run.
     """
     source = page("kettle", value="4.5", unit="out of 5", period="2026")
@@ -553,7 +550,7 @@ def test_the_statement_double_answers_one_verdict_per_label_the_request_lists() 
 async def test_a_statement_override_corrects_or_refuses_through_the_real_writer() -> None:
     """The override must reach the verdict the real composer applies.
 
-    R1: the items are built by ``compose_written_report`` itself, so the labels
+    The items are built by ``compose_written_report`` itself, so the labels
     each item carries are the writer's own reader labels -- never the ``F01``
     registry labels a hand-built item would invent, which the real request does
     not contain. A page scripted ``inconsistent`` has to leave a refused point
@@ -599,7 +596,7 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
     assert not re.search(r"(?m)^  F\d+: ", request)
 
     # The sections print every kept sentence; the bottom line answers with the
-    # first only (notes-progress-report spec §7.7).
+    # first only.
     kept_texts = [point.text for section in composition.sections for point in section.points]
     assert "Acme Institute reports 10.4 GW for 2024." in kept_texts
     assert "Corrected reports 9.8 GW for 2024." in kept_texts
@@ -612,9 +609,9 @@ async def test_a_statement_override_corrects_or_refuses_through_the_real_writer(
 
 
 def test_the_statement_double_refuses_a_cited_line_with_no_body() -> None:
-    """R2: a finding with no kept figure is shown with its ``snippet:`` and then
+    """A finding with no kept figure is shown with its ``snippet:`` and then
     the body it is ``attributed to:``, or -- when the extraction admitted no body
-    -- the site it was ``read at:`` (the re-review's C1; a host is where a
+    -- the site it was ``read at:`` (a host is where a
     statement was read).
 
     The double judges a sentence against the findings the packet shows for it,
@@ -647,7 +644,7 @@ def test_the_statement_double_answers_a_cited_line_that_states_its_body() -> Non
 
 
 def test_the_statement_double_refuses_an_attribution_line_with_a_figure() -> None:
-    """R2: the body line belongs to the figureless case alone (Task 5.7a).
+    """The body line belongs to the figureless case alone.
 
     A finding whose figure the Context Check kept states its attribution on the
     figure's own line, so the shipped builder prints no second, extraction-time
@@ -714,9 +711,9 @@ async def test_the_writer_double_drafts_one_kept_point_per_registry_line() -> No
         task, provider=completer, fingerprint=None,
     )
     assert composition.rejected_points == []
-    assert draft.short_title == "Battery storage"  # the title's first two words (§7.7)
+    assert draft.short_title == "Battery storage"  # the title's first two words
     # The bottom line answers with the first checked section statement
-    # (notes-progress-report spec §7.7), in the section's own words.
+    # in the section's own words.
     assert composition.summary[0].text == draft.points[0].text
 
 
@@ -724,8 +721,8 @@ def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_i
     """The case's fault, end to end: the drafted words, and the refusal.
 
     ``unsupported-mechanism``'s premise: the writer dresses a verified figure in
-    a recommendation no page makes. Under D8 nothing in code reads the drafted
-    prose -- the Statement Check refuses it -- so the double has to carry the
+    a recommendation no page makes. The Statement Check refuses drafted prose that
+    no page states, so the double has to carry the
     scripted words into the draft and answer the sentence that quotes them.
     """
     source = page("invented", value="10.4")
@@ -748,7 +745,7 @@ def test_the_writer_double_drafts_prose_no_page_states_and_the_checker_refuses_i
 
 
 def test_the_writer_double_answers_once_and_drafts_one_line_per_topic() -> None:
-    """notes-progress-report spec §7.7: the first statement of the first
+    """The first statement of the first
     ``## {coverage_id} · {title}`` block is the one answer sentence, and the
     first statement of each block is that topic's line, with its labels."""
     sources = tuple(
@@ -794,7 +791,7 @@ def test_the_writer_double_answers_once_and_drafts_one_line_per_topic() -> None:
 
 
 def test_every_manifest_entry_declares_the_result_its_builder_expects() -> None:
-    """R4 (review-4.9): the entry's published result and the scenario's own
+    """The entry's published result and the scenario's own
     expectation are one fact, and the runner reprints the entry's.
 
     ``runner.py`` copies ``expected_product_result`` into the recorded result,
@@ -840,9 +837,9 @@ async def test_the_reviewer_double_scores_every_dimension_and_disposes_every_sta
     reply = completer._reply_ReportReviewDraft(request)
 
     # One finding, checked three times -- its own section point, the bottom
-    # line's answer that restates it, and its topic's line (notes-progress-report
-    # spec §7.7): the parallel writer statement-checks all three, so the packet
-    # manifests all three ids rather than the single-call writer's one.
+    # line's answer that restates it, and its topic's line: the parallel writer
+    # statement-checks all three, so the packet manifests all three ids rather
+    # than the single-call writer's one.
     assert len(packet.expected_statement_ids) == 3
     assert set(reply.dimensions.as_dimensions()) == {
         "completeness",
@@ -894,7 +891,7 @@ async def test_a_scenario_can_script_a_statement_unsupported_and_a_score() -> No
 
 @pytest.mark.asyncio
 async def test_a_replayed_bottom_line_keeps_its_answer_and_its_topic_line() -> None:
-    """notes-progress-report spec §7.7, end to end through the real writer: the
+    """End to end through the real writer: the
     double's answer and its topic line are both checked and kept, the topic line
     labelled with the section's short title."""
     source = page("answered", value="10.4")
@@ -914,7 +911,7 @@ async def test_a_replayed_bottom_line_keeps_its_answer_and_its_topic_line() -> N
 
 
 def test_the_statement_double_answers_the_topic_line_keys() -> None:
-    """``BT``/``RT`` are the bottom line's topic-line flight keys (spec §7.1)."""
+    """``BT``/``RT`` are the bottom line's topic-line flight keys."""
     source = page("topic", value="10.4")
     completer = ReplayCompleter(scenario(source))
     items = [

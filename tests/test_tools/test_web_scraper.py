@@ -534,8 +534,8 @@ async def test_a_shell_page_whose_only_prose_is_a_dialog_is_a_failed_read(
 async def test_a_single_row_layout_table_is_not_a_body(tracker) -> None:
     """One row is a layout wrapper, not a page's own figures.
 
-    Any ``td`` used to make the text a body, so a shell whose markup wraps its
-    chrome in a one-row table was read as complete: a layout says nothing
+    A bare ``td`` does not make the text a body: a shell whose markup wraps its
+    chrome in a one-row table is not complete, since a layout says nothing
     about where the page's content is.
     """
     page = (
@@ -578,8 +578,8 @@ async def test_a_client_rendered_page_with_no_visible_text_reads_its_data(
 ) -> None:
     """A page that renders every word from data is a page with a body.
 
-    Its visible text is empty, which the old read reported as no readable
-    text at all; the words it renders from are in the response it served.
+    Its visible text is empty, which must not be reported as no readable text
+    at all; the words it renders from are in the response it served.
     """
     verdict = json.dumps({"article": {"verdict": _ARTICLE_PROSE}})
     page = (
@@ -1117,7 +1117,7 @@ def test_scraper_constructor_rejects_invalid_limits(tracker) -> None:
 
 
 # ---------------------------------------------------------------------------
-# D14: the page's own dates, captured once at scrape time, metadata only.
+# The page's own dates, captured once at scrape time, metadata only.
 # ---------------------------------------------------------------------------
 
 
@@ -1175,8 +1175,8 @@ async def test_scraper_captures_og_updated_time(tracker) -> None:
 @pytest.mark.asyncio
 async def test_scraper_captures_microdata_date_published(tracker) -> None:
     """A microdata ``itemprop="datePublished"`` scoped to the article itself
-    names the page's own date (RevDatesR3 round 2: an itemprop with no
-    ``itemscope`` ancestor names nothing)."""
+    names the page's own date. An itemprop with no ``itemscope`` ancestor
+    names nothing."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head>"
         '<body><article itemscope itemtype="https://schema.org/NewsArticle">'
@@ -1226,7 +1226,7 @@ async def test_scraper_captures_a_dublin_core_modified_meta_date(tracker) -> Non
 async def test_scraper_captures_date_published_only_from_article_shaped_json_ld_nodes(
     tracker,
 ) -> None:
-    """RevDatesR3 P1: a site-wide ``WebSite`` node never outranks an article node."""
+    """A site-wide ``WebSite`` node never outranks an article node."""
     ld_json = json.dumps(
         {
             "@graph": [
@@ -1254,7 +1254,7 @@ async def test_scraper_reads_a_json_ld_date_given_as_a_single_item_array(
 ) -> None:
     """A schema.org date property may be published as an array of one value
     rather than a bare string; a page whose JSON-LD wraps ``dateModified``
-    this way must not lose its own edit date (D3, run 5)."""
+    this way must not lose its own edit date."""
     ld_json = json.dumps(
         {
             "@type": "WebPage",
@@ -1277,7 +1277,7 @@ async def test_scraper_reads_a_json_ld_date_given_as_a_single_item_array(
 
 @pytest.mark.asyncio
 async def test_scraper_never_reads_a_comment_nodes_json_ld_date(tracker) -> None:
-    """RevDatesR3 P1: a ``Comment`` node's timestamp is never the page's date."""
+    """A ``Comment`` node's timestamp is never the page's date."""
     ld_json = json.dumps(
         {
             "@graph": [
@@ -1302,8 +1302,8 @@ async def test_scraper_never_reads_a_comment_nodes_json_ld_date(tracker) -> None
 async def test_scraper_reads_each_json_ld_date_from_its_own_article_shaped_node(
     tracker,
 ) -> None:
-    """RevDatesR3 P1: an Article's own modified date and a WebPage's published
-    date are each kept, never crossed with the other node's field."""
+    """An Article's own modified date and a WebPage's published date are each
+    kept, never crossed with the other node's field."""
     ld_json = json.dumps(
         {
             "@graph": [
@@ -1327,9 +1327,9 @@ async def test_scraper_reads_each_json_ld_date_from_its_own_article_shaped_node(
 
 @pytest.mark.asyncio
 async def test_scraper_never_captures_a_byline_date_from_prose(tracker) -> None:
-    """RevDatesR3 P1: the prose byline fallback is removed -- structured
-    metadata only. A page with no meta/microdata/JSON-LD gets no date, even
-    when its opening text carries what looks like a byline."""
+    """The prose byline fallback is removed -- structured metadata only. A page
+    with no meta/microdata/JSON-LD gets no date, even when its opening text
+    carries what looks like a byline."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head><body>"
         "<p>By Jane Doe. Published September 17, 2026.</p>"
@@ -1392,9 +1392,9 @@ async def test_scraper_refuses_an_impossible_calendar_date(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_scraper_refuses_epoch_seconds_content(tracker) -> None:
-    """RevDatesR3 P2: an unanchored ISO prefix let epoch seconds through as a
-    fabricated year; the digits after a valid date's own end must be end of
-    string, a time separator, or a timezone designator."""
+    """An unanchored ISO prefix can let epoch seconds through as a fabricated
+    year; the digits after a valid date's own end must be end of string, a time
+    separator, or a timezone designator."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta property="article:published_time" content="1758067200">'
@@ -1408,10 +1408,9 @@ async def test_scraper_refuses_epoch_seconds_content(tracker) -> None:
 
 
 # ---------------------------------------------------------------------------
-# RevDatesR3 round 2: JSON-LD outranks microdata, microdata is scoped to the
-# page's own content, and the generic citation names are gone.
+# JSON-LD outranks microdata, microdata is scoped to the page's own content,
+# and the generic citation names are not read.
 # ---------------------------------------------------------------------------
-
 _ARTICLE_JSON_LD = json.dumps(
     {
         "@type": "NewsArticle",
@@ -1425,10 +1424,9 @@ _ARTICLE_JSON_LD = json.dumps(
 async def test_a_sidebar_cards_microdata_date_never_beats_the_articles_json_ld(
     tracker,
 ) -> None:
-    """RevDatesR3 P1: a related-post card before the article is real
-    ``BlogPosting`` microdata -- itemscope-valid on its own -- but the
-    article's own JSON-LD is read first and settles both fields before the
-    card is ever consulted."""
+    """A related-post card before the article is real ``BlogPosting`` microdata
+    -- itemscope-valid on its own -- but the article's own JSON-LD is read
+    first and settles both fields before the card is ever consulted."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
@@ -1450,11 +1448,10 @@ async def test_a_sidebar_cards_microdata_date_never_beats_the_articles_json_ld(
 async def test_a_sidebar_cards_microdata_date_is_excluded_with_no_json_ld_at_all(
     tracker,
 ) -> None:
-    """RevDatesR3 P2 (round 3): itemtype scoping alone cannot tell a related-
-    post card apart from the article, since a card is itself validly typed
-    ``BlogPosting``. With no JSON-LD to mask it, the card's own date must
-    still never win: it sits in an ``<aside>``, which is never the article
-    regardless of its itemtype."""
+    """Itemtype scoping alone cannot tell a related-post card apart from the
+    article, since a card is itself validly typed ``BlogPosting``. With no
+    JSON-LD to mask it, the card's own date must still never win: it sits in an
+    ``<aside>``, which is never the article regardless of its itemtype."""
     page = (
         "<html><head><title>Grid Storage Outlook</title></head><body>"
         '<aside itemscope itemtype="https://schema.org/BlogPosting">'
@@ -1501,8 +1498,8 @@ async def test_two_disagreeing_article_scoped_dates_give_no_date_at_all(
 async def test_a_comments_microdata_date_never_beats_the_articles_json_ld(
     tracker,
 ) -> None:
-    """RevDatesR3 P1: a comment's own timestamp after the article is never
-    read as the page's date, whether or not JSON-LD is present."""
+    """A comment's own timestamp after the article is never read as the page's
+    date, whether or not JSON-LD is present."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         f'<script type="application/ld+json">{_ARTICLE_JSON_LD}</script>'
@@ -1560,8 +1557,8 @@ async def test_an_unscoped_microdata_date_is_never_captured(tracker) -> None:
 async def test_a_date_meta_build_stamp_never_beats_the_articles_json_ld(
     tracker,
 ) -> None:
-    """RevDatesR3 P2: a generic ``name="date"`` meta -- often a template's
-    build stamp -- never outranks the article's own JSON-LD."""
+    """A generic ``name="date"`` meta -- often a template's build stamp --
+    never outranks the article's own JSON-LD."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta name="date" content="2026-09-25">'
@@ -1578,8 +1575,8 @@ async def test_a_date_meta_build_stamp_never_beats_the_articles_json_ld(
 
 @pytest.mark.asyncio
 async def test_a_dcterms_date_meta_never_beats_the_articles_json_ld(tracker) -> None:
-    """RevDatesR3 P2: Dublin Core's generic ``dcterms.date`` -- often a
-    last-modified date, not a publication date -- never outranks JSON-LD."""
+    """Dublin Core's generic ``dcterms.date`` -- often a last-modified date,
+    not a publication date -- never outranks JSON-LD."""
     page = (
         "<html><head><title>Grid Storage Outlook</title>"
         '<meta name="dcterms.date" content="2019-01-01">'
@@ -1598,7 +1595,7 @@ async def test_a_dcterms_date_meta_never_beats_the_articles_json_ld(tracker) -> 
 async def test_the_generic_date_and_dcterms_date_names_are_never_read(
     tracker,
 ) -> None:
-    """RevDatesR3 P2: ``date``, ``dc.date`` and ``dcterms.date`` are removed
+    """The ``date``, ``dc.date`` and ``dcterms.date`` meta names are removed
     entirely, not merely reordered -- with no JSON-LD to mask them, they
     yield nothing at all."""
     page = (
@@ -1619,10 +1616,10 @@ async def test_the_generic_date_and_dcterms_date_names_are_never_read(
 async def test_two_disagreeing_article_json_ld_nodes_give_no_date_at_all(
     tracker,
 ) -> None:
-    """WholeBranchReview P3-3: JSON-LD requires the same agreement microdata
-    already does -- two article-shaped nodes with different ``datePublished``
-    values are not resolved by letting the first one win; the page's own
-    date is not established, so neither is recorded."""
+    """JSON-LD requires the same agreement microdata already does -- two
+    article-shaped nodes with different ``datePublished`` values are not
+    resolved by letting the first one win; the page's own date is not
+    established, so neither is recorded."""
     ld_json = json.dumps(
         [
             {"@type": "NewsArticle", "datePublished": "2026-09-17"},
@@ -1642,12 +1639,11 @@ async def test_two_disagreeing_article_json_ld_nodes_give_no_date_at_all(
 
 
 # ---------------------------------------------------------------------------
-# D3: title precedence (RevW5Titles P1-a, P2). The raw <title> tag is kept
-# whenever it is not empty and does not name only the site; only then does
-# og:title, twitter:title or a non-banner h1 stand in for it, skipping any
-# of those equal to og:site_name while a later, differing one remains.
+# Title precedence. The raw <title> tag is kept whenever it is not empty and
+# does not name only the site; only then does og:title, twitter:title or a
+# non-banner h1 stand in for it, skipping any of those equal to og:site_name
+# while a later, differing one remains.
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_scraper_prefers_og_title_over_a_bare_site_name_title(tracker) -> None:
@@ -1685,9 +1681,9 @@ async def test_scraper_uses_the_title_tag_when_no_other_candidate_exists(
 async def test_scraper_keeps_the_raw_headline_publisher_title_over_og_title(
     tracker,
 ) -> None:
-    """RevW5Titles P1-a: a 'Headline - Publisher' ``<title>`` is kept over
-    ``og:title``, since only the raw title carries the publisher segment the
-    issuer-evidence and page-owner checks read."""
+    """A 'Headline - Publisher' ``<title>`` is kept over ``og:title``, since
+    only the raw title carries the publisher segment the issuer-evidence and
+    page-owner checks read."""
     page = (
         "<html><head>"
         "<title>Battery storage capacity grew in 2024 - "
@@ -1708,7 +1704,7 @@ async def test_scraper_keeps_the_raw_headline_publisher_title_over_og_title(
 @pytest.mark.asyncio
 async def test_scraper_prefers_h1_when_og_title_only_names_the_site(tracker) -> None:
     """An ``og:title`` equal to the site's own name never beats a real ``h1``
-    headline (RevW5Titles P3#1)."""
+    headline."""
     page = (
         "<html><head><title>Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1727,9 +1723,9 @@ async def test_scraper_prefers_h1_when_og_title_only_names_the_site(tracker) -> 
 async def test_scraper_skips_a_banner_h1_when_choosing_the_fallback_heading(
     tracker,
 ) -> None:
-    """RevW5Titles P2: a theme's site-title banner heading is never read as
-    the page's own headline; the first non-banner ``h1`` stands in when the
-    title is just the site's own name."""
+    """A theme's site-title banner heading is never read as the page's own
+    headline; the first non-banner ``h1`` stands in when the title is just the
+    site's own name."""
     page = (
         "<html><head><title>Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1747,9 +1743,9 @@ async def test_scraper_skips_a_banner_h1_when_choosing_the_fallback_heading(
 
 @pytest.mark.asyncio
 async def test_scraper_falls_back_from_a_generic_one_word_title(tracker) -> None:
-    """D3 (run 5): a generic single-word ``<title>`` ('Work', 'Home',
-    'Index', 'Untitled', 'Document') carries no information, and counts as
-    a bare site name -- the next candidate is used."""
+    """A generic single-word ``<title>`` ('Work', 'Home', 'Index', 'Untitled',
+    'Document') carries no information, and counts as a bare site name -- the
+    next candidate is used."""
     page = (
         "<html><head><title>Work</title>"
         "</head><body><h1>Real headline about filings</h1>"
@@ -1766,10 +1762,9 @@ async def test_scraper_falls_back_from_a_generic_one_word_title(tracker) -> None
 async def test_scraper_falls_back_when_the_titles_own_segment_is_generic(
     tracker,
 ) -> None:
-    """D3 (run 5 follow-up): 'Work - Example Register' names nothing once
-    its site segment is set aside; the next candidate is used even though
-    the raw title, as a whole, is neither the bare site name nor a
-    single-word placeholder."""
+    """'Work - Example Register' names nothing once its site segment is set
+    aside; the next candidate is used even though the raw title, as a whole, is
+    neither the bare site name nor a single-word placeholder."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1787,10 +1782,10 @@ async def test_scraper_falls_back_when_the_titles_own_segment_is_generic(
 async def test_scraper_keeps_a_raw_title_when_no_segment_matches_the_site(
     tracker,
 ) -> None:
-    """D3 (run 5 follow-up P1): with no og:site_name and no title segment
-    matching the page's own host, the site's own segment is never
-    identified, so the generic-apart-from-site rule must not apply -- the
-    raw title is kept even though one of its segments is a generic word."""
+    """With no og:site_name and no title segment matching the page's own host,
+    the site's own segment is never identified, so the generic-apart-from-site
+    rule must not apply -- the raw title is kept even though one of its
+    segments is a generic word."""
     page = (
         "<html><head>"
         "<title>Home - Really Important Headline About Regional Housing "
@@ -1813,10 +1808,10 @@ async def test_scraper_keeps_a_raw_title_when_no_segment_matches_the_site(
 async def test_scraper_falls_back_when_the_site_segment_matches_the_host(
     tracker,
 ) -> None:
-    """D3 (run 5 follow-up): with no og:site_name, a title segment whose
-    text, normalised, matches the page's own host label -- 'ToposText' for
-    ``topostext.org`` -- is identified as the site's own segment; 'Work -
-    ToposText' then names nothing once it is set aside."""
+    """With no og:site_name, a title segment whose text, normalised, matches the
+    page's own host label -- 'ToposText' for ``topostext.org`` -- is identified
+    as the site's own segment; 'Work - ToposText' then names nothing once it is
+    set aside."""
     page = (
         "<html><head><title>Work - ToposText</title>"
         "</head><body><h1>A summary of recent filings and their outcomes</h1>"
@@ -1831,10 +1826,10 @@ async def test_scraper_falls_back_when_the_site_segment_matches_the_host(
 
 @pytest.mark.asyncio
 async def test_scraper_prefers_a_fuller_metadata_title_over_a_truncated_raw_title(tracker) -> None:
-    """D9: a publisher's own <title> is sometimes truncated mid-word; when a
-    metadata title (citation_title, DC.title, og:title) starts with that
-    same truncated title and is longer, the fuller metadata title is used
-    instead of the cut one."""
+    """A publisher's own <title> is sometimes truncated mid-word; when a
+    metadata title (citation_title, DC.title, og:title) starts with that same
+    truncated title and is longer, the fuller metadata title is used instead of
+    the cut one."""
     page = (
         "<html><head>"
         "<title>A study of the regional grid modernization plans for the northern distr</title>"
@@ -1853,9 +1848,8 @@ async def test_scraper_prefers_a_fuller_metadata_title_over_a_truncated_raw_titl
 
 @pytest.mark.asyncio
 async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
-    """D3 (run 5): a generic single-word ``og:title`` is skipped the same
-    way a title equal to the site's own name is, while a later, differing
-    candidate remains."""
+    """A generic single-word ``og:title`` is skipped the same way a title equal
+    to the site's own name is, while a later, differing candidate remains."""
     page = (
         "<html><head><title>Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1872,9 +1866,9 @@ async def test_scraper_skips_a_generic_one_word_og_title(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_scraper_falls_back_to_h2_after_the_existing_chain(tracker) -> None:
-    """D10: after the existing chain (og:title, twitter:title, h1) is
-    exhausted -- here, the raw title is generic apart from its own site
-    segment and no h1 exists -- the first h2 stands in."""
+    """After the existing chain (og:title, twitter:title, h1) is exhausted --
+    here, the raw title is generic apart from its own site segment and no h1
+    exists -- the first h2 stands in."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1890,7 +1884,7 @@ async def test_scraper_falls_back_to_h2_after_the_existing_chain(tracker) -> Non
 
 @pytest.mark.asyncio
 async def test_scraper_falls_back_to_dc_title_when_there_is_no_h2(tracker) -> None:
-    """D10: with no h1 or h2 either, a ``DC.title`` meta name stands in."""
+    """With no h1 or h2 either, a ``DC.title`` meta name stands in."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1906,10 +1900,10 @@ async def test_scraper_falls_back_to_dc_title_when_there_is_no_h2(tracker) -> No
 
 @pytest.mark.asyncio
 async def test_scraper_prefers_dc_title_over_a_sidebar_h2(tracker) -> None:
-    """D10/P2 (RevZ3): a heading under a sidebar, a comments block, or a
-    footer names that chrome, not the page -- 'Related articles' beside a
-    real ``DC.title`` must not win, and the candidate chain tries
-    ``DC.title``/``citation_title`` before ``h2`` for exactly this reason."""
+    """A heading under a sidebar, a comments block, or a footer names that
+    chrome, not the page -- 'Related articles' beside a real ``DC.title`` must
+    not win, and the candidate chain tries ``DC.title``/``citation_title`` before
+    ``h2`` for exactly this reason."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1926,9 +1920,9 @@ async def test_scraper_prefers_dc_title_over_a_sidebar_h2(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_scraper_skips_an_h2_under_a_comments_section_id(tracker) -> None:
-    """D10/P2 (RevZ3): an ancestor's own id or class naming comments,
-    sidebar, related, or footer chrome excludes its heading, even without a
-    ``<aside>``/``<footer>`` tag -- ``citation_title`` stands in instead."""
+    """An ancestor's own id or class naming comments, sidebar, related, or
+    footer chrome excludes its heading, even without a ``<aside>``/``<footer>``
+    tag -- ``citation_title`` stands in instead."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1946,9 +1940,9 @@ async def test_scraper_skips_an_h2_under_a_comments_section_id(tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_scraper_skips_an_h2_inside_a_footer_with_no_title_anywhere(tracker) -> None:
-    """D10/P2 (RevZ3): a footer heading ('Contact us') is chrome, and with
-    no title candidate anywhere else the raw (empty) title is kept rather
-    than inventing one from the footer."""
+    """A footer heading ('Contact us') is chrome, and with no title candidate
+    anywhere else the raw (empty) title is kept rather than inventing one from
+    the footer."""
     page = (
         "<html><head>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1964,9 +1958,9 @@ async def test_scraper_skips_an_h2_inside_a_footer_with_no_title_anywhere(tracke
 
 @pytest.mark.asyncio
 async def test_scraper_keeps_an_abbreviation_in_the_description_leading_clause(tracker) -> None:
-    """D10/P3 (RevZ3): a leading abbreviation's own full stop ('Dr.') is not
-    a sentence end -- the whole description is kept rather than cut down to
-    the abbreviation alone."""
+    """A leading abbreviation's own full stop ('Dr.') is not a sentence end --
+    the whole description is kept rather than cut down to the abbreviation
+    alone."""
     page = (
         "<html><head><title>Work - Example Register</title>"
         '<meta property="og:site_name" content="Example Register">'
@@ -1986,9 +1980,9 @@ async def test_scraper_keeps_an_abbreviation_in_the_description_leading_clause(t
 async def test_each_call_keeps_its_own_client_and_cookies_over_the_runs_pool(
     tracker,
 ) -> None:
-    """Latency audit O4: the scraper sends every call through the pool it was
-    given, and each call is still its own client -- the user agent it always
-    sent, and no cookie another call was given."""
+    """The scraper sends every call through the pool it was given, and each call
+    is still its own client -- the user agent it always sent, and no cookie
+    another call was given."""
     seen: list[tuple[str, str | None, str | None]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -2015,8 +2009,8 @@ async def test_each_call_keeps_its_own_client_and_cookies_over_the_runs_pool(
         second = await tool.execute(url="https://example.test/two")
 
     assert first.success and second.success
-    # robots.txt is fetched once per host (Task 14), so the second call asks
-    # for its page only.
+    # robots.txt is fetched once per host, so the second call asks for its page
+    # only.
     assert [path for path, _, _ in seen] == ["/robots.txt", "/one", "/two"]
     assert {agent for _, agent, _ in seen} == {"deep-research/0.1"}
     # Within one call its own cookie travels on, as before; a later call starts
@@ -2048,7 +2042,7 @@ def _robots_client(robots: httpx.Response | Exception, *, robots_hits: list[str]
 async def test_a_hosts_robots_rules_are_fetched_once_and_decide_every_read(
     tracker,
 ) -> None:
-    """Latency audit O4: one robots.txt fetch per host, the same verdicts."""
+    """One robots.txt fetch per host, the same verdicts."""
     hits: list[str] = []
     rules = httpx.Response(200, text="User-agent: *\nDisallow: /private/\n")
     tool = WebScraperTool(tracker, client=_robots_client(rules, robots_hits=hits))
@@ -2082,7 +2076,7 @@ async def test_a_missing_robots_file_is_settled_once_and_reads_unchecked(tracker
 
 @pytest.mark.asyncio
 async def test_a_robots_fetch_that_failed_is_asked_again_on_the_next_read(tracker) -> None:
-    """A timeout or a server error settles nothing, as every read used to ask."""
+    """A timeout or a server error settles nothing, so every read asks again."""
     hits: list[str] = []
     tool = WebScraperTool(
         tracker, client=_robots_client(httpx.Response(503), robots_hits=hits)

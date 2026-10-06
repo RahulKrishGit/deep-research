@@ -69,8 +69,7 @@ def test_agent_event_rejects_blank_identifiers(
 
 
 def test_the_no_provider_text_rule_binds_state_bound_events() -> None:
-    """notes-progress-report spec §4 item 1 (AC13): a live-only progress event is never
-    copied into ``ResearchState.events``, so both builders scope the rule to the
-    events that are."""
+    """A live-only progress event is never copied into ``ResearchState.events``, so
+    both builders scope the rule to the events that are."""
     for builder in (agent_event, graph_event):
         assert "state-bound" in (builder.__doc__ or "")

@@ -1,6 +1,6 @@
 "use client";
-// The step bodies of the running spine's briefs (notes-progress-report spec §6.3-§6.7). Each renders
-// one step's `.ln` lines, numbered from `first` so a brief keeps one stagger (live-briefs pick 1A).
+// The step bodies of the running spine's briefs. Each renders
+// one step's `.ln` lines, numbered from `first` so a brief keeps one stagger.
 import type { CSSProperties } from "react";
 import {
   VERIFY_PLACEHOLDER,
@@ -34,7 +34,7 @@ export function StatusLine({ stack, i }: { stack: StatusStack; i: number }) {
   );
 }
 
-/* §6.3: Planning's slots — a skeleton bar that cross-fades to its title, a mark and a fact. */
+/* Planning's slots — a skeleton bar that cross-fades to its title, a mark and a fact. */
 export function PlanningSlots({ slots, first }: { slots: SlotLine[]; first: number }) {
   return (
     <div className="ps-topics ps-slots" role="list">
@@ -56,7 +56,7 @@ export function PlanningSlots({ slots, first }: { slots: SlotLine[]; first: numb
 
 function Count({ value }: { value: number }) { return <>{useTween(value)}</>; }
 
-/* §6.4: the lead, a determinate bar and the Rated / Strong / Fair / Weak split. */
+/* The lead, a determinate bar and the Rated / Strong / Fair / Weak split. */
 export function EvaluatingLines({ body, first }: { body: Extract<BriefBody, { kind: "evaluating" }>; first: number }) {
   const s = body.stats;
   const stat = (label: string, value: number | null, of?: number) => (
@@ -75,7 +75,7 @@ export function EvaluatingLines({ body, first }: { body: Extract<BriefBody, { ki
   );
 }
 
-/* §6.5, §6.6: the ticker box — the last two samples stacked, the newest showing, paced by useTicker. */
+/* The ticker box — the last two samples stacked, the newest showing, paced by useTicker. */
 function TickerBox({ samples, placeholder, i }: { samples: TickerLine[]; placeholder: string; i: number }) {
   const { current, previous } = useTicker(samples.at(-1) ?? null);
   return (
@@ -127,7 +127,7 @@ export function WritingLines({ body, first }: { body: Extract<BriefBody, { kind:
   );
 }
 
-/* §6.7: one criterion or note — its mark, its text, and its fact cross-fading from "reading". `r` is
+/* One criterion or note — its mark, its text, and its fact cross-fading from "reading". `r` is
    its place in the reveal, 60 ms apart once the review lands. A met criterion has no fact and its ✓ is
    aria-hidden, so it says "met" to a screen reader (a note always has a fact). */
 function CheckRow({ line, i, r }: { line: CheckLine; i: number; r: number }) {

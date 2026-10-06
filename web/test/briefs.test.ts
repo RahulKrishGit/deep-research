@@ -28,7 +28,7 @@ function body<K extends BriefBody["kind"]>(brief: RowBrief, kind: K): Extract<Br
 }
 const text = (brief: RowBrief) => subtitleText(brief.subtitle);
 
-describe("the Researching brief (live-briefs spec §4.3, AC5; kept by notes-progress-report D12)", () => {
+describe("the Researching brief", () => {
   it("reads its static meta until topics are known, then '{n} topics · researching' until one is done", () => {
     const run = newRunState();
     expect(text(rowBrief(run, "researcher", "active", NOW))).toBe("search · scrape · read · memory");
@@ -53,7 +53,7 @@ describe("the Researching brief (live-briefs spec §4.3, AC5; kept by notes-prog
       }
     }
   });
-  it("prints only the facts it measured: a null count is left out, a measured 0 reads in words (D19)", () => {
+  it("prints only the facts it measured: a null count is left out, a measured 0 reads in words", () => {
     const research = (done: number, pages: number | null, findings: number | null): Subtitle => ({ kind: "research", topics: 3, done, pages, findings });
     // Before the first topic is done the running line is "{n} topics · researching", whatever is measured.
     expect(subtitleText(research(0, null, null))).toBe("3 topics · researching");
@@ -68,7 +68,7 @@ describe("the Researching brief (live-briefs spec §4.3, AC5; kept by notes-prog
     expect(subtitleText(research(1, null, 0))).toBe("1 of 3 topics done · no findings");
     expect(subtitleText(research(3, 41, 212))).toBe("3 of 3 topics done · 41 pages read · 212 findings");
   });
-  it("topicFact follows the spec's table", () => {
+  it("topicFact reads 'not yet' while waiting, 'reading' while running, then the finding count", () => {
     expect(topicFact({ coverageId: "a", title: "A", state: "waiting", findings: null })).toBe("not yet");
     expect(topicFact({ coverageId: "a", title: "A", state: "running", findings: null })).toBe("reading");
     expect(topicFact({ coverageId: "a", title: "A", state: "done", findings: 1 })).toBe("1 finding");
@@ -76,7 +76,7 @@ describe("the Researching brief (live-briefs spec §4.3, AC5; kept by notes-prog
   });
 });
 
-describe("every other row (notes-progress-report spec §6.3-§6.9)", () => {
+describe("every other row", () => {
   it("shows its static meta while pending and its live facts while active; Reviewing's meta is '5 checks', '· your notes' with a note held", () => {
     const run = newRunState();
     for (const id of AGENT_ORDER.filter((id) => id !== "researcher")) expect(text(rowBrief(run, id, "pending", NOW))).toBe(STATIC_META[id]);
@@ -94,7 +94,7 @@ describe("every other row (notes-progress-report spec §6.3-§6.9)", () => {
     expect(body(rowBrief(run, "finalize_report", "active", NOW), "sentence").text).toBe("Saving the report and evidence log");
     expect(SENTENCES).toEqual({ finalize_report: "Saving the report and evidence log" });
   });
-  it("Planning, once done, keeps its slots: the plan's titles and a research note's own topic (spec §5.7, §6.3)", () => {
+  it("Planning, once done, keeps its slots: the plan's titles and a research note's own topic", () => {
     const run = newRunState();
     applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 2, note_topic_count: 1, sub_topics: [
       { coverage_id: "topic-01", title: "Published picks", state: "passed" },
@@ -133,7 +133,7 @@ describe("every other row (notes-progress-report spec §6.3-§6.9)", () => {
   });
 });
 
-describe("the stopped row and the rows after it (notes-progress-report spec §8.5, with §6's live facts)", () => {
+describe("the stopped row and the rows after it", () => {
   it("Researching counts its topics after 'Stopped' — 'none of' before one is done, never a bare 0", () => {
     const run = newRunState();
     expect(stoppedSubtitle(run, "researcher")).toBe("Stopped");
@@ -142,7 +142,7 @@ describe("the stopped row and the rows after it (notes-progress-report spec §8.
     applyEvent(run, ev("researcher.sub_topic.completed", { coverage_id: "topic-02", sub_topic: "B", index: 2, successful_reads: 41, findings_retained: 212 }));
     expect(stoppedSubtitle(run, "researcher")).toBe("Stopped · 1 of 3 topics done · 41 pages read · 212 findings");
   });
-  it("leaves out a count the run has not measured and prints one it measured, a measured 0 in words (D19)", () => {
+  it("leaves out a count the run has not measured and prints one it measured, a measured 0 in words", () => {
     const run = newRunState();
     applyEvent(run, ev("planner.planning.completed", { sub_topic_count: 3, sub_topics: [{ coverage_id: "topic-01", title: "A" }, { coverage_id: "topic-02", title: "B" }, { coverage_id: "topic-03", title: "C" }] }));
     expect([run.pagesRead, run.findingsSoFar]).toEqual([null, null]);
@@ -180,7 +180,7 @@ describe("the stopped row and the rows after it (notes-progress-report spec §8.
     expect(r.criteria[0]).toMatchObject({ mark: "waiting", before: "stopped", landed: false });
     expect(text(rowBrief(run, "report_reviewer", "stopped", NOW))).toBe("Stopped · reading the draft · 0m 30s");
   });
-  // owner decision O2 (2026-10-01): the stopped Reviewing row keeps the review's own tense: reading while the call
+  // The stopped Reviewing row keeps the review's own tense: reading while the call
   // ran when the reader stopped it, "read the draft in {elapsed}" once the review had landed.
   it("freezes Reviewing's subtitle in the past tense when the review had landed before the stop", () => {
     const run = play([
@@ -200,7 +200,7 @@ describe("the stopped row and the rows after it (notes-progress-report spec §8.
   });
 });
 
-describe("burst safety over the live captures (notes-progress-report AC19)", () => {
+describe("burst safety over the live captures", () => {
   for (const capture of captures) {
     it(`${capture.case_id}: every row's brief from a replay of events 1..k equals the live stream's`, () => {
       const snaps = snapshots(capture.events);

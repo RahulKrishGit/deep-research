@@ -23,10 +23,8 @@ from deep_research.evaluation.models import (
 )
 from deep_research.utils.types import ResearchState
 
-# The live case registry is empty until Tasks 10-15 land the case files, so
-# the fixtures below fall back to minimal sample cases built from the real
-# future case ids. The moment a case file lands, the registry lookup wins
-# and these tests exercise the real cases.
+# A live case from the registry is used when one exists; otherwise the
+# fixtures below fall back to a minimal sample case built from the case id.
 
 _SAMPLE_CASE_IDS = {
     "planner": "focused-decomposition",
@@ -52,7 +50,7 @@ def _sample_live_case(agent_name: AgentName) -> EvaluationCase:
         agent_name=agent_name,
         tier="live",
         title=f"{agent_name} sample live case",
-        purpose="Sample live case for the Task 8 live-bundle tests.",
+        purpose="Sample live case for live-bundle tests.",
         state=ResearchState(
             session_id=f"evaluation-{case_id}",
             original_question="Sample research question?",
@@ -146,10 +144,7 @@ def test_selecting_openai_chat_requires_the_openai_key(agent_name) -> None:
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
 def test_a_named_embedding_model_requires_the_openai_key(agent_name) -> None:
     """A live run selecting the OpenAI embedding provider must require
-    ``OPENAI_API_KEY`` even when the chat provider is DeepSeek -- this is
-    the restored coverage for the Task 8/11 composition gap. (Guard against
-    under-fixing: ``test_the_chat_provider_and_langsmith_are_always_required``
-    above already pins that the local provider requires no such key.)"""
+    ``OPENAI_API_KEY`` even when the chat provider is DeepSeek."""
     assert "OPENAI_API_KEY" in required_credentials(
         agent_name,
         provider="deepseek",
@@ -293,9 +288,9 @@ def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
         tracker=tracker,
         settings=settings,
         root=tmp_path,
-        # Selecting the OpenAI embedding provider now requires
-        # OPENAI_API_KEY (the fix for the Task 8/11 fail-open) -- present
-        # here so this test still exercises the provider selection itself.
+        # Selecting the OpenAI embedding provider requires
+        # OPENAI_API_KEY -- present here so this test still exercises the
+        # provider selection itself.
         environ={**FULL_ENVIRONMENT, "OPENAI_API_KEY": "sk-openai-abcdefgh"},
     )
 
@@ -305,11 +300,10 @@ def test_a_live_bundle_selects_openai_for_a_named_embedding_model(
 def test_a_named_embedding_model_without_the_openai_key_fails_closed(
     tracker, settings, tmp_path, runtime_config_for, live_case_for
 ) -> None:
-    """The Task 8/11 composition gap this branch fixes: a live run
-    selecting the OpenAI embedding provider with no ``OPENAI_API_KEY`` must
-    be rejected by ``build_live_dependencies`` itself, before any embedding
-    provider is constructed -- not left to fail later at the first
-    ``query_memory``/``save_to_memory`` call."""
+    """A live run selecting the OpenAI embedding provider with no
+    ``OPENAI_API_KEY`` must be rejected by ``build_live_dependencies``
+    itself, before any embedding provider is constructed -- not left to fail
+    later at the first ``query_memory``/``save_to_memory`` call."""
     runtime = runtime_config_for("planner", tier="live").model_copy(
         update={
             "embedding_provider": "openai",
@@ -356,7 +350,7 @@ def test_live_repetitions_never_share_a_persist_path(
 ) -> None:
     """Live Chroma persists per repetition, never under a shared root.
 
-    Task 7's ``isolated_settings`` default of ``root/memory`` is inert for
+    The ``isolated_settings`` default of ``root/memory`` is inert for
     the in-memory controlled collection but would be a collision trap for
     the real Chroma collection live mode opens: repetition 2 would recall
     repetition 1's findings. The live tier overrides it per repetition.

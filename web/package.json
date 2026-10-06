@@ -1,11 +1,6 @@
 {
   "name": "deep-research-console",
   "version": "1.0.0",
-  "description": "",
-  "directories": {
-    "lib": "lib",
-    "test": "test"
-  },
   "scripts": {
     "test": "vitest run",
     "dev": "next dev -H 127.0.0.1",
@@ -17,8 +12,6 @@
     "capture:visual": "playwright test --project visual",
     "check:css": "node scripts/check-css-verbatim.mjs"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "module",
   "private": true,

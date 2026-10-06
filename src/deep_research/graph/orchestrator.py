@@ -152,10 +152,10 @@ def build_research_graph(
 ) -> StateGraph:
     """Assemble the uncompiled research graph.
 
-    ``run_telemetry`` is the run's §7.3 collector, handed to the terminal
+    ``run_telemetry`` is the run's collector, handed to the terminal
     finalizer — the one node that renders the quality record — so the figures
     published beside the report are the whole run's rather than one pass's.
-    ``None`` builds the graph exactly as it was built before there was one.
+    ``None`` builds the graph without one.
     """
     builder = StateGraph(ResearchGraphState)
     builder.add_node(PLANNER_NODE, agent_node(agents.planner, node_name=PLANNER_NODE))
@@ -212,7 +212,7 @@ def build_research_graph(
     # exists for the targets that were missing, and the topics that already
     # answered their own obligations are not part of it.
     builder.add_edge(EXTRA_PASS_NODE, RESEARCHER_NODE)
-    # A reader note's targeted pass (live-briefs spec §4.6) loops back the same
+    # A reader note's targeted pass loops back the same
     # way, confined to the notes' own sub-topics; its redraft reuses the
     # writer-redraft hop below.
     builder.add_edge(NOTE_PASS_NODE, RESEARCHER_NODE)
@@ -247,7 +247,7 @@ def build_checkpointer(*, enabled: bool) -> Any | None:
     """Return the checkpointer this build supports, or ``None``.
 
     ``InMemorySaver`` survives a resume inside one process, which is what
-    spec 11 asks for and what its tests exercise. Durable checkpointing is
+    a resume needs and what its tests exercise. Durable checkpointing is
     a hardening concern and drops in through ``compile_research_graph``.
     """
     return InMemorySaver() if enabled else None
@@ -323,7 +323,7 @@ async def _stream_graph_result(
 ) -> ResearchGraphState:
     """Run the graph in values mode, publishing every event exactly once.
 
-    Events reach the handler by two paths (live-briefs spec E2). An agent or node
+    Events reach the handler by two paths. An agent or node
     publishes an event *live* the moment it builds it, through the sink bound here
     for the stream's duration (``graph/live.py``); the sink records its
     ``event_id``. Each ``stream_mode="values"`` snapshot is the cumulative channel,
@@ -454,9 +454,9 @@ async def run_research_graph(
 ) -> GraphRun:
     """Run one research session from the question to a final status.
 
-    ``reader_answers`` are the reader's answers to the one-time check
-    (live-briefs spec §4.4); they start in the initial state, so the planner
-    reads them, and a run without them starts exactly as before.
+    ``reader_answers`` are the reader's answers to the one-time check;
+    they start in the initial state, so the planner reads them, and a run
+    without them starts with none.
 
     ``session_started_event`` is written into the initial state *before* the
     graph runs, so it is checkpointed with everything else.
@@ -556,7 +556,7 @@ async def resume_research_graph(
     # An empty ``next`` means the checkpoint is terminal: the graph has no
     # pending nodes, so a resumed stream is legitimately empty and the
     # checkpoint is the fallback result. Any other checkpoint must produce
-    # snapshots or fail exactly as before.
+    # snapshots or fail with the empty-stream ``RuntimeError``.
     terminal_checkpoint = checkpointed if not snapshot.next else None
     return await _invoke(
         graph=graph,

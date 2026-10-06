@@ -1,4 +1,4 @@
-// @vitest-environment node — pure state over synthesized events (notes-progress-report spec §6.9).
+// @vitest-environment node — pure state over synthesized events.
 import { describe, expect, it } from "vitest";
 import { applyEvent, newRunState, notAcceptedLine, type RunEvent, type RunState } from "../lib/run-state";
 
@@ -16,7 +16,7 @@ function burstSafe(events: RunEvent[]): void {
 }
 const slot = (coverage_id: string, title: string, state: string) => ({ coverage_id, title, state });
 
-describe("timestamps (spec §4 item 4)", () => {
+describe("timestamps", () => {
   it("keeps each row's start and, at its completion, its duration; a restart clears the duration", () => {
     const run = play([
       ev("graph.node.started", { node: "planner", iteration: 0 }, at(0)),
@@ -45,7 +45,7 @@ describe("timestamps (spec §4 item 4)", () => {
   });
 });
 
-describe("Planning (spec §6.3)", () => {
+describe("Planning", () => {
   const plan = [slot("topic-01", "Alpha", "checking"), slot("topic-02", "Beta", "checking")];
   it("follows each planner.progress, then stamps the final states and the planned notes", () => {
     const run = play([
@@ -99,7 +99,7 @@ describe("Planning (spec §6.3)", () => {
   });
 });
 
-describe("a note's slot after the plan (Phase B Task 9, spec §6.3)", () => {
+describe("a note's slot after the plan", () => {
   const planned = [
     ev("graph.node.started", { node: "planner", iteration: 0 }, at(0)),
     ev("session.note.interpreted", { note_id: "n1", restatement: "pastries", kinds: ["new_angle"], replaces: null, fallback: false }),
@@ -125,7 +125,7 @@ describe("a note's slot after the plan (Phase B Task 9, spec §6.3)", () => {
   });
 });
 
-describe("Evaluating, Verifying and Writing (spec §6.4-§6.6)", () => {
+describe("Evaluating, Verifying and Writing", () => {
   it("keeps the latest evaluator counts and the split outcome", () => {
     const run = play([
       ev("graph.node.started", { node: "source_evaluator", iteration: 0 }, at(0)),
@@ -160,7 +160,7 @@ describe("Evaluating, Verifying and Writing (spec §6.4-§6.6)", () => {
     expect(run.writing!.fraction).toBe(0.5);
     expect(run.writing!.samples).toEqual([{ seq: 1, text: "S.", verdict: "backed", findings: 2, section: "Alpha" }]);
   });
-  // owner decision O2 (2026-10-01): report_writer.progress carries parts_failed, the parts that ended failed
+  // report_writer.progress carries parts_failed, the parts that ended failed
   // (parts_returned still counts them, as settled). A progress event from before the key (a recorded capture)
   // has none, which reads as no failed part, never as an error.
   it("keeps the parts whose draft failed, as the latest snapshot says, and reads a missing key as none", () => {
@@ -178,7 +178,7 @@ describe("Evaluating, Verifying and Writing (spec §6.4-§6.6)", () => {
   });
 });
 
-describe("Reviewing (spec §6.7)", () => {
+describe("Reviewing", () => {
   const criteria = (failing: Record<string, string[]> = {}) => ["completeness", "evidence_quality", "attribution", "uncertainty", "readability"]
     .map((dimension) => ({ dimension, met: !failing[dimension], kinds: failing[dimension] ?? [] }));
   const review = (md: Record<string, unknown>) => [
@@ -205,7 +205,7 @@ describe("Reviewing (spec §6.7)", () => {
     expect(decide("redraft_requested", { material_defects: null })).toBe("Things to fix · back to the writer");
     expect(decide("extra_pass_requested")).toBe("Sent back to fill 2 gaps");
     expect(decide("review_unavailable")).toBe("Review unavailable");
-    // owner decision O2 (2026-10-01): a halted route reads "Halted", never "Review unavailable"; the backend does
+    // A halted route reads "Halted", never "Review unavailable"; the backend does
     // not publish graph.route.decided with this reason today (the reviewer node skips a halted run), so this pins
     // the word for a stream that ever does. A reason the table does not know keeps the fall-back.
     expect(decide("halted")).toBe("Halted");
@@ -226,7 +226,7 @@ describe("Reviewing (spec §6.7)", () => {
   });
 });
 
-describe("burst safety (AC19)", () => {
+describe("burst safety", () => {
   it("paints the same state from any prefix of a synthesized run", () => {
     burstSafe([
       ev("graph.node.started", { node: "planner", iteration: 0 }, at(0)),

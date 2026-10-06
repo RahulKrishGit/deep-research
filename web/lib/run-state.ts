@@ -1,9 +1,8 @@
-// The prototype's event core (docs/design/prototype/index.html:2456-2465, :2501-2504, :2885-3054,
-// :3095-3103), ported unchanged: every handler reads only `md.<key>` and the state after event k
-// depends only on events 1..k, so bursts, ticks and a replay from event 1 paint the same screen.
-// live-briefs spec §4.3 (2026-09-28) extends it with the step briefs' state — the topic checklist,
-// the outcome lines and the reopen lines — on the same rule; `open` is the one field the reader,
-// not the stream, writes.
+// The prototype's event core (docs/design/prototype/index.html), ported unchanged: every handler
+// reads only `md.<key>` and the state after event k depends only on events 1..k, so bursts, ticks
+// and a replay from event 1 paint the same screen. The step briefs' state — the topic checklist,
+// the outcome lines and the reopen lines — follows the same rule; `open` is the one field the
+// reader, not the stream, writes.
 import type { ResearchEvent, SessionStatus } from "./api";
 import { noteRedraftLine, notePassLine } from "./notes";
 
@@ -22,7 +21,7 @@ export const STAGES: readonly Stage[] = [
   { id: "finalize_report", label: "Publishing", meta: "report · evidence log · quality record" },
 ];
 export const AGENT_ORDER: readonly NodeId[] = STAGES.map((s) => s.id);
-/* live-briefs spec §4.7: a note pass returns to Researching like the extra pass, drawn with the
+/* A note pass returns to Researching like the extra pass, drawn with the
    redraft's stroke (--meta), because a note pass is not a warning. */
 export const ARCS: Record<"extra_pass" | "redraft" | "note_pass", { from: NodeId; to: NodeId }> = {
   extra_pass: { from: "report_reviewer", to: "researcher" },
@@ -34,7 +33,7 @@ export interface Counters {
   findings: number | null; sources: number | null; verified: number | null; corrected: number | null; dropped: number | null;
   statements: number | null; refused: number | null; reviewSeen: boolean; reviewScore: number | null;
 }
-/* The step briefs' state (live-briefs spec §4.3). A topic is one planned sub-topic in this pass's
+/* The step briefs' state. A topic is one planned sub-topic in this pass's
    Researching checklist; "waiting" until its researcher.sub_topic.started, "running" until its
    researcher.sub_topic.completed. */
 export type TopicState = "waiting" | "running" | "done";
@@ -42,41 +41,41 @@ export interface Topic { coverageId: string; title: string; state: TopicState; f
 export interface PlannedTopic { coverageId: string; title: string }
 /* The first line of a row a loop reopened: why it reopened (the old loop tag's content). */
 export interface ReopenLine { kind: "extra_pass" | "redraft" | "note_pass" | "note_redraft"; text: string }
-/* One reader note (live-briefs spec §4.6-§4.7): as received, then as the run read it. `where` is the
+/* One reader note: as received, then as the run read it. `where` is the
    row that was active when session.note.interpreted arrived — the step the acknowledgement names. */
 export interface NoteState {
   id: string; text: string; interpreted: boolean; restatement: string | null;
   replaces: string | null; fallback: boolean; where: NodeId | null;
-  /* notes-progress-report spec §5.7: the run's reading of the note's kinds ([] until it is read), and
+  /* The run's reading of the note's kinds ([] until it is read), and
      whether its own research thread has started — a researcher.sub_topic.started naming it — in the
-     current researcher run; cleared when an extra pass or a note pass reopens Researching (§5.7). */
+     current researcher run; cleared when an extra pass or a note pass reopens Researching. */
   kinds: string[]; threadStarted: boolean;
 }
-/* The one-time check (live-briefs spec §4.4-§4.5): its questions and deadline from
+/* The one-time check: its questions and deadline from
    session.clarification.requested, then the answers the run starts with from .answered. */
 export interface ClarifyQuestion { id: string; dimension: string; text: string; short: string; options: string[]; bestGuess: string }
 export interface ClarifyAnswer { questionId: string; value: string; source: "chosen" | "typed" | "best_guess" }
 export interface ClarifyState { questions: ClarifyQuestion[]; deadlineAt: string; answered: { answers: ClarifyAnswer[]; reason: string } | null }
-/* notes-progress-report spec §6.3: one planned topic's slot in Planning's brief, in the state the
+/* One planned topic's slot in Planning's brief, in the state the
    latest planner.progress (then planner.planning.completed) gives it. */
 export type SlotState = "skeleton" | "drafted" | "checking" | "being_fixed" | "passed" | "fixed" | "flagged" | "not_checked";
 export interface PlanSlot { coverageId: string; title: string; state: SlotState }
 /* A research note's own slot: "pending" while Planning runs, "planned" once planning.completed lists it. */
 export interface NoteSlot { noteId: string; title: string; state: "pending" | "planned" }
 export interface PlanningState { step: "reading" | "drafting" | "checking" | "fixing" | "ready"; round: number; slots: PlanSlot[]; noteSlots: NoteSlot[] }
-/* §6.1: the latest source_evaluator.progress, as sent. */
+/* The latest source_evaluator.progress, as sent. */
 export interface EvaluatingState { toRate: number; reused: number; capped: number; rated: number; strong: number; fair: number; weak: number; unrated: number; batches: number; batchesDone: number }
-/* §6.1: one ticker sample; `seq` numbers this pass's samples, so each keeps its own key. */
+/* One ticker sample; `seq` numbers this pass's samples, so each keeps its own key. */
 export interface VerifierSample { seq: number; text: string; verdict: string; correction: { field: string; value: string | null } | null; dropReason: string | null; role: string | null; host: string | null }
 export interface VerifyingState { total: number; checked: number; verified: number; corrected: number; quoted: number; dropped: number; batches: number; batchesDone: number; samples: VerifierSample[]; sampleCount: number }
 export interface WriterSample { seq: number; text: string; verdict: "backed" | "removed"; findings: number; section: string }
 export interface WritingState { phase: "sections" | "bottom_line"; partsTotal: number; partsReturned: number; partsFailed: number; drafted: number; checked: number; backed: number; removed: number; unchecked: number; fraction: number; samples: WriterSample[]; sampleCount: number }
-/* §6.1, §6.7: graph.report.reviewed's five criteria and each note's result, then the route decided after it. */
+/* graph.report.reviewed's five criteria and each note's result, then the route decided after it. */
 export interface CriterionState { dimension: string; met: boolean | null; kinds: string[] }
 export interface ReviewHalf { result: string; reason: string }
 export interface ReviewNoteResult extends ReviewHalf { noteId: string; steering: ReviewHalf | null }
 export interface ReviewingState { landed: boolean; reviewedAt: string | null; criteria: CriterionState[] | null; notes: ReviewNoteResult[]; defects: number | null; reason: string | null; missing: number }
-/* notes-progress-report spec §8.2, §8.4: a stopped session's last event — the step it was on (a row's
+/* A stopped session's last event — the step it was on (a row's
    node id, or "check"), when (ISO) and how long it had run. A value the event does not carry is null,
    never invented. */
 export interface StoppedRun { step: string | null; at: string | null; elapsedSeconds: number | null }
@@ -101,17 +100,17 @@ export interface RunState {
   open: Set<NodeId>;                      /* done rows the reader reopened — reader state, not derived from events */
   clarify: ClarifyState | null;           /* the one-time check; null while the stream has told none */
   notes: NoteState[];                     /* the reader's notes, in receipt order */
-  startedAt: Partial<Record<NodeId, string>>;  /* each row's latest graph.node.started timestamp (notes-progress-report spec §4 item 4) */
+  startedAt: Partial<Record<NodeId, string>>;  /* each row's latest graph.node.started timestamp */
   durations: Partial<Record<NodeId, number>>;  /* seconds from that start to the row's graph.node.completed */
-  planning: PlanningState;                /* Planning's status and slots (§6.3) */
-  evaluating: EvaluatingState | null;     /* this pass's latest source_evaluator.progress (§6.4) */
-  verifying: VerifyingState | null;       /* this pass's latest evidence_verifier.progress, the last two samples kept (§6.5) */
-  writing: WritingState | null;           /* this draft's latest report_writer.progress, the last two samples kept (§6.6) */
-  reviewing: ReviewingState;              /* this review's graph.report.reviewed and route decision (§6.7) */
-  hardFailures: string[] | null;          /* the latest graph.quality.assessed.hard_failures (§6.7's refusal line) */
+  planning: PlanningState;                /* Planning's status and slots */
+  evaluating: EvaluatingState | null;     /* this pass's latest source_evaluator.progress */
+  verifying: VerifyingState | null;       /* this pass's latest evidence_verifier.progress, the last two samples kept */
+  writing: WritingState | null;           /* this draft's latest report_writer.progress, the last two samples kept */
+  reviewing: ReviewingState;              /* this review's graph.report.reviewed and route decision */
+  hardFailures: string[] | null;          /* the latest graph.quality.assessed.hard_failures (the refusal line) */
   stopped: StoppedRun | null;             /* session.stopped: the reader stopped the run; null otherwise */
 }
-/* `timestamp` is the event's own (notes-progress-report spec §4 item 4): optional, because the
+/* `timestamp` is the event's own: optional, because the
    events tests and fixtures synthesize carry none; every event from the stream has one. */
 export interface RunEvent { type: string; metadata: Record<string, unknown>; timestamp?: string }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -157,7 +156,7 @@ function rearm(run: RunState, fromIndex: number): void {
   delete run.marks.finalize_report;
 }
 export function plural(n: number, one: string, many: string): string { return n + " " + (n === 1 ? one : many); }
-/* The label of the row a node runs on, for the chip's "Running · {step}" (live-briefs spec §4.2).
+/* The label of the row a node runs on, for the chip's "Running · {step}".
    The two hops lead back into a row, so they read as that row; anything else is not a row. */
 const HOP_ROW: Readonly<Record<string, NodeId>> = { extra_pass: "researcher", note_pass: "researcher", writer_redraft: "report_writer" };
 export function stepLabel(node: string | null | undefined): string | null {
@@ -175,7 +174,7 @@ export function chipStep(run: RunState): string | null {
   if (run.finalStatus === "failed") return run.openNode;
   return "finalize_report";
 }
-/* A measured count in words: 0 reads "no …", never a bare 0 (live-briefs spec AC5). */
+/* A measured count in words: 0 reads "no …", never a bare 0. */
 export function countPhrase(n: number, one: string, many: string): string { return n === 0 ? "no " + many : plural(n, one, many); }
 const count = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const topicId = (md: Md): string => (typeof md.coverage_id === "string" && md.coverage_id ? md.coverage_id : "index-" + String(md.index));
@@ -189,7 +188,7 @@ function topicFor(run: RunState, md: Md): Topic {
   return topic;
 }
 const missingCount = (md: Md): number => (Array.isArray(md.missing_required_target_ids) ? md.missing_required_target_ids.length : 0);
-/* notes-progress-report spec §6.7: why a scored report was not accepted, without a score. */
+/* Why a scored report was not accepted, without a score. */
 export function notAcceptedLine(run: RunState): string {
   const met = run.reviewing.criteria?.filter((c) => c.met === true).length ?? 0;
   if (met < 5) return "Not accepted · " + met + " of 5 met";
@@ -197,17 +196,17 @@ export function notAcceptedLine(run: RunState): string {
     ? "Not accepted · a check the run makes itself failed"
     : "Not accepted · the reviewer's overall judgement fell short";
 }
-/* §6.7's redraft lines lead with the count of material defects. A review that sent no count leaves it
-   out ("Things to fix · …"), never "0 things": an unknown value does not read as 0 (D19). */
+/* The redraft lines lead with the count of material defects. A review that sent no count leaves it
+   out ("Things to fix · …"), never "0 things": an unknown value does not read as 0. */
 export function thingsToFix(defects: number | null): string {
   return defects === null ? "Things to fix" : plural(defects, "thing", "things") + " to fix";
 }
-/* Reviewing's outcome line, read at the route decision (notes-progress-report spec §6.7 route
-   table): never a score; the brief adds the row's duration (lib/briefs.ts). `halted` is a route reason
+/* Reviewing's outcome line, read at the route decision (the route table): never a score; the brief
+   adds the row's duration (lib/briefs.ts). `halted` is a route reason
    the backend defines (graph/state.py GRAPH_ROUTES) and does not publish as a decision today: the
    reviewer node skips a halted run and the errors its own review adds are never halting ones. It reads
-   "Halted" (owner decision O2, 2026-10-01), never the review-unavailable line; a reason this table does
-   not know falls back to that line, as before. */
+   "Halted", never the review-unavailable line; a reason this table does
+   not know falls back to that line. */
 function reviewOutcome(run: RunState, md: Md): string {
   switch (md.reason) {
     case "note_pass_requested": return "Sent back to research your note";
@@ -241,7 +240,7 @@ function isClarifyAnswer(a: unknown): a is { question_id: string; value: string;
   return !!m && isText(m.question_id) && typeof m.value === "string" && ["chosen", "typed", "best_guess"].includes(m.source);
 }
 
-/* notes-progress-report spec §6.1-§6.7: the progress events' wire shapes. An entry that does not fit
+/* The progress events' wire shapes. An entry that does not fit
    is dropped, never invented; an unknown slot state reads as drafted (a ring, no fact). */
 const SLOT_STATES: readonly string[] = ["skeleton", "drafted", "checking", "being_fixed", "passed", "fixed", "flagged", "not_checked"];
 function planSlots(listed: unknown): PlanSlot[] {
@@ -277,7 +276,7 @@ function reviewNotes(listed: unknown): ReviewNoteResult[] {
   return (Array.isArray(listed) ? listed : []).filter((n): n is Md => !!n && isText((n as Md).note_id))
     .map((n) => ({ noteId: n.note_id, ...reviewHalf(n), steering: n.steering && typeof n.steering === "object" ? reviewHalf(n.steering) : null }));
 }
-/* §6.3: a note read as a research note while Planning is the running row joins the plan as its own
+/* A note read as a research note while Planning is the running row joins the plan as its own
    slot; a later note that replaces it takes its slot away, but only while Planning still plans: once
    the plan is ready its slots are the plan's, and a replacing note leaves the finished brief as it was. */
 function noteSlot(run: RunState, md: Md): void {
@@ -300,7 +299,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     if (!AGENT_ORDER.includes(node)) return; /* the hops never map to a row */
     if (timestamp) run.startedAt[node] = timestamp; else delete run.startedAt[node];
     delete run.durations[node];
-    /* notes-progress-report spec §6.9: each step's block starts clean, so a re-armed row does too;
+    /* Each step's block starts clean, so a re-armed row does too;
        a research note's slot read before the planner started stays. */
     if (node === "planner") run.planning = { ...emptyPlanning(), noteSlots: run.planning.noteSlots };
     if (node === "source_evaluator") run.evaluating = null;
@@ -334,7 +333,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
       .map((t) => ({ coverageId: t.coverage_id, title: t.title }));
     run.topics = run.plan.map((p) => ({ coverageId: p.coverageId, title: p.title, state: "waiting", findings: null }));
     run.pagesRead = null; run.findingsSoFar = null;
-    /* notes-progress-report spec §6.3: each slot's final state, and the research notes the plan took in. */
+    /* Each slot's final state, and the research notes the plan took in. */
     run.planning.step = "ready";
     run.planning.slots = planSlots(listed);
     run.planning.noteSlots = listed.filter((t): t is Md => !!t && isText((t as Md).note_id) && typeof (t as Md).title === "string")
@@ -342,7 +341,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "researcher.sub_topic.started": (run, md) => {
     topicFor(run, md).state = "running";
-    /* notes-progress-report spec §5.7: a reader note's own thread names its note */
+    /* A reader note's own thread names its note */
     const note = isText(md.note_id) ? run.notes.find((n) => n.id === md.note_id) : undefined;
     if (note) note.threadStarted = true;
   },
@@ -370,7 +369,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
   },
   "source_evaluator.evaluation.completed": (run, md) => {
     run.counters.sources = md.source_count;
-    /* notes-progress-report spec §6.4: "{scored} sources rated · {s} strong · {f} fair · {w} weak". */
+    /* "{scored} sources rated · {s} strong · {f} fair · {w} weak". */
     if (typeof md.strong_count !== "number") { run.outcomes.source_evaluator = plural(count(md.source_count), "source rated", "sources rated"); return; }
     const unrated = count(md.unscored_cap_count) + count(md.unscored_provider_count) + count(md.unscored_missing_count);
     run.outcomes.source_evaluator = plural(count(md.scored_count), "source rated", "sources rated") + " · " + count(md.strong_count) + " strong · "
@@ -390,7 +389,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const c = run.counters;
     c.reviewSeen = true;
     c.reviewScore = typeof md.mean_score === "number" ? md.mean_score : null;
-    /* notes-progress-report spec §6.7: what Reviewing's checks and notes read -- never the score. */
+    /* What Reviewing's checks and notes read -- never the score. */
     run.reviewing.landed = true;
     run.reviewing.reviewedAt = timestamp;
     run.reviewing.criteria = reviewCriteria(md.criteria);
@@ -407,15 +406,15 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
       run.loopPending = true; run.arc = "extra_pass"; run.loop = "flowing";
       /* the pass about to run starts its own checklist; the writer's next draft is not a redraft */
       run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
-      /* spec §5.7: "now" means the note's own thread runs in this researcher run; an earlier run's thread no longer counts */
+      /* "now" means the note's own thread runs in this researcher run; an earlier run's thread no longer counts */
       for (const n of run.notes) n.threadStarted = false;
       delete run.reopen.report_writer;
     } else if (md.destination === "note_pass") {
-      /* live-briefs spec §4.6: the note pass re-runs Researching onward, as the extra pass does */
+      /* The note pass re-runs Researching onward, as the extra pass does */
       rearm(run, 1); run.active = "researcher";
       run.loopPending = true; run.arc = "note_pass"; run.loop = "flowing";
       run.topics = []; run.pagesRead = null; run.findingsSoFar = null; run.passFindings = null;
-      /* spec §5.7: a note pass's own started event sets it again */
+      /* A note pass's own started event sets it again */
       for (const n of run.notes) n.threadStarted = false;
       delete run.reopen.report_writer;
     } else if (md.destination === "redraft") {
@@ -446,7 +445,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const c = run.counters;
     c.statements = null; c.refused = null; c.reviewSeen = false; c.reviewScore = null;
   },
-  /* live-briefs spec §4.7: the note pass researches only the notes' own sub-topics — "Your note: …" —
+  /* The note pass researches only the notes' own sub-topics — "Your note: …" —
      and its first line says which notes it is for. Like an extra pass it starts its own this-pass
      rows and drops the earlier pass's researching caption; whole-run and current-draft rows keep
      their values. */
@@ -478,7 +477,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     run.loop = "off"; run.arc = null;
     run.active = null;
   },
-  /* live-briefs spec §4.4: the session asks before the graph starts; neither event moves a row. */
+  /* The session asks before the graph starts; neither event moves a row. */
   "session.clarification.requested": (run, md) => {
     const listed: unknown[] = Array.isArray(md.questions) ? md.questions : [];
     run.clarify = {
@@ -492,7 +491,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const answers = listed.filter(isClarifyAnswer).map((a) => ({ questionId: a.question_id, value: a.value, source: a.source }));
     run.clarify = { questions: run.clarify?.questions ?? [], deadlineAt: run.clarify?.deadlineAt ?? "", answered: { answers, reason: typeof md.reason === "string" ? md.reason : "" } };
   },
-  /* live-briefs spec §4.6-§4.7: a note is acknowledged as received at once, then as the run read
+  /* A note is acknowledged as received at once, then as the run read
      it; neither event moves a row. A replayed note is never counted twice. */
   "session.note.received": (run, md) => {
     if (!isText(md.note_id) || run.notes.some((n) => n.id === md.note_id)) return;
@@ -510,7 +509,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     note.where = run.active;
     noteSlot(run, md);
   },
-  /* notes-progress-report spec §8.4: the reader stopped the run. No row is active and no loop is lit;
+  /* The reader stopped the run. No row is active and no loop is lit;
      every mark stays as recorded, so the stopped stage can freeze the pipeline where it was. */
   "session.stopped": (run, md) => {
     run.stopped = {
@@ -520,8 +519,8 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     };
     run.active = null; run.loop = "off"; run.arc = null;
   },
-  /* notes-progress-report spec §6.1-§6.7: the four live-only progress events, each a cumulative
-     snapshot (the latest wins), and the latest quality verdict's hard failures (§6.7's refusal line). */
+  /* The four live-only progress events, each a cumulative
+     snapshot (the latest wins), and the latest quality verdict's hard failures (the refusal line). */
   "planner.progress": (run, md) => {
     if (md.step !== "drafting" && md.step !== "checking" && md.step !== "fixing") return;
     run.planning.step = md.step;
@@ -550,7 +549,7 @@ export const EVENT_HANDLERS: Readonly<Record<string, Handler>> = {
     const next = writerSample(md.sample, (before?.sampleCount ?? 0) + 1);
     run.writing = {
       phase: md.phase === "bottom_line" ? "bottom_line" : "sections",
-      /* owner decision O2 (2026-10-01): parts_returned counts every settled part; parts_failed is how many of them
+      /* parts_returned counts every settled part; parts_failed is how many of them
          ended failed (nothing of such a part is written), so the page can say how many sections were written. A
          progress event from before the key has none, which reads as none failed. */
       partsTotal: count(md.parts_total), partsReturned: count(md.parts_returned), partsFailed: count(md.parts_failed), drafted: count(md.sentences_drafted),
@@ -597,7 +596,7 @@ export function replayRun(events: readonly ResearchEvent[]): RunState {
 }
 /* The failed stage's marks: the halting row is the open node; Publishing is skipped by the client
    rule status == "failed" (never has_report); an API-level failure has no graph.session.completed,
-   so the session's own status is the fallback (index.html:3745-3746). */
+   so the session's own status is the fallback. */
 export function failedMarks(run: RunState, sessionStatus: SessionStatus): Partial<Record<NodeId, PaintedMark>> {
   const marks = marksFor(run, run.openNode);
   if ((run.finalStatus || sessionStatus) === "failed") marks.finalize_report = "skipped";

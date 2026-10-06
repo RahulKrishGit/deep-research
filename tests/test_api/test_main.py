@@ -49,7 +49,7 @@ def test_bad_flags_exit_2(argv: list[str]) -> None:
 
 
 def test_help_shows_defaults_for_mode_host_and_port(capsys: pytest.CaptureFixture[str]) -> None:
-    # M5: AC1's wording lists the defaults; argparse only prints them if the help string asks.
+    # argparse only prints defaults if the help string asks.
     with pytest.raises(SystemExit):
         start.parse_args(["--help"])
     out = " ".join(capsys.readouterr().out.split())  # argparse wraps long help lines
@@ -101,7 +101,7 @@ def test_main_serves_with_the_numeric_host_and_a_bounded_shutdown(tmp_path: Path
     assert calls[-1]["host"] == "127.0.0.1" and calls[-1]["port"] == 8123
     assert calls[-1]["timeout_graceful_shutdown"] == 5 and calls[-1]["app"].state.mode == "live"
     assert start.main(["--mode", "replay", "--host", "localhost", "--port", "8124"], serve=fake_serve) == 0
-    # M4: family=AF_INET forces IPv4 — "--host localhost" binds 127.0.0.1, never the IPv6 "::1"
+    # family=AF_INET forces IPv4 — "--host localhost" binds 127.0.0.1, never the IPv6 "::1"
     # some machines' resolvers prefer, which the default DEEP_RESEARCH_API_URL cannot reach.
     assert calls[-1]["host"] == "127.0.0.1" and calls[-1]["port"] == 8124
     assert calls[-1]["timeout_graceful_shutdown"] == 5 and calls[-1]["app"].state.mode == "replay"
@@ -110,10 +110,10 @@ def test_main_serves_with_the_numeric_host_and_a_bounded_shutdown(tmp_path: Path
 
 
 def test_main_falls_back_to_an_unrestricted_lookup_for_an_ipv6_literal_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # NB3 (re-review): M4's family=socket.AF_INET fixed "--host localhost" (a resolver that
-    # prefers IPv6 used to bind only [::1]) but, tried alone, it also rejects a *literal* IPv6
-    # host like "::1" outright (AF_INET can't reinterpret an IPv6 address) — a host that worked
-    # at the base and still works in live mode. AF_INET must be preferred, not the only attempt.
+    # family=socket.AF_INET makes "--host localhost" bind 127.0.0.1 even where a resolver
+    # prefers IPv6, but, tried alone, it rejects a *literal* IPv6 host like "::1" outright
+    # (AF_INET can't reinterpret an IPv6 address). AF_INET must be preferred, not the only
+    # attempt.
     calls: list[dict[str, Any]] = []
 
     def fake_serve(app: Any, **kwargs: Any) -> None:
@@ -127,7 +127,7 @@ def test_main_falls_back_to_an_unrestricted_lookup_for_an_ipv6_literal_host(tmp_
 
 
 def test_main_maps_an_unresolvable_host_to_a_usage_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    # NB3: neither lookup can resolve every possible --host value; that is a usage error (exit 2,
+    # Neither lookup can resolve every possible --host value; that is a usage error (exit 2,
     # argparse's own "error:" message on stderr), never an unhandled socket.gaierror traceback.
     # Monkeypatched (not a real unresolvable hostname) so this stays offline and deterministic.
     def always_fails(*args: Any, **kwargs: Any) -> Any:

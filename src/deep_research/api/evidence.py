@@ -1,4 +1,4 @@
-"""E1: the evidence view's JSON, built from the run's own ``ReportComposition``.
+"""The evidence view's JSON, built from the run's own ``ReportComposition``.
 
 Every derivation reuses the evidence log's own helpers — the label pairing,
 the figure text, the release, the page owner — so the JSON can never
@@ -34,7 +34,7 @@ from deep_research.utils.types import (
 
 
 def build_evidence_response(outcome: ResearchOutcome) -> EvidenceResponse:
-    """The E1 body for a finished run; raises when the run composed nothing."""
+    """The evidence body for a finished run; raises when the run composed nothing."""
     composition = outcome.composition
     if composition is None:
         raise ValueError("the outcome carries no composition")

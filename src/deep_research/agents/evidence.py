@@ -1,7 +1,6 @@
 """The pure read-evidence contract: canonical text, identity, admission.
 
-One home for the four rules whose disagreement caused the defects this
-program repairs:
+One home for the four rules that must never be allowed to disagree:
 
 * **What a read is.** Only a successful ``web_scraper`` or ``document_reader``
   call produces a :class:`~deep_research.utils.types.ReadRecord`. A search
@@ -21,9 +20,7 @@ program repairs:
 
 Nothing here performs I/O, reads a clock, or calls a provider: every value is
 a deterministic function of its arguments, and every timestamp is supplied by
-the caller that owns the clock. Later tasks extend this module — Task 3 wires
-read admission into the acquisition loop, Task 4 adds transport/derivation
-evidence.
+the caller that owns the clock.
 """
 
 from __future__ import annotations
@@ -171,7 +168,7 @@ _NUMERIC_LINE_BREAK = re.compile(r"(?<=\d)-[ \t]*\r?\n[ \t]*(?=\d)")
 
 
 def cosmetic_text(text: str, *, join_hyphenation: bool = True) -> str:
-    """Spec §5.1 step 1: the cosmetic normalisation, and nothing else.
+    """The cosmetic normalisation, and nothing else.
 
     Whitespace and line breaks, curly and straight quotes, soft hyphens and
     line-break hyphenation, and case. Digits, units, dashes and words are
@@ -352,7 +349,7 @@ def _parse_row(row: object) -> _Row:
         parsed.derives_from.append(_related_id(link))
 
     # A registered work key a snapshot already resolved, replayed because the
-    # anchors that produced it were not persisted (§2.2 rule 3). It joins
+    # anchors that produced it were not persisted. It joins
     # exactly like the alias it is, so a record that named its work keeps
     # naming it — and a body two records key differently stays ``conflicting``
     # rather than being silently re-keyed to whichever arrived last.
@@ -441,7 +438,7 @@ def _resolve_group(group: Sequence[_Row]) -> WorkIdentity:
         conflicts.append(f"{len(dois)} distinct normalized DOIs")
     if len(hashes) > 1 and not (len(dois) == 1 or len(reports) == 1):
         # Distinct bytes are one work only when one registered identifier
-        # says so (Section 2.2 rules 2/4); without one they are ambiguity.
+        # says so; without one they are ambiguity.
         conflicts.append(f"{len(hashes)} distinct complete-content hashes")
     for issuer in issuers:
         numbers = _distinct(
@@ -1383,12 +1380,12 @@ def _passage_index(boundaries: Sequence[int], offset: int) -> int:
 # The words that turn a mention of a body into a claim about who published a
 # figure. A name on its own is not one of them — "Unlike the EIA" and a bare
 # "EIA" both name the body without saying the figure is its own — and neither
-# is a body named for something else on the same page. "or similar" in the
-# specification this enforces covers the possessive, which is not a fixed
-# word: :func:`attribution_cue_adjacent` reads "Wood Mackenzie's ... Monitor"
+# is a body named for something else on the same page. The possessive is a
+# cue too, though not a fixed word: :func:`attribution_cue_adjacent` reads
+# "Wood Mackenzie's ... Monitor"
 # the same way. A "Data source: ..." caption line credits its originator the
 # same way a sentence does.
-# D8: a page that introduces a block quotation names its author or work the
+# A page that introduces a block quotation names its author or work the
 # same way it names a relay's issuer -- "To quote X", "In the words of X".
 # Only the introducer phrase is a cue, never the bare verb: a page saying
 # "X wrote a book" or "X put it to a vote" is not crediting X with the
@@ -1439,17 +1436,17 @@ _SOURCE_NOUN_CUE_PATTERN = re.compile(
 # battery storage capacity to reach 30 GW") credits that body for what the
 # title states, the same claim "according to EIA" makes about a sentence.
 _TITLE_CUE_MARK = re.compile(r"^\s*:\s")
-# D8: a parenthetical citation right after the matched name, followed by a
+# A parenthetical citation right after the matched name, followed by a
 # colon, credits that name with what follows exactly as "X writes:" does --
 # "Example Author (Notes 2.19): the council could not act ...".
 _CITATION_COLON_MARK = re.compile(r"^\s*\([^()]{0,60}\)\s*:")
-# D8/P1: "writes"/"wrote" credits the name only directly after it and only
+# "writes"/"wrote" credits the name only directly after it and only
 # when followed by a colon ("Example Author writes: ...") -- never merely
 # somewhere nearby, which would credit a name a page's own sentence about
 # someone else's writing happens to mention ("Example Author wrote a book
 # ... our own count found 40 sites").
 _WRITES_COLON_MARK = re.compile(r"^\s*(?:writes|wrote)\s*:")
-# D8/P1: "As X put it" is matched only as the whole introducer shape -- "as"
+# "As X put it" is matched only as the whole introducer shape -- "as"
 # directly before the name, "put(s) it" directly after -- never a bare
 # "put it" found nearby for an unrelated reason ("Example Council put it to
 # a vote").
@@ -1461,16 +1458,16 @@ _POSSESSIVE_MARK = re.compile(r"^['\u2019]s(?![A-Za-z0-9])")
 # How many characters may separate a cue from the name it attributes: the
 # connective words an attribution is written with ("the", a comma, a colon),
 # not a whole unrelated clause standing between them. The reach never
-# crosses a sentence end either (D11a, run 8): "according to some sources.
+# crosses a sentence end either: "according to some sources.
 # That number ..." must not credit "That" with the next sentence's own
 # statement just because it falls within the character reach -- but a mark
 # only ends a sentence when it is followed by whitespace, an optional
 # opening quote or paren, and a capital letter, AND the token right before
-# it is not itself an abbreviation (RevV4 P1 follow-up): "U.S.", "Dr.",
+# it is not itself an abbreviation: "U.S.", "Dr.",
 # "St.", "Inc." are not sentence ends, so "according to the U.S. EIA",
 # "according to Dr. Vale" and "Acme Inc. said ..." keep crediting. A
 # closing quote or paren right after the mark does not hide a sentence end
-# either (ReRevV4 follow-ups): "According to team." Beta grew fast." must
+# either: "According to team." Beta grew fast." must
 # not credit Beta, whether the mark is followed directly by the next
 # sentence's capital or by a run of closing quotes/parens first (a quote
 # nested in a quote closes with two).
@@ -1554,7 +1551,7 @@ def attribution_cue_adjacent(phrase: str, name_match: re.Match[str]) -> bool:
 
 
 def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
-    """PD-18: the read is ``organisation``'s own page.
+    """The read is ``organisation``'s own page.
 
     The first-party rule, or a government/education host whose registrable
     label spells the name (initials, or the words run together, a leading
@@ -1575,7 +1572,7 @@ def own_organisation_on_page(read: ReadRecord, organisation: str) -> bool:
     return bool(name.search(f"{read.title} {_document_text(read)}"))
 
 
-# The same bound the Context Check windows a passage to (spec §5.2): large
+# The same bound the Context Check windows a passage to: large
 # enough for a real paragraph's worth of context, never the whole page.
 _RELAY_PASSAGE_CHARS = 6000
 
@@ -1663,12 +1660,12 @@ def relay_attribution_on_page(read: ReadRecord, locator: str, snippet: str, orga
     a bounded window around it, when the locator does not resolve one) beside
     an attribution cue ("according to", "reported by", a possessive, ...); or
     the read's own opening names ``organisation`` as the document's author or
-    publisher (PD-8), which applies to every figure in the document however
+    publisher, which applies to every figure in the document however
     far from that opening it sits -- a mirrored PDF that credits its
     originator only on its cover and in scattered captions never within reach
     of a given figure is still that originator's relay of the whole document.
     """
-    # F9: Figure Match admits a snippet found anywhere on the page, so its locator
+    # A snippet may be found anywhere on the page, so its locator
     # may be stale. The fallback is a bounded window centred on the snippet
     # itself, never the whole page: an unbounded page-wide search let a distant,
     # unrelated "According to BNEF" credit that body for a figure it never
@@ -1887,7 +1884,7 @@ class ReadIdentityRequest(NamedTuple):
     ``anchors`` are the metadata anchors the read was shown to evidence;
     ``stored_work_id`` is a registered work key a snapshot already recorded for
     this read's source, replayed so the record still names the work it was
-    assessed as (Section 2.2 rule 3).
+    assessed as.
     """
 
     read: ReadRecord
@@ -2356,12 +2353,11 @@ def _quoted_date(read: ReadRecord | None, claimed: object, *,
 # labelling the date: "Published: 2026-02-20", "Published by Example
 # Institute on 2026-02-20", "Posted 2026-02-20". "released"/"issued" are
 # deliberately absent, and "updated"/"modified"/"last modified" are kept out
-# of this set too: a probe of an earlier cut of this rule found "Sony
-# released the WH-1000XM6 on May 15, 2025" admitted as the page's own
-# publication date -- "released" so commonly labels a PRODUCT or a report,
-# never the page itself, that no general (non-domain) rule can tell the two
-# apart -- and found "Updated May 15, 2025" printed as though it were a
-# first publication, although it names an edit (WholeBranchReview P1-2).
+# of this set too: "Sony released the WH-1000XM6 on May 15, 2025" is not the
+# page's own publication date -- "released" so commonly labels a PRODUCT or a
+# report, never the page itself, that no general (non-domain) rule can tell
+# the two apart -- and "Updated May 15, 2025" names an edit, not a
+# first publication.
 # This contract carries no separate "last updated" field to route an edit
 # date to, so a claim only such a word governs is refused here rather than
 # let an edit date stand in for a publication date.
@@ -2381,8 +2377,8 @@ _PUBLICATION_CUE_CHARS = 200
 # with no such lead-in governs the page's own date: a bare label ("In-brief
 # analysis, published August 7, 2026"), a sentence start ("Published:
 # 2026-02-20"), or the page's own self-reference ("This article was
-# published on ...") are none of them a clause about a different document
-# (WholeBranchReview R-4). Bounded to a short reach so an unrelated "the"
+# published on ...") are none of them a clause about a different document.
+# Bounded to a short reach so an unrelated "the"
 # many words earlier in a long window can never be read as this lead-in.
 _OTHER_DOCUMENT_LEAD = re.compile(
     r"\b(?:the|a|an)\s+[A-Za-z][A-Za-z\s]{0,40}?,\s*\Z",
@@ -2419,18 +2415,17 @@ def _states_it_as_the_publication_date(
     quotes only the date leaves it. Either way the cue must govern the date
     it labels: one embedded in a clause about a different document ("the
     EIA report, published June 10, 2025") does not count, even from well
-    inside the search window (``_cue_is_governing``, WholeBranchReview R-4).
+    inside the search window (``_cue_is_governing``).
     A cue-less quote is admitted only when it names exactly the date the
-    page's own metadata already captured (D14, ``ReadRecord.page_published``)
+    page's own metadata already captured (``ReadRecord.page_published``)
     -- coarser than the captured date is also admitted (a cue-less "2026"
     beside a captured "2026-09-17" is still that page's year), but never
-    merely because a day-precision date sits early in the page's text
-    (RevDatesR3 P0).
+    merely because a day-precision date sits early in the page's text.
 
     Whenever the page's own metadata carries a publication date, a proposal
     that disagrees with it is refused even when a real cue governs it: the
     page's own captured date is the more reliable fact, and a wrong date is
-    worse than none (WholeBranchReview P1-2).
+    worse than none.
     """
     page_published = read.page_published
     cue_governs = _cue_is_governing(quote) or _cue_is_governing(
@@ -2965,11 +2960,11 @@ def build_read_record(
     document — a PDF page that would not parse, a scanned page with no text —
     as a read of the locators it did extract, with
     ``INCOMPLETE_CONTENT_SHA256`` in place of a content hash. Discarding such
-    a document outright would throw away evidence that Section 2.1 admits (an
+    a document outright would throw away evidence that is admissible (an
     exact excerpt with a locator from a successful same-run read), while
     letting it keep a digest would identify a work nobody fully read.
 
-    ``page_published``/``page_updated`` (D14) are the page's own dates, from
+    ``page_published``/``page_updated`` are the page's own dates, from
     its own metadata only and already normalised by the reader that scraped
     it; a value that is not a real calendar date at the year, year-month, or
     year-month-day precision this contract dates everything at is dropped
@@ -3110,9 +3105,8 @@ def build_evidence_unit(
     is not evidence, however plausible it reads.
     """
     if origin != "researcher":
-        # The Fact Checker is deleted (step 4), so the researcher is the only
-        # agent that selects a passage: a unit recording another selector names
-        # an agent this branch cannot run.
+        # The researcher is the only agent that selects a passage: a unit
+        # recording another selector names an agent this build cannot run.
         raise EvidenceContractError(
             "an evidence unit requires the agent that selected it"
         )
@@ -3166,7 +3160,7 @@ def validate_cached_read(
     original read's identity, publisher-relevant fields, and observation
     period, so no second body download and no synthetic ``retrieved_at`` are
     needed. ``None`` means refused: the caller records an
-    :class:`~deep_research.utils.types.EvidenceDisposition` for it. Task 3
+    :class:`~deep_research.utils.types.EvidenceDisposition` for it. The caller
     owns when this is called; this function owns what it may accept.
 
     Only a *complete* original is ever admitted here. A partial read is
@@ -3470,7 +3464,7 @@ def build_boundary_audit(
     disposition_ids: Sequence[str] = (),
     status: str = "completed",
 ) -> BoundaryAudit:
-    """Build one Section 2.6 boundary manifest for one handoff.
+    """Build one boundary manifest for one handoff.
 
     A manifest records what went in, what came out, what was accepted, what
     was deferred, and the reasons for everything that did not cross — so an

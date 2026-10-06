@@ -56,7 +56,7 @@ STRUCTURED_EXAMPLE_NOTICE = (
     "facts, URLs, or wording into the real answer."
 )
 
-# D10 (PD-29): the last line of every tool-free pipeline request. The static
+# The last line of every tool-free pipeline request. The static
 # sections (the contract and the reply format) lead, so every call of one
 # operation shares them as a prefix DeepSeek's context cache can reuse; the
 # per-call material follows. The line avoids "JSON object", which
@@ -253,14 +253,14 @@ def render_react_messages(
     sections = [f"## Task\n{task.instruction}"]
     if task.guidance.strip():
         sections.append(f"## Guidance\n{task.guidance}")
-    # D10 (S4): the notes grow oldest first and the acquisition context changes
+    # The notes grow oldest first and the acquisition context changes
     # every turn, so the notes come first and each turn shares the last one's prefix.
     sections.append(f"## Notes so far\n{render_scratchpad(scratchpad)}")
     if decision_context.strip():
         sections.append(f"## Acquisition context\n{decision_context}")
     budget = f"Iteration {iteration} of {max_iterations}."
     if iteration == max_iterations:
-        # D10 (S3): a tool called on the last turn is never reasoned over.
+        # A tool called on the last turn is never reasoned over.
         budget += (
             " This is the last iteration: return the final answer now without "
             "calling a tool."
@@ -347,7 +347,7 @@ def render_read_dossier(
     about the document, and an assertion the dossier does not carry stays
     empty rather than becoming a recorded fact.
 
-    When the read declares its own derivative or teaching kind (D1), that
+    When the read declares its own derivative or teaching kind, that
     declaration is the dossier's second line -- ahead of everything else the
     model is shown about the document -- so the evaluator sees it before it
     forms any other judgement.

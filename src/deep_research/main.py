@@ -131,7 +131,7 @@ def _budget_observer(
     """The one callable the run's budget notifies, out of up to two parties.
 
     ``RequestBudget.set_observer`` holds a single callable, and two want it:
-    the run's §7.3 collector, which the assembly built and handed to the
+    the run's telemetry collector, which the assembly built and handed to the
     providers, and the caller's own observer — the CLI's stream, the API's
     recorder. Giving the slot to either alone would silence the other, and
     the collector's figures describe the run rather than the observer, so
@@ -155,7 +155,7 @@ def _budget_observer(
     return observe
 
 
-#: The event-loop lag monitor's tick (P1-B): it sleeps this long repeatedly
+#: The event-loop lag monitor's tick: it sleeps this long repeatedly
 #: and records each wake-up's delay beyond it. A "block" is a delay at or
 #: beyond five ticks -- five seconds in production -- so a test can shorten
 #: the tick and still exercise the block path without a real 5 s wait.
@@ -166,12 +166,12 @@ _LOOP_LAG_BLOCK_TICKS = 5
 async def _monitor_loop_lag(
     collector: RunTelemetryCollector, *, tick: float = _LOOP_LAG_TICK_SECONDS
 ) -> None:
-    """Record the run's event-loop lag for the Telemetry line (P1-B, §1.2).
+    """Record the run's event-loop lag for the Telemetry line.
 
     Sleeps ``tick`` seconds at a time for as long as the run lasts, recording
     each wake-up's delay beyond what was asked for -- time the loop spent
-    blocked elsewhere, such as the page-admission normalisation the stall
-    investigation found. Cancellation is the only way this task ends: it
+    blocked elsewhere, such as the page-admission normalisation.
+    Cancellation is the only way this task ends: it
     must never keep the run alive past its own work, and a reading it cannot
     make sense of is dropped by the collector rather than raised, so this
     monitor can never fail the run it is watching.
@@ -202,16 +202,16 @@ async def run_research(
 ) -> ResearchOutcome:
     """Run one research session, or continue a checkpointed one.
 
-    ``reader_answers`` are the reader's answers to the API's one-time check
-    (live-briefs spec §4.4). A fresh run starts with them in its state, where
+    ``reader_answers`` are the reader's answers to the API's one-time check.
+    A fresh run starts with them in its state, where
     the planner reads them; a resumed run keeps the answers its checkpoint
     holds, so they are ignored there.
 
     ``max_extra_passes`` bounds how many extra research passes the run may
-    buy after its first one (D4) and defaults to
+    buy after its first one and defaults to
     ``settings.graph.max_extra_passes``. The CLI's ``--max-iterations`` flag
     and the API's ``max_iterations`` field keep their own names and arrive
-    here as this argument (PD-15).
+    here as this argument.
 
     ``runtime_builder`` is injected rather than imported at the call site so
     a test can drive the real graph with scripted agents and no provider.
@@ -228,7 +228,7 @@ async def run_research(
     outlive one run (a resume reuses the runtime that made the checkpoint),
     and a stale observer would attribute a later run's attempts to this
     caller. The terminal snapshots reach the outcome either way.
-    The slot is shared with the run's §7.3 collector, which the assembly
+    The slot is shared with the run's telemetry collector, which the assembly
     built: the collector is notified first and this handler after it for
     every update, so neither the caller's stream nor the run's telemetry
     goes blind (see ``_budget_observer``).
@@ -362,7 +362,7 @@ async def run_research(
             monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await monitor_task
-        # The run's shared HTTP pool (latency audit O4) closes with the run.
+        # The run's shared HTTP pool closes with the run.
         # Read with ``getattr``: a stand-in runtime may predate the field.
         pool = getattr(runtime, "connection_pool", None)
         if pool is not None:

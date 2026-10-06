@@ -1,4 +1,4 @@
-"""Paired live runs (latency audit §7 tier 4; latency plan X1 baseline, X2, X3).
+"""Paired live runs of a baseline arm against treatment arms.
 
 ``run`` makes one research session for one question and arm, through
 ``run_research`` with the arm's request-scoped config overrides and a fresh,
@@ -7,10 +7,10 @@ empty memory of its own, so no run reads what an earlier run stored. It writes
 metrics below) and a copy of the run's quality record into
 ``<out>/<question>-<arm>-<repetition>/``. A run that raises, cancellation
 included, leaves a timing-only ``run.json`` with status ``"failed"`` and the
-error instead. ``--capture`` also binds a stage capture there, for the X1
+error instead. ``--capture`` also binds a stage capture there, for the
 stage replay.
 
-``compare`` applies the latency plan's pre-registered criteria (Task 17) to a
+``compare`` applies pre-registered criteria to a
 treatment arm against the baseline arm: accuracy first, then time.
 
     python -m deep_research.experiments.live_runs run --question tamil \\
@@ -38,9 +38,9 @@ from pathlib import Path
 from typing import Any
 
 QUESTIONS: dict[str, str] = {
-    # Figure-heavy: the audit's Tamil run (box-office figures, one 16-figure finding).
+    # Figure-heavy (box-office figures, one 16-figure finding).
     "tamil": "what are the best films in tamil?",
-    # Local recommendations: the audit's Latte run.
+    # Local recommendations.
     "latte": "Where can we get the best tasting Lattes in san Jose",
     # Prose: causes and interpretations, few figures.
     "rome": "Why did the Roman Republic fall?",
@@ -49,7 +49,7 @@ QUESTIONS: dict[str, str] = {
 PEAK_HOURS_UTC: tuple[tuple[int, int], ...] = ((1, 4), (6, 10))
 PEAK_LOOKAHEAD_MINUTES = 50
 
-# Pre-registered tolerances (latency plan Task 17, "Pass criteria"). A
+# Pre-registered tolerances. A
 # question's control spread is used when it has two or more control runs;
 # these floors stand in for it otherwise, and bound it from below.
 REVIEW_MARGIN_FLOOR = 0.03
@@ -91,7 +91,7 @@ def stage_seconds(events: Sequence[Mapping[str, Any]]) -> dict[str, float]:
 
 
 def lock_waits(events: Sequence[Mapping[str, Any]]) -> dict[str, float | int]:
-    """How long tool calls waited for the run's tool gate (latency audit O4, O8)."""
+    """How long tool calls waited for the run's tool gate."""
     waits = sorted(
         float(event["metadata"]["lock_wait_s"])
         for event in events
@@ -149,8 +149,8 @@ def quality_metrics(record: Mapping[str, Any]) -> dict[str, Any]:
 def output_speeds(record: Mapping[str, Any]) -> dict[str, float]:
     """Each stage's median output tokens per second over its provider calls.
 
-    Read from the quality record's ``telemetry.stages[].call_records`` (latency
-    plan Task 4). It sits beside the time verdict: a stage that is slower only
+    Read from the quality record's ``telemetry.stages[].call_records``. It sits
+    beside the time verdict: a stage that is slower only
     because the provider streamed more slowly that hour shows it here.
     """
     speeds: dict[str, float] = {}
@@ -187,7 +187,7 @@ def _write_crashed_run(
     overrides: Mapping[str, Any],
     error: BaseException,
 ) -> None:
-    """Timing-only ``run.json`` for a run whose research raised (Task 17 review).
+    """Timing-only ``run.json`` for a run whose research raised.
 
     It carries no quality record and no duration, so ``compare`` counts it as a
     failed treatment and never as a control: a crash fails closed instead of
@@ -287,7 +287,7 @@ async def run_one(
         **lock_waits(events),
     }
     result = directory / "run.json"
-    record: dict[str, Any] = {
+    run_record: dict[str, Any] = {
         "question_id": question_id,
         "question": QUESTIONS[question_id],
         "arm": arm,
@@ -301,7 +301,7 @@ async def run_one(
     }
 
     def write() -> None:
-        result.write_text(json.dumps(record, ensure_ascii=False, indent=1), encoding="utf-8")
+        result.write_text(json.dumps(run_record, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # The timing is written first: a quality record that cannot be read (a run
     # that took no quality snapshot publishes ``"quality": {}``) must not lose
@@ -340,7 +340,7 @@ def _usable(metrics: Mapping[str, Any]) -> bool:
 
 
 def _usable_control(metrics: Mapping[str, Any]) -> bool:
-    """A usable run whose session completed (owner decision H10, 2026-10-01).
+    """A usable run whose session completed.
 
     A baseline that ended any other way (``incomplete``, ``max_iterations``, ...)
     is not a control: it feeds neither a question's thresholds nor the margins.
@@ -355,14 +355,14 @@ def compare(
     stage: str,
     control: str = "baseline",
 ) -> dict[str, Any]:
-    """The pre-registered verdict for one treatment arm (latency plan Task 17).
+    """The pre-registered verdict for one treatment arm.
 
     Accuracy: every check below on every question that has both arms. Time:
     the targeted stage is faster than the control mean on at least two of the
     questions, and the mean ratio of end-to-end seconds is below 1.
 
     A control is a run that published a quality record and a duration and whose
-    session completed (owner decision H10, 2026-10-01, before any paid run). A
+    session completed. A
     question with a treatment run but no such control fails the verdict
     (``has_controls`` False, the run listed in ``unpaired``); a question with
     neither arm is simply absent.
@@ -466,7 +466,7 @@ def compare(
                 "stage_seconds": stage_time,
                 "control_stage_seconds": round(control_stage, 3),
                 "seconds_ratio": round(ratio, 4),
-                # Beside the time verdict, not part of it (review P2-6): the
+                # Beside the time verdict, not part of it: the
                 # provider's own speed for this stage in each arm.
                 "stage_output_tokens_per_s": (run.get("output_tokens_per_s") or {}).get(stage),
                 "control_stage_output_tokens_per_s": (
@@ -509,7 +509,7 @@ def compare(
 
 
 def suite_verdict(control: Mapping[str, Any], treatment: Mapping[str, Any]) -> dict[str, Any]:
-    """The tier-3 gate (latency plan Task 17; run in Tasks 23 and 24): two
+    """The suite gate: two
     ``results.json`` of one agent.
 
     The treatment must pass by the harness's own rule (status ``REVIEW

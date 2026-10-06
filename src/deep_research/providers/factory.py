@@ -60,7 +60,7 @@ def build_chat_provider(
     accepting and dropping it: a budget that silently goes nowhere is exactly
     the decorative ceiling this machinery exists to replace.
 
-    ``telemetry`` is the run's §7.3 collector, threaded exactly as the budget
+    ``telemetry`` is the run's telemetry collector, threaded exactly as the budget
     is: one collector per run, so every provider call of the run reports its
     seconds, its output tokens against its cap and its truncations to the same
     object. ``None`` leaves each adapter with a private no-op collector, which
