@@ -872,14 +872,14 @@ def _evidence_lines(outcome: ResearchOutcome) -> list[str]:
 
 
 def _telemetry_lines(outcome: ResearchOutcome) -> list[str]:
-    """The run's §7.3 figures: one line, then the advice they trigger.
+    """The run's telemetry figures: one line, then the advice they trigger.
 
     Rendered by the telemetry's own renderers, never re-rendered here: the
     line's wording, its order and the config keys in the advice are one
     implementation's, so the CLI and the quality record cannot describe the
     same run in two ways. Nothing is computed and nothing is acted on — the
     advice is for an operator reading the summary, and the run never tunes
-    itself (§12).
+    itself.
 
     A run whose collector recorded nothing is a run nothing measured — a
     harness, or a runtime with no collector — and it prints no line at all:
@@ -960,7 +960,7 @@ def _quality_reason_line(outcome: ResearchOutcome) -> list[str]:
 def _coverage_line(outcome: ResearchOutcome) -> list[str]:
     """Required-target completion, then what no search could answer.
 
-    Two readings of one denominator, kept apart (§6.4). The count is the
+    Two readings of one denominator, kept apart. The count is the
     gate's own: required targets some verified finding answers. The Not found
     row is the report's own account of what it searched for and did not find,
     printed under its own name so a reader can tell an accounted obligation

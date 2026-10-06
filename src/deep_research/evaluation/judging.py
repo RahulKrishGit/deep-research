@@ -1,7 +1,7 @@
 """The fixed, versioned LLM-as-judge.
 
 This module is the LLM half of quality scoring (``aggregate_quality``
-mixes it at 0.60 with the deterministic half from Task 17). The judge
+mixes it at 0.60 with the deterministic half). The judge
 scores a structurally closed ``JudgeInput`` built field by field from the
 repetition's ``TargetOutput`` — never from a wholesale dump — so
 ``dependency_scenario``, raw clients, absolute paths, and hidden reasoning
@@ -56,7 +56,7 @@ from deep_research.utils.types import ContractModel, JsonValue
 
 JUDGE_PROMPT_ID = "individual-agent-judge"
 
-# The frozen weight table from the spec. A rubric may add agent dimensions
+# The frozen weight table. A rubric may add agent dimensions
 # and anchors; it never changes a weight.
 COMMON_DIMENSION_WEIGHTS: dict[str, float] = {
     "role_adherence": 0.15,
@@ -164,8 +164,7 @@ JUDGE_SYSTEM_PROMPT = (
 # Heading levels are load-bearing. Every section this template owns is `#`, and
 # the judged run's own blocks are `##` (``_render_blocks``), so the blocks nest
 # under "The run to judge" and no block name can be read as a section of this
-# instruction -- the same collision the Critic request had with its report's H2
-# headings. The contract's own subsections are `##` beneath their `#` parent.
+# instruction. The contract's own subsections are `##` beneath their `#` parent.
 #
 # The response contract is stated in prose as well as in the appended schema,
 # because the schema alone does not constrain this provider. Measured: with
@@ -173,9 +172,9 @@ JUDGE_SYSTEM_PROMPT = (
 # attempts at max effort exceeded it (`string_too_long`), with a median
 # rationale of 1,735 characters. The bound cannot be enforced by decoding --
 # adding ``strict`` to the ``text.format`` block returns HTTP 400 -- so prose is
-# the only lever. The schema bound was subsequently widened to
-# ``models.JUDGE_RATIONALE_SCHEMA_MAX`` so that overshoot past the stated
-# guidance is accepted rather than failing the run.
+# the only lever. The schema bound is ``models.JUDGE_RATIONALE_SCHEMA_MAX``,
+# wider than the stated guidance, so that overshoot past the guidance is
+# accepted rather than failing the run.
 JUDGE_PROMPT_TEMPLATE = """\
 # What you are scoring
 

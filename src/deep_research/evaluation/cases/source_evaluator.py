@@ -620,7 +620,7 @@ _LIVE = build_case(
     dependency_scenario="live",
     expectations=CaseExpectations(
         required_output_fields=["evaluated_sources"],
-        # Live-run note for Task 18's evaluator: the Source Evaluator
+        # Live-run note: the Source Evaluator
         # declares no tools and derives its canonical source set from
         # state.raw_findings (group_findings_by_url), so the URLs a live
         # run scores are exactly the four fixed findings below — only the

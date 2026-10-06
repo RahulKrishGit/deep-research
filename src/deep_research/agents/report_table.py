@@ -1,18 +1,18 @@
-"""The question-shaped table (spec §4) — pure, offline table builders.
+"""The question-shaped table — pure, offline table builders.
 
-Decision 1's structural choice rule (§4.1), picked *after* the writer's
+The structural choice rule, picked *after* the writer's
 statements are checked: an **options table** assembled from option marks on
 kept (``consistent``/``corrected``) statements, when a required part on its
-own names >= 2 options; else **Key figures** (notes-progress-report spec
-§7.4), the verified figures labelled ``item · measure`` and merged per
+own names >= 2 options; else **Key figures**, the verified figures labelled
+``item · measure`` and merged per
 passage, when >= 2 rows qualify; else no table. No model call ever writes
 table text — every word in a cell is either a verbatim span of a checked
 sentence (options) or a page-verified field (Key figures).
 
-:func:`build_table` is the one entry point the Report Writer calls
-(spec §6.7); :func:`options_table` and :func:`key_figures_table` are exposed
+:func:`build_table` is the one entry point the Report Writer calls;
+:func:`options_table` and :func:`key_figures_table` are exposed
 separately because each is independently testable against its own fixture
-(spec §14 T2) and each may be asked to build a table the caller then decides
+and each may be asked to build a table the caller then decides
 not to use.
 """
 
@@ -47,7 +47,7 @@ from deep_research.utils.types import (
 
 __all__ = ["KeyFigureGroup", "build_table", "key_figures_table", "merge_key_figures", "options_table"]
 
-# Row/column bounds (§4.2; notes-progress-report spec §7.4): a table is a
+# Row/column bounds: a table is a
 # summary, never the whole log.
 MAX_OPTION_ROWS = 8
 MAX_OPTION_PART_COLUMNS = 4
@@ -56,10 +56,10 @@ MAX_KEY_FIGURE_ROWS = 10
 
 _KEPT_VERDICTS = frozenset({"consistent", "corrected"})
 
-# D10: for these answer kinds the question plans no figure target of its
+# For these answer kinds the question plans no figure target of its
 # own -- a figure the researcher happens to find is evidence inside a
 # finding, not an obligation -- so a findings-table row only qualifies when
-# it answers a target that itself asks for a quantity (§4.3).
+# it answers a target that itself asks for a quantity.
 _QUANTITY_ONLY_ANSWER_KINDS = frozenset({"explanation", "constraints"})
 _OPTIONS_COLUMNS_HEAD = "Option"
 _RECOMMENDED_BY_COLUMN = "Recommended by"
@@ -70,7 +70,7 @@ _STATED_FIGURE = "stated figure"
 #: word boundary, so a planner-sized measure ("battery storage power capacity added")
 #: and a note's subject or question read alike.
 _NOTE_MEASURE_CHARS = 40
-#: A value's shape (spec §7.4 item 3): each run of digits, dots and commas reads ``#``.
+#: A value's shape: each run of digits, dots and commas reads ``#``.
 _VALUE_NUMBERS = re.compile(r"[\d.,]+")
 _OPTIONS_CAPTION = (
     "Each cell quotes the report's own sentence about the option in that "
@@ -138,12 +138,12 @@ def _required_coverage_ids(composition: ReportComposition) -> set[str]:
 
 
 def _option_key(name: str) -> str:
-    """§4.2: the row key — case, whitespace and dash variants folded (cosmetic_text plus dash-class collapse)."""
+    """The row key — case, whitespace and dash variants folded (cosmetic_text plus dash-class collapse)."""
     return _DASH_CLASS.sub("-", cosmetic_text(name))
 
 
 class _ResolvedMark(NamedTuple):
-    """One valid mark, tied to the parts it counts toward (§4.2's "a statement's parts")."""
+    """One valid mark, tied to the parts it counts toward (a statement's parts)."""
 
     statement_id: str
     mark: ItemMark
@@ -152,13 +152,13 @@ class _ResolvedMark(NamedTuple):
     relay: tuple[str, str] | None
     """(credited_body, relay_publisher) when the mark's backing finding reports
     another body's judgement through this page; ``None`` when the page speaks
-    for itself (P1-1)."""
+    for itself."""
 
 
 def _relay_credit(
     finding: Finding | None, page_credits: Mapping[str, PageCredit], url: str
 ) -> tuple[str, str] | None:
-    """P1-1: (credited_body, relay_publisher) when ``finding`` reports another
+    """(credited_body, relay_publisher) when ``finding`` reports another
     body's judgement relayed through ``url``'s page; ``None`` when the page
     speaks for itself. Never credits the relay alone: a page whose own words
     hand a pick or verdict to a named body ('according to Wirecutter, as
@@ -189,7 +189,7 @@ def _mark_relay_credit(
     page_credits: Mapping[str, PageCredit],
     finding_by_id: Mapping[str, Finding],
 ) -> tuple[str, str] | None:
-    """R-2: the relay credit for one mark, decided by the finding it actually
+    """The relay credit for one mark, decided by the finding it actually
     rests on — never by whichever finding happens to share its page.
 
     Prefers ``mark.finding_id`` (the fingerprint the draft's ``by`` resolved
@@ -222,7 +222,7 @@ def _resolve_marks(
 ) -> tuple[list[_ResolvedMark], list[str]]:
     """Kept statements' valid marks, in report order, each tied to its own part(s).
 
-    Three checks before a mark counts (§4.2 last bullet): the statement is
+    Three checks before a mark counts: the statement is
     kept (``consistent``/``corrected``, never ``unchecked``); ``name`` and
     ``verdict`` are verbatim spans of the statement's final text; and the
     mark's own ``source_url`` is the page of one of the findings the
@@ -230,7 +230,7 @@ def _resolve_marks(
     on, and a statement that cites no known finding at all fails this check
     too (a mark trusts nothing it cannot check against). A mark failing
     either source check is dropped; the drop messages are returned rather
-    than written to ``composition.dropped_marks`` directly (P3-1), so a
+    than written to ``composition.dropped_marks`` directly, so a
     caller invoked more than once on the same composition merges instead of
     duplicating them.
 
@@ -292,7 +292,7 @@ def _resolve_marks(
 def _merge_dropped_marks(
     composition: ReportComposition, dropped: Sequence[str]
 ) -> None:
-    """P3-1: merge without duplicating, so calling a builder twice on the same
+    """Merge without duplicating, so calling a builder twice on the same
     composition cannot double-record the same drop."""
     for message in dropped:
         if message not in composition.dropped_marks:
@@ -312,15 +312,15 @@ def _required_part_option_counts(
 
 
 # =============================================================================
-# the choice rule (§4.1)
+# the choice rule
 # =============================================================================
 
 
 def build_table(composition: ReportComposition) -> ReportTable | None:
-    """§4.1: options when one required part alone marks >= 2 options; else Key figures when >= 2 rows qualify; else none.
+    """Options when one required part alone marks >= 2 options; else Key figures when >= 2 rows qualify; else none.
 
     The >= 2 test applies per required part (consistent with the column
-    rule, §4.2): two different required parts each marking one distinct
+    rule): two different required parts each marking one distinct
     option do not qualify, since neither part alone names a comparison. If
     the gate passes but the resulting options table still has fewer than 2
     rows (every marked option's only cell lay outside the parts that
@@ -342,7 +342,7 @@ def build_table(composition: ReportComposition) -> ReportTable | None:
 
 
 # =============================================================================
-# §4.2 options table
+# options table
 # =============================================================================
 
 
@@ -417,7 +417,7 @@ def _part_cell(
         text = _dedup_join(verdicts)
         relay = relays.get(url)
         if relay is not None and text:
-            # P1-1: never credit the relay alone — name the body whose
+            # Never credit the relay alone — name the body whose
             # judgement this is, with the relay page still cited by its marker.
             text = f"{text}, according to {relay[0]}"
         entries.append(TableEntry(text=text, source_url=url))
@@ -507,7 +507,7 @@ def _build_options_table(
             resolved_marks, key, composition.page_credits
         )
         if non_empty == 0 and not recommended_cell.entries:
-            continue  # §4.2: a row needs >= 1 non-empty cell
+            continue  # a row needs >= 1 non-empty cell
         row_cells.append(recommended_cell)
         pick_pages = _distinct_pick_pages(resolved_marks, key)
         rows_data.append(
@@ -534,11 +534,11 @@ def _build_options_table(
 
 
 def options_table(composition: ReportComposition) -> ReportTable:
-    """§4.2: the table code assembles from option marks, the parts and the page credits.
+    """The table code assembles from option marks, the parts and the page credits.
 
     Builds from *every* kept, valid mark regardless of its part's required
     flag — the structural gate that decides whether an options table is used
-    at all lives in :func:`build_table` (§4.1); this function only shapes
+    at all lives in :func:`build_table`; this function only shapes
     whatever marks exist.
     """
     resolved_marks, dropped = _resolve_marks(composition)
@@ -547,7 +547,7 @@ def options_table(composition: ReportComposition) -> ReportTable:
 
 
 # =============================================================================
-# §4.3's eligible figures, as notes-progress-report spec §7.4's Key figures
+# eligible figures, as the Key figures table
 # =============================================================================
 
 
@@ -560,7 +560,7 @@ def _row_and_duplicate_ids(row: FactRow) -> set[str]:
 
 
 def _row_finding_ids(row: FactRow) -> list[str]:
-    """Every finding a number in this row comes from, the row's own first (marker/audit ids)."""
+    """Every finding a number in this row comes from, the row's own first (the ids a table cell carries)."""
     return list(
         dict.fromkeys(
             [row.finding_id, *(edition.finding_id for edition in row.earlier)]
@@ -596,7 +596,7 @@ def _explicitly_answers_required(
     finding_by_id: Mapping[str, Finding],
     required_target_ids: set[str],
 ) -> bool:
-    """§6.13: "answers a required target" means an explicit binding on the row's own finding(s)."""
+    """A row "answers a required target" only by an explicit binding on the row's own finding(s)."""
     for fid in _row_and_duplicate_ids(row):
         finding = finding_by_id.get(fid)
         if finding is not None and set(finding.target_ids) & required_target_ids:
@@ -605,7 +605,7 @@ def _explicitly_answers_required(
 
 
 def _quantity_target_ids(composition: ReportComposition) -> set[str]:
-    """D10: targets that ask for a quantity -- an ``EvidenceTarget`` with
+    """Targets that ask for a quantity -- an ``EvidenceTarget`` with
     ``unit_dimension`` set; ``None`` marks a qualitative target."""
     return {
         target.target_id
@@ -625,10 +625,10 @@ def _row_eligible(
     if row.context_unchecked:
         return False
     if quantity_target_ids is not None:
-        # D10: for explanation/constraints answers, a row qualifies only
+        # For explanation/constraints answers, a row qualifies only
         # when it answers a target that asks for a quantity -- being cited,
-        # or bound to a qualitative target (even a required one), no longer
-        # qualifies it for these kinds.
+        # or bound to a qualitative target (even a required one), does not
+        # qualify it for these kinds.
         return _explicitly_answers_required(row, finding_by_id, quantity_target_ids)
     if _explicitly_answers_required(row, finding_by_id, required_target_ids):
         return True
@@ -641,7 +641,7 @@ def _row_priority(
     required_target_ids: set[str],
     bottom_line_cited: set[str],
 ) -> int:
-    """§4.3's cap priority: a row that explicitly answers a required target
+    """The cap priority: a row that explicitly answers a required target
     first, then one the bottom line cites, then the rest."""
     if _explicitly_answers_required(row, finding_by_id, required_target_ids):
         return 0
@@ -664,7 +664,7 @@ def _words_present(candidate: str, text: str) -> bool:
 def _earlier_edition_date(
     edition: EarlierEdition, finding_by_id: Mapping[str, Finding]
 ) -> str | None:
-    """§4.3: the earlier edition's own release date, else its statement date — never the unverified vintage."""
+    """The earlier edition's own release date, else its statement date — never the unverified vintage."""
     earlier_finding = finding_by_id.get(edition.finding_id)
     if earlier_finding is None:
         return None
@@ -728,7 +728,7 @@ def _who_text(
 def _label_source(
     row: FactRow, finding: Finding | None, page_credits: Mapping[str, PageCredit]
 ) -> str:
-    """D40: the source that reported a row, for the label of a row with no named
+    """The source that reported a row, for the label of a row with no named
     item -- the organisation a relayed figure is credited to, else the name the
     Source column prints (the publisher, or the page's own site)."""
     if row.attribution == "relayed" and row.organisation:
@@ -738,7 +738,7 @@ def _label_source(
 
 @dataclass(frozen=True)
 class KeyFigureGroup:
-    """One merged Key figures row (notes-progress-report spec §7.4 item 3): the
+    """One merged Key figures row: the
     values one passage states about one item, under one label. ``rows`` holds
     every fact row merged here, in row order; ``shown`` the ones whose values
     print -- a row whose value repeats a shown one only adds its finding ids."""
@@ -773,13 +773,13 @@ def _short_label(text: str, *, cut: bool = True) -> str:
 
 
 def _note_topic_measure(topic: SubTopic, target: EvidenceTarget) -> str:
-    """Final review P3-1: a research note's own targets carry the note's whole question as
+    """A research note's own targets carry the note's whole question as
     their measure (``reader_notes.note_sub_topic``), which is no label for a table cell.
 
     The label is per note topic when the topic has exactly one target: its title without
     the "Your note: " prefix, trimmed (``_short_label``). With more than one target, rows
     about one item that answer different targets would share that label and the
-    one-row-per-label rule (§7.4 item 3) would drop all but one, so each row is labelled
+    one-row-per-label rule would drop all but one, so each row is labelled
     by its own target's question, trimmed the same way. When trimming would make two of
     the topic's questions read alike, the questions stay whole. ``""`` when nothing is
     left, and the target's own measure then stands."""
@@ -791,7 +791,7 @@ def _note_topic_measure(topic: SubTopic, target: EvidenceTarget) -> str:
 
 
 def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
-    """Spec §7.4 item 2: read the row by the sub-topic owning the most of its
+    """Read the row by the sub-topic owning the most of its
     planned targets (the earlier in plan order on a tie), and take that
     sub-topic's first such target in plan order whose ``unit_dimension`` is
     set, else its first such target; a row answering no planned target keeps
@@ -821,7 +821,7 @@ def _key_figure_measure(row: FactRow, composition: ReportComposition) -> str:
 def _key_figure_label(
     row: FactRow, composition: ReportComposition, finding_by_id: Mapping[str, Finding]
 ) -> str | None:
-    """Spec §7.4 item 2, as D40 amends it: ``{Item} \u00b7 {measure}``, the item
+    """``{Item} \u00b7 {measure}``, the item
     being the row's subject unless it starts with a pronoun; a row with no named
     item is labelled by the source that reported it, ``{Source} \u00b7 {Measure}``
     (``_label_source``), so figures from different findings keep separate rows --
@@ -850,8 +850,8 @@ def _value_shape(value: str) -> str:
 
 
 def merge_key_figures(rows: Sequence[FactRow], composition: ReportComposition) -> list[KeyFigureGroup]:
-    """Spec §7.4 items 2-3, before eligibility and the cap: label each row (D40:
-    a row with no named item by the source that reported it), and merge the
+    """Before eligibility and the cap: label each row (a row with no named
+    item by the source that reported it), and merge the
     values one passage states about one item.
 
     Rows sharing (label, primary finding, kind) form a group. Within a group, a
@@ -908,16 +908,16 @@ def _group_display_order(
 
 
 def key_figures_table(composition: ReportComposition) -> ReportTable | None:
-    """Notes-progress-report spec §7.4: the eligible verified figures (§4.3's
-    rule, ``_row_eligible``) labelled and merged, one row per label, at most
+    """The eligible verified figures (``_row_eligible``) labelled and merged,
+    one row per label, at most
     ``MAX_KEY_FIGURE_ROWS``, with the What / Figure / Source columns; ``None``
     when fewer than 2 fact rows qualify.
 
-    The cap keeps the merged rows whose best fact row ranks first by §4.3's
+    The cap keeps the merged rows whose best fact row ranks first by
     priority (``_row_priority``; stable within a rank); of merged rows sharing
     a label only the first by that priority prints -- the table cannot tell
     them apart, and a repeated label with different figures reads as a
-    contradiction (D36) -- and every other stays in the evidence log.
+    contradiction -- and every other stays in the evidence log.
     """
     required_target_ids = {
         target.target_id

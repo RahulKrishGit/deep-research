@@ -199,8 +199,8 @@ class ScriptedCompleter:
 class HoldingCompleter(ScriptedCompleter):
     """A ``ScriptedCompleter`` that holds each structured reply for a set time
     after choosing it, and records when each structured call started and
-    ended, by call index (latency audit O3, O10: proves two calls were in
-    flight together, and that a later one may answer first)."""
+    ended, by call index (proves two calls were in flight together, and that
+    a later one may answer first)."""
 
     def __init__(
         self,
@@ -239,7 +239,7 @@ class HoldingCompleter(ScriptedCompleter):
 
 class LabelRecordingCompleter(ScriptedCompleter):
     """A ``ScriptedCompleter`` that also records, for each structured request,
-    the call label its caller bound around it (latency audit O8)."""
+    the call label its caller bound around it."""
 
     def __init__(
         self,
@@ -355,14 +355,6 @@ class TargetKeyedCompleter:
         return [
             _request_text(call.messages)
             for call in self.react_calls
-            if call.key == key
-        ]
-
-    def structured_requests(self, key: str) -> list[str]:
-        """Every structured request body ``key`` received, in order."""
-        return [
-            _request_text(call.messages)
-            for call in self.calls
             if call.key == key
         ]
 

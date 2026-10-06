@@ -52,7 +52,7 @@ class SaveToMemoryTool(BaseTool):
     async def save_many(
         self, findings: Sequence[tuple[str, Mapping[str, JsonValue]]]
     ) -> ToolResult:
-        """Persist several findings in one memory write (latency audit O2).
+        """Persist several findings in one memory write.
 
         One tool span and one ``save_many`` on the backend for the whole set,
         instead of one of each per finding. Every finding is validated as

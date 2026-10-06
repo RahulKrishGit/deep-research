@@ -65,7 +65,7 @@ def test_the_evaluation_package_defines_no_graph_or_suite_dataset() -> None:
         for case in all_cases()
     )
     # The total is derived from the declared inventory rather than pinned to
-    # a literal, so a round that adds a case updates one declaration.
+    # a literal, so a change that adds a case updates one declaration.
     assert len(all_cases()) == sum(
         len(ids) for ids in EXPECTED_CONTROLLED_CASE_IDS.values()
     ) + sum(len(ids) for ids in EXPECTED_LIVE_CASE_IDS.values())

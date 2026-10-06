@@ -436,11 +436,10 @@ def test_load_config_empty_yaml(tmp_path: Path) -> None:
 def test_stale_reasoning_mode_key_under_llm_is_rejected(config_path: Path) -> None:
     """A stale ``reasoning_mode`` key under ``llm`` must fail loudly.
 
-    ``reasoning_mode`` is exactly the key this branch removed from
-    ``LLMConfig``. Before every config model set ``extra="forbid"``, a
-    config file that still carried it loaded silently with default
-    behaviour standing in for the ignored setting -- no signal that the key
-    did nothing.
+    ``reasoning_mode`` is not a field of ``LLMConfig``. Every config model
+    sets ``extra="forbid"``, so a config file that still carries it is
+    rejected instead of loading silently with default behaviour standing in
+    for the ignored setting.
     """
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     raw["llm"]["reasoning_mode"] = "pro"
@@ -808,7 +807,7 @@ def test_agent_runtime_defaults_bound_every_react_loop(config_path: Path) -> Non
 
 
 def test_writer_reader_length_and_authority_floor_default(config_path: Path) -> None:
-    """D11/D6-D7: the writer's reader-length fallback and authority floor."""
+    """The writer's reader-length fallback and authority floor."""
     settings = load_config(str(config_path))
 
     assert settings.agents.report_target_words == 2000
@@ -895,11 +894,11 @@ def test_no_output_budget_is_pinned_to_a_small_cap(config_path: Path) -> None:
 def test_every_shipped_output_budget_but_the_re_extraction_is_the_global_cap() -> None:
     """The shipped file lifts every output budget but the one looping call's.
 
-    User decision 2026-09-25: no agent fails on an output-length limit, so
-    every operation budget is sent at the same value as ``llm.max_tokens``
-    (the provider's documented maximum). The researcher's owed-passage
-    re-extraction is the exception, because it ran away to whatever cap it
-    had: its budget stays below the global one.
+    No agent fails on an output-length limit, so every operation budget is
+    sent at the same value as ``llm.max_tokens`` (the provider's documented
+    maximum). The researcher's owed-passage re-extraction is the exception,
+    because a looping call runs to whatever cap it has: its budget stays
+    below the global one.
     """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     global_cap = raw["llm"]["max_tokens"]
@@ -998,7 +997,7 @@ def test_the_shipped_config_file_carries_the_agent_budget_overrides() -> None:
 
 
 def test_the_shipped_config_sets_the_researcher_budget_and_turn_caps() -> None:
-    """Spec §7.2: the researcher's tool budget is 40 over fifteen model turns,
+    """The researcher's tool budget is 40 over fifteen model turns,
     and one pass attempts every sub-topic a plan may carry (ten)."""
     settings = load_config("config.yaml")
 
@@ -1025,14 +1024,14 @@ def test_the_shipped_llm_block_declares_the_measured_agent_efforts() -> None:
         "source_evaluator": "high",
         "evidence_verifier": "high",
         "report_writer": "high",
-        # Task 10's terminal semantic reviewer, resolved as its own service
+        # The terminal semantic reviewer, resolved as its own service
         # role: a separate call role with its own effort, not an agent.
         "report_reviewer": "max",
     }
     # A timed-out review gets one transport retry, not the global repeats.
     assert raw["llm"]["model_overrides"]["report_reviewer"]["retry_count"] == 1
     # No role times out before the transport default every other role
-    # inherits: the timeouts moved with the lifted output caps.
+    # inherits.
     assert all(
         override.get("timeout", raw["llm"]["timeout"]) >= raw["llm"]["timeout"]
         for override in raw["llm"]["model_overrides"].values()
@@ -1344,7 +1343,7 @@ def test_no_environment_variable_can_set_a_request_budget_ceiling(
 
     The environment table is where a silent second way to set a ceiling would
     appear, and a ceiling that the environment can change is a ceiling no
-    canary can honestly claim. Limits arrive through request-scoped CLI
+    run can honestly claim. Limits arrive through request-scoped CLI
     overrides only.
     """
     from deep_research.utils import config as config_module
@@ -1372,15 +1371,15 @@ def test_a_request_budget_ceiling_reaches_settings_only_through_an_override() ->
     shipped = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
     settings = ConfigSettings()
 
-    canary = apply_config_overrides(
+    overridden = apply_config_overrides(
         settings,
         {"request_budget": {"tavily_attempt_ceiling": 4, "stop_fraction": 0.9}},
     )
 
     assert "request_budget" not in shipped
-    assert canary.request_budget.tavily_attempt_ceiling == 4
-    assert canary.request_budget.stop_fraction == 0.9
-    assert canary.request_budget.openai_attempt_ceiling is None
+    assert overridden.request_budget.tavily_attempt_ceiling == 4
+    assert overridden.request_budget.stop_fraction == 0.9
+    assert overridden.request_budget.openai_attempt_ceiling is None
     assert settings.request_budget == RequestBudgetConfig()
 
 
@@ -1389,40 +1388,35 @@ def test_the_evidence_verifier_pipeline_config() -> None:
     assert settings.graph.max_extra_passes == 1
     assert settings.agents.tool_budget_overrides["researcher"] == 40
     assert settings.llm.resolve_for("evidence_verifier").reasoning_effort == "high"
-    assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # F10: the one effort source
+    assert settings.llm.resolve_for("report_writer").reasoning_effort == "high"   # the one effort source
     reviewer = settings.llm.resolve_for("report_reviewer")
     assert reviewer.timeout >= settings.llm.timeout
     assert set(settings.agents.tool_budget_overrides) <= set(PRODUCTION_AGENT_NAMES)
     assert PRODUCTION_AGENT_NAMES == ("planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer")
     assert SERVICE_ROLE_NAMES == ("report_reviewer",)
-    # Spec 7.3 (D9/PD-27): the four per-stage concurrency caps, one
-    # assertion each, plus extraction_concurrency (S6), a fifth
-    # concurrency knob that bounds the researcher's own per-page
-    # extraction calls rather than a stage of its own.
+    # The four per-stage concurrency caps, one assertion each, plus
+    # extraction_concurrency, a fifth concurrency knob that bounds the
+    # researcher's own per-page extraction calls rather than a stage of its
+    # own.
     assert settings.agents.sub_topic_concurrency == 10
     assert settings.agents.source_scoring_concurrency == 6
     assert settings.agents.verifier_batch_size == 5
-    # Latency audit O1 (2026-09-30): raised from 16 so every Context Check
-    # batch of a run starts at once.
+    # Sized so every Context Check batch of a run starts at once.
     assert settings.agents.verifier_concurrency == 64
     assert settings.agents.extraction_concurrency == 16
-    # Spec §6.10/§17 Q6: the parallel writer's own concurrency bound; a
-    # controller ruling for this build raised the shipped default from 7 to
-    # 10 ("no strong limits").
+    # The parallel writer's own concurrency bound.
     assert settings.agents.writer_section_concurrency == 10
-    # P1-4 (WholeBranchReview): the S1 limits lift raised the code defaults
-    # to 20 and 2000, but the shipped YAML kept overriding them at 8 and
-    # 200 -- silently reverting the lift for every production run while
-    # the e2e harness ran at the lifted value. Asserted against the real
-    # shipped file, not a synthetic YAML, so this fails the moment the two
-    # drift apart again.
+    # The code defaults are 20 and 2000, and the shipped YAML must not
+    # override them with smaller values, which would silently revert them for
+    # every production run. Asserted against the real shipped file, not a
+    # synthetic YAML, so this fails the moment the two drift apart.
     assert settings.agents.prompt_context_entries == 20
     assert settings.agents.observation_summary_chars == 2000
 
 
-def test_the_hitl_timings_default_to_the_spec_values() -> None:
-    """live-briefs spec §4.4: the check call 20 s, the wait for answers 60 s (D6), a
-    note's interpretation 15 s."""
+def test_the_hitl_timings_have_their_default_values() -> None:
+    """The check call 20 s, the wait for answers 60 s, a note's interpretation
+    15 s."""
     assert ConfigSettings().hitl == HitlConfig(
         check_timeout_s=20.0, answer_wait_s=60.0, note_interpret_timeout_s=15.0
     )
@@ -1459,8 +1453,8 @@ def test_each_hitl_timing_refuses_infinite_nan_and_oversized_values(
     field: str, bad: float
 ) -> None:
     """A timing that is not a finite number of seconds up to ten minutes is refused
-    where the request is validated: ``1e12`` s used to pass and then overflow the
-    session's answer deadline, failing the run instead of the request."""
+    where the request is validated: ``1e12`` s would overflow the session's
+    answer deadline, failing the run instead of the request."""
     with pytest.raises(ValidationError):
         HitlConfig(**{field: bad})
     with pytest.raises(ValueError):

@@ -1,4 +1,4 @@
-"""The notes route and a session's notes (live-briefs spec §4.6, §4.8; AC19, AC20).
+"""The notes route and a session's notes.
 
 Store-level tests drive ``SessionStore`` with scripted interpreters and a runner
 held open; the route tests go through ``TestClient``. No provider is ever reached:
@@ -410,7 +410,7 @@ def _wait(client: TestClient, session_id: str, predicate: Callable[[dict[str, An
 
 
 def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome() -> None:
-    """AC19's status half: every note, its reading and its outcome; the pass count."""
+    """Every note, its reading and its outcome are listed on the status with the pass count."""
     runner = HeldRunner({"n2": "no_evidence", "n3": "ignored_with_evidence"}, note_passes=1)
     app = create_app(runner=runner, preflight=valid_preflight, note_interpreter=Interpreter())
     with TestClient(app) as client:
@@ -434,7 +434,7 @@ def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome()
          "steering_outcome": None},
     ]
     assert (running["notes_remaining"], running["note_passes"], running["clarification"]) == (7, 1, None)
-    # A note the report still ignores is reported as such, never as covered (live-briefs Phase 3, O8).
+    # A note the report still ignores is reported as such, never as covered.
     assert [(n["note_id"], n["outcome"]) for n in done["notes"]] == [
         ("n1", "covered"), ("n2", "not_found"), ("n3", "not_addressed"),
     ]
@@ -444,7 +444,7 @@ def test_the_notes_route_takes_a_note_and_the_status_lists_it_with_its_outcome()
 
 
 def test_the_notes_route_refuses_unknown_sessions_bad_text_and_the_eleventh_note() -> None:
-    """AC20's API half: the eleventh note is a 409 ``note_limit_reached``."""
+    """The eleventh note is a 409 ``note_limit_reached``."""
     runner = GateRunner()
     app = create_app(runner=runner, preflight=valid_preflight, note_interpreter=Interpreter())
     with TestClient(app) as client:
@@ -487,7 +487,7 @@ def test_a_replay_mode_app_reads_notes_with_the_scripted_interpreter(tmp_path: P
 
 
 def test_the_status_carries_the_one_time_check_the_session_asked() -> None:
-    """spec §4.6 Status response: ``clarification: {questions, answers}``."""
+    """Status response includes ``clarification: {questions, answers}``."""
     app = create_app(runner=GateRunner(), preflight=valid_preflight, clarity_checker=Checker())
     with TestClient(app) as client:
         session_id = client.post("/research", json={"query": QUESTION}).json()["session_id"]
@@ -508,10 +508,11 @@ def test_the_status_carries_the_one_time_check_the_session_asked() -> None:
 
 @pytest.mark.parametrize("wait", [1e12, float("inf")])
 def test_a_timing_too_long_or_not_finite_is_refused_with_the_request(wait: float) -> None:
-    """Phase 2's final review (M6): ``1e12`` s passed validation, then overflowed the
-    answer deadline inside the session. Now the request itself is a 422, and no
-    session starts. The body is sent as raw JSON: ``Infinity`` is not standard JSON,
-    so the test client's encoder refuses it, but FastAPI's parser takes it."""
+    """A request with an answer_wait_s that is too long or not finite is refused with a 422.
+    ``1e12`` s would overflow the answer deadline inside the session, so the request itself
+    is refused and no session starts. The body is sent as raw JSON:
+    ``Infinity`` is not standard JSON, so the test client's encoder refuses it, but
+    FastAPI's parser takes it."""
     body = json.dumps({"query": QUESTION, "config_overrides": {"hitl": {"answer_wait_s": wait}}})
     app = create_app(runner=GateRunner(), preflight=valid_preflight, note_interpreter=Interpreter())
     with TestClient(app) as client:
@@ -524,7 +525,7 @@ def test_a_timing_too_long_or_not_finite_is_refused_with_the_request(wait: float
 
 
 
-# --- notes-progress-report spec §4 item 2: no session that has ended reports ``pending`` ---------
+# --- No session that has ended reports ``pending`` ---------
 
 
 def test_a_note_nothing_judged_reads_pending_while_the_session_runs_and_not_checked_once_it_ends() -> None:

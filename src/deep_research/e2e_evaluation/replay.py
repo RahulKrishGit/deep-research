@@ -40,13 +40,13 @@ from deep_research.agents.acquisition import (
 )
 from deep_research.agents.base import AgentCompleter
 from deep_research.agents.evidence import TemporalClaim, normalized_content_sha256
-from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.evidence_verifier import (
     ContextCheckDraft,
     FigureCheckDraft,
     StatementCheckDraft,
     StatementVerdictDraft,
 )
+from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.planner import (
     EvidenceTargetDraft,
     PlanExtensionDraft,
@@ -94,11 +94,11 @@ from deep_research.utils.config import ConfigSettings
 from deep_research.utils.types import (
     REVIEW_DIMENSIONS,
     BottomLineDraft,
-    TopicLineDraft,
     ItemMarkDraft,
     ReadRecord,
     ResearchState,
     SectionDraft,
+    TopicLineDraft,
 )
 
 # The public progress summary stays at its shipped length. A scenario may ask
@@ -116,8 +116,7 @@ OBSERVATION_SUMMARY_CHARS = 2000
 # straddled 00:00 UTC published three differently dated reports and failed the
 # row on a fact about the clock rather than about the agents.
 #
-# Midday of the day the real-agent rows were certified (see
-# ``docs/validation/2026-09-16-real-agent-controlled-validation.md``), so the
+# Midday of the day the real-agent rows were certified, so the
 # frozen date is one the fixtures' own era already assumes: the rows were
 # authored and accepted against a clock in this year, and the questions that
 # name a period are classified against it.
@@ -146,7 +145,7 @@ CONTEXT_OVERRIDE_KEYS = frozenset(
         "kind",
         "evidence_words",
         "verdict",
-        # D11's two proposals: a period (absolute, or one the page's own date
+        # Two proposals: a period (absolute, or one the page's own date
         # resolves from the quoted words) and the subject the figure is about.
         "period",
         "subject",
@@ -224,7 +223,7 @@ class ReplaySource:
     # The subjects of ``figures``, position for position, exactly as the
     # extraction records them (``FindingFigureDraft.subject``). A subject is
     # the thing the figure is about as the page names it, and it is what keeps
-    # two figures equal in value, organisation, period and kind apart (D11),
+    # two figures equal in value, organisation, period and kind apart,
     # so a fixture that states none for a figure is declaring that the figure
     # is about its topic as a whole rather than about a named thing.
     figure_subjects: tuple[str | None, ...] = ()
@@ -232,12 +231,12 @@ class ReplaySource:
     # the value and the page's own words for it (``TemporalClaim``). The words
     # have to be the page's text verbatim, exactly as an excerpt does -- the
     # real evaluator admits a date only from a quote the read carries -- and
-    # the value is what a relative period ("this year") is resolved against
-    # (D11), so a fixture that declared one its page does not state would be
+    # the value is what a relative period ("this year") is resolved against,
+    # so a fixture that declared one its page does not state would be
     # scripting a page date no reader could have earned.
     publication_date: tuple[str, str] | None = None
     # The edition this page's figure belongs to, as the extraction records it
-    # (``FindingDraft.vintage``): it is the release key PD-9 compares to tell a
+    # (``FindingDraft.vintage``): it is the release key compared to tell a
     # revision of one fact from a second reading of it.
     vintage: str = ""
     # The scope the scripted extraction records for this page's figure
@@ -247,7 +246,7 @@ class ReplaySource:
     recorded_scope: str = ""
     # What the Context Check double answers for this page's figures, keyed the
     # way the reply carries them: ``scope``, ``attribution``, ``organisation``,
-    # ``kind``, ``evidence_words`` and ``verdict`` (D8's Context Check fields).
+    # ``kind``, ``evidence_words`` and ``verdict`` (the Context Check's fields).
     # Empty is a page the double confirms exactly as the extractor recorded it.
     # A key outside that set is a fixture typo, not a silent no-op: the
     # Context Check reads only these fields, so an override it cannot read
@@ -323,9 +322,9 @@ class ExtraEvidenceTarget:
 
     A plan sub-topic can carry more than one evidence target (the writer
     places every citable finding into exactly one part by its *first*
-    matching target, spec §6.1), and a part with one target already answered
+    matching target), and a part with one target already answered
     and a second one still missing on the opening pass is what
-    ``scoped-redraft-after-a-named-defect``'s sibling case (the P0-1
+    ``scoped-redraft-after-a-named-defect``'s sibling case (the
     extra-pass regression) needs: the part already has a section before the
     extra pass runs.
     """
@@ -359,10 +358,10 @@ class ReplayTopic:
     # string is not.
     follow_up_queries: tuple[str, ...] = ()
     # The obligation's structured fields, exactly as the planner's draft
-    # carries them (Task 1.4, ``EvidenceTargetDraft``): the measure it asks
+    # carries them (``EvidenceTargetDraft``): the measure it asks
     # for, the unit dimension, period and kind its evidence has to state, and
     # the geography and organisation it names. An empty unit dimension is a
-    # qualitative obligation (PD-7) -- answered by a verified finding that
+    # qualitative obligation -- answered by a verified finding that
     # names it -- which is what a topic whose measure states no unit carries.
     measure: str = ""
     unit_dimension: str = ""
@@ -378,7 +377,7 @@ class ReplayTopic:
     # Further evidence targets this same part carries, beyond the primary
     # one above -- a part with two, one answered on the opening pass and one
     # still missing, so it already has a section before the extra pass its
-    # missing target buys (D4, §6.5) ever runs.
+    # missing target buys ever runs.
     extra_targets: tuple[ExtraEvidenceTarget, ...] = ()
 
 
@@ -421,10 +420,10 @@ class CaseExpectation:
 
 @dataclass(frozen=True)
 class ReplayReviewDefect:
-    """One material defect the scripted *first* full review names (T5 addendum).
+    """One material defect the scripted *first* full review names.
 
     Its ``target_ids`` are what routes the redraft it buys to exactly the
-    part(s) that own them (spec §6.9's ``_route_defects``); a scenario with
+    part(s) that own them (``_route_defects``); a scenario with
     two or more parts and one such defect is what leaves the other part(s)
     carried over byte-identical, which is what lets the second review be
     scoped rather than a second full one. ``ReplayCompleter`` returns this
@@ -460,29 +459,29 @@ class ReplayScenario:
     review_failure: bool = False
     # The dimension score a made review records, and the statement ids it
     # disposes of as unsupported. 0.9 with none rejected is an accepting
-    # review (spec §6.3's floor is a mean of 0.80); a case that wants the
+    # review (the floor is a mean of 0.80); a case that wants the
     # terminal review to refuse a report lowers the score or names the
     # sentences the evidence does not carry.
     review_score: float = 0.9
     rejected_statement_ids: tuple[str, ...] = ()
     # The one material defect the scripted first full review names, naming
-    # the part(s) its ``target_ids`` route to (T5 addendum, spec §6.9). Left
+    # the part(s) its ``target_ids`` route to. Left
     # unset, the review never returns a defect and no redraft is bought.
     review_defect: ReplayReviewDefect | None = None
     # The scoped re-review that could not be used: the provider raises,
     # exactly as an outage would, so the run has to fall back to one fresh
-    # full review rather than accept a scoped-derived judgement (T5
-    # addendum). Meaningless without ``review_defect``, since nothing buys a
+    # full review rather than accept a scoped-derived judgement.
+    # Meaningless without ``review_defect``, since nothing buys a
     # redraft (and so a scoped attempt) without one.
     scoped_review_failure: bool = False
     # The Statement Check that could not be made: every batch's provider call
     # raises, exactly as an outage would, and every drafted sentence has to be
-    # kept exactly as drafted with the failure recorded (§5.4). The case exists
+    # kept exactly as drafted with the failure recorded. The case exists
     # because "no judgement" must not silently read as "judged consistent".
     statement_failure: bool = False
     # Prose the scripted writer drafts that no page states. The product is the
     # thing under test here: prose no citation attests must not reach the
-    # reader, whatever the writer proposed. Under D8 the refusal is the
+    # reader, whatever the writer proposed. The refusal is the
     # Statement Check's own verdict, so the double reads this text out of the
     # sentence it was handed rather than trusting a code pattern.
     invented_prose: str = ""
@@ -543,17 +542,6 @@ def _context_ids(text: str, label: str) -> list[str]:
     return [item for item in value.split(",") if item]
 
 
-def _labelled_ids(text: str, label: str) -> list[str]:
-    """Read one ``Label: a, b, c`` inventory line out of a packet."""
-    match = re.search(rf"(?m)^{re.escape(label)}: (.*)$", text)
-    if match is None:
-        return []
-    value = match.group(1).strip()
-    if not value or value == "(none)":
-        return []
-    return [item.strip() for item in value.split(",") if item.strip()]
-
-
 # --- reading the requests the real agents build -------------------------------
 
 
@@ -612,7 +600,7 @@ def _printed_figures(
     ``(number, value, period, kind, subject)``, read from the shipped line
     format: ``figure 1: 4.5 out of 5 | recorded period 2026 | recorded kind
     actual``, with the `` | recorded subject …`` part present only when the
-    figure carries one (Task 5.7b). The kind is a single word, which is what
+    figure carries one. The kind is a single word, which is what
     keeps it from swallowing the subject part a lazier group would take.
     """
     figures: list[tuple[int, str, str | None, str, str | None]] = []
@@ -645,7 +633,7 @@ def _registry_entries(
     ``(value, unit, period, kind, organisation, subject)``. Read from the
     registry's own format, which is what the writer's prompt is built from: a
     figure line carries its `` | subject …`` part after the unit only when the
-    Context Check resolved one (D11), so the unit group has to stop there
+    Context Check resolved one, so the unit group has to stop there
     rather than run on to the next part. An entry with no figure line is a
     finding whose page stated no figure: ``finding_registry`` still lists
     those, so the request really carries them and the double reads them rather
@@ -744,8 +732,8 @@ def _written_sentence(
     """The sentence one registry line becomes: the figure, and nothing else.
 
     The reader label carries the rest (who the figure is credited to, whether
-    it is a forecast and, for a forecast, its release), because D8 moves the
-    wording judgement to the Statement Check and the label to code. A line
+    it is a forecast and, for a forecast, its release), because the
+    wording judgement sits with the Statement Check and the label with code. A line
     whose period the page did not state states no period rather than inventing
     one. A line with a subject names it first, as the thing the sentence is
     about: two figures can be equal in value, organisation, period and kind
@@ -789,7 +777,7 @@ class ReplayCompleter(AgentCompleter):
         self.review_defect: ReplayReviewDefect | None = scenario.review_defect
         self.scoped_review_failure: bool = scenario.scoped_review_failure
         # Returned on the first ``ReportReviewDraft`` reply only: a redraft
-        # buys one re-run (spec §6.9), and a controlled case scripts one,
+        # buys one re-run, and a controlled case scripts one,
         # never a defect that keeps reappearing after it is resolved.
         self._review_defect_returned = False
         self.invented_prose: str = scenario.invented_prose
@@ -1096,7 +1084,7 @@ class ReplayCompleter(AgentCompleter):
         """One subject per figure, padded when the fixture declares none.
 
         An empty ``figure_subjects`` is a page whose figures are about their
-        topic as a whole, which is the shape every figure carried before D11.
+        topic as a whole.
         """
         if not source.figure_subjects:
             return (None,) * len(source.figures)
@@ -1248,14 +1236,14 @@ class ReplayCompleter(AgentCompleter):
         """
         if self.statement_failure:
             # The provider boundary's own failure type, not a bare exception:
-            # an outage is what §5.4 is written to survive, and raising
+            # an outage is what the Statement Check is written to survive, and raising
             # anything else would test the harness rather than the product.
             raise ProviderError("the statement check was not made")
         drafts: list[StatementVerdictDraft] = []
-        # The production writer's own flight keys (spec §6.7): ``P{part:02d}.``
+        # The production writer's own flight keys: ``P{part:02d}.``
         # for a section's own batch, ``B`` and ``R`` for the bottom line's
-        # answer and its re-ask, ``BT`` and ``RT`` for their topic lines
-        # (notes-progress-report spec §7.1), all renumbered to the reader's
+        # answer and its re-ask, ``BT`` and ``RT`` for their topic lines,
+        # all renumbered to the reader's
         # ``S001…`` only after every check finishes, so the check itself never
         # sees an ``S`` label from that path -- but a test that calls this double
         # directly still builds its own items with plain ``S00n`` labels, which
@@ -1319,7 +1307,7 @@ class ReplayCompleter(AgentCompleter):
                 )
             # A finding with no kept figure is shown with the body it is
             # ``attributed to`` when the extraction admitted one, and otherwise
-            # with the site it was ``read at`` (the re-review's C1: a host is
+            # with the site it was ``read at`` (a host is
             # where a statement was read, never the body that made it). Either
             # line satisfies the figureless case; a finding whose figure was
             # kept shows neither, because its own figure line states its
@@ -1383,17 +1371,17 @@ class ReplayCompleter(AgentCompleter):
 
         Scoped to ``# Verified findings for this part`` alone, never
         ``# Context only``: a context-only finding is listed for the writer to
-        read, not to cite (spec §6.4 rule 3), and a double that drafted from it
+        read, not to cite, and a double that drafted from it
         would cite a label the real writer is refused for citing. The line is
         the registry's own format (``F01 | figure 1: 10.4 GW | period 2024 |
         kind actual | organisation Wood Mackenzie | label: ...``), so the
         draft states the figure its verified finding carries, and the
         code-built reader label carries what the sentence does not say (who
         the figure is credited to, and whether it is a forecast). A figure
-        line that names a subject (D11) is also marked as an option: the
+        line that names a subject is also marked as an option: the
         subject is the mark's name and the value-and-unit span is its verdict,
-        both verbatim spans of the drafted sentence (spec §6.4 rule 8), so the
-        options table (§4.2) has real cells to build from a replay run.
+        both verbatim spans of the drafted sentence, so the
+        options table has real cells to build from a replay run.
         """
         title_block = self._material_block(text, "This part of the question")
         title = title_block.strip().splitlines()[0].strip() if title_block.strip() else "Findings"
@@ -1437,7 +1425,7 @@ class ReplayCompleter(AgentCompleter):
             raise ReplayContractError(
                 "the section packet listed no finding to draft from"
             )
-        # notes-progress-report spec §7.7: the title's first two words.
+        # The title's first two words.
         return SectionDraft(title=title, points=points, short_title=" ".join(title.split()[:2]))
 
     _BOTTOM_LINE_STATEMENT = re.compile(r"^(.*) \(cites ([^;()]*)(?:; options: .*)?\)$")
@@ -1446,7 +1434,7 @@ class ReplayCompleter(AgentCompleter):
     def _reply_BottomLineDraft(self, text: str) -> BottomLineDraft:
         """The first statement of the first ``## {coverage_id} · {title}`` block
         as the one answer sentence, and the first statement of each block as that
-        topic's line (notes-progress-report spec §7.7): a bottom line built only
+        topic's line: a bottom line built only
         from what a part's own draft already had verified, never inventing new
         prose. ``cites nothing`` (a statement with no finding label) carries no
         label."""
@@ -1553,7 +1541,7 @@ class ReplayCompleter(AgentCompleter):
         )
 
     def note_dispositions_for(self, text: str) -> list[NoteDispositionDraft]:
-        """``honoured`` for every reader note the review packet lists (live-briefs spec §4.6).
+        """``honoured`` for every reader note the review packet lists.
 
         Read from the request's own ``# Reader notes`` section, so a packet
         without notes gets no entry and every existing case replies exactly
@@ -1581,7 +1569,7 @@ class ReplayCompleter(AgentCompleter):
 
     def _reply_ScopedReportReviewDraft(self, text: str) -> ScopedReportReviewDraft:
         """Accept a redraft: every changed statement supported, every
-        previous defect resolved, no new defect (T5 addendum).
+        previous defect resolved, no new defect.
 
         Generic over the packet's own content, exactly as
         ``_reply_ReportReviewDraft`` is keyed on the full packet's own
@@ -1594,8 +1582,8 @@ class ReplayCompleter(AgentCompleter):
         already supply.
         """
         if self.scoped_review_failure:
-            # The provider boundary's own failure type: the T5 addendum's
-            # fallback exists precisely for a scoped call that could not be
+            # The provider boundary's own failure type: the fallback
+            # exists precisely for a scoped call that could not be
             # made, and raising anything else would test the harness's
             # imagination instead of the product's own fallback.
             raise ProviderError("the scoped re-review was not made")
@@ -2122,7 +2110,6 @@ class ReplayRun:
     graph_run: Any
     replay: ReplayRuntime
     exit_code: int
-    cli_output: list[str]
 
     @property
     def quality_status(self) -> str:
@@ -2142,8 +2129,8 @@ class ReplayRun:
     def answered_target_ids(self) -> list[str]:
         """The obligations the run's own accounting says it answered.
 
-        Read from the quality snapshot the writer's pass computed (PD-5,
-        §6.6), never re-derived here: whether an obligation is answered is
+        Read from the quality snapshot the writer's pass computed, never
+        re-derived here: whether an obligation is answered is
         code's question, and a harness that answered it its own way could only
         disagree with the run it is judging. A pass that composed no report
         answered nothing.
@@ -2175,8 +2162,8 @@ class ReplayRun:
             if quality.missing_required_target_ids:
                 kinds.append("missing_required_target")
             if quality.semantic_review_status != "scored":
-                # A missing judgement is not a pass: the reviewed baseline is
-                # explicit that an unjudged repetition must never read as one.
+                # A missing judgement is not a pass: an unjudged repetition
+                # must never read as one.
                 kinds.append("semantic_review_missing")
         for error in self.state.errors:
             kinds.append(f"error:{error.error_type}")
@@ -2189,7 +2176,7 @@ def _invariant_relay_labelled_as_relay(run: ReplayRun) -> str | None:
     The honesty rule is one sentence: a relay is never presented as the
     organisation it relays. So the row names the site that relays the figure as
     the host, credits the figure to the organisation the page credits, and the
-    two are never the same name. Spec §11.3: the rule is per *page*, not per
+    two are never the same name. The rule is per *page*, not per
     row -- a wire service relaying four separate obligations is one relaying
     site four times over, so any other fact row read from that same host must
     carry the same ``relayed`` attribution, never a stray ``own``.
@@ -2373,7 +2360,7 @@ def _target_id_for(run: ReplayRun, topic: ReplayTopic | None) -> str | None:
 def _invariant_no_false_verification(run: ReplayRun) -> str | None:
     """Every figure a published sentence rests on has a resolved context.
 
-    §5.2's product is one context per kept figure: the period, scope,
+    The product is one context per kept figure: the period, scope,
     attribution, organisation and kind the Context Check resolved and code
     confirmed against the page. A finding cited while the verifier dropped it,
     a page nobody read, or a kept figure with no organisation, is a figure the
@@ -2406,7 +2393,7 @@ def _invariant_mirror_not_double_counted(run: ReplayRun) -> str | None:
     """One body served twice is one work, however many hosts serve it.
 
     Both reads are real and both are admitted; what the mirror cannot do is
-    become two facts. PD-9 merges figures by field key, so the case is read off
+    become two facts. Figures merge by field key, so the case is read off
     the composition: the rows the mirrored reads produced are one row.
     """
     by_digest: dict[str, list[str]] = {}
@@ -2487,7 +2474,7 @@ def _invariant_extra_pass_recovers_missing_target(run: ReplayRun) -> str | None:
 
     A recovery that is real is a recovery the ledger shows, on all three legs:
     the run bought exactly one extra pass for the one obligation that was
-    missing (D4, §6.5), the late page was acquired only once that pass ran,
+    missing, the late page was acquired only once that pass ran,
     and the obligation its topic carried is answered at the end. A run that
     had the answer in hand before the extra pass -- because a second
     discovery round happened inside the first pass, which is a different fact
@@ -2501,8 +2488,8 @@ def _invariant_extra_pass_recovers_missing_target(run: ReplayRun) -> str | None:
         )
     if run.state.iteration != 1:
         return (
-            f"the run spent {run.state.iteration} extra passes, where D4's cap "
-            "and the product default are one"
+            f"the run spent {run.state.iteration} extra passes, where the extra-pass "
+            "cap and the product default are one"
         )
     late = _late_pages(run)
     if not late:
@@ -2562,7 +2549,7 @@ def _invariant_empty_answer_answered_nothing(run: ReplayRun) -> str | None:
     """A tidy report that answered no obligation says so, and says which.
 
     The case exists to refuse the reading where clean structure and a
-    recommendation stand in for an answer. Under PD-23 the run does publish,
+    recommendation stand in for an answer. The run does publish,
     and an accepted report that lists its unanswered obligations under Not
     found is the intended result -- what the report may not do is imply an
     answer it never had. So the check is that nothing was credited, that every
@@ -2775,7 +2762,7 @@ def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | N
 
     Three halves, all readable from the run. The opening round ends with
     ``topic-01-target-01`` missing -- code chose it, not a judgement -- and
-    spends exactly one extra pass for it (D4, §6.5). The page that answers it
+    spends exactly one extra pass for it. The page that answers it
     was not read before that pass: the opening round's search surfaced the
     topic's records and ran out of turns before reaching the page that states
     the figure, so the answering page was still an unread candidate when the
@@ -2789,8 +2776,8 @@ def _invariant_missing_target_triggers_one_extra_pass(run: ReplayRun) -> str | N
         )
     if run.state.iteration != 1:
         return (
-            f"the run spent {run.state.iteration} extra passes, where D4's cap "
-            "and the product default are one"
+            f"the run spent {run.state.iteration} extra passes, where the extra-pass "
+            "cap and the product default are one"
         )
     late = _late_pages(run)
     if not late:
@@ -2825,8 +2812,8 @@ def _invariant_extra_pass_finds_nothing(run: ReplayRun) -> str | None:
         return "the run never chose a target for an extra pass"
     if run.state.iteration != 1:
         return (
-            f"the run spent {run.state.iteration} extra passes, where D4's cap "
-            "and the product default are one"
+            f"the run spent {run.state.iteration} extra passes, where the extra-pass "
+            "cap and the product default are one"
         )
     answered = set(run.answered_target_ids())
     still_missing = [target_id for target_id in extra if target_id not in answered]
@@ -2849,7 +2836,7 @@ def _invariant_extra_pass_finds_nothing(run: ReplayRun) -> str | None:
 def _invariant_subjects_stay_apart(run: ReplayRun) -> str | None:
     """Two things rated the same are two rows, and both sentences survive.
 
-    D11: a subject is what keeps two figures of equal value, organisation,
+    A subject is what keeps two figures of equal value, organisation,
     period and kind apart, so the row that lost it would be one row for two
     products. The writer's own restatement guard counts a row only for the
     subject the sentence names, so the second half is the same fact seen from
@@ -2900,7 +2887,7 @@ def _invariant_subjects_stay_apart(run: ReplayRun) -> str | None:
 def _invariant_versions_stay_apart(run: ReplayRun) -> str | None:
     """Two editions of two different things are two rows, and no release history.
 
-    PD-9 folds two rows that answer one obligation and differ only in their
+    Two rows that answer one obligation are folded when they differ only in their
     release, so a subject that names *which* version the figure is about is what
     keeps a patch's notes from folding into the previous patch's. The row that
     lost the subject folds them and prints an earlier edition nobody earned.
@@ -2942,7 +2929,7 @@ def _invariant_versions_stay_apart(run: ReplayRun) -> str | None:
 def _invariant_one_fact_row(run: ReplayRun) -> str | None:
     """One measurement, however many spellings of its subject, is one row.
 
-    Fable §8.6 step 3: a subject that only restates what its own target already
+    A subject that only restates what its own target already
     says names nothing. A run that treated "United States" and "widget
     adoption" as two subjects would print two rows for one figure.
     """
@@ -2958,7 +2945,7 @@ def _invariant_one_fact_row(run: ReplayRun) -> str | None:
 def _invariant_period_resolved_from_page_date(run: ReplayRun) -> str | None:
     """A relative period is kept only from a date its own page states.
 
-    D11 (§8.7): "this year" states no year by itself. The kept figure carries
+    "this year" states no year by itself. The kept figure carries
     the period the page's date resolved it to, records the date it came from,
     and the same words on a page that states no date are refused outright --
     never published with a period no page carried.
@@ -2997,7 +2984,7 @@ def _invariant_period_resolved_from_page_date(run: ReplayRun) -> str | None:
 def _invariant_revision_noted(run: ReplayRun) -> str | None:
     """A revision is two editions of one fact, and the reader is told.
 
-    PD-9: two findings that answer one obligation and carry different release
+    Two findings that answer one obligation and carry different release
     keys are one fact with an earlier edition, never two rows for the reader to
     average. So the row that answers the obligation carries an earlier edition
     whose value differs from the one the row publishes.
@@ -3017,8 +3004,8 @@ def _invariant_revision_noted(run: ReplayRun) -> str | None:
 def _invariant_scope_corrected_to_all_segments(run: ReplayRun) -> str | None:
     """The corrected scope is what reaches the reader, and the old wording does not.
 
-    Review focus 4: an all-segment figure the extractor wrote as grid-scale.
-    Under D8 the Sentence whose scope the page does not state is refused by the
+    An all-segment figure the extractor wrote as grid-scale.
+    The Sentence whose scope the page does not state is refused by the
     Statement Check, that finding is marked corrected, and the figure's own
     label still states the scope the page carried.
     """
@@ -3062,7 +3049,7 @@ def _invariant_scope_corrected_to_all_segments(run: ReplayRun) -> str | None:
 def _invariant_figure_not_on_page_dropped(run: ReplayRun) -> str | None:
     """A figure the passage does not state is refused, and never published.
 
-    D8's Context Check is what judges this now: the prompt tells it to reject a
+    The Context Check is what judges this: the prompt tells it to reject a
     figure its snippet or passage does not actually state, and code records the
     refusal with the checker's own reason. The reader may not see the value the
     refusal was about.
@@ -3117,12 +3104,12 @@ def _invariant_evidence_words_not_on_page_rejected(run: ReplayRun) -> str | None
 def _invariant_statement_failure_keeps_sentences(run: ReplayRun) -> str | None:
     """A Statement Check that could not be made keeps every sentence as drafted.
 
-    §5.4: the checker never stops the run. The failure is recorded, every
+    The checker never stops the run. The failure is recorded, every
     kept sentence's own verdict is ``"unchecked"`` -- never any other value,
     and never absent -- no point is refused, the printed text is exactly what
     the writer drafted (a correction is something only a check that ran could
-    have made), and PD-10 counts a recorded batch failure's ``"unchecked"``
-    verdict as answered, so it must never trip the ``unjudged_sentences`` gate.
+    have made), and a recorded batch failure's ``"unchecked"``
+    verdict counts as answered, so it must never trip the ``unjudged_sentences`` gate.
     """
     if "evidence_verifier_statement_check_failed" not in run.error_types():
         return "the run recorded no Statement Check failure"
@@ -3228,16 +3215,14 @@ def _invariant_mechanism_obligation_stays_unanswered(
     Two facts, both readable from the artifacts. The pages the report rests on
     state what happened, never why: their own claims carry no causal marker,
     which is the fixture's whole premise. And the cause the scripted writer was
-    asked to publish is refused by the Statement Check -- D8's only wording
+    asked to publish is refused by the Statement Check -- the only wording
     judge -- so nothing the reader sees asserts one.
 
-    PD-7 is why the obligation itself is not the assertion here: a target with
+    The obligation itself is not the assertion here: a target with
     no unit dimension is answered by a verified finding that names it, and no
     field distinguishes "what happened" from "why", so this harness cannot
     build a causal obligation code would treat as different from a
-    measurement. The reader-visible refusal is what the row can pin; Task 4.11
-    owns what the row should say if a mechanism obligation gets a field of its
-    own.
+    measurement. The reader-visible refusal is what the row can pin.
     """
     causal = ("because", "due to", "led to", "drove", "caused", "as a result")
     cited = _cited_findings(run)
@@ -3263,14 +3248,13 @@ def _invariant_mechanism_obligation_stays_unanswered(
 
 
 def _invariant_no_table_printed(run: ReplayRun) -> str | None:
-    """No question-shaped table when nothing qualifies (spec §4.1 rule 3).
+    """No question-shaped table when nothing qualifies.
 
     A run whose findings state no figure and mark no option builds neither an
-    options table nor a findings table; the choice rule is structural (§4.1),
+    options table nor a findings table; the choice rule is structural,
     so this reads the composition's own ``table`` field rather than pattern
-    matching the report for the old placeholder sentence the table used to
-    print in its place ("No figure passed the Evidence Verifier.", cut by
-    spec §3.1 rule 4).
+    matching the report for a placeholder sentence ("No figure passed the
+    Evidence Verifier.").
     """
     composition = run.state.composition
     if composition is None:
@@ -3297,7 +3281,7 @@ def _owning_coverage_ids(run: ReplayRun) -> set[str]:
 def _invariant_scoped_review_used(run: ReplayRun) -> str | None:
     """The redraft's second review is scoped, never a second full review.
 
-    T5 addendum: once a redrafted composition carries a part byte-identical
+    Once a redrafted composition carries a part byte-identical
     to what the first review judged, the graph must ask a *scoped* re-review
     (``ScopedReportReviewDraft``) rather than falling back to a second full
     one. This checks the whole chain of facts that makes that true, not just
@@ -3373,7 +3357,7 @@ def _invariant_count_period_binds_obligation(run: ReplayRun) -> str | None:
 
 
 def _invariant_scoped_review_fallback_used(run: ReplayRun) -> str | None:
-    """An invalid scoped reply falls back to exactly one full review (T5 addendum).
+    """An invalid scoped reply falls back to exactly one full review.
 
     The scoped attempt is made -- that is what makes the fallback observable
     -- but its reply could not be used, so the run's *final* judgement is a
@@ -3402,10 +3386,10 @@ def _invariant_extra_pass_redrafts_the_gaining_part(run: ReplayRun) -> str | Non
     """A part that gains a new finding on the extra pass is written fresh,
     never silently carried over from the opening pass's composition.
 
-    P0-1: the extra-pass writer must not run in redraft mode off the
+    The extra-pass writer must not run in redraft mode off the
     previous pass's own review -- topic-02 already has a section on pass 0
     (its first target answered), and topic-02-target-02 is answered only by
-    the extra pass the missing target buys (D4, §6.5). A composition that
+    the extra pass the missing target buys. A composition that
     still marks topic-02 ``carried_over``, or whose topic-02 section does
     not cite the new finding, is exactly the bug this case exists to catch.
     """
@@ -3688,7 +3672,6 @@ def run_replay_scenario(
         graph_run=outcome,
         replay=replay,
         exit_code=exit_code,
-        cli_output=stream.getvalue().splitlines(),
     )
 
 

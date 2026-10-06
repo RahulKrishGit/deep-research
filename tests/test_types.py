@@ -9,28 +9,52 @@ from deep_research.agents.verified_facts import release_key, release_text
 from deep_research.utils.types import (
     INCOMPLETE_CONTENT_SHA256,
     ORIGINAL_QUESTION_OMISSION_REFERENCE,
+    REVIEW_RUBRIC_VERSION,
     AnswerContract,
+    BottomLineDraft,
     BoundaryAudit,
     EvidenceTarget,
+    FactRow,
+    FigureContext,
+    FigureResult,
     Finding,
+    FindingFigure,
+    FindingVerification,
+    ItemMark,
+    ItemMarkDraft,
     MemorySnapshot,
+    NotFoundTarget,
+    PageCredit,
     ReadRecord,
+    ReportComposition,
+    ReportPart,
+    ReportPoint,
+    ReportQualitySnapshot,
+    ReportReview,
+    ReportSection,
+    ReportStatement,
+    ReportTable,
     ResearchError,
     ResearchEvent,
     ResearchState,
+    ReviewDefect,
     ScoredSource,
+    SectionDraft,
     SourceEvaluationStatus,
     SubTopic,
+    TableCell,
+    TableEntry,
+    UnreachablePage,
+    WriterPointDraft,
     advance_research_iteration,
     counted_evidence_targets,
     merge_research_state,
 )
+from tests.evidence_fakes import figure, make_finding, make_read, make_target
 
 
 def test_an_answer_contract_freezes_the_scope_form_and_as_of_date() -> None:
-    """The contract is the frozen half of Section 2.3.
-
-    Every field is required, including the two that may hold nothing: a
+    """Every field is required, including the two that may hold nothing: a
     question with no stated geography still gets an explicit assumption
     rather than an empty field a later stage could read as "anywhere".
     """
@@ -150,7 +174,7 @@ def test_the_initial_target_inventory_is_immutable_under_later_updates() -> None
 
     An update that names a subset is the dangerous case: replacement
     semantics would let a later pass drop a difficult critical target, which
-    is exactly the smaller-denominator failure Section 2.3 forbids.
+    is exactly the smaller-denominator failure the inventory must prevent.
     """
     state = ResearchState(session_id="session-1", original_question="Why?")
     assert state.answer_contract is None
@@ -450,7 +474,7 @@ def test_research_event_serializes_and_round_trips() -> None:
 
 
 def test_research_event_ids_default_to_distinct_uuid4_hex() -> None:
-    """live-briefs spec E1: every event gets its own identity, so two events built
+    """Every event gets its own identity, so two events built
     alike are distinct, and a copy keeps the identity of what it copies."""
     first = ResearchEvent(event_type="graph.node.started", source="graph", message="Node started.")
     second = ResearchEvent(event_type="graph.node.started", source="graph", message="Node started.")
@@ -600,10 +624,6 @@ def test_a_relays_own_date_never_prints_or_orders_as_the_issuers_release() -> (
     assert release_text(silent) is None
 
 
-from deep_research.utils.types import FindingFigure
-from tests.evidence_fakes import figure, make_finding, make_read, make_target
-
-
 def test_a_finding_carries_its_snippet_read_locator_and_figures() -> None:
     read = make_read()
     finding = make_finding(
@@ -639,13 +659,6 @@ def test_a_target_carries_structured_fields() -> None:
     assert make_target(unit_dimension="currency").unit_dimension == "currency"
     with pytest.raises(ValidationError):
         make_target(unit_dimension="")
-
-
-from deep_research.utils.types import (
-    FigureContext,
-    FigureResult,
-    FindingVerification,
-)
 
 
 def _context(**overrides: object) -> FigureContext:
@@ -695,9 +708,6 @@ def test_verified_findings_are_replaced_not_appended() -> None:
     assert state.verified_findings == [first, second]
 
 
-from deep_research.utils.types import FactRow, NotFoundTarget, ReportComposition
-
-
 def test_a_fact_row_and_a_not_found_target_validate() -> None:
     row = FactRow(row_id="K001", organisation="U.S. Energy Information Administration",
                   attribution="own", measure="battery storage power capacity added",
@@ -709,9 +719,6 @@ def test_a_fact_row_and_a_not_found_target_validate() -> None:
 def test_a_composition_carries_fact_rows_not_found_and_labels() -> None:
     composition = ReportComposition(question="q", session_id="s")
     assert (composition.fact_rows, composition.not_found, composition.finding_labels) == ([], [], {})
-
-
-from deep_research.utils.types import REVIEW_RUBRIC_VERSION, ReportReview, ReviewDefect
 
 
 def test_a_review_carries_review_defects_and_missing_targets() -> None:
@@ -732,15 +739,11 @@ def test_extra_passes_default_to_one_and_their_targets_are_replaced() -> None:
         advance_research_iteration(advance_research_iteration(state))
 
 
-from deep_research.utils.types import ReportQualitySnapshot
-
-
 def test_a_bare_quality_snapshot_constructs_with_zeroed_readings() -> None:
     """Every reading has a zero: a snapshot is filled in as a pass measures it.
 
-    The step-4 contract and Task 4.8's tests build the record before every
-    reading exists, so a required field would make a partially measured pass
-    unrepresentable rather than incomplete.
+    A partially measured pass builds the record before every reading exists,
+    so a required field would make it unrepresentable rather than incomplete.
     """
     snapshot = ReportQualitySnapshot()
 
@@ -776,7 +779,7 @@ def test_a_target_is_its_structured_fields_and_needs_a_measure() -> None:
 
 
 def test_a_target_needs_its_required_flag() -> None:
-    """Task 5.1's deferred minor: the flag is a field, never an assumed default.
+    """The flag is a field, never an assumed default.
 
     A target read back from a snapshot that lost ``required`` would otherwise
     be silently optional, and a missing obligation would never reach Not found.
@@ -786,24 +789,6 @@ def test_a_target_needs_its_required_flag() -> None:
 
     with pytest.raises(ValidationError):
         EvidenceTarget(**payload)
-
-
-from deep_research.utils.types import (
-    BottomLineDraft,
-    ItemMark,
-    ItemMarkDraft,
-    PageCredit,
-    ReportPart,
-    ReportPoint,
-    ReportSection,
-    ReportStatement,
-    ReportTable,
-    SectionDraft,
-    TableCell,
-    TableEntry,
-    UnreachablePage,
-    WriterPointDraft,
-)
 
 
 def test_a_report_table_rejects_a_row_whose_width_does_not_match_its_columns() -> None:
@@ -830,7 +815,7 @@ def test_a_report_table_accepts_rows_matching_its_column_count() -> None:
 
 
 def test_a_composition_round_trips_the_table_parts_credits_marks_and_item_marks() -> None:
-    """T2-T6's fixed contract: every field the writer, table builder and renderer share."""
+    """Every field the writer, table builder and renderer share."""
     mark = ItemMark(
         name="Sony WH-1000XM6",
         verdict="best wireless headphones",
@@ -882,7 +867,7 @@ def test_a_composition_round_trips_the_table_parts_credits_marks_and_item_marks(
 
 
 def test_a_page_credit_records_which_date_it_carries() -> None:
-    """T3's date display rule: a published date and an updated-only date
+    """A published date and an updated-only date
     print differently, so the credit must say which one it holds."""
     undated = PageCredit(publisher="SoundGuys")
     published = PageCredit(publisher="SoundGuys", date="2026-09-17", date_kind="published")
@@ -908,7 +893,7 @@ def test_an_older_composition_snapshot_without_the_new_report_fields_still_valid
 
 
 def test_section_and_bottom_line_drafts_carry_point_option_marks() -> None:
-    """The parallel writer's two reply schemas (spec §6.3): one point shape, shared."""
+    """The parallel writer's two reply schemas: one point shape, shared."""
     mark = ItemMarkDraft(name="Model A", verdict="4.5 out of 5", picked=True, by="F01")
     point = WriterPointDraft(
         text="Example Tester gives Model A a noise rating of 4.5 out of 5.",
@@ -924,8 +909,8 @@ def test_section_and_bottom_line_drafts_carry_point_option_marks() -> None:
 
 
 def test_a_finding_without_the_disputes_field_still_validates() -> None:
-    """A finding persisted before the dissent re-ask (D2) carries no
-    ``disputes`` key and still validates, defaulting to not disputing."""
+    """A finding persisted without a ``disputes`` key still validates,
+    defaulting to not disputing."""
     legacy_payload = {
         "content": "A finding.",
         "source_url": "https://example.com/source",

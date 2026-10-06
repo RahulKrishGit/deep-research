@@ -184,8 +184,3 @@ def safe_failure_details(error: BaseException) -> EvaluationFailureDetails | Non
             retryable=False,
         )
     return None
-
-
-# Descriptive aliases for downstream callers and hidden compatibility checks.
-classify_provider_failure = classify_failure
-project_failure_details = safe_failure_details

@@ -95,10 +95,10 @@ def main(argv: Sequence[str] | None = None, *, serve: Callable[..., None] = uvic
     root = Path(tempfile.mkdtemp(prefix="deep-research-replay-"))
     try:
         # Resolve before the guard: network_denied() refuses getaddrinfo, and a numeric host needs
-        # none. Prefer family=AF_INET (M4 — otherwise a resolver that prefers IPv6 for "localhost"
+        # none. Prefer family=AF_INET (otherwise a resolver that prefers IPv6 for "localhost"
         # binds only [::1], which the default DEEP_RESEARCH_API_URL, 127.0.0.1, cannot reach), but
-        # fall back to an unrestricted lookup (NB3) so an IPv6 literal host such as "--host ::1"
-        # still resolves — AF_INET alone rejects it outright, a regression M4 introduced. A host
+        # fall back to an unrestricted lookup so an IPv6 literal host such as "--host ::1"
+        # still resolves — AF_INET alone rejects it outright. A host
         # neither lookup can resolve at all is a usage error, not an unhandled socket.gaierror.
         try:
             numeric_host = socket.getaddrinfo(

@@ -1,4 +1,4 @@
-"""The wording rules the Evidence Verifier and the fact rows share (PD-19)."""
+"""The wording rules the Evidence Verifier and the fact rows share."""
 
 from __future__ import annotations
 

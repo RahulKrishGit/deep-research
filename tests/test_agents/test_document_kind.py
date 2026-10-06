@@ -1,9 +1,8 @@
 """Tests for ``derivative_self_description``: what a document says about
 itself.
 
-D1/D2 (run-8 fix wave): nothing in the pipeline reads what a document says
-about itself before it is credited. This contract scans a read's own text
-for a sentence in which the document declares itself teaching or exercise
+A document's own text is read before it is credited: this contract scans a
+read for a sentence in which the document declares itself teaching or exercise
 material, simplified or adapted for a teaching purpose, based on an
 encyclopedia's or a chatbot's content, or AI-written by its own words --
 verbatim, cut at 300 characters on a word boundary, or ``None``.
@@ -15,7 +14,6 @@ import pytest
 
 from deep_research.agents.document_kind import derivative_self_description
 from tests.evidence_fakes import make_read
-
 
 # --- negatives: none of these declare the document itself derivative -------
 
@@ -50,11 +48,11 @@ def test_a_page_that_merely_links_to_an_encyclopedia_is_not_a_self_description()
     assert derivative_self_description(read) is None
 
 
-# --- positive: the audit's case, neutral stand-in ---------------------------
+# --- positive: a footnote that declares the page derivative -----------------
 
 
 def test_a_footnote_split_across_two_chunks_is_read_as_one_sentence() -> None:
-    """The audit's case (D1): a page's own footnote says its history is a
+    """A page's own footnote says its history is a
     relay of an encyclopedia's and a chatbot's content and that it was
     simplified for teaching -- and the extraction split the declaring
     sentence itself across two locators. Neither passage alone carries the
@@ -139,8 +137,8 @@ def test_a_long_matching_sentence_is_cut_at_300_characters_on_a_word_boundary() 
     assert len(result) == len(sentence) or sentence[len(result)] == " "
 
 
-# --- P1: "based on" flags the document as a relay only when the relay is --
-# --- the source of *its own* content, not merely a nearby word ------------
+# --- "based on" flags the document as a relay only when the relay is -------
+# --- the source of *its own* content, not merely a nearby word -------------
 
 
 @pytest.mark.parametrize(
@@ -177,7 +175,7 @@ def test_a_self_referencing_subject_based_on_a_relay_with_no_middle_noun() -> No
     )
 
 
-# --- P2: an ambiguous kind (simulation, exercise, case study, scenario, ---
+# --- An ambiguous kind (simulation, exercise, case study, scenario, --------
 # --- game) counts only with a teaching cue in the same sentence; the ------
 # --- inherently-teaching kinds (role-play, teaching case, teaching note, --
 # --- lesson, worksheet, sample essay, model answer) never need one --------
@@ -210,7 +208,7 @@ def test_an_ambiguous_kind_with_a_teaching_cue_is_a_self_description() -> None:
     )
 
 
-# --- P2: phrasings the earlier pattern missed ------------------------------
+# --- Phrasings of the "has been prepared" family ---------------------------
 
 
 def test_has_been_prepared_is_accepted_alongside_was_and_is() -> None:
@@ -244,8 +242,8 @@ def test_an_abbreviation_inside_the_declaring_sentence_does_not_end_it_early() -
     )
 
 
-# --- Fable prompt review: category 2's "illustrative" over-reaches onto ---
-# --- a data table's own note and a regulator's own guidance on its rules --
+# --- "illustrative" alone is not a self-description: a data table's own ---
+# --- note and a regulator's own guidance on its rules ---------------------
 
 
 @pytest.mark.parametrize(

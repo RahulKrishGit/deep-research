@@ -10,7 +10,7 @@ from its own records, every refusal published with its reason, and no
 publication claim about artifacts no run wrote.
 
 The Statement Check's verdicts are scripted by the tests that drive these
-cases: the writer calls the checker after drafting (D8), so a controlled run
+cases: the writer calls the checker after drafting, so a controlled run
 supplies both replies.
 """
 
@@ -262,7 +262,7 @@ _COMPLETE = build_case(
                         organisation=_WOODMAC_ORGANISATION,
                     ),
                     # No seeded finding answers this obligation, so an honest
-                    # report has to list it under Not found: §6.1 item 5 either
+                    # report has to list it under Not found: a report either
                     # answers a required target or says it could not.
                     target(
                         "topic-03-target-02",

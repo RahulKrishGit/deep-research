@@ -98,7 +98,7 @@ def finding_fingerprint(finding: Finding) -> str:
 def _figure_keys(finding: Finding) -> tuple[tuple[str, str, str, str, str], ...]:
     """The figures one finding carries, as ``(value, unit, period, kind, subject)`` keys.
 
-    Subject is part of D13's "figure set" (P2 fix): without it, two loops
+    Subject is part of the "figure set": without it, two loops
     quoting one comparison-table sentence for two different products with the
     same value and unit fold into one record at the passage stage, and the
     survivor's target ids silently claim a binding it never stated for the
@@ -170,12 +170,12 @@ def _passage_key(finding: Finding) -> tuple[str, ...] | None:
     records with that key are one piece of evidence however each restated it
     -- and however each was mined: a passage a later loop re-reads for a
     *different* sub-topic is still that passage when both records carry
-    explicit target ids (D13, the run's own F01/F19/F27 shape), because the
+    explicit target ids, because the
     fold unions bindings rather than choosing one.
 
     An *unbound* record (``target_ids`` empty) keeps its own sub-topic in the
-    key (P1 fix): its only path to answering anything is the sub-topic
-    fallback (1A), carried on ``related_sub_topic`` alone, and folding it into
+    key: its only path to answering anything is the sub-topic
+    fallback, carried on ``related_sub_topic`` alone, and folding it into
     an unbound record from a *different* sub-topic would keep one survivor's
     sub-topic and silently delete the other's only route to its target --
     reported "Not found" for a fact the run did extract and verify. Folding
@@ -276,8 +276,8 @@ def _merge_duplicate_findings(winner: Finding, loser: Finding) -> Finding:
     taking the loser's name beside its own phrase.
 
     A dispute finding (``Finding.disputes``) and a plain one are never
-    merged into each other, whatever identity or passage key they land on
-    (RevZ1, run 7 fix wave review, P2): unioning ``target_ids`` would bind
+    merged into each other, whatever identity or passage key they land on:
+    unioning ``target_ids`` would bind
     the survivor to a target its own text does not dispute when it is the
     dispute record that wins, and a plain ``model_copy`` would drop the
     flag silently when it is the plain record that wins. The winner is

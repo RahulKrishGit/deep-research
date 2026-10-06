@@ -1,4 +1,4 @@
-"""What Reviewing's brief reads from one review (notes-progress-report spec §6.1, §6.2, §6.7; AC18)."""
+"""What Reviewing's brief reads from one review."""
 
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ def _defect(n: int, kind: str, *, severity: str = "major") -> ReviewDefect:
 
 
 def test_reviewed_event_five_criteria_mapping() -> None:
-    """D23 and §6.2: five criteria in DIMENSION_GUIDANCE order; every defect kind maps to
-    one; a material defect marks its criterion not met with its kind, a minor one does
-    not; an unscored review marks none."""
+    """Five criteria in DIMENSION_GUIDANCE order; every defect kind maps to
+    one; a material defect marks its criterion not met with its kind, a minor
+    one does not; an unscored review marks none."""
     assert CRITERIA == ("completeness", "evidence_quality", "attribution", "uncertainty", "readability")
     assert set(CRITERION_FOR_KIND) == set(GAP_KINDS)
     assert set(CRITERION_FOR_KIND.values()) == set(CRITERIA)
@@ -55,10 +55,10 @@ def _completed(coverage_id: str, stop_reason: str):
 
 
 def test_reviewed_event_mixed_note_steering() -> None:
-    """§6.7 and D20: a research note's result from its own targets, a steering note's from
-    the review, a mixed note both; a research note with no researched topic is owed its
-    pass, unless that pass is spent (``passed``, the unfunded refusal of §5.4); a
-    replaced note is not listed."""
+    """A research note's result comes from its own targets, a steering note's
+    from the review, a mixed note both; a research note with no researched
+    topic is owed its pass, unless that pass is spent (``passed``, the
+    unfunded refusal); a replaced note is not listed."""
     covered = fake_reader_note("n1", kinds=["new_angle"], restatement="pastries at the cafés")
     mixed = fake_reader_note("n2", kinds=["new_angle", "exclude"], restatement="pastries, not closed cafés")
     honoured = fake_reader_note("n3", kinds=["emphasis"])

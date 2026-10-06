@@ -24,9 +24,9 @@ from tests.test_api.fakes import GateRunner, ScriptedRunner
 def valid_preflight(**kwargs: Any) -> ConfigSettings:
     """Preflight double that never refuses a request: the default settings.
 
-    The route reads the one-time check's timings from them (``settings.hitl``,
-    live-briefs spec §4.4); the checker itself is replaced by the package's
-    ``live_check_calls`` fixture (``tests/test_api/conftest.py``).
+    The route reads the one-time check's timings from them (``settings.hitl``);
+    the checker itself is replaced by the package's ``live_check_calls`` fixture
+    (``tests/test_api/conftest.py``).
     """
     return ConfigSettings()
 
@@ -82,7 +82,7 @@ def test_post_starts_a_session_and_forwards_every_request_field() -> None:
 
 
 def test_post_accepts_zero_extra_passes() -> None:
-    """A request may ask for no extra pass at all (PD-15)."""
+    """A request may ask for no extra pass at all."""
     runner = ScriptedRunner()
     app = create_app(runner=runner, preflight=valid_preflight)
 

@@ -1,4 +1,4 @@
-"""Latency plan Task 16: a live run's stage inputs, written only when bound."""
+"""A live run's stage inputs, written only when bound."""
 
 from __future__ import annotations
 

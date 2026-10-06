@@ -35,7 +35,7 @@ def _taxonomy_module():
     try:
         import deep_research.evaluation.failure_taxonomy as taxonomy
     except ModuleNotFoundError as error:
-        pytest.fail(f"Task 2 taxonomy module is missing: {error}")
+        pytest.fail(f"Failure taxonomy module is missing: {error}")
 
     return taxonomy
 

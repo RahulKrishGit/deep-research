@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 import deep_research.providers.factory as factory
-from deep_research.observability import LangSmithRuntimeConfig, Tracker
 from deep_research.providers import (
     ChatMessage,
     OpenAIChatProvider,
@@ -17,17 +16,6 @@ from deep_research.providers.deepseek_provider import (
     DeepSeekSchemaChatProvider,
 )
 from deep_research.utils.config import LLMConfig
-
-
-@pytest.fixture
-def tracker() -> Tracker:
-    return Tracker(
-        LangSmithRuntimeConfig(
-            tracing_enabled=False,
-            project="factory-tests",
-            api_key=None,
-        )
-    )
 
 
 @pytest.mark.parametrize(
@@ -509,11 +497,11 @@ async def test_telemetry_reaches_the_deepseek_chat_adapter(tracker) -> None:
 async def test_a_truncated_call_reaches_the_collector_as_a_truncation(
     tracker,
 ) -> None:
-    """An output-limit response is the truncation count §7.3 asks for.
+    """An output-limit response is the truncation count the run telemetry reports.
 
     The provider raises on the truncated reply *and* has to report it: the
     call really happened, and a truncation that never reaches the collector
-    would leave the one §7.3 figure an operator acts on permanently at zero.
+    would leave the one figure an operator acts on permanently at zero.
     """
     from deep_research.observability import RunTelemetryCollector
     from deep_research.providers.deepseek_provider import ProviderOutputLimitError

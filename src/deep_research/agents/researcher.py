@@ -121,8 +121,8 @@ HIGH_PRIORITY_THRESHOLD = 2
 # the whole plan by default rather than silently truncating it.
 DEFAULT_MAX_SUB_TOPICS = 10
 # Evidence kept per sub-topic, not coverage planned. These are runaway
-# guards, not the extraction contract's own limits -- the user's standing
-# ruling is to lift content caps and keep only runaway guards -- so a
+# guards, not the extraction contract's own limits -- content caps are lifted
+# and only runaway guards kept -- so a
 # sub-topic may report at most 120 distinct findings drawn from at most 48
 # distinct sources: high enough that a genuinely broad topic's own evidence
 # is never cut for volume alone, and still a backstop against a runaway
@@ -135,7 +135,7 @@ MAX_UNIQUE_SOURCES_PER_SUB_TOPIC = 48
 # one required target from making the cap meaningless. An obligation's answer
 # is one claim and its strongest restatement, not twenty-five of them.
 MAX_EXEMPT_PER_REQUIRED_TARGET = 2
-# How many dispute findings (D2, Fable's audit of run 7) one disputed
+# How many dispute findings one disputed
 # statement's own target ids may keep outside those caps -- same guarantee,
 # same shape as the required-target exemption above, since the caps would
 # otherwise drop a page's own rejection of a step exactly as readily as they
@@ -149,16 +149,16 @@ MAX_DISPUTE_EXEMPT_PER_TARGET = 4
 # packet cannot hold stays unmined, and the passages that owe the most are the
 # ones asked about first.
 MAX_OWED_PASSAGES_PER_BATCH = 8
-# How many disputed statements the dissent re-ask's own packet may list
-# (RevZ1, run 7 fix wave review, P1): built only from the passages that
+# How many disputed statements the dissent re-ask's own packet may list:
+# built only from the passages that
 # actually made the packet, capped at the top few by overlap -- without a
 # cap, a pool of hundreds of retained findings turns into a packet of
 # hundreds of D-lines, tens of thousands of characters the model must
 # still pick the right target ids out of.
 MAX_DISPUTED_STATEMENTS = 8
-# The cross-topic sweep's own floor (Fable's audit of run 6, Appendix 2): one
-# shared token let chrome and bibliography passages fill every packet slot
-# -- 42 packets and 269k output tokens for ten weak findings, none of them
+# The cross-topic sweep's own floor: one
+# shared token would let chrome and bibliography passages fill every packet
+# slot, spending packets and output tokens on weak findings, none of them
 # the content the sweep exists to catch. Two distinct, non-generic tokens is
 # still a low bar for a passage that genuinely answers the target's own
 # question, and high enough that a passage sharing only the plan's own
@@ -168,7 +168,7 @@ MAX_DISPUTED_STATEMENTS = 8
 MIN_CROSS_TOPIC_SHARED_TOKENS = 2
 MAX_OWED_BATCHES = 2
 DEFAULT_EVIDENCE_CHARS = 4000
-# Latency audit O9: a sub-topic loop never asks its forced last turn, the one
+# A sub-topic loop never asks its forced last turn, the one
 # told to answer without a tool (``run_react_loop``'s
 # ``skip_final_answer_turn``). That turn's answer only ever reached
 # ``ReActRun.final_answer``, which no stage after research reads. A module
@@ -272,7 +272,7 @@ class FindingDraft(ContractModel):
     # REQUIRES these whenever the acquisition path is active (``known_reads is
     # not None``): an optional membership check is one the model can skip, and
     # the reply example demonstrates the required shape rather than the
-    # URL/title shape that no longer admits anything. They stay optional on the
+    # URL/title shape that admits nothing. They stay optional on the
     # model so a snapshot written for the legacy URL/title path still loads.
     read_id: str | None = None
     locator: str | None = None
@@ -328,7 +328,7 @@ class SubTopicTask(AgentTask):
 
 
 def _eligible_sub_topics(state: ResearchState) -> list[SubTopic]:
-    """The sub-topics this pass may run, in priority order (spec §6.5, §7.2).
+    """The sub-topics this pass may run, in priority order.
 
     The first pass runs every planned sub-topic: a topic is planned because
     the question needs it, so its priority orders the pass rather than
@@ -359,10 +359,9 @@ def _selected_and_capped(
 ) -> tuple[list[SubTopic], list[SubTopic]]:
     """This pass's topics, and the planned ones the cap leaves out.
 
-    notes-progress-report spec §5.3: the eligible planned topics, at most
+    The eligible planned topics, at most
     ``max_sub_topics`` of them, then every eligible reader-note topic
-    (``note-…``), which the cap never touches: a run holds at most ten notes
-    (LB-D11a).
+    (``note-…``), which the cap never touches: a run holds at most ten notes.
     """
     eligible = _eligible_sub_topics(state)
     planned = [
@@ -384,7 +383,7 @@ def select_sub_topics(
 ) -> list[SubTopic]:
     """The first pass researches every planned sub-topic, up to ``max_sub_topics``,
     and every reader-note sub-topic; an extra or note pass only the sub-topics
-    that own one of its targets (spec §6.5, §7.2; notes-progress-report §5.3)."""
+    that own one of its targets."""
     if max_sub_topics < 1:
         raise ValueError("max_sub_topics must be at least 1")
     return _selected_and_capped(state, max_sub_topics)[0]
@@ -624,7 +623,7 @@ def retrieved_finding_urls(run: ReActRun) -> tuple[str, ...]:
 # empty-list case, which is valid and is not the opposite end of a scale. On
 # the acquisition path every finding must carry the registry fields it copied
 # from the packet, so the example demonstrates that shape instead of the
-# URL/title shape that no longer admits anything: the prompt must never show
+# URL/title shape that admits nothing: the prompt must never show
 # a bypass of the membership checks. Its target id is shaped like the plan's
 # own (``topic-01-target-01``) rather than a bare ``target-01``, because the
 # one thing the model must copy from the Planned targets list is the id, and
@@ -709,11 +708,11 @@ _FINDING_DATES_CONTRACT = (
 )
 
 # Who a figure belongs to, and what it is measured over. Both are properties
-# of the figure, not of the page that carried it, and the audited run got both
-# wrong in the same way: it credited a relay with the agency's own count — and
-# so published a conflict where there was one figure published twice — and its
-# extraction dropped a market monitor's all-segment total rather than record
-# the segment the release states. A relay's copy is that body's measurement,
+# of the figure, not of the page that carried it: crediting a relay with the
+# agency's own count would publish a conflict where there is one figure
+# published twice, and recording a market monitor's all-segment total rather
+# than the segment the release states would answer a different question. A
+# relay's copy is that body's measurement,
 # and a total over every segment is not the segment a target asks about.
 _FINDING_PROVENANCE_CONTRACT = (
     "\n- Name the body the page's words give the statement or figure to, "
@@ -832,7 +831,7 @@ def render_disputable_statements(findings: Sequence[Finding]) -> str:
 # stands beside a unit of the base that target names. The bases are power (W)
 # and energy (Wh), and the unit vocabulary is ``utils.types``' own, so what a
 # passage owes and what a target declares cannot drift apart. Bounded: the
-# energy-market units only (Fable C-f); a target in any other unit owes no
+# energy-market units only; a target in any other unit owes no
 # passage, so the re-extraction is a no-op outside that domain.
 _MEASURE_UNITS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("energy", _ENERGY_UNIT),
@@ -881,7 +880,7 @@ def _measure_bases(targets: Sequence[EvidenceTarget]) -> frozenset[str]:
     A target asks for a quantity when its structured ``unit_dimension`` names
     one: the field is what the plan sets for a figure the answer has to state,
     so a target carrying no unit dimension asks for no quantity, and no passage
-    can owe it one (PD-7).
+    can owe it one.
     """
     return frozenset(
         target.unit_dimension
@@ -913,7 +912,7 @@ def _units_owing_a_figure(
     admitted finding used: a passage that produced a finding owes nothing, and
     a passage fetched for another topic is that topic's business. What is left
     and states a figure in a base the target asks for is evidence the
-    extraction walked past — the audited run's "12,314 megawatts (MW) and
+    extraction walked past — a "12,314 megawatts (MW) and
     37,143 megawatt hours (MWh) deployed" passage, selected, disposed of as
     irrelevant, and never mined for the MWh target that needed it.
     """
@@ -958,7 +957,7 @@ def _required_targets_unbound_by_read(
 ) -> list[EvidenceTarget]:
     """Required, qualitative targets no finding from ``read_id`` alone binds.
 
-    D7/D10: the per-topic sweep above asks a page about only the reading
+    The per-topic sweep above asks a page about only the reading
     sub-topic's own required targets, answered nowhere in the pass -- so a
     page read for one sub-topic's own targets that also holds a *different*
     sub-topic's required answer is never asked about it. The unit here is
@@ -993,8 +992,8 @@ _CAPITALIZED_WORD = re.compile(r"[A-Za-z]+")
 _SENTENCE_TERMINATOR = re.compile(r"[.!?](?=\s|$)")
 _RAIL_CAPITALIZED_RATIO = 0.5
 _RAIL_MIN_WORDS = 22
-# Question and reporting words no plan's own stop-word list drops (RevY1
-# P2): "do", "does", "state" and the rest name the act of asking or
+# Question and reporting words no plan's own stop-word list drops:
+# "do", "does", "state" and the rest name the act of asking or
 # reporting, never the plan's own subject, so a passage sharing only one
 # of them with a required question is no likelier to answer it than a page
 # that shares nothing. Kept local to the cross-topic sweep -- the global
@@ -1031,7 +1030,7 @@ def _cross_topic_target_words(
     """One target's own words for the cross-topic sweep, generic tokens
     stripped -- unless stripping would leave fewer than
     :data:`MIN_CROSS_TOPIC_SHARED_TOKENS`, in which case the target's full
-    own words stand instead (RevY1 P2). Two narrow questions on the same
+    own words stand instead. Two narrow questions on the same
     subject can share most of their own words ("the capacity of Model A",
     "the price of Model A"): stripping every shared word can leave a target
     with only one word of its own, which the floor would then make
@@ -1056,21 +1055,21 @@ def _cross_topic_target_words(
 def _is_chrome_or_bibliography(text: str) -> bool:
     """True when ``text`` reads as a page's own link rail, not prose.
 
-    Not :func:`is_link_dense` (RevY1 P0): that is the passage selector's
+    Not :func:`is_link_dense`: that is the passage selector's
     own lede-only heuristic, and it flags any ordinary paragraph that
-    merely contains one sentence of 22 words or more among several -- the
-    run-6 D2 historiography paragraph and the D11 archaeology caveat both
-    read as chrome under it, and so did 32 of the 44 units that actually
-    yielded a finding across three real traces. A genuine rail -- a run of
+    merely contains one sentence of 22 words or more among several -- a
+    historiography paragraph or an archaeology caveat would read as chrome
+    under it, as would many units that actually yield a finding. A genuine
+    rail -- a run of
     link labels -- carries no sentence terminator anywhere in it, however
     many words it strings together; an ordinary paragraph breaks into
     sentences long before any one of them runs this long. The rule here
     only ever fires on a passage with no terminator at all, and even then
     only when more than half its words are capitalised, so a long run-on
-    clause of ordinary lower-case prose still is not read as one. Dropped
-    the year-citation rule entirely (RevY1 P2): a paragraph summarising
+    clause of ordinary lower-case prose still is not read as one. There is
+    deliberately no year-citation rule: a paragraph summarising
     several dated studies is often exactly how a disagreement is stated,
-    and the pattern also matched plain parenthetical numbers that name no
+    and such a pattern also matches plain parenthetical numbers that name no
     year at all.
     """
     if _SENTENCE_TERMINATOR.search(text):
@@ -1090,7 +1089,7 @@ def _units_owing_cross_topic_words(
     used: Collection[tuple[str, str]],
 ) -> list[EvidenceUnit]:
     """One read's own admitted units that plausibly answer an unbound
-    cross-topic target's own words (Fable's audit of run 6, Appendix 2).
+    cross-topic target's own words.
 
     Tighter than the topic's own owed re-ask (:func:`_units_owing_own_words`):
     ``own_words`` here has the plan's own generic, shared-subject tokens
@@ -1125,13 +1124,13 @@ def _units_owing_cross_topic_words(
     return owing
 
 
-# D2's own cues (Fable's audit of run 7): case-insensitive, and deliberately
+# The dissent cues: case-insensitive, and deliberately
 # broad -- the cue alone never sends a packet, it only makes a passage a
 # candidate the token-overlap test below then has to earn. "surveys",
 # "excavations" and "archaeolog*" name a discipline that revises an earlier
 # account, not a domain: any field's own later fieldwork can revise an
 # earlier claim the same way. They are also exactly the words a reference
-# list's own titles repeat (RevZ1, run 7 fix wave review, P1), which is
+# list's own titles repeat, which is
 # what :func:`_is_reference_list` exists to keep out of this selector.
 _DISSENT_CUE = re.compile(
     r"\b("
@@ -1162,10 +1161,10 @@ _DISSENT_CUE = re.compile(
 MIN_DISSENT_SHARED_TOKENS = 2
 # A "(Year)." marker recurring densely is a bibliography entry's own shape
 # ("Smith, J. (2001). Title. Journal, 5, 12-30."), whatever else a
-# passage's prose contains (RevZ1, run 7 fix wave review, P1): unlike a
+# passage's prose contains: unlike a
 # page's link rail, a reference list carries plenty of sentence
 # terminators, so :func:`_is_chrome_or_bibliography`'s own no-terminator
-# rule never catches it, and ranking by raw cue count let ten such entries
+# rule never catches it, and ranking by raw cue count would let ten such entries
 # outrank and crowd out the one genuine dissent passage they outnumbered.
 _REFERENCE_ENTRY_MARKER = re.compile(r"\(\d{4}\)\.")
 _REFERENCE_LIST_MIN_ENTRIES = 2
@@ -1187,8 +1186,8 @@ def _is_reference_list(text: str) -> bool:
 
 # The share of the retained pool's own snippets a word may appear in
 # before it stops counting as one of that snippet's own distinctive words,
-# and the smallest pool this filter applies to at all (RevZ1, run 7 fix
-# wave review, P1). Below the floor, any word two of the pool's few
+# and the smallest pool this filter applies to at all. Below the floor,
+# any word two of the pool's few
 # snippets happen to share would already clear "more than 20%", which
 # would strip a small pool's own snippets down to nothing rather than
 # catch the plan-wide repetition the filter exists for.
@@ -1234,8 +1233,8 @@ def _adjacent_locators(locator: str, available: Collection[str]) -> list[str]:
     read's own chunk order, or none for a locator this pattern misses.
 
     Crosses from a page's own last chunk to the next page's own chunk 0
-    when ``available`` holds no further chunk of the same page (RevZ1, run
-    7 fix wave review, P1): the sentence that resolves what a disputing
+    when ``available`` holds no further chunk of the same page: the sentence
+    that resolves what a disputing
     passage disputes is exactly as likely to sit just past a page break as
     a plain chunk boundary, and the read's own pagination must not hide it.
     """
@@ -1269,8 +1268,7 @@ def _dissent_units_for_read(
     max_statements: int = MAX_DISPUTED_STATEMENTS,
 ) -> tuple[list[EvidenceUnit], list[Finding]]:
     """One read's own admitted units that plausibly dispute, qualify or
-    date a retained, targeted finding's own snippet (D2, Fable's audit of
-    run 7).
+    date a retained, targeted finding's own snippet.
 
     A unit anchors a dissent when it carries a dissent cue, is not a
     passage :func:`_is_chrome_or_bibliography` or :func:`_is_reference_list`
@@ -1278,7 +1276,7 @@ def _dissent_units_for_read(
     :data:`MIN_DISSENT_SHARED_TOKENS` distinctive tokens with some retained
     finding's snippet -- the plan's own generic words stripped, *and* any
     word :func:`_pool_frequent_words` finds repeated across the retained
-    pool itself (RevZ1, run 7 fix wave review, P1): without that second
+    pool itself: without that second
     strip, a long passage shares two such words with almost every finding
     the run has ever kept, whatever it is actually about. Only a finding
     with its own target ids can be disputed -- an unbound retained finding
@@ -1288,9 +1286,9 @@ def _dissent_units_for_read(
     immediately after it, whether or not they independently qualify,
     unless they too read as chrome or a bibliography. Anchors are ranked
     by their own distinct dissent cues, capped at one, then by token
-    overlap (RevZ1 P1): revised, survey(s), excavation(s) and archaeolog*
+    overlap: revised, survey(s), excavation(s) and archaeolog*
     are exactly the words a reference list's own titles repeat, and
-    ranking by raw cue count let such entries outrank the dissent they
+    ranking by raw cue count would let such entries outrank the dissent they
     outnumbered.
 
     Returns the qualifying units in that order, capped at
@@ -1299,7 +1297,7 @@ def _dissent_units_for_read(
     overlap and capped at ``max_statements``: built only from what
     actually reaches the packet, and only that many statements, so a pool
     of hundreds of findings does not turn into a packet of hundreds of
-    D-lines (RevZ1 P1).
+    D-lines.
     """
     admitted = set(used)
     by_locator = {
@@ -1395,7 +1393,7 @@ def _units_owing_own_words(
 ) -> list[EvidenceUnit]:
     """Selected units that state an unanswered target's own words, unmined.
 
-    A target with no unit of measure carries no figure to look for (PD-7), so
+    A target with no unit of measure carries no figure to look for, so
     what a passage states instead is the target's own words: the passage must
     carry at least one word of a required question this topic has not answered
     and no admitted finding used.
@@ -1489,16 +1487,16 @@ def _owed_batches_by_page(
 
     At most :data:`MAX_OWED_PASSAGES_PER_BATCH` passages per packet and at
     most :data:`MAX_OWED_BATCHES` packets -- **per page**, not shared across
-    a sub-topic's pages (user ruling: no strong limits, only runaway guards;
+    a sub-topic's pages (no strong limits, only runaway guards;
     a shared budget that let one page's owed passages crowd out another
     page's could drop a required target's only remaining chance of an
-    answer, which is exactly the kind of content-dropping cap the ruling
-    forbids). A packet that carried a whole page's read is what ran the
+    answer, which is exactly the kind of content-dropping cap this design
+    rules out). A packet that carried a whole page's read is what ran the
     extraction away to its output cap, so what one page's own bound cannot
     hold is left unmined and reported rather than sent -- but a second page
     owing its own passages still gets its own two packets regardless.
 
-    A batch never mixes two pages' units (S6): each page's own extraction
+    A batch never mixes two pages' units: each page's own extraction
     left its own passages owed, so a re-extraction packet stays scoped to
     the one page it retries, exactly like that page's own main extraction
     call. The returned mapping's own key order is the priority order each
@@ -1536,8 +1534,8 @@ def extraction_messages(
 ) -> list[ChatMessage]:
     """Build the messages that extract findings from one finished loop.
 
-    ``reader_notes`` is the rendered reader-notes block (live-briefs spec
-    §4.6), printed as ``# Reader notes`` so extraction respects a note's
+    ``reader_notes`` is the rendered reader-notes block, printed as
+    ``# Reader notes`` so extraction respects a note's
     scope; an empty block adds nothing. It is the last section, after the
     retrieved evidence: no reader text then comes before the evidence's own
     ``- target_id=`` line, which the replay harness reads as the first match
@@ -1564,8 +1562,8 @@ def extraction_messages(
     required target's own words is exactly the evidence a binding can be
     made from, and the target's question is the binding instruction.
 
-    ``dissent_passages`` marks the dissent re-ask's own request (D2, Fable's
-    audit of run 7). Its packet carries passages that carry a cue of
+    ``dissent_passages`` marks the dissent re-ask's own request. Its packet
+    carries passages that carry a cue of
     disagreement or revision and share words with a statement the run has
     already kept, so the request says the packet is for finding what
     disputes, qualifies or dates that statement, never for restating it.
@@ -1837,7 +1835,7 @@ def _admitted_attribution(
     # The title is read because a reproduced document is often attributed by
     # the card, heading or masthead that introduces it — a label naming the
     # instrument — and a rule that read only the two passages left such a page
-    # crediting the host that served it (review RES-6 §3).
+    # crediting the host that served it.
     windows = [neighbouring_passage_text(read, locator or ""), read.title]
     if not any(excerpt_matches(window, phrase) for window in windows):
         return None, None
@@ -1879,7 +1877,7 @@ def _admitted_stated_date(read: ReadRecord | None, value: object) -> str | None:
     ``statement_date``, which is published as the finding's own statement date
     and is the Evidence Verifier's last-resort basis for resolving a relative
     period. That reader labels the basis a page date, so a model's guess
-    standing in for one was published as a page's own statement (live probe).
+    standing in for one would be published as a page's own statement.
     """
     if read is None:
         return None
@@ -1899,14 +1897,13 @@ def _admitted_period(value: object) -> str | None:
     states no period: it dates the figure *against the page*, and the page's
     own date is what resolves it.
 
-    Recording such a phrase as the period is what made the Evidence Verifier
+    Recording such a phrase as the period would make the Evidence Verifier
     refuse the Context Check's resolved year as ``correction_not_on_page``:
     code reads a recorded period as one the page's words state themselves, so
     it never resolves it relatively, and the figure is dropped although the
-    page dates it and the date is known (live probe: "this year" recorded, 2026
-    proposed, dropped). The phrase itself is not lost — the excerpt is the
-    page's own words, and the verifier resolves a relative phrase from the
-    page's date and records which date it came from (D11) — so a relative
+    page dates it and the date is known. The phrase itself is not lost — the
+    excerpt is the page's own words, and the verifier resolves a relative
+    phrase from the page's date and records which date it came from — so a relative
     phrase is recorded through that path and never as an explicit period.
     """
     period = value.strip() if isinstance(value, str) else ""
@@ -1930,13 +1927,13 @@ def _snippet_admitted_at(read: ReadRecord, locator: str, snippet: str) -> str | 
     return locate_snippet(read, snippet, claimed_locator=locator)
 
 
-# RES-4's snippet rule: a verdict must carry the thing it judges. A bare
+# The snippet rule: a verdict must carry the thing it judges. A bare
 # pronoun or demonstrative ("this", "that", "these", "those", "it", "they")
 # standing alone as a clause's whole subject, immediately before a linking
-# verb, states a judgement about something the snippet never names — the
-# audited run reported "..., this is the model to beat." with no way for
-# anything downstream to say what "this" was. The trigger fires at a clause
-# boundary as well as a sentence start, because that audited sentence put its
+# verb, states a judgement about something the snippet never names:
+# "..., this is the model to beat." leaves nothing downstream able to say
+# what "this" was. The trigger fires at a clause
+# boundary as well as a sentence start, because such a sentence can put its
 # judgement after a comma, not at the sentence's own head. "They" is
 # restricted to true linking verbs ("have"/"has"/"had" state possession, not
 # a verdict), and "It" followed by an impersonal "is/was/has been ... that/to"
@@ -2022,8 +2019,8 @@ def _is_referent_word(word: str, *, sentence_initial: bool) -> bool:
     return not sentence_initial
 
 
-# F5 (controller decision, ReRevResearcherR3 final round): unlike the
-# snippet, content's own sentence-initial word usually *is* the subject
+# Unlike the snippet, content's own sentence-initial word usually *is* the
+# subject
 # ("Sony is the model to beat."), so it is excluded only when it names
 # nothing on its own: a closed-class word, this specific introductory
 # word ("According", followed by "to" rather than a comma), or a word a
@@ -2083,7 +2080,7 @@ def _bare_pronoun_judgement(snippet: str, content: str) -> bool:
     snippet that never makes that shape of claim is never refused here,
     whatever else it says. Once triggered, the finding is refused unless a
     referent is named either by an earlier sentence of the snippet or by the
-    finding's own ``content`` — because RES-4 asks the model to take the
+    finding's own ``content`` — because the model is asked to take the
     neighbouring sentence into the snippet, or to name the referent in
     content, when the passage carries it.
     """
@@ -2289,14 +2286,14 @@ def _admitted_target_ids(
 
 
 # The model's free-text figure kind is not constrained to the closed
-# vocabulary: a live pass reported "plan" for EIA's own "planned additions"
+# vocabulary: the model can report "plan" for EIA's own "planned additions"
 # of 19.6 GW, which is a forecast in every sense but the exact spelling. A
 # recognised forecast synonym is normalised rather than silently dropped to
-# ``None`` — the honesty rule (spec §2) is "Forecasts are reported with
+# ``None`` — the honesty rule is "Forecasts are reported with
 # issuer and release. Actuals are labelled as actuals.", and losing the
 # verdict entirely would let a downstream reader print a plan as though it
 # were a measured outcome. Anything else unrecognised is left ``None`` for
-# the Context Check to set from the passage (§5.2); it never raises.
+# the Context Check to set from the passage; it never raises.
 _FORECAST_KIND_SYNONYMS = frozenset(
     {
         "plan", "plans", "planned", "planning",
@@ -2450,9 +2447,9 @@ def bound_sub_topic_findings(
 
     A finding bound to a required target is exempt from both caps: it is the
     answer the run was sent to get, not corroborating volume, and a
-    confidence ranking over a page's findings can otherwise drop it — the
-    audited run lost two required answers to a per-sub-topic cap while a
-    menu's own paragraphs kept their slots. Exempt findings are kept in
+    confidence ranking over a page's findings can otherwise drop it — a
+    per-sub-topic cap can lose required answers while a
+    menu's own paragraphs keep their slots. Exempt findings are kept in
     addition to the capped set rather than counted inside it, so an answer
     never spends a slot another finding needed.
 
@@ -2464,7 +2461,7 @@ def bound_sub_topic_findings(
     it — twenty-five restatements of one obligation, and a per-sub-topic cap
     that bounds nothing.
 
-    A dispute finding (``Finding.disputes``, D2, Fable's audit of run 7) is
+    A dispute finding (``Finding.disputes``) is
     exempt the same way, grouped by the target ids it is bound to rather
     than by required-target membership: at most
     ``max_dispute_exempt_per_target`` dispute findings per shared target id
@@ -2636,9 +2633,9 @@ def sub_topic_started_event(
 ) -> ResearchEvent:
     """Announce that one sub-topic's loop is about to run.
 
-    ``coverage_id`` lets a console match the topic to the plan's own list
-    (live-briefs spec E3). A reader note's own topic (``note-{id}``) also names
-    its ``note_id`` (notes-progress-report spec §5.3), so the page can say the
+    ``coverage_id`` lets a console match the topic to the plan's own list.
+    A reader note's own topic (``note-{id}``) also names
+    its ``note_id``, so the page can say the
     note is being researched now; a planned topic carries no such key.
     """
     metadata: dict[str, JsonValue] = {
@@ -2666,13 +2663,13 @@ def tool_call_event(
 ) -> ResearchEvent | None:
     """Report one tool call the sub-topic's loop made, or ``None`` for a step without one.
 
-    Built when the step's observation is recorded (live-briefs spec E3), so the
+    Built when the step's observation is recorded, so the
     event is stamped at the call rather than when the sub-topic's loop ends.
 
-    ``timing`` is the call's ``(lock_wait_s, duration_s)`` from the loop
-    (latency audit O8): the seconds it waited for the run's tool lock and the
+    ``timing`` is the call's ``(lock_wait_s, duration_s)`` from the loop:
+    the seconds it waited for the run's tool lock and the
     seconds its tool ran. Both keys are added only when it is given, so an
-    event rebuilt after the loop (``tool_call_events``) keeps its old shape.
+    event rebuilt after the loop (``tool_call_events``) carries neither.
     """
     observation = step.observation
     if observation is None:
@@ -2745,12 +2742,12 @@ def sub_topic_completed_event(
     completion, where the log's own timestamps can no longer separate them;
     this is the number that survives.
 
-    ``target_obligation_completed`` is the Task 3 signal that the active
+    ``target_obligation_completed`` is the signal that the active
     target's obligation advanced: at least one registry-admitted finding was
     extracted for it. Whether the reader's report answers the target is judged
     later, on the report's own statements, and is not claimed here.
 
-    ``timings`` is where the tail after the loop went (latency audit O8):
+    ``timings`` is where the tail after the loop went:
     ``extraction_wait_s``, ``owed_round_s``, ``owed_calls`` and
     ``slowest_page_s``, added only when it is given.
     """
@@ -2803,8 +2800,7 @@ def research_completed_event(
     """Report the whole research pass.
 
     ``sub_topics_planned`` is every sub-topic the Planner produced, plus the
-    reader notes' own topics this run started threads for (notes-progress-report
-    spec §5.3);
+    reader notes' own topics this run started threads for;
     ``sub_topics_skipped`` is how many of the pass's own selection were never
     attempted — dropped by the ``max_sub_topics`` cap, or left unstarted when
     a non-recoverable provider failure stopped the pass early. Together with
@@ -2998,7 +2994,7 @@ def owed_extraction_provider_error(
 
 @dataclass(slots=True)
 class ExtractionTimings:
-    """Where one sub-topic's tail after its loop went (latency audit O8).
+    """Where one sub-topic's tail after its loop went.
 
     ``extract_findings`` fills it when it is handed one: the seconds spent
     waiting for the page extractions the loop started (``extraction_wait_s``),
@@ -3016,7 +3012,7 @@ class ExtractionTimings:
 
 @dataclass(frozen=True, slots=True)
 class _PageExtraction:
-    """One page's own extraction result (S6: per-page parallel extraction).
+    """One page's own extraction result (per-page parallel extraction).
 
     ``error`` is set instead of ``findings`` on a provider failure for this
     one page's own call -- the read's own record, never the whole
@@ -3041,7 +3037,7 @@ class _PageExtraction:
 
 class _LoopWithExtraction(NamedTuple):
     """One sub-topic's finished ReAct loop, and its own per-page extraction
-    tasks (S6): every read the loop admitted started its own background
+    tasks: every read the loop admitted started its own background
     extraction call the moment it was admitted, and this is the fixed,
     read-admission order the caller merges them in.
     """
@@ -3052,19 +3048,19 @@ class _LoopWithExtraction(NamedTuple):
     extraction_gate: asyncio.Semaphore
     tool_calls: list[ResearchEvent]
     """The loop's ``researcher.tool_call`` events, in step order, each built and
-    published live as its step was recorded (live-briefs spec E3)."""
+    published live as its step was recorded."""
 
 
 @dataclass(frozen=True, slots=True)
 class _OwedPageResult:
-    """One page's own bounded owed re-extraction (S6).
+    """One page's own bounded owed re-extraction.
 
     Each owing page gets its own up-to-``MAX_OWED_BATCHES`` batches, and
     every owing page's own batches run concurrently under the same
     ``extraction_concurrency`` gate that page's own main call ran under --
     a shared budget across a sub-topic's pages would let one page's owed
     passages crowd out another's, which is exactly the content-dropping cap
-    the user's "no strong limits" ruling forbids. ``findings``/``rejected``/
+    this design rules out. ``findings``/``rejected``/
     ``admitted_keys``/``unplanned_target_ids``/``dropped_figures`` are this
     page's own local accumulators, merged into the sub-topic's shared ones
     only after every owing page's task has returned, in a fixed page order
@@ -3088,7 +3084,7 @@ class _SubTopicOutcome:
     """One sub-topic loop's own results, folded in plan order by ``run``.
 
     Everything here belongs to exactly one loop. With several loops in flight
-    (D9) there is no run-level "active" acquisition, target or counter to keep
+    there is no run-level "active" acquisition, target or counter to keep
     on the agent — a field would be a race waiting to be written — so the
     loop's own stop reason, findings, errors, events, counters and acquisition
     snapshot travel back with the loop that produced them.
@@ -3105,8 +3101,7 @@ class _SubTopicOutcome:
 async def _cancel_and_gather_pages(
     page_extractions: Mapping[str, "asyncio.Task[_PageExtraction]"],
 ) -> None:
-    """Cancel every per-page task not already done, then await all of them
-    (S6, RevSelectionR3 P1).
+    """Cancel every per-page task not already done, then await all of them.
 
     Called on every path that stops waiting for a sub-topic's background
     extraction tasks without having awaited each one to completion: a loop
@@ -3132,7 +3127,7 @@ async def _until_a_thread_ends_or_the_board_changes(
 ) -> None:
     """Return once any of ``threads`` ends or, with a board bound, the board changes.
 
-    notes-progress-report spec §5.3: ``seen`` is the board's change count read
+    ``seen`` is the board's change count read
     before the dispatcher's scan, so a note added after that scan wakes this
     wait at once. With no board bound (``None``: the CLI) only the threads are
     waited on. The board's waiter never outlives the call.
@@ -3165,7 +3160,7 @@ def _thread_result(
 class ResearcherAgent(BaseAgent[ResearchFindings]):
     """Run one bounded ReAct loop per selected sub-topic and extract findings.
 
-    ``run`` is overridden because the spec requires a loop *per sub-topic*,
+    ``run`` is overridden because the agent needs a loop *per sub-topic*,
     which the single-loop ``BaseAgent.run`` cannot express. Everything below
     ``run`` — bounds, tracing, tool execution, scratchpad writes — is still
     the shared runtime's.
@@ -3173,9 +3168,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
     name = RESEARCHER_NAME
     description = "Gather source-backed findings for planned sub-topics."
-    # The prompt-fix wave changed this agent's prompt contract: the loop is
-    # told the rules the policy enforces and stops on the sub-topic's
-    # obligations, and the extraction binds in an ordered step with its date,
+    # The loop is told the rules the policy enforces and stops on the
+    # sub-topic's obligations, and the extraction binds in an ordered step with its date,
     # provenance and completeness rules restated. An artifact therefore says
     # which researcher instructions produced it.
     prompt_version = "researcher-2"
@@ -3287,14 +3281,14 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._shared_network_read_ids = (
             network_read_ids if network_read_ids is not None else set()
         )
-        # How many sub-topic loops may run at once (PD-27). Every other loop
+        # How many sub-topic loops may run at once. Every other loop
         # value is a local of the loop that owns it: with several loops in
         # flight there is no single "active" acquisition, target or counter to
         # keep here, and a field would only be a race waiting to be written.
         self._sub_topic_concurrency = resolved_concurrency
         self._run_source_state: ResearchState | None = None
         # The reader notes' own topics this run started threads for, in start
-        # order (notes-progress-report spec §5.3): their targets join the
+        # order: their targets join the
         # extraction list, and the run's update appends them to the plan.
         self._run_note_topics: list[SubTopic] = []
 
@@ -3321,10 +3315,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         )
 
     def _reader_notes_block(self, instruction: str) -> str:
-        """The reader's notes a request built now carries, or ``""`` (live-briefs spec §4.6).
+        """The reader's notes a request built now carries, or ``""``.
 
         The notes this pass was handed plus any that arrived since, from the
-        run's board, as steering notes (notes-progress-report spec §5.1): a
+        run's board, as steering notes: a
         note whose only kind is ``new_angle`` gets a thread of its own instead,
         and a mixed note steers with ``new_angle`` left out of its kinds.
         """
@@ -3358,8 +3352,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         snapshot predating the target inventory — yields none, and extraction
         then binds nothing, because there is no inventory to bind against.
 
-        A reader note's own thread started in this run (notes-progress-report
-        spec §5.3) adds its topic's targets, on any pass. The list is built
+        A reader note's own thread started in this run adds its topic's
+        targets, on any pass. The list is built
         again at each call, so a read made after a thread started sees its
         targets.
         """
@@ -3531,7 +3525,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         question: str | None,
         coverage_titles: Mapping[str, str],
     ) -> _PageExtraction:
-        """One page's own extraction call (S6): started as soon as ``read_id``
+        """One page's own extraction call: started as soon as ``read_id``
         is admitted, bounded by ``agents.extraction_concurrency``.
 
         The packet is scoped to this read alone (``read_ids=[read_id]``), so
@@ -3621,7 +3615,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             dropped_figures=dropped_figures,
         )
         if findings:
-            # S6 acceptance 4: a still-running loop's later decision turn
+            # A still-running loop's later decision turn
             # must see this page's findings, not just the merge after the
             # loop finishes. ``policy.context()`` renders ``policy.findings``
             # beside the evidence on every subsequent call, so recording them
@@ -3659,9 +3653,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         label: str = "owed_extraction",
     ) -> _OwedPageResult:
         """One page's own owed re-ask: up to ``MAX_OWED_BATCHES`` packets of
-        its own owed passages alone (S6). ``dissent_statements`` switches
-        the packet from an owed re-ask to the dissent re-ask (D2, Fable's
-        audit of run 7): when given, every batch's own finding is marked
+        its own owed passages alone. ``dissent_statements`` switches
+        the packet from an owed re-ask to the dissent re-ask: when given,
+        every batch's own finding is marked
         ``disputes=True`` after admission, bound to whichever of
         ``dissent_statements`` its own content disputes.
 
@@ -3674,11 +3668,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         caller merges every page's own result back in a fixed page order
         after every owing page's task has returned, never completion order.
 
-        ``label`` names these calls in the run's call records (latency audit
-        O8): ``owed_extraction``, ``cross_topic_extraction`` or
+        ``label`` names these calls in the run's call records:
+        ``owed_extraction``, ``cross_topic_extraction`` or
         ``dissent_extraction``.
 
-        Latency audit O3: a page's batches are asked together, not one after
+        A page's batches are asked together, not one after
         another. Each batch's request is built from its own passages alone,
         and a reply is admitted only after every batch has answered, in batch
         order, so the page's findings, rejections and admitted keys are the
@@ -3762,13 +3756,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_figures=dropped_figures,
             )
             if dissent_statements is not None:
-                # Validated post-admission (RevZ1, run 7 fix wave review,
-                # P2; narrowed rather than dropped on an extra target per
-                # Fable's prompt review, R3): every returned finding was
-                # previously marked disputes=True unconditionally,
-                # trusting the reply's own read_id/locator and target_ids
-                # without checking either against what the packet actually
-                # asked about. Kept only when its own passage is one the
+                # Validated post-admission: the reply's own read_id/locator
+                # and target_ids are checked against what the packet actually
+                # asked about, not trusted as given. Kept only when its own passage is one the
                 # packet actually sent, and its own target ids are
                 # narrowed to their intersection with the disputed
                 # statements' own targets -- a conscientious model that
@@ -3778,7 +3768,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # own, or that intersection is empty (an unbound reply, or
                 # one bound to targets none of the statements name).
                 # ``build_findings`` itself stays ignorant of the dissent
-                # re-ask (minimal blast radius).
+                # re-ask.
                 batch_keys = {(unit.read_id, unit.locator) for unit in batch}
                 disputed_target_ids = {
                     target_id
@@ -3821,8 +3811,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     )
                 retry_findings = validated
             findings.extend(retry_findings)
-            # Prefixed with this page's own read id (RevSelectionR3 P3,
-            # ReRevS6): two different pages that both return a malformed
+            # Prefixed with this page's own read id: two different pages that
+            # both return a malformed
             # owed retry finding would otherwise both report "finding 1:
             # ...", indistinguishable in the merged errors.
             rejected.extend(f"{read_id}: {reason}" for reason in retry_rejected)
@@ -3855,22 +3845,22 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         only searched, or only wrote to memory, has nothing to extract from.
 
         ``policy`` is this loop's own acquisition policy, passed in rather than
-        read from an "active" field: several sub-topic loops share the agent
-        (D9), so the policy a call acts on has to be the caller's own.
+        read from an "active" field: several sub-topic loops share the agent,
+        so the policy a call acts on has to be the caller's own.
 
-        S6: ``page_extractions`` and ``admitted_read_order`` are the
+        ``page_extractions`` and ``admitted_read_order`` are the
         background per-page extraction tasks ``_research_sub_topic`` started
         as each read was admitted, and the fixed order to merge them in --
         read order, never completion order, so the sub-topic's output is
         identical whatever order the concurrent calls actually finish in. A
         caller with no per-page tasks (``finalize()``'s legacy entry point,
         which has no policy of its own to have scheduled any) falls back to
-        one call over the whole run's evidence, exactly as before S6.
+        one call over the whole run's evidence.
 
         The third element, ``failure``, is why the extraction call produced
         nothing at all, and there are three answers. ``""`` is no failure, or
         a partial page failure that left every succeeding page's own
-        findings standing (S6: one page's provider error is that page's own
+        findings standing (one page's provider error is that page's own
         record, reported as its own error, never a run-halting one).
         ``"provider"`` is every page's call failing to reach the model
         provider at once -- a genuine outage, not one page's own trouble --
@@ -3878,7 +3868,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         ReAct-loop-level ``provider_error``: stop researching further
         sub-topics, but keep every finding already collected.
         ``"output_limit"`` is the legacy single-call path's own truncated
-        reply, or S6's own signal for a partial page failure. In a mixed
+        reply, or the signal for a partial page failure. In a mixed
         result only the failed page's own units are excluded from this
         pass's ``complete_extraction`` (so they are not marked consumed the
         moment they failed) and disposed of as ``EXTRACTION_FAILED_REASON``
@@ -3887,8 +3877,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         this extraction completed, which the caller reports in the
         sub-topic's own completed event.
 
-        ``timings``, when given, is filled with where this tail went (latency
-        audit O8); nothing else reads it.
+        ``timings``, when given, is filled with where this tail went;
+        nothing else reads it.
         """
         # One call, two consumers: the same tuple gates the provider call and
         # becomes the provenance allow-list, so "did this loop read anything"
@@ -3914,8 +3904,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # findings were already paid for and must not be thrown
                 # away, even though the run is about to stop researching
                 # further sub-topics. Nothing still in flight should keep
-                # calling the provider after the pass has halted
-                # (RevSelectionR3 P1).
+                # calling the provider after the pass has halted.
                 salvaged: list[Finding] = []
                 for read_id in admitted_read_order:
                     page_task = page_extractions.get(read_id)
@@ -3969,7 +3958,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         sub_topic_extraction_failure: ExtractionFailure = ""
 
         if policy is not None and page_extractions is not None and admitted_read_order:
-            # S6: merge every page's own extraction, in read order -- never
+            # Merge every page's own extraction, in read order -- never
             # completion order -- so the sub-topic's output is identical
             # whatever order the concurrent calls actually finish in.
             page_failures: list[str] = []
@@ -3996,8 +3985,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         continue
                     findings.extend(page.findings)
                     admitted_keys.extend(page.admitted_keys)
-                    # Prefixed with this page's own read id (RevSelectionR3
-                    # P3): each page numbers its own rejections from
+                    # Prefixed with this page's own read id: each page
+                    # numbers its own rejections from
                     # "finding 1", so an unprefixed merge could report
                     # "finding 1: ..." twice for two different pages' own
                     # drops.
@@ -4012,7 +4001,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # ``ProviderError`` are caught there) -- a bug, or an
                 # external cancellation. Every task not yet awaited here
                 # must not keep calling the provider after this loop has
-                # stopped waiting for it (RevSelectionR3 P1).
+                # stopped waiting for it.
                 await _cancel_and_gather_pages(page_extractions)
                 raise
             if timings is not None:
@@ -4028,8 +4017,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # loop-level ``provider_error`` is; anything else defers the
                 # batch without halting the run. Every read stays in
                 # ``pending_extraction_ids`` (neither ``complete_extraction``
-                # nor ``record_extraction_dispositions`` runs on this path),
-                # exactly the pre-S6 outage behaviour.
+                # nor ``record_extraction_dispositions`` runs on this path).
                 if all(failure == "provider" for failure in page_failures):
                     return findings, errors, "provider", False
                 return findings, errors, "output_limit", False
@@ -4044,7 +4032,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # The legacy single-call path: no policy (``finalize()``'s own
             # entry point has none of its own to schedule per-page tasks
             # from), a policy this caller built without scheduling any, or
-            # -- S6 -- a pass that admitted no new read at all (a repeat
+            # a pass that admitted no new read at all (a repeat
             # pass whose one page was already read by an earlier pass, and
             # so never fires ``on_read_admitted`` again). That last case
             # still deserves a chance to re-mine the topic's accumulated
@@ -4117,7 +4105,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         if policy is not None:
             own_targets = counted_evidence_targets(task.sub_topic.evidence_targets)
             # A page whose own extraction call failed this pass is excluded
-            # from the owed-unit sets entirely (RevSelectionR3 P1): the
+            # from the owed-unit sets entirely: the
             # provider never actually saw or walked past that page's own
             # passages, so they can be neither "unmined" nor "irrelevant" --
             # they stay owed instead, via ``except_read_ids`` below.
@@ -4193,7 +4181,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     task.sub_topic.evidence_targets
                 )
             }
-            # D7/D10: every admitted read is also asked about the plan's
+            # Every admitted read is also asked about the plan's
             # required, qualitative targets no finding from THAT read binds,
             # whichever sub-topic owns them -- the sweep above only ever asks
             # a page about the reading sub-topic's own required targets, so a
@@ -4207,12 +4195,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # one call, never one per target. Computed from this main
             # extraction's own findings, before the own-topic sweep above's
             # own packets are even sent -- both sweeps go out in the same
-            # round trip below (RevX1Sweep P2-1) -- at the accepted cost that
+            # round trip below -- at the accepted cost that
             # a target the own sweep alone binds is not seen here and may be
             # asked about twice.
             #
             # The bound check reads the run's whole record, not only this
-            # pass's own findings (RevX1Sweep P3-1): an extra pass may
+            # pass's own findings: an extra pass may
             # re-admit a read this topic already held, and the target that
             # read already bound may have been bound by an earlier pass, not
             # this one. ``used`` includes ``mined_earlier`` for the same
@@ -4232,8 +4220,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 if self._run_source_state is not None
                 else ()
             )
-            # The plan's own repeated subject words (Fable's audit of run 6,
-            # Appendix 2): computed once per pass over every planned target,
+            # The plan's own repeated subject words: computed once per pass
+            # over every planned target,
             # shared by the cross-topic sweep below and the dissent re-ask
             # further down, not just the cross-topic candidates, because a
             # target this sub-topic owns is as much a source of the plan's
@@ -4277,16 +4265,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             owed_cross_topic_units = [
                 unit for batch in cross_topic_batches.values() for unit in batch
             ]
-            # D2: the dissent re-ask, one packet per admitted read (Fable's
-            # audit of run 7, CODE 1). A page can hold both a stated step
+            # The dissent re-ask, one packet per admitted read. A page can
+            # hold both a stated step
             # and, elsewhere on that same page or a different one the run
             # has read, another page's rejection, qualification or dating
             # of it -- the main extraction only ever asks what a passage
             # states, never what it disputes about a claim the run has
-            # already kept, and the same omission has recurred across four
-            # heads. Checked only for a read this pass itself admitted (S6's
-            # own per-page architecture is what "that read's main
-            # extraction" refers to); the retained pool is this sub-topic's
+            # already kept. Checked only for a read this pass itself admitted
+            # (the read whose own per-page main extraction just ran); the
+            # retained pool is this sub-topic's
             # own findings so far, on top of the run's whole record, so a
             # passage on a page read for this topic can dispute a finding
             # another topic's read produced, and the reverse.
@@ -4295,8 +4282,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             if admitted_read_order:
                 retained_for_dissent = [*run_findings, *findings]
                 # A passage the same gather's own owed or cross-topic
-                # packet already carries is excluded here too (RevZ1, run
-                # 7 fix wave review, P2): those packets are built above but
+                # packet already carries is excluded here too: those
+                # packets are built above but
                 # not yet sent, so ``admitted_keys`` alone cannot yet know
                 # they claim it, and without this a passage could be asked
                 # about twice at once, in two concurrent packets.
@@ -4328,8 +4315,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         continue
                     dissent_batches[read_id] = dissent_units
                     dissent_statements_by_read[read_id] = disputed
-            # One round trip for all three sweeps (RevX1Sweep P2-1, extended
-            # to the dissent re-ask): every packet runs in the same gather,
+            # One round trip for all three sweeps: every packet runs in the
+            # same gather,
             # under the same per-page gate, instead of waiting on an
             # earlier sweep's whole round trip to finish first. Sliced back
             # apart by count afterwards, not zipped, so each keeps the
@@ -4345,7 +4332,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 (read_id, [batch], (), dissent_statements_by_read[read_id])
                 for read_id, batch in dissent_batches.items()
             ]
-            # Each job's name in the run's call records (latency audit O8),
+            # Each job's name in the run's call records,
             # in the order the three lists above were joined.
             job_labels = (
                 ["owed_extraction"] * len(batches_by_page)
@@ -4407,7 +4394,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 dropped_figures.extend(owed.dropped_figures)
                 asked.update(owed.asked_evidence_ids)
             # This topic's own telemetry, captured before the cross-topic
-            # and dissent findings below are merged in (RevX1Sweep P3-2):
+            # and dissent findings below are merged in:
             # either kind is always bound to whatever statement it answers
             # or disputes, not necessarily this topic's own target, and
             # folding them into ``bound`` first would let one turn an
@@ -4533,7 +4520,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """Findings, errors and this run's note topics. ``run`` adds the progress events.
 
         The reader notes' own topics this run started threads for join the
-        plan's (notes-progress-report spec §5.3); the target inventories are
+        plan's; the target inventories are
         left as they are, as a note pass leaves them.
         """
         update: ResearchStateUpdate = {"errors": list(run.errors)}
@@ -4572,11 +4559,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         The loop gets its own scratchpad, its own policy and the run's tool
         lock, so its prompt renders its own observations and its own
-        acquisition state however many sibling loops are running (D9).
+        acquisition state however many sibling loops are running.
         Context that genuinely carries over between sub-topics travels in
         ``task.guidance`` instead of through shared notes.
 
-        S6: each read's own extraction call starts in the background the
+        Each read's own extraction call starts in the background the
         moment it is admitted (``policy.on_read_admitted``), bounded by
         ``agents.extraction_concurrency``, while the loop keeps running --
         more searches and reads. The tasks and the fixed order they were
@@ -4633,7 +4620,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             iteration: int,
             steps: Sequence[ReActStep],
         ) -> tuple[ReActDecision, ...]:
-            # live-briefs spec §4.6: before each model call the loop reads the
+            # Before each model call the loop reads the
             # run's board, so a note that arrived since its last turn steers
             # this one, under its own ``## Reader notes`` heading.
             context = policy.context(
@@ -4652,7 +4639,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         tool_calls: list[ResearchEvent] = []
         # Each call's (lock_wait_s, duration_s), keyed by proposal id, from the
-        # loop to the event its step becomes (latency audit O8).
+        # loop to the event its step becomes.
         timings: dict[str, tuple[float, float]] = {}
 
         def note_timing(
@@ -4698,7 +4685,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # them into a ``ReActRun`` (a re-raised ``RequestAttemptLimit
             # Error``, for one) -- whatever page tasks this loop already
             # started must not be left running unobserved after the loop
-            # itself has failed to even return (RevSelectionR3 P1).
+            # itself has failed to even return.
             await _cancel_and_gather_pages(extraction_tasks)
             raise
         react = react.model_copy(
@@ -4722,7 +4709,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         Nothing here writes to the agent: the loop's findings, errors, events
         and counters are returned for ``run`` to fold in plan order. The topic's
-        events are also published live as they happen (live-briefs spec E3): the
+        events are also published live as they happen: the
         started event as the loop begins, each tool call as its step is
         recorded, the completed event once extraction settles -- the very
         objects this outcome returns.
@@ -4744,7 +4731,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         timings = ExtractionTimings()
         started_at = perf_counter()
         async with self.tracker.agent_span(self.name) as span:
-            # Own the tasks here (RevSelectionR3 P1): whatever exception
+            # Own the tasks here: whatever exception
             # escapes this block, every per-page task this loop started must
             # be cancelled and awaited before it propagates, so none keeps
             # calling the provider after this sub-topic's own pass has given
@@ -4876,8 +4863,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         loops at once, and fold their results in plan order.
 
         Each loop is independent — its own scratchpad, policy and bounded
-        ReAct run — and they share exactly two things: the run-wide tool lock
-        (D9), so a page two loops want is downloaded once, and the run's own
+        ReAct run — and they share exactly two things: the run-wide tool lock,
+        so a page two loops want is downloaded once, and the run's own
         read/evidence registry, so a body one loop read can serve another
         without a second acquisition. A provider failure in one loop stops
         the topics that have not started yet (they record
@@ -4887,8 +4874,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
 
         A reader's research note read while the loops run gets its own thread
         at once, outside the ``sub_topic_concurrency`` slots, and the run does
-        not return until every thread has ended (notes-progress-report spec
-        §5.3, D3); a note still being read when they have is waited for, for
+        not return until every thread has ended; a note still being read when
+        they have is waited for, for
         ``NOTES_WAIT_S`` at most.
         """
         self._run_source_state = state
@@ -4915,8 +4902,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         self._run_cache = self._shared_cache
         # The cache is keyed by URL, never by read id: a lookup happens before
         # any body download and only knows the URL it is about to request.
-        # Seeding it with read ids worked by accident (nothing looks a read id
-        # up here) and would have silently polluted the shared cache a later
+        # Seeding it with read ids would silently pollute the shared cache a later
         # acquisition consumer is handed.
         for read in self._run_reads.values():
             if read.acquisition_kind != "network":
@@ -4932,7 +4918,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             }
         )
         base_task = self.build_task(state)
-        # notes-progress-report spec §5.3: the cap holds the planned topics only.
+        # The cap holds the planned topics only.
         selected, capped = _selected_and_capped(state, self._max_sub_topics)
         events: list[ResearchEvent] = []
         errors: list[ResearchError] = []
@@ -4979,14 +4965,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 call_fingerprints=dict(self._call_fingerprints),
             )
 
-        # One tool gate for the whole run, never a module global (D9, amended
-        # by latency audit O4): every sub-topic loop of this run shares it, so
+        # One tool gate for the whole run, never a module global: every
+        # sub-topic loop of this run shares it, so
         # two loops can never admit or commit at the same time, and a page two
         # loops want is fetched once, while reads of different pages overlap.
         # The gate is itself an asyncio.Lock, so everything that hands it on
-        # keeps its type; it is imported here, beside its one use, so that the
-        # amendment touches nothing else in this module. It is made per run
-        # and dies with it.
+        # keeps its type; it is imported here, beside its one use. It is made
+        # per run and dies with it.
         from deep_research.agents.react import ToolGate
 
         tool_lock = ToolGate()
@@ -4995,8 +4980,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # failure. A loop that has not started yet checks it as it starts and
         # stops there, which is what keeps ``provider_failure_stopped_processing``
         # for the topics that never got a turn, while the loops already running
-        # finish; and once it is set no reader note gets a thread of its own
-        # (notes-progress-report spec §5.3). A gated loop sets it before the
+        # finish; and once it is set no reader note gets a thread of its own.
+        # A gated loop sets it before the
         # gate is released, so a waiter cannot slip past it.
         stop = asyncio.Event()
 
@@ -5006,7 +4991,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             """Run one sub-topic, or skip it when the pass has stopped.
 
             A gated topic waits for one of ``sub_topic_concurrency`` slots; a
-            reader note's own thread is not gated (spec §5.3), so it starts at
+            reader note's own thread is not gated, so it starts at
             once, beside however many loops are running.
             """
             async with (gate if gated else contextlib.nullcontext()):
@@ -5032,13 +5017,13 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     stop.set()
             return outcome
 
-        # notes-progress-report spec §5.3 (D3): the dispatcher. Every selected
+        # The dispatcher. Every selected
         # topic runs as its own task; a research note read while any of them
         # runs gets its own thread at once. A note still being read when every
         # thread has ended is waited for, ``NOTES_WAIT_S`` at most, so it still
         # gets its thread. The window closes on a scan that found no note due,
         # with no await between that scan and the loop's exit, so a note read
-        # after it owes a note pass instead (§5.4).
+        # after it owes a note pass instead.
         order: list[SubTopic] = list(selected)
         threads = [
             asyncio.create_task(research(index, sub_topic, gated=True))
@@ -5076,7 +5061,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 closing = not await notes_settled(timeout=NOTES_WAIT_S)
         finally:
             # Unlike a gather's children, these tasks are not cancelled with the
-            # run: whatever ends it early -- a cancellation (Phase D's stop)
+            # run: whatever ends it early -- a cancellation (a stop request)
             # included -- cancels every thread still running and awaits it.
             running = [thread for thread in threads if not thread.done()]
             for thread in running:

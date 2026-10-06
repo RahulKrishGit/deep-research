@@ -10,9 +10,9 @@ reads ``X-Replay-Case`` on ``POST /research`` and rewrites the request's
 ``query`` to the case's own question, so the session records what ran. It
 also reads ``X-Replay-Clarify`` on the same request: ``on`` makes the scripted
 one-time check ask its fixed questions (``api/clarify.py``), and anything else
-leaves every flow exactly as it was (live-briefs spec §4.4).
+leaves every flow exactly as it was.
 
-Two pacing aids (notes-progress-report spec §6.10): each event is published
+Two pacing aids: each event is published
 with its release time as its timestamp, so the console's elapsed times read as
 they would live; and ``X-Replay-Hold-After: <event_type>[#<n>]`` on the same
 request makes the stream stop after the n-th event of that type (default the
@@ -76,7 +76,7 @@ def parse_hold(value: str) -> tuple[str, int] | None:
 
 
 def resolve_scenario(case_id: str) -> ReplayScenario:
-    """The case, or the enumerated configuration failure an unknown id earns (R1)."""
+    """The case, or the enumerated configuration failure an unknown id earns."""
     try:
         return scenario_by_id(case_id)
     except KeyError:
@@ -170,8 +170,8 @@ class ReplayRunner:
         """Release each event ``delay`` seconds apart, stamped with its release time.
 
         The engine ran unpaced, so the events' own timestamps are a fraction of a
-        second apart; the copy published carries the moment it is released (spec
-        §6.10), while the engine's state keeps its own. With ``hold``, the drain
+        second apart; the copy published carries the moment it is released,
+        while the engine's state keeps its own. With ``hold``, the drain
         stops after the n-th event of that type and waits until it is cancelled.
         """
         seen = 0

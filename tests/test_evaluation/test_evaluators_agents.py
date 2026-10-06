@@ -181,14 +181,15 @@ def test_the_researcher_gate_rejects_an_invented_source_url(
 def test_the_researcher_gate_rejects_a_malformed_source_url_without_raising(
     researcher_case, researcher_output
 ) -> None:
-    """Finding 16: this is the reviewer-found path itself --
-    ``_gate_no_invented_sources`` -> ``_no_invented_sources_passes`` ->
-    ``agents/sources.py``'s unguarded ``normalize_source_url`` call, for
-    the Researcher agent, reached directly through ``evaluate_agent_gates``
-    with no local fallback in the way (unlike ``_gate_citations_known``'s
-    round-2 ``_normalized`` helper). Pre-root-cause-fix this raised
-    ``ValueError: Port out of range 0-65535`` here; post-fix it must
-    return a clean failing ``GateResult`` instead.
+    """A malformed source URL fails the gate instead of raising.
+
+    This is the path ``_gate_no_invented_sources`` ->
+    ``_no_invented_sources_passes`` -> ``agents/sources.py``'s
+    ``normalize_source_url`` call, for the Researcher agent, reached directly
+    through ``evaluate_agent_gates`` with no local fallback in the way
+    (unlike ``_gate_citations_known``'s ``_normalized`` helper). The
+    out-of-range port must not raise ``ValueError: Port out of range
+    0-65535`` here; it must return a clean failing ``GateResult``.
     """
     output = researcher_output.with_finding_url("https://ex.com:99999/page")
 
@@ -257,10 +258,10 @@ def test_the_source_evaluator_gate_requires_the_expected_low_confidence_flag(
 
 # --- Read-bearing provenance ------------------------------------------------
 #
-# Task 5 review, Important 2: the evidence checks validated passage fields and
-# publisher independence but never bound a passage URL to the run's
-# read-bearing tool results, so a search-only or invented URL could still pass
-# the quality gates. These tests drive the REAL classifier over typed steps —
+# The evidence checks validate passage fields and publisher independence and
+# also bind a passage URL to the run's read-bearing tool results, so a
+# search-only or invented URL cannot pass the quality gates. These tests
+# drive the REAL classifier over typed steps —
 # the same one ``targets._success_output`` records the artifact with, and the
 # field the researcher's kept ``findings_are_read_bearing`` metric reads.
 
@@ -491,26 +492,25 @@ def test_the_code_evaluator_never_raises_on_a_malformed_run(
 def test_the_code_evaluator_never_raises_on_a_malformed_cited_url(
     planner_case, clean_target_output
 ) -> None:
-    """Finding 14, traced through the actual runner dispatch path.
+    """Traced through the actual runner dispatch path.
 
     ``code_evaluator``'s inner ``evaluate`` closure is exactly what
     ``runner.py``'s ``_dispatch_code`` wraps in a LangSmith evaluator call,
     and ``runner.py`` only catches ``ValidationError`` around that
-    dispatch — never ``ValueError``. Pre-fix, a malformed cited URL (e.g.
-    an out-of-range port) made ``_gate_citations_known`` raise
-    ``ValueError`` from ``normalize_source_url``'s ``urlsplit(...).port``,
-    which would escape here uncaught, and in the real runner that means
-    ``pending_gates[key]`` is never set and the whole repetition silently
-    vanishes from ``repetitions_by_case`` instead of failing its gates.
-    This must now return a normal, fully populated gate report with
-    ``citations_known`` scored 0 -- not raise.
+    dispatch — never ``ValueError``. A malformed cited URL (e.g.
+    an out-of-range port) makes ``_gate_citations_known`` raise
+    ``ValueError`` from ``normalize_source_url``'s ``urlsplit(...).port``
+    unless it is handled, which would escape here uncaught, and in the real
+    runner that means ``pending_gates[key]`` is never set and the whole
+    repetition silently vanishes from ``repetitions_by_case`` instead of
+    failing its gates. This must return a normal, fully populated gate
+    report with ``citations_known`` scored 0 -- not raise.
 
     Uses the planner (no agent-specific gate touches
     ``normalize_source_url``) so this test isolates ``citations_known``'s
-    own resilience rather than the separately-scoped, pre-existing
-    ``normalize_source_url`` non-totality reachable from other gates
-    (e.g. ``no_invented_sources``'s ``source_domain`` call, out of scope
-    for this fix per the finding).
+    own resilience rather than the separately-scoped ``normalize_source_url``
+    non-totality reachable from other gates (e.g. ``no_invented_sources``'s
+    ``source_domain`` call, out of scope here).
     """
     from tests.evaluation_fakes import FakeExampleRow, FakeRun
 
@@ -551,9 +551,9 @@ def test_evaluate_target_combines_general_and_agent_gates(
     assert 0.0 <= quality <= 1.0
 
 
-# --- Task 12: scoped evidence targets ---------------------------------------
+# --- Scoped evidence targets ---
 #
-# Section 2.1's scoping guarantees are metrics, not gates: each one states a
+# The scoping guarantees are metrics, not gates: each one states a
 # property of a plan that a general gate cannot see, so each needs a positive
 # proof and a mutation that must score zero.
 
@@ -587,7 +587,7 @@ def test_a_scoped_plan_scores_its_metrics_one(
 def test_targets_have_measure_gate(
     scoped_targets_case, scoped_target_output
 ) -> None:
-    """D10's single scoping gate: every target names the measure it asks for.
+    """Every target names the measure it asks for.
 
     The dimension *word* is no longer judged — the unit vocabulary is open —
     so what the plan owes is the measure itself. The fixture's plan, whose
@@ -681,7 +681,7 @@ def test_a_plan_declaring_nothing_fails_the_measure_gate_closed(
     )
 
 
-# --- Task 12: read-bearing acquisition --------------------------------------
+# --- Read-bearing acquisition ---
 
 
 def _readable_urls(read_bearing_case) -> list[str]:
@@ -784,7 +784,7 @@ def test_an_empty_finding_list_scores_zero(
     )
 
 
-# --- Task 12: work-role independence ----------------------------------------
+# --- Work-role independence ---
 
 
 def _work_role_urls(work_role_case) -> list[str]:
@@ -1005,23 +1005,22 @@ def test_an_unknown_relation_carrying_the_original_publisher_is_not_a_new_work(
     assert metric_score(output, work_role_case, "mirror_not_a_new_work") == 1.0
 
 
-# --- Task 12: canonical citation provenance ---------------------------------
+# --- Canonical citation provenance ---
 #
-# The synthesizer half of Task 7's risk: the report's references are composed
-# by joining the evidence registry, so no URL reaches the reader that the run
-# never held, and one work reprinted twice is one reference. The end-to-end
-# proof of the same defect lives in ``test_real_agents``, where
-# ``statement_source_urls`` is monkeypatched inside the full graph replay;
-# these assert the property at the artifact level — the composed report itself
-# never carries a URL the state cannot derive a citation from, and never
-# prints two references for one work.
+# The report's references are composed by joining the evidence registry, so no
+# URL reaches the reader that the run never held, and one work reprinted twice
+# is one reference. The end-to-end proof of the same defect lives in
+# ``test_real_agents``, where ``statement_source_urls`` is monkeypatched inside
+# the full graph replay; these assert the property at the artifact level — the
+# composed report itself never carries a URL the state cannot derive a citation
+# from, and never prints two references for one work.
 
 
 def _derived_reference_urls(case) -> list[str]:
     """The reference list production's collapse rule derives from the state.
 
     The assessed rows and the verified findings, which is the whole citation
-    vocabulary a composing pass has (§6.1): one entry per recorded work,
+    vocabulary a composing pass has: one entry per recorded work,
     under the copy the assessments identify as the original.
     """
     derived = [
@@ -1069,7 +1068,7 @@ def test_an_invented_reference_url_is_not_locally_derived(
     The known-source gate refuses it too, but for a different reason: that gate
     compares the report against the case's *declaration*, while this metric
     compares it against the records the run actually holds — which is the
-    invariant Task 7's join enforces, since a reference is rendered from an
+    invariant that joins references: a reference is rendered from an
     evidence id and never from a URL the model supplied.
     """
     case = canonical_report_case

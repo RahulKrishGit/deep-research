@@ -1,18 +1,17 @@
-"""Every provider request and every event of every replay row, pinned
-(latency plan, Task 1).
+"""Every provider request and every event of every replay row, pinned.
 
-The latency work moves when requests start, never what they say, and never
-which events a run records or in what order. These pins are the offline proof
-of that for the whole real-agent matrix. ``PINNED_REQUEST_DIGESTS`` holds each
-row's (full, timing_free, outside_research, count) request digests and
+Changing when requests start must never change what they say, which events a
+run records, or in what order. These pins are the offline proof of that for
+the whole real-agent matrix. ``PINNED_REQUEST_DIGESTS`` holds each row's
+(full, timing_free, outside_research, count) request digests and
 ``PINNED_EVENT_DIGESTS`` its (event types in order, count) digest
-(``tests/replay_digests.py``), as they stood at the start of the latency plan.
+(``tests/replay_digests.py``).
 A change that alters one byte of one request, or adds or drops one, moves
 full; timing_free moves only when something other than a live
 acquisition-state snapshot changed; outside_research moves only when a
 request of the planner, source evaluator, verifier, writer or reviewer
-changed. A task that moves a pin on purpose re-pins that row in its own commit
-and says why in a comment above the entry or the dictionary.
+changed. Re-pin a moved row deliberately with
+``python -m tests.replay_digests --pin``.
 """
 
 from __future__ import annotations
@@ -32,48 +31,6 @@ from tests.replay_digests import (
     timing_free_lines,
 )
 
-# Latency plan Task 12 (audit O4): research loops no longer wait for each
-# other's page fetches, so a page extraction's request can catch its loop's
-# acquisition state a step earlier or later. In these rows only ``full``
-# moved; ``timing_free`` and ``outside_research`` did not:
-# blocked-html-pdf-fallback
-# broad-constraints
-# comparative-conflict
-# decision-context-late-candidate
-# evidence-words-not-on-page-rejected
-# extra-pass-finds-nothing
-# extra-pass-recovers-missing-target
-# extra-pass-redrafts-the-gaining-part
-# figure-not-on-page-dropped
-# forecast-versus-actual-kept-apart
-# memory-is-not-read
-# missing-target-triggers-one-extra-pass
-# non-constraint-answer
-# report-scope-corrected-to-all-segments
-# review-unavailable
-# revision-noted
-# same-work-mirror
-# scoped-redraft-after-a-named-defect
-# scoped-review-invalid-reply-falls-back
-# statement-check-failure-keeps-sentences
-# unsupported-mechanism
-# validated-cache-reuse
-#
-# Merge of origin/main into notes-progress-report-stop: every row is re-pinned from the
-# merged tree (``python -m tests.replay_digests --pin``), and the two sides' moves explain
-# all of it. The branch (Phase C) changed what the writer, the Statement Check and the
-# reviewers are asked, so in all 35 rows full, timing_free and outside_research moved, and
-# broad-constraints' count went 58 -> 59 (one more Statement Check batch of the drafted
-# sentences, as on the branch alone). Measured request by request, the merged tree differs
-# from main's only in evidence_verifier:StatementCheckDraft, report_reviewer:ReportReviewDraft
-# and :ScopedReportReviewDraft and report_writer:BottomLineDraft and :SectionDraft, and every
-# researcher request, snapshot lines included, is byte-identical to main's in every row. It
-# differs from the branch's own tree only in researcher requests (the O4 snapshot timing,
-# the 22 rows listed above) and in report_reviewer:ReportReviewDraft in the three rows O9
-# moved: with ``SKIP_FINAL_ANSWER_TURN`` put back to False those three rows reproduce the
-# branch's outside-research requests, research requests (timing aside), events and counts.
-# No event digest moved: the branch changes no event of any replay row; main's three O9
-# moves are already pinned here.
 PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "blocked-html-pdf-fallback": ("007666cb31f5212e", "899aacdb97e7a617", "250262dd58e797c6", 36),
     "broad-constraints": ("a111a2648e94cca4", "33624bd297ab2166", "83527eb9236455ae", 59),
@@ -84,24 +41,21 @@ PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "empty-but-clean": ("d02228cc8855fe88", "aef6caa41fa79668", "29fd24cea08b7d2f", 40),
     "evidence-words-not-on-page-rejected": ("a3ba22adc19a91a7", "8512bffb0b583ab8", "ce02b1541e0533e5", 33),
     "extra-pass-finds-nothing": ("e30dc98c33aff5e3", "05722cd095cfc654", "07765d9b14cebcd3", 37),
-    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
-    # forced last turn, which a sub-topic loop no longer asks; the
-    # obeying-model test below shows a model that answers as told loses
-    # only that turn's own requests. Was ("cc4d4c93c0dcd75f", "f263e41636a8452e", "e3cd657e27a7db9a", 48).
+    # This row's script calls a tool on its forced last turn, which a
+    # sub-topic loop never asks; a model that answers as told loses only that
+    # turn's own requests (see the obeying-model test below).
     "extra-pass-recovers-missing-target": ("f52091c37449783b", "0326f95dbec579bf", "3d329de1d1d19c72", 48),
-    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
-    # forced last turn, which a sub-topic loop no longer asks; the
-    # obeying-model test below shows a model that answers as told loses
-    # only that turn's own requests. Was ("472eb4eb9a52e922", "7cb5411d8b2d9a81", "83358bd57ccf2f08", 41).
+    # This row's script calls a tool on its forced last turn, which a
+    # sub-topic loop never asks; a model that answers as told loses only that
+    # turn's own requests (see the obeying-model test below).
     "extra-pass-redrafts-the-gaining-part": ("405bc78441fbdcac", "bc0a68ee8bf6a8b1", "38b615bc05fd169a", 41),
     "figure-not-on-page-dropped": ("3c7dc8ce949021fc", "3bfac55074629d62", "e04709adc1e21392", 33),
     "forecast-versus-actual-kept-apart": ("f632bdf6f4ab7125", "4ad3ee88d833f1fa", "8e1cb9a396e4dca9", 41),
     "maker-notes-vs-relay": ("e8ac145c1910a2d2", "454e28d55e0eb077", "8c9479eef7a31dd6", 20),
     "memory-is-not-read": ("ff79f833c218bedc", "a2bc3bdebb97bf24", "b0ee9daa3f3c06bb", 34),
-    # Latency plan Task 8 (audit O9): this row's script calls a tool on its
-    # forced last turn, which a sub-topic loop no longer asks; the
-    # obeying-model test below shows a model that answers as told loses
-    # only that turn's own requests. Was ("271c9e9baa621249", "1f24dc4136dc4d03", "622613a384191f12", 46).
+    # This row's script calls a tool on its forced last turn, which a
+    # sub-topic loop never asks; a model that answers as told loses only that
+    # turn's own requests (see the obeying-model test below).
     "missing-target-triggers-one-extra-pass": ("d75c5a90c152a830", "b80c35c7c2af39a4", "388fdb5b29b26938", 46),
     "non-constraint-answer": ("10c6a71ce1bc6fa0", "07d53e7979077394", "8b3e1975ab5195c4", 33),
     "one-part-question": ("907557702b4faf46", "b942154e38eb83ef", "1ed4931a212c59db", 16),
@@ -134,24 +88,18 @@ PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {
     "empty-but-clean": ("4c04aa44cdae0546", 67),
     "evidence-words-not-on-page-rejected": ("4300aed5bf981011", 43),
     "extra-pass-finds-nothing": ("441cde5a6daccc68", 65),
-    # Latency plan Task 8 (audit O9): the read this row's script made on
-    # its forced last turn is made in the extra pass instead, so one
-    # researcher.tool_call moves; the count and every other event keep
-    # their place. Was ("9e9e0f6bedf8126d", 73).
+    # The read this row's script makes on its forced last turn happens in the
+    # extra pass instead, so one researcher.tool_call sits later in the order.
     "extra-pass-recovers-missing-target": ("35b2c5d90b741aae", 73),
-    # Latency plan Task 8 (audit O9): the read this row's script made on
-    # its forced last turn is made in the extra pass instead, so one
-    # researcher.tool_call moves; the count and every other event keep
-    # their place. Was ("cc140d8a6608095f", 68).
+    # The read this row's script makes on its forced last turn happens in the
+    # extra pass instead, so one researcher.tool_call sits later in the order.
     "extra-pass-redrafts-the-gaining-part": ("8dc9953c25609e20", 68),
     "figure-not-on-page-dropped": ("4300aed5bf981011", 43),
     "forecast-versus-actual-kept-apart": ("441cde5a6daccc68", 65),
     "maker-notes-vs-relay": ("6fb5d6e45c766113", 36),
     "memory-is-not-read": ("2f97159ff35b43a3", 64),
-    # Latency plan Task 8 (audit O9): the read this row's script made on
-    # its forced last turn is made in the extra pass instead, so one
-    # researcher.tool_call moves; the count and every other event keep
-    # their place. Was ("44a14f886a7379ff", 72).
+    # The read this row's script makes on its forced last turn happens in the
+    # extra pass instead, so one researcher.tool_call sits later in the order.
     "missing-target-triggers-one-extra-pass": ("694cfaf0bf69d89e", 72),
     "non-constraint-answer": ("4300aed5bf981011", 43),
     "one-part-question": ("3ec645826328d887", 33),
@@ -197,14 +145,12 @@ def test_every_request_and_event_of_every_replay_row_is_pinned(
 def test_skipping_the_forced_final_turn_drops_only_that_turns_requests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Latency audit O9, on every row. With a scripted model that obeys the
+    """With a scripted model that obeys the
     last-turn instruction -- it answers without a tool, as the prompt tells
     it to -- a row that skips its forced turns asks everything it asked with
     them, less the forced turns' own requests: every request outside research
     byte for byte, every research request up to its live acquisition-state
-    snapshot; and it records the same events in the same order. (The replay's
-    own script ignores that instruction and reads on its forced turn in three
-    extra-pass rows; their pins moved in Task 8.)"""
+    snapshot; and it records the same events in the same order."""
     import deep_research.agents.researcher as researcher_module
     from deep_research.e2e_evaluation.replay import ReplayCompleter
 

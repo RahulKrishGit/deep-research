@@ -40,7 +40,7 @@ from tests.evaluation_fakes import (
 )
 
 
-def test_the_aggregate_formula_matches_the_spec_exactly() -> None:
+def test_the_aggregate_formula_matches_its_documented_weights() -> None:
     assert aggregate_quality(1.0, 0.0) == pytest.approx(0.40)
     assert aggregate_quality(0.0, 1.0) == pytest.approx(0.60)
     assert aggregate_quality(0.5, 0.5) == pytest.approx(0.50)
@@ -1183,19 +1183,18 @@ async def test_experiment_url_failure_is_auxiliary_and_preserves_quality_status(
 async def test_a_gate_evaluation_exception_is_recorded_not_dropped(
     settings, runtime_config_for, tmp_path, evaluation_harness, monkeypatch
 ) -> None:
-    """Finding 16's defense in depth: even though the root-cause fix makes
-    ``normalize_source_url`` total, ``_dispatch_code``'s ``try`` around
-    ``evaluate_target_with_metrics`` must widen past ``ValidationError`` so that ANY
-    unexpected exception from gate evaluation is caught, rather than
-    relying solely on ``normalize_source_url`` never raising again.
+    """Defense in depth: even though ``normalize_source_url`` is total,
+    ``_dispatch_code``'s ``try`` around ``evaluate_target_with_metrics`` must
+    widen past ``ValidationError`` so that ANY unexpected exception from gate
+    evaluation is caught, rather than relying solely on
+    ``normalize_source_url`` never raising.
 
-    Pre-fix, an exception escaping ``evaluate_target`` here would leave
+    An exception escaping ``evaluate_target`` here would leave
     ``pending_gates[key]`` unset, and ``_dispatch_judge``'s
     ``if gates is not None`` guard would then silently omit the repetition
-    from ``repetitions_by_case`` -- finding 14's failure mode, reachable
-    through any exception, not only the one this round's root-cause fix
-    closes. Post-fix, the repetition must still appear, scored as a
-    failed gate, never silently dropped.
+    from ``repetitions_by_case`` -- a failure mode reachable through any
+    exception. The repetition must still appear, scored as a failed gate,
+    never silently dropped.
     """
     import deep_research.evaluation.runner as runner_module
 
@@ -1389,7 +1388,7 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
 ) -> None:
     base = tmp_path
     for name in (
-        "task10-runner-output-root-" + "a" * 64,
+        "runner-output-root-" + "a" * 64,
         "windows-long-path-" + "b" * 64,
         "normal-repetition-" + "c" * 64,
         "legal-component-" + "d" * 64,
@@ -1403,7 +1402,7 @@ async def test_runner_uses_runtime_output_root_for_every_offline_descendant(
         "planner",
         case_id=case.case_id,
         output_directory=str(base),
-        experiment_prefix="task10-runner-output-root",
+        experiment_prefix="runner-output-root",
     )
     preflight_dependency_roots: list[Path] = []
     real_preflight_dependencies = runner_module.build_controlled_dependencies

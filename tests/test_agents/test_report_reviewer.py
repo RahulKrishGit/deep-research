@@ -1,11 +1,10 @@
-"""Task 4.2, spec §6.2-§6.3: the terminal report review, one call per review.
+"""The terminal report review, one call per review.
 
 The reviewer reads one packet — the reader report, every reader statement with
 its code-built label, the cited findings' snippets and labels, the key facts,
 Not found, and the deterministic gate results — and returns the seven
 dimensions, one disposition per statement, and its typed defects. There are no
-claims, no verdict badges, no evidence batches, and no Critic here: the critic
-and the fact checker left with step 4 (D6, PD-16, PD-21).
+claims, no verdict badges, no evidence batches, and no Critic here.
 
 Every named case is its own test function, because a review that "looks right"
 is exactly what the formula this review replaced already provided. The review
@@ -21,10 +20,9 @@ from types import SimpleNamespace
 from typing import Callable
 
 import httpx
+import pytest
 import yaml
 from openai import APITimeoutError
-
-import pytest
 
 from deep_research.agents.identity import finding_fingerprint
 from deep_research.agents.report import (
@@ -34,24 +32,21 @@ from deep_research.agents.report import (
     render_written_report,
 )
 from deep_research.agents.report_reviewer import (
-    _fact_row_line,
-    _table_lines,
-    REPORT_REVIEWER_ROLE,
-    REPORT_REVIEW_PROMPT_VERSION,
     REPORT_REVIEW_SYSTEM_PROMPT,
+    REPORT_REVIEWER_ROLE,
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SCOPED_REPORT_REVIEW_INSTRUCTION,
     SCOPED_REPORT_REVIEW_SYSTEM_PROMPT,
     SEMANTIC_REVIEW_MEAN,
     PreviousDefectResolutionDraft,
-    PreviousDefectView,
     ReportReviewer,
     ReviewDefectDraft,
     ReviewDimensionScores,
-    StatementDispositionDraft,
     ScopedReportReviewDraft,
-    ScopedReportReviewInput,
+    StatementDispositionDraft,
+    _fact_row_line,
+    _table_lines,
     build_report_review_input,
     build_scoped_report_review_input,
     composition_semantic_fingerprint,
@@ -59,7 +54,6 @@ from deep_research.agents.report_reviewer import (
     report_review_input_fingerprint,
     review_messages,
     review_report,
-    review_scoped_report,
     scoped_report_review_input_fingerprint,
     scoped_review_messages,
     semantic_review_passes,
@@ -75,14 +69,13 @@ from deep_research.providers import (
     ProviderResponseTelemetry,
 )
 from deep_research.providers.deepseek_provider import DeepSeekSchemaChatProvider
-from deep_research.utils.config import LLMConfig
-from deep_research.utils.config import AgentRuntimeConfig
+from deep_research.utils.config import AgentRuntimeConfig, LLMConfig
 from deep_research.utils.types import (
     UNREVIEWED_STATEMENT_DISPOSITION,
+    FactRow,
     FigureContext,
     FigureResult,
     FindingVerification,
-    ItemMark,
     NotFoundTarget,
     ReportPart,
     ReportQualitySnapshot,
@@ -90,13 +83,12 @@ from deep_research.utils.types import (
     ReportStatement,
     ReportTable,
     ResearchState,
-    ScoredSource,
     ReviewDefect,
+    ScoredSource,
     SubTopic,
     TableCell,
     TableEntry,
     UnreachablePage,
-    FactRow,
 )
 from tests.agent_fakes import ScriptedCompleter
 from tests.evidence_fakes import (
@@ -610,8 +602,8 @@ def test_a_statement_carries_its_code_built_label_and_its_findings_labels() -> N
     # the labels of the findings it cites.
     assert second.label == ""
     assert second.finding_labels == summary.finding_labels
-    # The label is packet-only material now (spec §3.1 rule 8 cuts it from the
-    # printed report; it never reached ``reader_content``, only the request).
+    # The label is packet-only material: it is cut from the printed report and
+    # never reaches ``reader_content``, only the request.
     assert summary.label not in built.reader_content
     assert summary.label in _render(built)
 
@@ -631,10 +623,10 @@ def test_the_finding_block_carries_the_snippet_host_and_figure_labels() -> None:
 
 
 def test_the_finding_view_carries_the_bounded_passage_around_its_snippet() -> None:
-    """D5/D13: a body only the bounded passage around a snippet names -- a
+    """A finding must carry the bounded passage around its snippet — a
     footnote or a "Key takeaways from ..." line just past the snippet's own
-    cut -- must reach the reviewer as the writer and the Statement Check
-    read it, not just the snippet the writer trimmed to.
+    cut — so the reviewer reads what the writer and the Statement Check
+    read, not just the snippet the writer trimmed to.
     """
     finding = _written_finding()
     finding_id = finding_fingerprint(finding)
@@ -656,8 +648,8 @@ def test_a_finding_with_no_read_passage_carries_none() -> None:
 
 
 def test_the_finding_view_carries_the_sources_kind_line() -> None:
-    """W2: the writer names a weak page's kind "in the source line's own
-    words" -- the reviewer must be shown that same line, or it judges the
+    """The writer names a weak page's kind "in the source line's own
+    words" — the reviewer must be shown that same line, or it judges the
     naming against a block that never carried it."""
     source = ScoredSource(
         url=EIA_URL, title=EIA_TITLE, authority_score=0.5, recency_score=0.5,
@@ -829,7 +821,7 @@ def test_the_key_facts_and_not_found_lines_reach_the_request() -> None:
 
 
 def test_the_deterministic_block_reports_unjudged_sentences_not_untraced_figures() -> None:
-    """PD-10, D8: ``unjudged_sentences`` replaced ``untraced_figures``."""
+    """The packet reports unjudged_sentences instead of untraced_figures."""
     state = state_with_written_report(
         quality=_quality(
             hard_failures=["missing_reader_report"],
@@ -905,9 +897,10 @@ def test_the_request_names_the_exact_fingerprint_it_reviews() -> None:
 
 
 def test_the_manifest_marks_which_target_ids_are_required() -> None:
-    """P3b (RevRouteR3): REVIEW_DEFECT_RULES tells the reviewer a coverage
-    defect on a *required* target is always material, but nothing in the
-    packet said which target ids those are -- the manifest must show it.
+    """The manifest must show which target ids are required.
+
+    REVIEW_DEFECT_RULES tells the reviewer a coverage defect on a required
+    target is always material, so the packet must mark which target ids those are.
     """
     rendered = _render(packet())
 
@@ -920,13 +913,16 @@ async def test_a_real_written_report_builds_the_same_packet(
 ) -> None:
     """The fixture is the writer's shape: proved against the writer itself.
 
-    ``compose_written_report`` numbers its candidates S001… in bottom-line-
-    then-sections render order (spec §6.7), and a real composition must
-    produce the same three statement ids, the same label and the same key
-    facts line the hand-built fixture does.
+    The statement numbering follows the bottom-line-then-sections render order,
+    and a real composition must produce the same three statement ids, the same
+    label and the same key facts line the hand-built fixture does.
     """
-    from deep_research.agents.report_writer import ReportWriterTask, compose_written_report
-    from deep_research.utils.types import BottomLineDraft, SectionDraft, WriterPointDraft as _WriterPointDraft
+    from deep_research.agents.report_writer import (
+        ReportWriterTask,
+        compose_written_report,
+    )
+    from deep_research.utils.types import BottomLineDraft, SectionDraft
+    from deep_research.utils.types import WriterPointDraft as _WriterPointDraft
 
     class _Verdict:
         def __init__(self, label: str) -> None:
@@ -939,8 +935,7 @@ async def test_a_real_written_report_builds_the_same_packet(
         provider, items, *, question, fingerprint=None,
         batch_size=None, concurrency=None, gate=None, on_batch=None,
     ):
-        # The bounds and the shared gate are part of the call the real
-        # checker accepts (PD-12; spec §6.5's shared semaphore).
+        # The bounds and the shared gate are part of the verification call.
         del provider, question, fingerprint, batch_size, concurrency, gate, on_batch
         return {item.label: _Verdict(item.label) for item in items}, []
 
@@ -1857,7 +1852,7 @@ async def test_a_dropped_defect_note_names_only_the_field_that_failed() -> None:
 @pytest.mark.asyncio
 async def test_a_coverage_defect_on_a_required_target_is_always_material() -> None:
     """A coverage defect on a required target is material whatever severity
-    the model gave it (D11): the model called an identical missing-half-answer
+    the model gave it: a model can call an identical missing-half-answer
     problem major in one review and minor in another, and routing cannot be
     left to that inconsistency.
     """
@@ -2145,23 +2140,21 @@ async def test_a_reused_review_records_no_retry() -> None:
 
 
 def test_a_fact_row_line_names_its_subject() -> None:
-    """D11: the reviewer reads which thing each key fact is about, as the reader does."""
+    """The reviewer reads which thing each key fact is about, as the reader does."""
     row = _fact_row("finding-1")
     assert "| subject Model B |" in _fact_row_line(row.model_copy(update={"subject": "Model B"}))
     assert "| subject not stated |" in _fact_row_line(row)
 
 
 def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -> None:
-    """Final review I-1: the premise the reviewer reads must be true of every sentence.
+    """The prompt must state a premise true of every sentence.
 
     The label builder labels only the units ``figures.quantities_in`` parses
     (power, energy, percent), so a sentence stating a price, a count or a rating
     ends with no label while stating a figure — the row is in the Key facts
-    table with no label beside the sentence. The prompt used to read "A sentence
-    that ends with no label states no figure", which told the model to read such
-    a sentence as figure-free and skip the provenance check the label exists for.
-    The prompt states the premise truly instead, and sends the sentence to the
-    cited findings' own figure labels, which the packet prints for every unit.
+    table with no label beside the sentence. The prompt must state this premise
+    truly and send the sentence to the cited findings' own figure labels, which
+    the packet prints for every unit.
     """
     assert "A sentence that ends with no label states no figure:" not in REPORT_REVIEW_SYSTEM_PROMPT
     assert "a unit this report does not label" in REPORT_REVIEW_SYSTEM_PROMPT
@@ -2169,7 +2162,7 @@ def test_the_prompt_never_claims_a_sentence_without_a_label_states_no_figure() -
     assert "against their figure labels" in REPORT_REVIEW_SYSTEM_PROMPT
 
 
-# --- spec §11.1: the renamed packet sections, the table, finding status -----
+# --- the renamed packet sections, the table, finding status -----
 
 
 def test_the_prompt_no_longer_says_the_code_built_label_it_ends_with() -> None:
@@ -2191,7 +2184,7 @@ def test_the_packet_renames_not_found_to_what_the_report_could_not_confirm() -> 
 
 def _table_composition() -> ReportComposition:
     """A composition with a one-row findings table, for the packet's own
-    ``# Table`` block (spec §11.1)."""
+    ``# Table`` block."""
     table = ReportTable(
         shape="findings",
         columns=["What was measured", "Result", "Who reported it (and when)", "Source"],
@@ -2294,7 +2287,7 @@ def test_the_composition_fingerprint_moves_with_unreachable_pages() -> None:
     assert before != composition_semantic_fingerprint(with_unreachable)
 
 
-# --- T5 addendum: scoped re-review after a redraft --------------------------
+# --- scoped re-review after a redraft --------------------------
 
 
 PART_A = "topic-01"
@@ -2406,7 +2399,7 @@ def test_a_scoped_packet_marks_changed_and_unchanged_and_carries_previous_defect
 
 
 def test_an_unchanged_part_whose_text_differs_forces_a_full_review() -> None:
-    """T5 addendum: a part changed without a redraft request is not scoped."""
+    """A part changed without a redraft request is not scoped."""
     old, new, previous_review = _redraft_fixture()
     tampered_section = new.sections[0].model_copy(
         update={
@@ -2470,7 +2463,7 @@ async def test_a_resolved_defect_is_recorded_as_resolved_and_an_unresolved_one_a
     assert by_id["review-01"].resolution == "unresolved"
     assert by_id["review-02"].resolution == "resolved"
     # A resolved defect is recorded, not silently dropped, but no longer
-    # blocks acceptance whatever its original severity (T5 addendum item 4).
+    # blocks acceptance whatever its original severity.
     assert not by_id["review-02"].material
     assert by_id["review-01"].material
     assert "Resolved by the redraft: review-02" in review.rationale
@@ -2481,10 +2474,10 @@ async def test_a_resolved_defect_is_recorded_as_resolved_and_an_unresolved_one_a
 async def test_a_disposition_returned_for_an_unchanged_id_does_not_overwrite_the_carried_one() -> (
     None
 ):
-    """Fable prompt review: an unchanged id is "not being asked again" -- the
-    scoped prompt's own promise -- so a reply that judges one anyway (a model
-    that answered beyond its scope) must not move that id's carried
-    disposition; the carried reading stands."""
+    """An unchanged id in the scoped review is not being asked again.
+
+    A reply that judges one anyway (a model that answered beyond its scope) must
+    not move that id's carried disposition; the carried reading stands."""
     old, new, previous_review = _redraft_fixture()
     remapped = remap_review_for_redraft(
         previous_review, previous_composition=old, composition=new
@@ -2587,8 +2580,8 @@ async def test_a_new_defect_claimed_on_an_unchanged_part_is_refused() -> None:
 
 @pytest.mark.asyncio
 async def test_a_new_defect_citing_a_changed_and_unchanged_contradiction_is_accepted() -> None:
-    """T5 addendum: naming a changed id together with the unchanged one it
-    contradicts still names a changed id, so this one rule covers both."""
+    """Naming a changed id together with an unchanged one it contradicts still
+    names a changed id, covering both cases."""
     old, new, previous_review = _redraft_fixture()
     remapped = remap_review_for_redraft(
         previous_review, previous_composition=old, composition=new
@@ -2699,16 +2692,16 @@ def test_the_scoped_prompt_asks_for_each_previous_defects_own_resolution() -> No
     assert "previous_defect_resolutions" in SCOPED_REPORT_REVIEW_INSTRUCTION
 
 
-# --- reviewer round (RevFormatT5): P0/P1 fixes -------------------------------
+# --- coverage defect and scoped review ----
 
 
 @pytest.mark.asyncio
 async def test_a_target_only_coverage_defect_in_a_scoped_reply_stays_major() -> None:
-    """P0 repro: a new defect naming no statement at all (a report-level or
-    target-scoped coverage gap) must not be dropped, and D11's floor must
-    still force it material in the scoped path exactly as a full review
-    would -- a findings-table mis-credit works the same way, since its own
-    defect carries only fact-row ids and no statement id either.
+    """A new defect naming no statement at all (a report-level or
+    target-scoped coverage gap) must not be dropped and must be forced material
+    in the scoped path exactly as a full review would. A findings-table
+    mis-credit works the same way, since its own defect carries only fact-row
+    ids and no statement id either.
     """
     old, new, previous_review = _redraft_fixture()
     remapped = remap_review_for_redraft(
@@ -2750,13 +2743,15 @@ async def test_a_target_only_coverage_defect_in_a_scoped_reply_stays_major() -> 
 async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_statement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1 repro, with the real writer's own renumbering: a redrafted part
-    shrinks by one point, which shifts a carried-over part's statement ids.
-    A previous defect against the redrafted part's own (now gone) statement
-    must never be carried onto the carried-over part's shifted statement
+    """A redrafted part shrinks by one point, which shifts a carried-over part's
+    statement ids. A previous defect against the redrafted part's own (now gone)
+    statement must never be carried onto the carried-over part's shifted statement
     just because the old id string happens to collide with the new one.
     """
-    from deep_research.agents.report_writer import ReportWriterTask, compose_written_report
+    from deep_research.agents.report_writer import (
+        ReportWriterTask,
+        compose_written_report,
+    )
     from deep_research.utils.types import BottomLineDraft, SectionDraft, SubTopic
     from deep_research.utils.types import WriterPointDraft as _WriterPointDraft
 
@@ -2916,10 +2911,10 @@ async def test_remap_drops_a_defect_whose_old_id_now_names_a_different_carried_s
 
 
 def test_the_table_block_shows_real_option_cell_text_and_publishers() -> None:
-    """P1 repro: the packet's own '# Table' block must show the reader's own
-    cell content -- the writer's marks over checked statements -- not an em
-    dash for every options-table cell, and must pin each cell's own backing
-    statement ids so a mis-credit can be found.
+    """The packet's own '# Table' block must show the reader's own cell content
+    (the writer's marks over checked statements) not an em dash for every
+    options-table cell, and must pin each cell's own backing statement ids so a
+    mis-credit can be found.
     """
     from deep_research.agents.report_table import options_table
     from tests.test_agents.test_report_table import _fable_composition
@@ -2943,8 +2938,8 @@ def test_the_table_block_shows_real_option_cell_text_and_publishers() -> None:
 
 
 def test_the_scoped_developer_message_carries_the_full_reviews_judging_rules() -> None:
-    """P1: changed statements must be judged by exactly the full review's
-    standard, so the scoped developer message must carry its rules."""
+    """Changed statements must be judged by exactly the full review's standard,
+    so the scoped developer message must carry its rules."""
     assert "against their figure labels" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
     assert "according to X" in SCOPED_REPORT_REVIEW_SYSTEM_PROMPT
     assert (

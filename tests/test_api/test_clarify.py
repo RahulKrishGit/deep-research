@@ -1,4 +1,4 @@
-"""The one-time check's service (live-briefs spec §4.4): contract, checkers, answers, events.
+"""The one-time check's service: contract, checkers, answers, events.
 
 The live checker is driven only with a scripted completer: no provider is built
 and no request leaves the process.
@@ -212,7 +212,7 @@ def test_answers_that_do_not_fit_the_questions_name_each_problem() -> None:
     ]
 
 
-def test_the_two_events_carry_the_spec_metadata() -> None:
+def test_the_two_events_carry_the_expected_metadata() -> None:
     deadline = datetime(2026, 9, 29, 10, 0, 30, 123456, tzinfo=timezone.utc)
     requested = clarification_requested_event(QUESTIONS, deadline)
     answered = clarification_answered_event(resolve_answers(QUESTIONS), "timed_out")
@@ -235,7 +235,7 @@ def test_the_two_events_carry_the_spec_metadata() -> None:
 
 
 def test_the_request_asks_by_default_and_can_turn_the_check_off() -> None:
-    """D16: the setting is on unless the request says otherwise."""
+    """The setting is on by default unless the request says otherwise."""
     assert ResearchRequest(query="Q?").ask_clarifying_questions is True
     assert ResearchRequest(query="Q?", ask_clarifying_questions=False).ask_clarifying_questions is False
 

@@ -367,7 +367,7 @@ async def test_a_failing_source_scoring_batch_leaves_the_other_batches_scored(
     """One batch's ProviderError marks that batch `unscored_provider`; the other
     batches are scored, keyed by URL, in `task.groups` order.
 
-    The batches run concurrently and each stands alone (D9): a failed batch
+    The batches run concurrently and each stands alone: a failed batch
     marks only its own groups, and a later batch still reaches the provider
     instead of being marked on the strength of an earlier batch's failure.
     """
@@ -462,7 +462,7 @@ async def test_scoring_batches_run_at_the_configured_concurrency(
     tracker: Tracker,
 ) -> None:
     """`agents.source_scoring_concurrency` bounds the scoring calls in flight:
-    five batches of one source, at most two calls at a time (PD-27)."""
+    five batches of one source, at most two calls at a time."""
     findings = [
         _eval_finding(f"https://source-{index}.test/page")
         for index in range(5)
@@ -1093,7 +1093,7 @@ async def test_a_score_returned_for_an_example_url_is_ignored(
 
 
 # --------------------------------------------------------------------------
-# Task 4: the shared read-backed assessment service
+# The shared read-backed assessment service
 # --------------------------------------------------------------------------
 
 READ_SESSION = "session-1"
@@ -1221,7 +1221,7 @@ async def test_the_original_report_resolves_a_read_backed_identity() -> None:
     assert source.cited_sub_topics == []
 
 
-# The audited run's own EIA read and the relay that quotes the same inventory.
+# An EIA read and the relay that quotes the same inventory.
 # The agency's page carries no attribution phrase, so the issuer the model read
 # off its masthead was dropped, and with it every source-level identity the
 # page could contribute. The relay's headline names the agency by acronym, so
@@ -1339,8 +1339,8 @@ async def test_a_re_typeset_mirror_keeps_the_publisher_but_not_the_bytes() -> No
 
     Two byte-different copies of one report share no content hash, so a bare
     hash cannot be the identity they are compared by. The repository's own name
-    is its own claim rather than the origin of the figure it repeats (§2.2
-    rule 4), and the readable original keeps the publisher its host evidences.
+    is its own claim rather than the origin of the figure it repeats, and the
+    readable original keeps the publisher its host evidences.
     """
     original = _read(LAB_REPORT_URL, text=PLAIN_REPORT_TEXT)
     retypeset = _read(
@@ -2361,7 +2361,7 @@ async def test_two_articles_on_one_dataset_record_that_shared_dataset() -> None:
 
 
 # --------------------------------------------------------------------------
-# What a copy contributes: §2.2 rule 4. A copy's own publisher is not the
+# What a copy contributes. A copy's own publisher is not the
 # identity of the work it copies, and a hash-only copy has only its own bytes.
 # --------------------------------------------------------------------------
 
@@ -2504,7 +2504,7 @@ async def test_a_hash_only_source_of_unknown_transport_keeps_its_publisher() -> 
 # --------------------------------------------------------------------------
 # Lineage and legacy snapshots: a citation of a report NUMBER names the work
 # that number keys, and a snapshot written before anchors were persisted keeps
-# the identity it already carries (§2.2 rule 3).
+# the identity it already carries.
 # --------------------------------------------------------------------------
 
 NUMBERED_REPORT_TEXT = (
@@ -2591,7 +2591,7 @@ LEGACY_UPDATE_TEXT = (
 
 
 def test_a_legacy_snapshot_keeps_the_identity_it_already_carries() -> None:
-    """Re-resolution may not demote a stored identity (§2.2 rule 3).
+    """Re-resolution may not demote a stored identity.
 
     A record written before ``identity_anchors`` existed carries what its
     assessment resolved with anchors this snapshot no longer has. Without them
@@ -2634,7 +2634,7 @@ def test_a_legacy_strong_work_id_still_names_the_group_it_joins() -> None:
     The legacy record's own work is preserved, and the key it names still joins
     the resolution: a second record of the same body under a different DOI is
     then reported ``conflicting`` rather than silently re-keying the body to
-    the identifier the older record never saw (§2.2 rule 3).
+    the identifier the older record never saw.
     """
     from deep_research.agents.evidence import resolve_source_identities
 
@@ -3067,7 +3067,7 @@ async def test_two_failing_batches_record_their_errors_in_batch_order(
 
 @pytest.mark.asyncio
 async def test_the_evaluation_events_are_published_live(tracker: Tracker) -> None:
-    """live-briefs spec E3: both evaluation events, live, as the objects returned."""
+    """Both evaluation events, live, as the objects returned."""
     agent = _evaluator(tracker, ScriptedCompleter())
     state = _eval_state([])
     received: list[ResearchEvent] = []
@@ -3081,7 +3081,7 @@ async def test_the_evaluation_events_are_published_live(tracker: Tracker) -> Non
         "source_evaluator.evaluation.started",
         "source_evaluator.evaluation.completed",
     ]
-    # notes-progress-report spec §4 item 1: the progress event is live-only.
+    # The progress event is live-only.
     assert [event.event_type for event in received] == [
         "source_evaluator.evaluation.started",
         "source_evaluator.progress",
@@ -3092,7 +3092,7 @@ async def test_the_evaluation_events_are_published_live(tracker: Tracker) -> Non
     ] == [event.event_id for event in events]
 
 
-# --- notes-progress-report spec §6.1, §6.2, §6.4: Evaluating's live progress --------
+# --- Evaluating's live progress --------
 
 
 def _strength_source(url: str, overall: float | None, *, status: str = "scored") -> ScoredSource:
@@ -3106,7 +3106,7 @@ def _strength_source(url: str, overall: float | None, *, status: str = "scored")
 
 
 def test_source_strength_split() -> None:
-    """§6.2: strong at 0.70 and above, weak below 0.40 (today's low_confidence),
+    """Strong at 0.70 and above, weak below 0.40 (the low_confidence threshold),
     fair between, and no strength for an unscored source."""
     assert STRONG_SOURCE_THRESHOLD == 0.70
     assert source_strength(_strength_source("https://a.test/1", 0.70)) == "strong"
@@ -3118,7 +3118,7 @@ def test_source_strength_split() -> None:
 
 @pytest.mark.asyncio
 async def test_evaluator_progress_split(tracker: Tracker) -> None:
-    """AC15: one event once the batches are planned, then one per settled batch in
+    """One event once the batches are planned, then one per settled batch in
     completion order, scored or failed; strong + fair + weak is always ``rated``,
     and the bar's (rated + unrated) / to_rate reaches 1 exactly at the last batch."""
     findings = [_eval_finding(f"https://source-{index}.test/page") for index in range(5)]
@@ -3152,7 +3152,7 @@ async def test_evaluator_progress_split(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_evaluator_progress_counts_reused_and_capped_sources_apart(tracker: Tracker) -> None:
-    """§6.1: a reused assessment and a capped source are never rated in this pass."""
+    """A reused assessment and a capped source are never rated in this pass."""
     findings = [_eval_finding(f"https://source-{index}.test/page") for index in range(3)]
     prior = _strength_source("https://source-0.test/page", 0.9)
     completer = ScriptedCompleter(outputs=[SourceScoresDraft(sources=[
@@ -3174,7 +3174,7 @@ async def test_evaluator_progress_counts_reused_and_capped_sources_apart(tracker
 
 
 def test_evaluation_progress_counts_a_source_once() -> None:
-    """Review M13: a source reported twice -- a batch's halves reported on their own,
+    """A source reported twice -- a batch's halves reported on their own,
     or one report repeated -- is counted once."""
     from deep_research.agents.source_evaluator import _EvaluationProgress
 
@@ -3191,7 +3191,7 @@ def test_evaluation_progress_counts_a_source_once() -> None:
 
 
 def test_evaluation_completed_carries_the_split() -> None:
-    """§6.1: the completed event counts strong, fair and weak over the snapshot's
+    """The completed event counts strong, fair and weak over the snapshot's
     scored sources; an unscored source is in none of them."""
     sources = [
         _strength_source("https://a.test/1", 0.9),
@@ -3227,7 +3227,7 @@ class _SlowReputationSource(FakeReputationSource):
 async def test_every_reputation_is_looked_up_at_once_and_applied_in_source_order(
     tracker: Tracker,
 ) -> None:
-    """Latency audit O12: all lookups are in flight together, and the map they
+    """All lookups are in flight together, and the map they
     build is the one-by-one map: the same scores, in source order."""
     urls = [f"https://source{index}.example.test/page" for index in range(5)]
     memory = _SlowReputationSource(

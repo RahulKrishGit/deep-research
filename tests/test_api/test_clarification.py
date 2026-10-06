@@ -1,4 +1,4 @@
-"""The one-time check's lifecycle and route (live-briefs spec §4.4, §4.8; AC10-AC14).
+"""The one-time check's lifecycle and route.
 
 Store-level tests drive ``SessionStore`` with scripted checkers and runners; the
 route tests go through ``TestClient``; the replay tests run the real graph
@@ -26,7 +26,11 @@ from deep_research.api.clarify import (
 )
 from deep_research.api.models import ClarificationAnswer, ClarificationAnswersRequest
 from deep_research.api.sessions import NotWaitingForInput, SessionStore
-from deep_research.utils.config import ConfigSettings, HitlConfig, apply_config_overrides
+from deep_research.utils.config import (
+    ConfigSettings,
+    HitlConfig,
+    apply_config_overrides,
+)
 from deep_research.utils.types import ResearchEvent
 from tests.test_api.fakes import ScriptedRunner
 from tests.test_api.replay_support import guarded
@@ -129,7 +133,7 @@ async def test_just_start_skips_with_what_was_answered_and_best_guesses_for_the_
 
 @pytest.mark.asyncio
 async def test_no_answer_starts_the_run_on_best_guesses_when_the_wait_ends() -> None:
-    """AC12: the run starts within answer_wait_s + 2 s, every answer a best guess."""
+    """The run starts within answer_wait_s + 2 s, and every answer defaults to a best guess."""
     runner = ScriptedRunner()
     store = SessionStore(runner=runner, clarity_checker=Checker())
     started = time.monotonic()
@@ -160,7 +164,7 @@ async def test_a_failed_or_empty_check_starts_the_run_exactly_as_before(reply: A
 
 @pytest.mark.asyncio
 async def test_a_check_that_hangs_delays_the_run_by_at_most_check_timeout_s() -> None:
-    """AC14."""
+    """A check that hangs delays the run by at most check_timeout_s."""
     runner = ScriptedRunner()
     store = SessionStore(runner=runner, clarity_checker=Checker(None))
     started = time.monotonic()
@@ -174,7 +178,7 @@ async def test_a_check_that_hangs_delays_the_run_by_at_most_check_timeout_s() ->
 
 @pytest.mark.asyncio
 async def test_with_the_setting_off_no_check_call_is_made() -> None:
-    """AC13."""
+    """With the setting off, no check call is made."""
     checker = Checker()
     runner = ScriptedRunner()
     store = SessionStore(runner=runner, clarity_checker=checker)
@@ -328,8 +332,8 @@ def test_the_answers_route_is_404_for_an_unknown_session_and_409_when_nothing_wa
 
 
 def test_the_request_flag_defaults_on_and_off_makes_no_check_call(live_check_calls: list[str]) -> None:
-    """AC10 and AC13 at the route: the live-mode default checker (replaced by the
-    package guard) runs for a request without the flag and never for one with it off."""
+    """The live-mode default checker runs for a request without the flag and never
+    for one with it off."""
     runner = ScriptedRunner()
     app = create_app(runner=runner, preflight=valid_preflight)
     with TestClient(app) as client:
@@ -365,7 +369,7 @@ def test_a_replay_mode_app_checks_with_the_scripted_checker(tmp_path: Path) -> N
 
 
 def test_replay_asks_nothing_without_the_header(tmp_path: Path) -> None:
-    """AC10: the default flag is on and the question is clear, so nothing changes."""
+    """Without the header, the default flag is on and the question is clear, so nothing changes."""
     with guarded(), TestClient(replay_app(tmp_path)) as client:
         session_id = client.post("/research", json={"query": "q"}).json()["session_id"]
         status = _wait(client, session_id, TERMINAL, timeout=30)
@@ -377,7 +381,7 @@ def test_replay_asks_nothing_without_the_header(tmp_path: Path) -> None:
 
 
 def test_replay_with_the_header_asks_then_plans_with_the_readers_answers(tmp_path: Path) -> None:
-    """AC11 on the replay server: needs_input, the answers, then the run completes."""
+    """With the header, needs_input, then the answers, then the run completes."""
     app = replay_app(tmp_path)
     with guarded(), TestClient(app) as client:
         session_id = client.post("/research", json={"query": "q"}, headers={"X-Replay-Clarify": "on"}).json()["session_id"]

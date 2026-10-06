@@ -101,15 +101,12 @@ RELEVANCE_WEIGHT = 0.40
 REPUTATION_BLEND = 0.4
 
 LOW_CONFIDENCE_THRESHOLD = 0.4
-# notes-progress-report spec §6.2: Evaluating's split on ``overall_score``. Strong
-# at 0.70 and above, weak below ``LOW_CONFIDENCE_THRESHOLD`` (exactly today's
+# Evaluating's split on ``overall_score``. Strong
+# at 0.70 and above, weak below ``LOW_CONFIDENCE_THRESHOLD`` (exactly
 # ``low_confidence``), fair in between.
 STRONG_SOURCE_THRESHOLD = 0.70
 DEFAULT_BATCH_SIZE = 12
 DEFAULT_MAX_TOTAL_SOURCES = 36
-# Compatibility alias for callers that imported the old cap constant. The
-# old single-pass cap is now represented by ``max_total_sources``.
-DEFAULT_MAX_SOURCES = DEFAULT_MAX_TOTAL_SOURCES
 DEFAULT_EXCERPT_CHARS = 2000
 _RATIONALE_CHARS = 1000
 
@@ -558,7 +555,7 @@ SourceStrength: TypeAlias = Literal["strong", "fair", "weak"]
 
 
 def source_strength(source: ScoredSource) -> SourceStrength | None:
-    """Strong, fair or weak (notes-progress-report spec §6.2); ``None`` unscored."""
+    """Strong, fair or weak; ``None`` unscored."""
     if source.evaluation_status != "scored" or source.overall_score is None:
         return None
     if source.overall_score >= STRONG_SOURCE_THRESHOLD:
@@ -569,7 +566,7 @@ def source_strength(source: ScoredSource) -> SourceStrength | None:
 
 
 def strength_counts(sources: Sequence[ScoredSource]) -> dict[str, int]:
-    """How many scored sources are strong, fair and weak (spec §6.1)."""
+    """How many scored sources are strong, fair and weak."""
     strengths = [source_strength(source) for source in sources]
     return {
         "strong_count": strengths.count("strong"),
@@ -579,11 +576,11 @@ def strength_counts(sources: Sequence[ScoredSource]) -> dict[str, int]:
 
 
 class _EvaluationProgress:
-    """One scoring pass's running counts (notes-progress-report spec §6.1, §6.2).
+    """One scoring pass's running counts.
 
     Each source is counted once, the first time a settled batch reports it, so
     a total never depends on how many events arrive or how sources were
-    batched (review M13). ``rated``/``unrated`` hold urls; ``rated`` maps each
+    batched. ``rated``/``unrated`` hold urls; ``rated`` maps each
     scored url to its strength.
     """
 
@@ -623,7 +620,7 @@ class _EvaluationProgress:
 
 
 def evaluation_progress_event(metadata: Mapping[str, JsonValue]) -> ResearchEvent:
-    """One ``source_evaluator.progress`` event (spec §4 item 1, §6.1): live-only."""
+    """One ``source_evaluator.progress`` event: live-only."""
     return agent_event(
         agent_name=SOURCE_EVALUATOR_NAME,
         event_type="source_evaluator.progress",
@@ -701,11 +698,8 @@ async def assess_new_sources(
 ) -> list[ScoredSource]:
     """Assess newly read sources and return the cumulative source snapshot.
 
-    The one assessment service both the Source Evaluator and the Fact Checker
-    use, so a document retrieved during verification is scored before it may
-    carry a report statement and no graph trip back to the evaluator is
-    needed to score it. It is async and tool-free: it calls the provider and
-    nothing else, and it performs no I/O.
+    The assessment service behind the Source Evaluator. It is async and
+    tool-free: it calls the provider and nothing else, and it performs no I/O.
 
     Order of work, which is also the order the guarantees are made in:
     validate the read-backed dossiers; reuse the assessments whose content,
@@ -961,8 +955,8 @@ def scoring_messages(
 def reputation_lookup_error(*, failures: int, sources: int) -> ResearchError:
     """Warn that remembered reputations could not be read.
 
-    Recoverable: scoring continues from the dossiers alone, which is the
-    spec's "continue with direct scoring" path. Carries counts only —
+    Recoverable: scoring continues from the dossiers alone (direct
+    scoring). Carries counts only —
     never the backend's exception text.
     """
     return agent_error(
@@ -1190,9 +1184,9 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         }
         return SourceEvaluationTask(
             instruction=state.original_question,
-            # live-briefs spec §4.6: the reader's notes fill the request's
+            # The reader's notes fill the request's
             # ``# Context`` slot, for relevance only; ``""`` without notes. Their
-            # steering views only (notes-progress-report spec §5.1): a note whose
+            # steering views only: a note whose
             # only kind is new_angle is its own topic, and that topic is among the
             # sub-topics a source cited for it is judged with.
             guidance=render_reader_notes(
@@ -1212,10 +1206,9 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
 
         A live lookup wins over the ``memory_context`` seed. Any failure
         leaves the seed in place, records one recoverable error for the
-        whole pass, and lets scoring continue — the spec's "continue with
-        direct scoring" requirement.
+        whole pass, and lets scoring continue with direct scoring.
 
-        Every source is looked up at once (latency audit O12), and the
+        Every source is looked up at once, and the
         answers are applied in the sources' own order, so the map is the one
         the one-by-one lookups built.
         """
@@ -1269,13 +1262,13 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
         revised document from being credited with its earlier score.
 
         The batches run concurrently, at most
-        ``agents.source_scoring_concurrency`` in flight (D9), and each one
+        ``agents.source_scoring_concurrency`` in flight, and each one
         stands alone: a batch that cannot reach the provider marks its own
         sources ``unscored_provider``, and no other batch is marked on the
         strength of its failure. The returned snapshot is assembled in
         ``task.groups`` order whatever order the batches finished in.
 
-        ``on_progress`` (notes-progress-report spec §6.2) is called once the
+        ``on_progress`` is called once the
         batches are planned, before the first scoring call -- with nothing to
         score, once with every count 0 -- then once each batch settles, scored
         or failed, with cumulative counts in completion order.
@@ -1497,7 +1490,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
                 source_count=len(task.groups),
             )
         ]
-        publish_live(events[0])  # live-briefs spec E3; returned below as well
+        publish_live(events[0])  # returned below as well
         errors: list[ResearchError] = []
 
         async with self.tracker.agent_span(self.name) as span:
@@ -1505,7 +1498,7 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             errors.extend(lookup_errors)
             sources, scoring_errors, provider_failed = await self.score_sources(
                 task,
-                # notes-progress-report spec §6.2: each count, live-only.
+                # Each count, live-only.
                 on_progress=lambda metadata: publish_live(
                     evaluation_progress_event(metadata)
                 ),

@@ -58,7 +58,7 @@ FINALIZE_NODE = "finalize_report"
 # names so a LangSmith trace reads the same as this tuple; ``report_reviewer``
 # is the graph's own reviewer rather than one of the five agents,
 # ``note_pass`` is the hop that opens the reader's notes' targeted research
-# pass (live-briefs spec §4.6), ``extra_pass`` is the hop that carries the
+# pass, ``extra_pass`` is the hop that carries the
 # iteration increment,
 # ``writer_redraft`` is the hop that hands the reviewer's defects back to the
 # writer, and ``finalize_report`` is the one node with no model call at all.
@@ -82,8 +82,8 @@ NODE_NAMES = (
 MAX_WRITER_REDRAFTS = 1
 
 # The supersteps one writer re-run takes: the redraft hop, the writer, the
-# reviewer. A reader note buys at most one such re-run and one targeted pass
-# (live-briefs spec §4.6), which is what the recursion limit allows for.
+# reviewer. A reader note buys at most one such re-run and one targeted pass,
+# which is what the recursion limit allows for.
 NOTE_REDRAFT_STEPS = 3
 
 ROUTE_NOTE_PASS = "note_pass"
@@ -151,16 +151,16 @@ _STATUS_BY_ROUTE_REASON = {
     # report and not a failed run: the artifacts publish, honestly partial.
     "review_unavailable": "incomplete",
     "extra_pass_requested": "incomplete",
-    # PD-23: the ceiling was spent and the required targets are still missing,
+    # The ceiling was spent and the required targets are still missing,
     # so the run ends on its budget rather than on an acceptance. ``iteration``
     # is this status's own vocabulary and keeps its name in the CLI and the
-    # API (PD-11).
+    # API.
     "extra_passes_exhausted": "max_iterations",
     # The run is continuing, not ending: the writer has been asked for one
     # more draft, so this is the same "not accepted yet" reading an extra pass
     # carries.
     "redraft_requested": "incomplete",
-    # Both note routes continue the run (live-briefs spec §4.6), so they read
+    # Both note routes continue the run, so they read
     # as the loops above do; neither is ever a run's last decision.
     "note_pass_requested": "incomplete",
     "note_redraft_requested": "incomplete",
@@ -232,7 +232,7 @@ def initial_graph_state(
     ``memory_context`` is supplied by the caller. The graph performs no
     recall of its own: that touches ChromaDB and an embedding provider,
     which orchestration has no business owning. ``reader_answers`` are the
-    reader's answers to the one-time check (live-briefs spec §4.4), empty
+    reader's answers to the one-time check, empty
     when nothing was asked.
 
     A new run stamps the current evidence contract. The read and evidence
@@ -260,14 +260,14 @@ def is_halted(state: ResearchState) -> bool:
 
 
 def extra_pass_target_ids(state: ResearchState) -> list[str]:
-    """The obligations the next extra pass exists for (D10, spec §6.5).
+    """The obligations the next extra pass exists for.
 
     ``missing_required_target_ids`` is the code-stamped gate: a required
     target with no verified finding at all. A reviewer's own ``coverage``
     defect can name a required target that gate already counts as answered,
     when the answer it found does not actually settle the question — that
     target owes the pass too, *unless* a scoped re-review has since marked
-    that same defect resolved (T5 addendum item 4): ``defect.material``
+    that same defect resolved: ``defect.material``
     already excludes it from ``ReportReview.material_defects`` and
     ``semantic_review_passes``, and this reads the same flag so a target the
     redraft already answered cannot still buy another pass just because the
@@ -277,9 +277,9 @@ def extra_pass_target_ids(state: ResearchState) -> list[str]:
     diverge: whichever one is asked "is anything missing?" or "for what?",
     both read the same targets.
 
-    A reader note's own targets (``note-…``, live-briefs spec §4.6) are never
+    A reader note's own targets (``note-…``) are never
     part of it: a note buys its one targeted pass through the note route,
-    outside the extra-pass budget (D11), so a note target still missing after
+    outside the extra-pass budget, so a note target still missing after
     its pass neither buys an extra pass nor ends the run as exhausted.
     """
     review = state.report_review
@@ -311,7 +311,7 @@ def note_dispositions(state: ResearchState) -> dict[str, str]:
 
 
 def researched_note_topic_ids(state: ResearchState) -> set[str]:
-    """The reader-note topics (``note-…``) that have done their research (spec §5.1).
+    """The reader-note topics (``note-…``) that have done their research.
 
     A topic is researched when its latest ``researcher.sub_topic.completed``
     event ended with any stop reason but ``provider_error``, or when a
@@ -319,7 +319,7 @@ def researched_note_topic_ids(state: ResearchState) -> set[str]:
     snapshot counts as none answered). A topic with no completed event — one
     ``stop`` left unstarted — is not researched. So a note whose thread failed,
     or never started, still owes its one note pass, unless a finding already
-    answered it (D31; review I5; review 2, I-1).
+    answered it.
     """
     latest: dict[str, str] = {}
     for event in state.events:
@@ -344,7 +344,7 @@ def researched_note_topic_ids(state: ResearchState) -> set[str]:
 
 
 def notes_due_a_pass(state: ResearchState) -> list[ReaderNote]:
-    """Active notes owed their one targeted pass, not yet passed (D11; spec §5.4, D5).
+    """Active notes owed their one targeted pass, not yet passed.
 
     A research note — its kinds include ``new_angle`` — owes it while it has
     no researched topic of its own, whatever the review said or whether one
@@ -372,7 +372,7 @@ def notes_due_a_pass(state: ResearchState) -> list[ReaderNote]:
 
 
 def notes_due_a_redraft(state: ResearchState) -> list[ReaderNote]:
-    """Active notes owed their one redraft (live-briefs spec §4.6; spec §5.4, D20).
+    """Active notes owed their one redraft.
 
     Only a note with a steering kind buys one — a steering note, or a mixed
     note's steering half: one the report ignores although its findings bear
@@ -393,7 +393,7 @@ def notes_due_a_redraft(state: ResearchState) -> list[ReaderNote]:
 
 
 def graph_route(state: ResearchState) -> tuple[str, str]:
-    """Where the graph goes after the Report Reviewer, and why (spec §6.3-§6.5).
+    """Where the graph goes after the Report Reviewer, and why.
 
     Pure, so the conditional edge, the recorded route event, the final status,
     and the terminal quality status all read the same decision.
@@ -419,14 +419,13 @@ def graph_route(state: ResearchState) -> tuple[str, str]:
     judged; a scored report a reviewer explicitly refused buys its one
     re-draft before the run gives up, since that is the only lever left once
     research cannot help; and a scored report that cleared the gates and the
-    reviewer is accepted (PD-23) — even when the pass bought for a missing
-    target found nothing, since §6.4 accepts a report whose remaining
-    obligations are *listed* under Not found. Only a scored report that was
+    reviewer is accepted — even when the pass bought for a missing
+    target found nothing, since a report whose remaining
+    obligations are *listed* under Not found is accepted. Only a scored report that was
     not accepted and still owes a target that the ceiling can no longer buy
     for ends as ``extra_passes_exhausted`` (status ``max_iterations``).
 
-    The reader's notes are read right after a halt (live-briefs spec §4.6,
-    D11; notes-progress-report spec §5.4): first a note owed its one targeted
+    The reader's notes are read right after a halt: first a note owed its one targeted
     pass buys it (``ROUTE_NOTE_PASS``) — a research note with no researched
     topic, whatever the review's status, or a steering note the review found
     no evidence for — then a note with a steering kind the report ignores, or
@@ -494,8 +493,8 @@ def graph_recursion_limit(max_extra_passes: int) -> int:
     Always passed explicitly. LangGraph 1.2 defaults this generously, but
     earlier releases defaulted to 25 — under what the first pass plus one extra
     pass over eight nodes need — and an explicit value documents the shape.
-    Every reader note may buy one targeted pass and one redraft (live-briefs
-    spec §4.6, D11a), so the notes' own worst case is added on top: the limit
+    Every reader note may buy one targeted pass and one redraft,
+    so the notes' own worst case is added on top: the limit
     is never what stops a run the notes lengthened.
     """
     if max_extra_passes < 0:

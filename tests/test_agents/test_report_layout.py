@@ -1,7 +1,7 @@
-"""Spec §3, §8, §9, §10: the answer-first skeleton, the Sources line, the
+"""The answer-first skeleton, the Sources line, the
 evidence log's audit view, and the fallbacks -- plus the label machinery
-(``_point_labels``/``_row_label``) the terminal reviewer still depends on
-(R1), which this format keeps out of the reader-facing report itself.
+(``_point_labels``/``_row_label``) the terminal reviewer still depends on,
+which this format keeps out of the reader-facing report itself.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from deep_research.agents.report_table import key_figures_table
 from deep_research.agents.sources import normalize_source_url
 from deep_research.utils.types import (
     EarlierEdition,
-    EvidenceTarget,
     FactRow,
     FigureContext,
     FigureResult,
@@ -115,13 +114,11 @@ def _section_body(markdown: str, heading: str) -> str:
     return tail[: match.start()] if match else tail
 
 
-# --- label machinery the terminal reviewer still reads (R1) -------------------
+# --- label machinery the terminal reviewer still reads -------------------------
 #
-# ``_point_labels``/``_row_label``/``figure_label`` no longer print beside a
-# reader-facing sentence (spec §3.1 rule 8 cuts that suffix); they stay
-# because ``report_reviewer.py`` imports them to show the reviewer model the
-# same provenance words the reader used to see. Their own behaviour is
-# unchanged, so their tests stay.
+# ``_point_labels``/``_row_label``/``figure_label`` do not print beside a
+# reader-facing sentence; they exist because ``report_reviewer.py`` imports
+# them to show the reviewer model the provenance words for each sentence.
 
 
 def test_figure_label_follows_the_spec_labels() -> None:
@@ -154,7 +151,7 @@ def test_a_sentence_carries_the_label_of_the_subject_it_names() -> None:
 
 
 def test_an_article_in_the_targets_question_keeps_a_sentence_to_its_subject() -> None:
-    """Fix round 1 (CRITICAL 1): a target's "a" never strips the subject's "A" from a label."""
+    """A target's "a" never strips the subject's "A" from a label."""
     base = _composition()
     target = make_target(question="What noise rating did testers give a kettle?")
     topic = SubTopic(coverage_id="topic-01", title="Kettle noise", rationale="r",
@@ -170,7 +167,7 @@ def test_an_article_in_the_targets_question_keeps_a_sentence_to_its_subject() ->
 
 
 def test_a_comparison_target_keeps_each_label_with_its_own_product() -> None:
-    """Task 5.6c: a sentence naming K1 never carries K2's label, and the reverse."""
+    """A sentence naming K1 never carries K2's label, and the reverse."""
     base = _composition()
     target = make_target(question=("How do the Kettle K1 and the Kettle K2 compare on the "
                                    "Example Tester noise rating for 2026?"),
@@ -192,7 +189,7 @@ def test_a_comparison_target_keeps_each_label_with_its_own_product() -> None:
 
 
 def test_an_article_in_the_sentence_never_hands_a_label_to_the_other_subject() -> None:
-    """Fix round 1 (Important 2): the give-away "a" is required as the whole name, not alone."""
+    """The give-away "a" is required as the whole name, not alone."""
     base = _composition()
     target = make_target(question=("How do the Model A and the Model B compare on the "
                                    "Example Tester noise rating for 2026?"),
@@ -259,7 +256,7 @@ def test_a_sentence_carries_only_the_row_of_the_period_it_states() -> None:
 
 
 def test_a_sentence_citing_a_relay_copy_carries_the_relays_label() -> None:
-    """D13: the label beside a sentence is its own cited page's, not the row primary's."""
+    """The label beside a sentence is its own cited page's, not the row primary's."""
     own_page = _finding("https://agency.example.test/own-release",
                         "The agency expects 14 GW of additions in 2025.",
                         "14", "GW", organisation="Example Agency", kind="forecast", period="2025")
@@ -286,7 +283,7 @@ def test_a_sentence_citing_a_relay_copy_carries_the_relays_label() -> None:
     ]
 
 
-# --- §3: the reader skeleton, in order -----------------------------------------
+# --- the reader skeleton, in order ---------------------------------------------
 
 
 def _skeleton_composition() -> ReportComposition:
@@ -345,7 +342,7 @@ def test_no_table_prints_nothing_when_none_qualifies() -> None:
     assert "No figure passed the Evidence Verifier." not in report
 
 
-# --- §3.1.2: the evidence line --------------------------------------------------
+# --- the evidence line ----------------------------------------------------------
 
 
 def test_the_evidence_line_states_the_date_and_source_count() -> None:
@@ -371,7 +368,7 @@ def test_the_evidence_line_uses_the_singular_for_one_source() -> None:
     assert report.splitlines()[2] == "Evidence as of 2026-09-25 · 1 source"
 
 
-# --- §3.1.3: bottom-line markers before the stop --------------------------------
+# --- bottom-line markers before the stop ----------------------------------------
 
 
 def test_bottom_line_markers_land_before_each_sentences_final_stop() -> None:
@@ -391,7 +388,7 @@ def _single_point_composition(text: str) -> ReportComposition:
 
 
 def test_bottom_line_markers_land_before_a_closing_quote_after_the_stop() -> None:
-    """P3: a closing quote after the sentence's stop keeps the stop where it
+    """A closing quote after the sentence's stop keeps the stop where it
     was, with the markers before it -- never a second stop after the quote."""
     composition = _single_point_composition('He called it "the best."')
     body = _section_body(render_written_report(composition), "## Bottom line")
@@ -435,7 +432,7 @@ def test_the_bottom_line_falls_back_when_every_part_failed() -> None:
 
 
 def test_the_bottom_line_does_not_claim_a_part_failed_when_parts_are_only_empty() -> None:
-    """R-7: a part recorded as merely 'empty' (no failure, nothing to write)
+    """A part recorded as merely 'empty' (no failure, nothing to write)
     must not make the bottom line claim a part's sections could not be
     written -- that wording is reserved for an actual failure."""
     finding = _finding("https://agency.example.test/report",
@@ -456,10 +453,10 @@ def test_the_bottom_line_does_not_claim_a_part_failed_when_parts_are_only_empty(
 
 
 def test_the_bottom_line_never_denies_an_answer_a_citable_finding_gives() -> None:
-    """P1-3 belt and braces: a citable (verified) finding must never be
+    """A citable (verified) finding must never be
     hidden behind 'No source we could check answers this question.', even
     when no part kept a point that states it. This fixture's finding was
-    simply never placed into any part (R-7: no part recorded and no failure
+    simply never placed into any part (no part recorded and no failure
     either), so the honest reading is the plain unplaced-findings sentence,
     not a claim that a part's sections could not be written.
     """
@@ -478,7 +475,7 @@ def test_the_bottom_line_never_denies_an_answer_a_citable_finding_gives() -> Non
 
 
 def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
-    """P0: an empty bottom line (a D8 outage -- the draft returned no kept
+    """An empty bottom line (the draft returned no kept
     sentence) must not claim the report cites nothing when a section below
     it, or the table, does answer."""
     finding = _finding("https://agency.example.test/report",
@@ -502,11 +499,11 @@ def test_the_bottom_line_does_not_deny_an_answer_the_sections_give() -> None:
 
 
 
-# --- §5, §3.1.7-9: citation order and the Sources line --------------------------
+# --- citation order and the Sources line ----------------------------------------
 
 
 def test_citation_order_is_bottom_line_then_sections_then_table() -> None:
-    """Notes-progress-report spec §7.5: the table prints after the topics, so its
+    """The table prints after the topics, so its
     pages are numbered after the sections'."""
     a = _finding("https://a.example.test/1", "A reports X.", "1", "unit", organisation="A")
     b = _finding("https://b.example.test/1", "B reports Y.", "2", "unit", organisation="B")
@@ -593,7 +590,7 @@ def test_the_sources_line_falls_back_to_the_host_publisher_without_a_credit() ->
 
 
 def test_the_sources_line_escapes_a_title_that_could_hijack_the_link() -> None:
-    """P2: an untrusted page title containing ``](url)`` must not let the
+    """An untrusted page title containing ``](url)`` must not let the
     printed Sources link point somewhere other than the cited page."""
     finding = _bare_finding("https://cnet.com/real-page",
                             "Guide](https://evil.example.test) to headphones",
@@ -608,7 +605,7 @@ def test_the_sources_line_escapes_a_title_that_could_hijack_the_link() -> None:
 
 
 def test_the_sources_line_percent_encodes_unsafe_url_characters() -> None:
-    """P2: a link destination with a raw space or an unbalanced paren must
+    """A link destination with a raw space or an unbalanced paren must
     still be one non-whitespace Markdown token pointing at the cited page."""
     finding = _bare_finding("https://x.example.test/a b", "A report",
                             "X reports on something.")
@@ -635,7 +632,7 @@ def test_the_quality_records_printed_title_matches_the_sources_line() -> None:
 
 
 def test_the_table_header_escapes_a_pipe_in_a_column_title() -> None:
-    """P2: an options-table column title is the writer's section title
+    """An options-table column title is the writer's section title
     (model text); an embedded pipe must not break the GFM table."""
     table = ReportTable(shape="options", columns=["Option", "Price | value", "Recommended by"],
                         rows=[[TableCell(text="A"), TableCell(), TableCell()]])
@@ -649,7 +646,7 @@ def test_the_table_header_escapes_a_pipe_in_a_column_title() -> None:
 
 
 def test_recommended_by_credits_a_relay_mark_not_the_relaying_page_alone() -> None:
-    """R-1: when the picking mark's own entry text credits a relay (a page
+    """When the picking mark's own entry text credits a relay (a page
     reporting another body's pick), Recommended-by must print that credit,
     never the relaying page's bare name as if it were the picker itself."""
     finding = _bare_finding("https://businessinsider.com/best-headphones",
@@ -676,8 +673,8 @@ def test_recommended_by_credits_a_relay_mark_not_the_relaying_page_alone() -> No
 
 
 def test_an_option_part_cell_also_credits_a_relay_mark() -> None:
-    """The same check for a part cell (already correct at the time of R-1,
-    kept as a render-level regression alongside the Recommended-by fix)."""
+    """The same check for a part cell, kept as a render-level
+    regression alongside the Recommended-by check."""
     finding = _bare_finding("https://businessinsider.com/best-headphones",
                             "Best headphones", "Business Insider reports the pick.")
     table = ReportTable(
@@ -702,7 +699,7 @@ def test_an_option_part_cell_also_credits_a_relay_mark() -> None:
 
 
 
-# --- §10, §3.1.6: what we couldn't confirm --------------------------------------
+# --- what we couldn't confirm ---------------------------------------------------
 
 
 def test_what_we_couldnt_confirm_groups_searched_and_unsearched_targets() -> None:
@@ -723,8 +720,7 @@ def test_what_we_couldnt_confirm_groups_searched_and_unsearched_targets() -> Non
 
 
 def test_what_we_couldnt_confirm_lists_answered_but_unstated_targets() -> None:
-    """The disclosure group that closes the loop the P1-3 quality fix opened:
-    a required target a citable finding answers, but that no printed
+    """A required target a citable finding answers, but that no printed
     statement states, must reach the reader instead of vanishing silently."""
     target = make_target("topic-01-target-01", question="How much capacity was added?")
     topic = SubTopic(coverage_id="topic-01", title="Capacity", rationale="r",
@@ -808,10 +804,10 @@ def test_an_unreachable_pages_reason_reads_in_plain_words() -> None:
 
 
 def test_the_unreachable_pages_header_never_overclaims_when_the_same_work_is_cited() -> None:
-    """P3-3: a blocked landing page denied while its own PDF is read and
+    """A blocked landing page denied while its own PDF is read and
     cited is still one work reaching the report; the header must not claim
     "nothing from them is in this report" in a case it cannot rule out.
-    Chosen fix: soften the header rather than try to detect "the same work"
+    The header is worded softly rather than detecting "the same work"
     from the renderer alone (no reliable signal for that is carried on
     ``UnreachablePage`` or the citation index)."""
     finding = _finding("https://agency.example.test/report.pdf",
@@ -833,7 +829,7 @@ def test_the_unreachable_pages_header_never_overclaims_when_the_same_work_is_cit
     assert "so nothing from them is in this report" not in report
 
 
-# --- §3.1.8: the unchecked-sentence provenance exception ------------------------
+# --- the unchecked-sentence provenance exception --------------------------------
 
 
 def test_an_unchecked_sentence_with_a_fact_row_keeps_a_provenance_line() -> None:
@@ -862,7 +858,7 @@ def test_an_unchecked_sentence_with_a_fact_row_keeps_a_provenance_line() -> None
 
 
 def test_a_checked_sentence_with_a_fact_row_keeps_no_provenance_line() -> None:
-    """The exception is for ``unchecked`` sentences only (§3.1 rule 8)."""
+    """The exception is for ``unchecked`` sentences only."""
     finding = _finding("https://agency.example.test/report",
                        "The agency reports 10 GW added in 2024.",
                        "10", "GW", organisation="Example Agency")
@@ -887,7 +883,7 @@ def test_a_checked_sentence_with_a_fact_row_keeps_no_provenance_line() -> None:
 
 
 def test_an_unchecked_sentence_citing_a_relay_copy_gets_the_relays_provenance() -> None:
-    """P1/D13: an unchecked sentence that cites only the relay duplicate of a
+    """An unchecked sentence that cites only the relay duplicate of a
     fact row must not credit the row's primary page's issuer and release --
     a page the report never even cites."""
     own_page = _finding("https://agency.example.test/own-release",
@@ -924,7 +920,7 @@ def test_an_unchecked_sentence_citing_a_relay_copy_gets_the_relays_provenance() 
 
 
 def test_an_unchecked_sentence_citing_the_own_duplicate_of_a_relay_row_gets_its_own_provenance() -> None:
-    """P1/D13, the reverse direction: when the row's own primary is the relay
+    """The reverse direction: when the row's own primary is the relay
     page but the sentence cites only the original issuer's duplicate page,
     the suffix must credit that page, never a relay the report never cites."""
     own_page = _finding("https://agency.example.test/own-release",
@@ -959,10 +955,10 @@ def test_an_unchecked_sentence_citing_the_own_duplicate_of_a_relay_row_gets_its_
     assert "(figure: Example Agency (released 2025-01-14))" in body
 
 
-# --- §9: the evidence log ------------------------------------------------------
+# --- the evidence log ----------------------------------------------------------
 
 
-def test_the_evidence_log_keeps_the_search_trail_the_reader_no_longer_carries() -> None:
+def test_the_evidence_log_keeps_the_search_trail_the_reader_report_omits() -> None:
     log = render_finding_log(_composition())
 
     assert "BloombergNEF 2025 US storage forecast" in log
@@ -971,7 +967,7 @@ def test_the_evidence_log_keeps_the_search_trail_the_reader_no_longer_carries() 
 
 
 def test_the_evidence_log_shows_every_verified_figure_even_one_that_answers_no_target() -> None:
-    """Decision #4: the full fact-row table moves to the evidence log, unfiltered --
+    """The full fact-row table is in the evidence log, unfiltered --
     an auditor sees every verified figure, not only the ones a plan target names."""
     base = _composition()
     unplanned = base.fact_rows[1].model_copy(update={"target_ids": []})
@@ -1116,7 +1112,7 @@ def test_two_revision_editions_show_their_own_release_and_label() -> None:
 
 
 def test_a_fact_row_value_that_spells_its_own_unit_is_not_doubled() -> None:
-    """D15: a spelled duration value ('a century') already carries its own
+    """A spelled duration value ('a century') already carries its own
     unit; the fact-row table must not repeat it ('a century years')."""
     base = _composition()
     doubled_row = base.fact_rows[0].model_copy(update={"value": "a century years"})
@@ -1129,7 +1125,7 @@ def test_a_fact_row_value_that_spells_its_own_unit_is_not_doubled() -> None:
 
 
 def test_a_fact_row_rate_value_keeps_its_real_unit() -> None:
-    """D15/P2 (RevZ3): 'per year' names a rate's period, not a doubled
+    """'per year' names a rate's period, not a doubled
     duration -- 'days' is what is counted, not the period counted in -- so
     the dedup must never strip it down to '2 days per'."""
     base = _composition()
@@ -1142,7 +1138,7 @@ def test_a_fact_row_rate_value_keeps_its_real_unit() -> None:
 
 
 def test_the_verified_figures_table_omits_an_uncited_figure() -> None:
-    """D11c (run 8): the 'Verified figures' table lists rows only for
+    """The 'Verified figures' table lists rows only for
     findings the report actually cites (a bottom-line or section
     statement's own finding_ids) -- a verified figure no statement cites
     stays out of that table, though it remains printed under its own
@@ -1158,7 +1154,7 @@ def test_the_verified_figures_table_omits_an_uncited_figure() -> None:
 
 
 def test_the_verified_figures_table_includes_a_table_only_figure() -> None:
-    """D11c/P2 (RevV4 follow-up): a figure the reader report's own
+    """A figure the reader report's own
     question-shaped table prints -- bound to a required target, never cited
     by a bottom-line or section statement -- still needs a row in the
     evidence log's Verified figures table, the traceability that table
@@ -1187,7 +1183,7 @@ def test_the_verified_figures_table_includes_a_table_only_figure() -> None:
 
 
 def test_the_evidence_log_marks_a_disputing_finding() -> None:
-    """Audit observability (run 8; RevV4 P3 follow-up): the evidence log's
+    """The evidence log's
     finding block prints '- Disputes: yes', before Verification and its own
     nested figure lines, for a finding with ``Finding.disputes``, so an
     audit can tell whether the dissent re-ask fired."""
@@ -1202,7 +1198,7 @@ def test_the_evidence_log_marks_a_disputing_finding() -> None:
 
 
 def test_a_kept_figures_spelled_value_is_not_doubled_with_its_unit() -> None:
-    """D15: the same rule applies to a kept figure's own line under the
+    """The same rule applies to a kept figure's own line under the
     evidence log's Findings section, where value and unit are separate
     fields on the figure rather than one already-combined string."""
     finding = _finding(
@@ -1261,7 +1257,6 @@ def test_the_evidence_log_lists_dropped_marks_and_unplaced_findings() -> None:
     assert "S004: 'Model A' is not in the sentence" in log
     assert "## Unplaced findings" in log
     assert unplaced.source_url in _section_body(log, "## Unplaced findings")
-    assert "spec §6.1" not in log
 
 
 def test_the_evidence_log_lists_every_unreachable_page_uncapped() -> None:
@@ -1276,18 +1271,18 @@ def test_the_evidence_log_lists_every_unreachable_page_uncapped() -> None:
     assert "Denied 5" in log  # the reader report caps at 5; the ledger does not
 
 
-# --- §13: end-to-end goldens (T3 acceptance) -----------------------------------
+# --- end-to-end goldens --------------------------------------------------------
 #
 # Each composition is built the way the named run's own quality JSON would
 # carry it -- findings, a hand-set table, page credits, not-found targets --
 # so the assertion exercises the renderer's own assembly, numbering and
-# Sources logic against the spec's literal text, not the writer's sentence
+# Sources logic against a literal expected text, not the writer's sentence
 # generation or the table builder's own algorithm (both covered by their own
-# tests, T4 and T2).
+# tests).
 
 
 def _pre_flight_run_composition() -> ReportComposition:
-    """§13.2 -- pre-flight run 4 (session ``9390e6e1...``, pass 0)."""
+    """A pre-flight run's composition (pass 0)."""
     house = _bare_finding(
         "https://docs.house.gov/meetings/II/II00/20260513/119199/HHRG-119-II00-20260513-SD003.pdf",
         "U.S. battery capacity increased 66% in 2024",
@@ -1495,14 +1490,14 @@ How this was researched: [evidence log](report-9390e6e10b324fb6a6dc17477738a531-
 """
 
 
-def test_the_1322_pre_flight_run_renders_the_spec_golden() -> None:
-    """§14 T3 acceptance: §13.2's exact rendering from a hand-built
+def test_the_pre_flight_run_renders_its_golden() -> None:
+    """The exact rendering from a hand-built
     composition shaped like the run's own quality JSON."""
     assert render_written_report(_pre_flight_run_composition()) == _PRE_FLIGHT_RUN_GOLDEN
 
 
 def _electoral_college_composition() -> ReportComposition:
-    """§13.3 -- the generality smoke run (session ``e5d6cc40...``, pass 0; a
+    """The generality smoke run (pass 0; a
     capped run, 12 required targets left unsearched)."""
     cornell_article_ii = _bare_finding(
         "https://law.cornell.edu/constitution/articleii",
@@ -1718,8 +1713,8 @@ How this was researched: [evidence log](report-e5d6cc40fa74403ab7af075a9153c305-
 """
 
 
-def test_the_1333_electoral_college_smoke_renders_the_spec_golden() -> None:
-    """§14 T3 acceptance: §13.3's exact rendering from a hand-built
+def test_the_electoral_college_smoke_renders_its_golden() -> None:
+    """The exact rendering from a hand-built
     composition shaped like the run's own quality JSON (a capped run, 12
     required targets never searched)."""
     assert render_written_report(_electoral_college_composition()) == _ELECTORAL_COLLEGE_GOLDEN

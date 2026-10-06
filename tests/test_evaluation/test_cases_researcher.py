@@ -177,9 +177,8 @@ def test_every_case_state_plans_priority_ordered_planner_coverage_ids() -> None:
     A case state stands in for planner output: ``PlannerAgent`` orders a plan
     by priority and stamps ``topic-NN`` on that order, so the id carries the
     priority position, not the position the case author happened to write the
-    tuple in. Coverage from Task 3 onward is keyed on these ids, so an id
-    naming a lower-priority sub-topic than ``topic-01`` would silently
-    mis-report which planned topic was answered.
+    tuple in. An id naming a lower-priority sub-topic than ``topic-01`` would
+    silently mis-report which planned topic was answered.
     """
     for case in all_cases():
         sub_topics = case.state.sub_topics

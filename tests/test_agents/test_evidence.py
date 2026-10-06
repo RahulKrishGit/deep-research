@@ -131,7 +131,7 @@ def _identity_metadata(record: ReadRecord, **extra: object) -> dict[str, object]
 
 
 def test_build_read_record_carries_the_page_dates_captured_at_scrape_time() -> None:
-    """D14: the scraper's own dates, once verified, ride on the record."""
+    """The scraper's own dates, once verified, ride on the record."""
     record = build_read_record(
         session_id=SESSION_ID,
         reader="web_scraper",
@@ -907,7 +907,7 @@ def test_a_read_preserves_raw_locator_text_and_matches_it_normalized() -> None:
 
 
 def test_build_read_record_normalises_the_body_at_most_twice(monkeypatch) -> None:
-    """Whole-body normalisation must not scale with passage count (P1-A).
+    """Whole-body normalisation must not scale with passage count.
 
     ``excerpt_matches`` used to normalise the whole body once per passage
     (twice on a miss), so a page of many passages cost passages x page
@@ -1032,7 +1032,7 @@ def test_an_admitted_cache_read_still_resolves_its_publisher_and_work() -> None:
 
 
 def test_validate_cached_read_normalises_the_body_at_most_twice(monkeypatch) -> None:
-    """The same whole-body cost bound applies to cache re-validation (P1-A)."""
+    """The same whole-body cost bound applies to cache re-validation."""
     passages = {
         f"p-{i}": f"Paragraph {i} reports a unique measurement for locator {i}."
         for i in range(200)
@@ -1727,7 +1727,7 @@ def test_the_read_registry_keeps_ids_independent_of_assessments() -> None:
 
 
 # --------------------------------------------------------------------------
-# Task 4: read-derived metadata, transport relation, and retained works
+# read-derived metadata, transport relation, and retained works
 # --------------------------------------------------------------------------
 
 # One document that states its own publisher, year, and DOI the way a report's
@@ -1772,9 +1772,9 @@ def _web_read(
     )
 
 
-# Three passages of the EIA Today in Energy page the audited run read
-# (detail.php?id=64586): site navigation, the data-source note, and the
-# paragraph that carries the 18.2 GW forecast.
+# Three passages of the EIA Today in Energy page (detail.php?id=64586): site
+# navigation, the data-source note, and the paragraph that carries the 18.2 GW
+# forecast.
 _EIA_NAVIGATION = (
     "Solar, battery storage to lead new U.S. generating capacity additions in "
     "2025 - U.S. Energy Information Administration (EIA) Skip to "
@@ -2001,12 +2001,11 @@ def test_a_body_mention_does_not_transfer_issuer_ownership() -> None:
     )
 
 
-# The audited run's own EIA read: the agency's Today in Energy page, whose
-# title names the agency and prints the acronym its host is named by. There is
-# no "published by" imprint anywhere on the page, which is the whole difficulty:
-# the one document that states the answer carries no attribution phrase, so the
-# issuer anchor was dropped and the agency's own report could corroborate
-# nothing.
+# The EIA's Today in Energy page: the agency's page whose title names the
+# agency and prints the acronym its host is named by. There is no "published
+# by" imprint anywhere on the page. The page itself states the answer but
+# carries no attribution phrase, so the issuer anchor was dropped and the
+# agency's own report could corroborate nothing.
 AGENCY_URL = "https://www.eia.gov/todayinenergy/detail.php?id=67925"
 AGENCY_TITLE = (
     "Battery storage capacity averaged 70% growth over the last three years - "
@@ -2126,7 +2125,7 @@ def test_a_commercial_domain_is_refused_even_when_its_title_names_it() -> None:
     registration is controlled — "cleanedge.news" and "clean-edge.com" are one
     purchase away — so the same match would accept a squatter, and the rule
     refuses the commercial case deliberately. The cost is bounded: the pages
-    it keeps are the institutionally served ones the audited run needed.
+    it keeps are the institutionally served pages only.
     """
     read = _web_read(
         "https://cleanedge.com/data-dive/"
@@ -2544,7 +2543,7 @@ def test_a_verified_quote_is_recorded_at_the_precision_it_states() -> None:
 def test_a_date_the_document_spells_in_words_keeps_its_own_precision() -> None:
     """A page that writes its date in words dates itself by that day.
 
-    The audited run's EIA pages carry a dated byline ("In-brief analysis,
+    EIA's Today in Energy pages carry a dated byline ("In-brief analysis,
     published August 7, 2026"), and the evaluator's instruction reduced every
     one of them to its year, so two releases of one series could not be ranked
     against each other. The quote states the day, so the day is what is
@@ -3025,7 +3024,7 @@ def test_a_value_that_is_not_the_date_it_claims_is_rejected(value: str) -> None:
 
 
 # --------------------------------------------------------------------------
-# Preconditions carried from Task 4's breaker
+# Temporal date validation
 # --------------------------------------------------------------------------
 #
 # Both findings mint a temporal value and a freshness judgement at this shared
@@ -3214,7 +3213,7 @@ def test_cosmetic_text_keeps_digits_units_and_dashes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Task 2.1: attribution helpers moved in from ``researcher.py`` (F9, PD-18)
+# attribution helpers
 # ---------------------------------------------------------------------------
 
 
@@ -3250,7 +3249,7 @@ def test_a_source_line_is_an_attribution_cue() -> None:
 
 
 def test_a_to_quote_cue_credits_the_quoted_author() -> None:
-    """D8: 'To quote X' introduces a quoted author or work the same way
+    """'To quote X' introduces a quoted author or work the same way
     'according to X' introduces a relayed figure -- the quoted name is
     creditable as the passage's own originator, so a page that block-quotes
     a source without quotation marks (as text extraction often leaves it)
@@ -3266,7 +3265,7 @@ def test_a_to_quote_cue_credits_the_quoted_author() -> None:
 
 
 def test_a_parenthetical_citation_then_colon_credits_the_named_work() -> None:
-    """D8: 'X (Work N.N):' credits X with what follows the colon, the same
+    """'X (Work N.N):' credits X with what follows the colon, the same
     way a reporting verb right after the name does -- the shape a page's
     own inline citation of a quoted or excerpted work takes."""
     snippet = (
@@ -3281,7 +3280,7 @@ def test_a_parenthetical_citation_then_colon_credits_the_named_work() -> None:
 
 
 def test_writes_credits_only_directly_before_a_colon() -> None:
-    """D8/P1: 'writes'/'wrote' credits the name only when it sits directly
+    """'writes'/'wrote' credits the name only when it sits directly
     after it and is followed by a colon ('Example Author writes: ...') --
     not merely somewhere nearby, which would credit a name a page's own
     sentence about someone else's writing happens to mention."""
@@ -3293,7 +3292,7 @@ def test_writes_credits_only_directly_before_a_colon() -> None:
 
 
 def test_as_name_puts_it_credits_the_quoted_author() -> None:
-    """D8/P1: 'As X put it' credits X only as the whole introducer shape --
+    """'As X put it' credits X only as the whole introducer shape --
     'as' directly before the name and 'put(s) it' directly after -- never a
     bare 'put it' found nearby for an unrelated reason."""
     snippet = "As Example Author put it, the council could not act without a majority present."
@@ -3304,7 +3303,7 @@ def test_as_name_puts_it_credits_the_quoted_author() -> None:
 
 
 def test_a_bare_reporting_verb_wrote_does_not_credit_a_nearby_name() -> None:
-    """D8/P1 (RevZ3): a page saying 'X wrote a book' about someone is not
+    """A page saying 'X wrote a book' about someone is not
     that page's own attribution of ITS OWN separate statement to X -- the
     bare word 'wrote' must never turn a nearby name into a credited
     source."""
@@ -3319,7 +3318,7 @@ def test_a_bare_reporting_verb_wrote_does_not_credit_a_nearby_name() -> None:
 
 
 def test_a_bare_put_it_does_not_credit_a_nearby_name() -> None:
-    """D8/P1 (RevZ3): 'Example Council put it to a vote' uses 'put it' in
+    """'Example Council put it to a vote' uses 'put it' in
     its ordinary sense, not as a quotation introducer -- it must not credit
     Example Council with the page's own following statement."""
     snippet = "Example Council put it to a vote in 2019. Our survey found 12 GW."
@@ -3330,7 +3329,7 @@ def test_a_bare_put_it_does_not_credit_a_nearby_name() -> None:
 
 
 def test_a_cue_does_not_reach_across_a_sentence_end() -> None:
-    """D11a: an attribution cue's reach stops at a sentence end --
+    """An attribution cue's reach stops at a sentence end --
     'according to some sources. That amount ...' never credits 'That', a
     sentence-boundary word a model might otherwise propose as an
     organisation."""
@@ -3342,7 +3341,7 @@ def test_a_cue_does_not_reach_across_a_sentence_end() -> None:
 
 
 def test_a_cue_still_credits_a_name_in_the_same_sentence() -> None:
-    """D11a: the sentence-boundary fix must not break the ordinary case --
+    """The sentence-boundary fix must not break the ordinary case --
     'according to Example Institute' still credits Example Institute."""
     snippet = "According to Example Institute, the total grew to ten by 2019."
     read = make_read(
@@ -3352,7 +3351,7 @@ def test_a_cue_still_credits_a_name_in_the_same_sentence() -> None:
 
 
 def test_a_cue_still_credits_across_a_us_style_abbreviation() -> None:
-    """D11a follow-up (RevV4 P1): a period inside a two-letter initialism
+    """A period inside a two-letter initialism
     like 'U.S.' is not a sentence end -- 'according to the U.S. EIA' must
     still credit EIA, or a relayed figure reads as the host's own."""
     snippet = "According to the U.S. EIA, the total reached ten by 2019."
@@ -3363,7 +3362,7 @@ def test_a_cue_still_credits_across_a_us_style_abbreviation() -> None:
 
 
 def test_a_cue_still_credits_across_a_title_abbreviation() -> None:
-    """D11a follow-up (RevV4 P1): 'Dr.' is a title abbreviation, not a
+    """'Dr.' is a title abbreviation, not a
     sentence end -- 'according to Dr. Vale' must still credit Vale."""
     snippet = "According to Dr. Vale, the total reached ten by 2019."
     read = make_read(
@@ -3373,7 +3372,7 @@ def test_a_cue_still_credits_across_a_title_abbreviation() -> None:
 
 
 def test_said_still_credits_across_a_company_suffix_abbreviation() -> None:
-    """D11a follow-up (RevV4 P1): 'Inc.' is a company-suffix abbreviation,
+    """'Inc.' is a company-suffix abbreviation,
     not a sentence end -- 'Acme Inc. said ...' must still credit Acme
     Inc, exactly as the page spells it."""
     snippet = "Acme Inc. said revenue reached ten billion in 2019."
@@ -3384,7 +3383,7 @@ def test_said_still_credits_across_a_company_suffix_abbreviation() -> None:
 
 
 def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_curly_quote() -> None:
-    """D11a follow-up (ReRevV4): a sentence end followed by a closing curly
+    """A sentence end followed by a closing curly
     double quote is still a sentence end -- 'According to team.\u201d Beta
     grew fast.' must not credit Beta with the previous sentence's cue."""
     snippet = "According to team.\u201d Beta grew fast in 2019."
@@ -3395,7 +3394,7 @@ def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_curly_quote
 
 
 def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_straight_quote() -> None:
-    """D11a follow-up (ReRevV4): the same holds for a closing straight
+    """The same holds for a closing straight
     single quote -- 'According to team.' Beta grew fast.' must not credit
     Beta."""
     snippet = "According to team.' Beta grew fast in 2019."
@@ -3406,7 +3405,7 @@ def test_a_cue_does_not_reach_across_a_sentence_end_behind_a_closing_straight_qu
 
 
 def test_a_cue_does_not_reach_across_a_sentence_end_behind_nested_closing_quotes() -> None:
-    """D11a follow-up (ReRevV4 P2): a quote nested in a quote closes with two
+    """A quote nested in a quote closes with two
     marks in a row -- 'According to team.'" Beta grew fast.' must not credit
     Beta either."""
     snippet = "According to team.'\" Beta grew fast in 2019."
@@ -3430,7 +3429,7 @@ def test_a_stale_locator_windows_around_the_snippet_not_the_whole_page() -> None
 
 
 def test_own_organisation_on_an_agency_host() -> None:
-    """PD-18: an institutional host whose page names its own organisation.
+    """An institutional host whose page names its own organisation.
 
     eia.gov's registrable label spells the agency's initials while the page
     itself carries the full name. The identical page served from eia.news
@@ -3451,7 +3450,7 @@ def test_own_organisation_on_an_agency_host() -> None:
 
 
 def test_a_cover_credited_organisation_is_a_relay_even_far_from_the_figure() -> None:
-    """Task 3.6's audit-2 shape: ent.news's copy of EIA's Short-Term Energy
+    """ent.news's copy of EIA's Short-Term Energy
     Outlook credits EIA only on its cover/masthead and in scattered "Data
     source:" captions -- never within reach of the battery-storage figure
     itself, many pages later. The document's opening still identifies its
@@ -3478,7 +3477,7 @@ def test_a_cover_credited_organisation_is_a_relay_even_far_from_the_figure() -> 
         passages=passages,
     )
     # The valid, non-stale locator's own neighbourhood carries no EIA mention:
-    # this is not the stale-locator case round 1 fixed.
+    # this is not the stale-locator case.
     assert "EIA" not in neighbouring_passage_text(read, "page-14-chunk-14")
     assert relay_attribution_on_page(
         read, "page-14-chunk-14", figure_text, "U.S. Energy Information Administration"
@@ -3508,13 +3507,13 @@ def test_an_opening_that_merely_mentions_an_organisation_is_not_authorship() -> 
 
 
 # ---------------------------------------------------------------------------
-# Task FF1 (final review, slice 1): the sentence-level relay cues, and the
+# The sentence-level relay cues, and the
 # claim-era vocabulary that went with the claim pipeline.
 # ---------------------------------------------------------------------------
 
 
 def test_a_reporting_verb_after_the_name_is_an_attribution_cue() -> None:
-    """Task FF1 (review I5): a page credits a body with a reporting verb after
+    """A page credits a body with a reporting verb after
     its name -- "Gartner estimates ...", "IDC reported ...", "a Pew Research
     Center survey found ..." -- which is the same claim "according to Gartner"
     makes, so a relayed forecast keeps its issuer.
@@ -3548,7 +3547,7 @@ def test_a_reporting_verb_after_the_name_is_an_attribution_cue() -> None:
 
 
 def test_the_disposition_vocabulary_carries_no_stage_without_a_producer() -> None:
-    """Task FF1 (review P3-2): the claim pipeline that wrote "clustering" and
+    """The claim pipeline that wrote "clustering" and
     "adjudication-packet" is gone, so the persisted vocabulary names neither."""
     assert "clustering" not in DISPOSITION_STAGES
     assert "adjudication-packet" not in DISPOSITION_STAGES
@@ -3556,20 +3555,19 @@ def test_the_disposition_vocabulary_carries_no_stage_without_a_producer() -> Non
 
 
 def test_the_boundary_manifest_carries_no_claim_cluster_ids() -> None:
-    """Task FF1 (review P3-2): claim clusters left the state in step 4, and the
-    manifest they were recorded on has no writer for them."""
+    """The boundary manifest records no claim clusters: it has no
+    writer for them."""
     assert "claim_cluster_ids" not in BoundaryAudit.model_fields
 
 
 # ---------------------------------------------------------------------------
-# Task FF1 follow-up: the dead origin value, the reporting verbs the slice-3
-# review named, and a publication cue for the publication date.
+# The dead origin value, the reporting verbs, and a publication cue for the
+# publication date.
 # ---------------------------------------------------------------------------
 
 
 def test_an_evidence_unit_records_the_surviving_origin_only() -> None:
-    """Task FF1 follow-up: the Fact Checker is deleted (step 4), so the
-    researcher is the only agent that selects evidence. A unit naming another
+    """The researcher is the only agent that selects evidence. A unit naming another
     selector is refused by the producer and by the persisted contract, and the
     surviving value is still taken."""
     stored = _original_read()
@@ -3626,12 +3624,11 @@ def test_a_date_counts_as_the_publication_date_only_when_the_page_says_so() -> N
 
 
 def test_a_cue_less_quote_is_admitted_only_when_it_matches_the_pages_own_metadata_date() -> None:
-    """Fable's run-3 case, fixed correctly (RevDatesR3 P0): a cue-less quote
-    is the page's date only when it equals the date the page's own metadata
-    already captured (D14, ``ReadRecord.page_published``) -- never merely
-    because it sits early in the page's text, which is what let event dates,
-    data-period dates, effective dates and a related article's own date all
-    through in a first cut of this rule."""
+    """A cue-less quote is the page's date only when it equals the date the
+    page's own metadata already captured (``ReadRecord.page_published``) --
+    never merely because it sits early in the page's text, which would let
+    event dates, data-period dates, effective dates and a related article's
+    own date all through."""
     read = _dated(
         "Grid Storage Outlook. The page is dated Sep 17, 2026. Battery "
         "storage capacity grew across every region this year."
@@ -3702,7 +3699,7 @@ def test_a_cue_less_year_is_admitted_against_a_finer_captured_date() -> None:
 def test_a_cue_less_date_with_no_matching_page_date_is_refused(
     text: str, quote: str, value: str
 ) -> None:
-    """RevDatesR3 P0: a day-precision date early in the page's text is not by
+    """A day-precision date early in the page's text is not by
     itself the page's publication date. An event date, a data-period date, an
     effective date and a related article's own date must all still be
     refused with no cue and no page metadata that names the same date."""
@@ -3717,7 +3714,7 @@ def test_a_cue_less_date_with_no_matching_page_date_is_refused(
 
 
 # ---------------------------------------------------------------------------
-# WholeBranchReview P1-2: a publication cue must govern the date it labels,
+# A publication cue must govern the date it labels,
 # not merely sit somewhere in the same paragraph; "updated"/"modified" never
 # govern a publication claim; a proposal that disagrees with the page's own
 # captured metadata loses to that metadata.
@@ -3725,7 +3722,7 @@ def test_a_cue_less_date_with_no_matching_page_date_is_refused(
 
 
 def test_a_products_own_release_date_is_not_the_pages_publication_date() -> None:
-    """WholeBranchReview P1-2 repro: 'released' so commonly labels a product
+    """'Released' so commonly labels a product
     or a report, not the page itself, that it is dropped from the
     publication cues entirely rather than guessed apart from a real page
     label."""
@@ -3747,7 +3744,7 @@ def test_a_products_own_release_date_is_not_the_pages_publication_date() -> None
 
 
 def test_a_cue_less_bare_year_near_an_unrelated_release_mention_is_refused() -> None:
-    """WholeBranchReview P1-2 repro: a cue-less bare year must not ride in on
+    """A cue-less bare year must not ride in on
     an unrelated 'released' mention merely because it sits nearby."""
     read = _dated(
         "Grid Storage Outlook. Sony released the WH-1000XM6 on May 15, 2025. "
@@ -3779,7 +3776,7 @@ def test_a_published_byline_label_is_still_admitted() -> None:
 
 
 def test_an_updated_label_never_governs_a_publication_claim() -> None:
-    """WholeBranchReview P1-2: 'Updated'/'modified' label an edit, never a
+    """'Updated'/'modified' label an edit, never a
     first publication -- this contract carries no separate field to route
     an edit date to, so a claim only an update label governs is refused for
     ``publication_date`` rather than printed as though it were one."""
@@ -3799,7 +3796,7 @@ def test_an_updated_label_never_governs_a_publication_claim() -> None:
 
 
 def test_a_governed_proposal_that_disagrees_with_page_metadata_loses() -> None:
-    """WholeBranchReview P1-2: the page's own captured metadata date is more
+    """The page's own captured metadata date is more
     reliable than a model's proposal, even a genuinely cue-governed one. A
     wrong date is worse than none, so disagreement refuses the proposal
     rather than printing whichever date happened to be labelled in the
@@ -3835,14 +3832,14 @@ def test_a_governed_proposal_that_agrees_with_page_metadata_is_admitted() -> Non
 
 
 # ---------------------------------------------------------------------------
-# WholeBranchReview R-4: a publication cue must govern the date it labels --
+# A publication cue must govern the date it labels --
 # a cue inside a clause about a DIFFERENT document does not govern the
 # page's own date, even when it sits well inside the search window.
 # ---------------------------------------------------------------------------
 
 
 def test_a_cue_inside_a_clause_about_another_document_does_not_govern() -> None:
-    """WholeBranchReview R-4 repro: 'the EIA report, published June 10,
+    """'The EIA report, published June 10,
     2025' names another document's own publication, not this page's --
     the cue is attached to 'the ... report,' rather than to the page
     itself."""
@@ -3924,11 +3921,10 @@ def test_a_self_referential_this_article_was_published_governs() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The live pre-flight's Defect A (review-01): the page's own sentence credits a
-# body inside a reporting phrase, which the relay cue list did not read.
+# The page's own sentence credits a body inside a reporting phrase.
 # ---------------------------------------------------------------------------
 
-PREFLIGHT_WORDS = (
+RELAYED_CREDIT_WORDS = (
     "U.S. developers and power plant owners plan to significantly increase utility-scale "
     "battery storage over the next three years, reaching 30 GW by the end of 2025, based on "
     "the latest reporting from the U.S. Energy Information Administration (EIA)."
@@ -3936,12 +3932,12 @@ PREFLIGHT_WORDS = (
 
 
 def test_a_reporting_noun_phrase_credits_the_body_it_names() -> None:
-    """Defect A: "based on the latest reporting from X", "reporting from X",
+    """The phrases "based on the latest reporting from X", "reporting from X",
     "X data", "X's latest report" credit X the way "according to X" does, and a
     title of the form "X: ..." credits X too — while a body the sentence only
     mentions in passing still credits nobody."""
     credited = {
-        PREFLIGHT_WORDS: "U.S. Energy Information Administration",
+        RELAYED_CREDIT_WORDS: "U.S. Energy Information Administration",
         "Additions reached 30 GW, reporting from the Example Statistical Agency.":
             "Example Statistical Agency",
         "Additions reached 30 GW, according to the Example Statistical Agency.":
@@ -4127,7 +4123,7 @@ def test_snippet_span_text_contains_the_whole_three_passage_snippet() -> None:
 def test_snippet_span_text_does_not_stop_at_a_repeat_in_the_preceding_passage() -> None:
     """A repeat of the snippet's own words one passage early must not win.
 
-    RevLimitsLift's repro: the same sentence sits in both the passage before
+    The same sentence sits in both the passage before
     the relocated locator and the locator's own passage. The window must
     still hold the locator's own passage -- here, the one that turns the
     figure into a 2030 forecast -- not stop at the repeat one passage early.
@@ -4153,7 +4149,7 @@ def test_snippet_span_text_does_not_stop_at_a_repeat_in_the_preceding_passage() 
 def test_locate_snippet_admits_a_quote_crossing_a_line_break_hyphen() -> None:
     """A PDF-style mid-word passage cut must not defeat admission.
 
-    RevLimitsLift's repro: ``split_read_body`` can cut a passage inside a
+    ``split_read_body`` can cut a passage inside a
     line-break hyphen when the second half opens with no sentence or clause
     boundary of its own ("...stor-\\n" / "age..."), and the quote spans the
     join. Normalising each passage on its own -- before either side has ever
@@ -4212,8 +4208,8 @@ def _large_read(*, passage_count: int, passage_chars: int) -> ReadRecord:
 def test_locate_snippet_stays_fast_on_a_large_page() -> None:
     """Admission must not cost quadratic time on a large page.
 
-    RevLimitsLift measured 1.5 s per finding (hit) and 3 s (miss) on a
-    196k-char, 355-passage page before this fix -- ``build_findings`` runs
+    Quadratic admission cost measured 1.5 s per finding (hit) and 3 s (miss) on a
+    196k-char, 355-passage page -- ``build_findings`` runs
     synchronously, so every finding from a large page stalled every
     sub-topic running at the same time. A miss tries both hyphenation
     modes, so it alone warms both of the read's cache entries; twenty more

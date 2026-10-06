@@ -1,4 +1,4 @@
-"""Tests for ``gather_or_cancel`` (latency plan, Task 7)."""
+"""Tests for ``gather_or_cancel``."""
 
 from __future__ import annotations
 

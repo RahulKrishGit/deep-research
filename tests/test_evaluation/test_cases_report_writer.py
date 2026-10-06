@@ -1,4 +1,4 @@
-"""The Report Writer's evaluation cases (spec §6.1-6.2, D8).
+"""The Report Writer's evaluation cases.
 
 Each controlled case is driven through the real ``ReportWriterAgent`` (the
 ``report_writer_output_for`` fixture) with a ``ScriptedCompleter`` answering
@@ -19,7 +19,6 @@ from deep_research.agents.evidence_verifier import (
     StatementVerdictDraft,
 )
 from deep_research.agents.report import collapse_mirror_urls
-from deep_research.utils.types import SectionDraft, WriterPointDraft
 from deep_research.agents.sources import normalize_source_url
 from deep_research.evaluation.cases import (
     EXPECTED_CONTROLLED_CASE_IDS,
@@ -35,6 +34,7 @@ from deep_research.evaluation.evaluators import (
     evaluate_agent_gates,
 )
 from deep_research.evaluation.models import TargetOutput
+from deep_research.utils.types import SectionDraft, WriterPointDraft
 
 CONTROLLED = (
     "complete-cited-report",
@@ -195,7 +195,7 @@ def test_a_complete_case_composes_both_artifacts_and_passes_every_gate(
 def test_the_complete_case_names_its_unanswered_target(
     report_writer_output_for,
 ) -> None:
-    """§6.1 item 5: a required target nothing answers is listed, not dropped."""
+    """A required target nothing answers is listed, not dropped."""
     case = _case("complete-cited-report")
     unanswered = case.expectations.reference["unanswered_target_id"]
     output = report_writer_output_for(case)
@@ -260,7 +260,7 @@ def test_a_dropped_finding_is_published_with_its_reason(
 def test_a_refused_sentence_is_published_in_full_with_its_reason(
     report_writer_output_for,
 ) -> None:
-    """§6.1 item 7 and D8: the check's refusal reaches the reader's log."""
+    """The check's refusal reaches the reader's log."""
     case = _case("conflict-and-limitations")
     conflated = (
         "According to both the EIA and Wood Mackenzie, 19.6 GW of battery "
@@ -383,7 +383,7 @@ def test_the_canonical_case_prints_one_reference_per_work(
 def test_the_reader_report_renders_its_structural_sections(
     report_writer_output_for,
 ) -> None:
-    """§6.1 items 1-6 are structure, so the writer renders them itself."""
+    """Structural sections render themselves."""
     for case_id in CONTROLLED:
         case = _case(case_id)
         output = report_writer_output_for(case)
@@ -400,7 +400,7 @@ def test_the_reader_report_renders_its_structural_sections(
 def test_every_printed_statement_cites_a_known_label(
     report_writer_output_for,
 ) -> None:
-    """§6.2's rule, read back from the artifact."""
+    """Every printed statement cites a known label."""
     case = _case("conflict-and-limitations")
     output = report_writer_output_for(case)
 

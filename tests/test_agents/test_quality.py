@@ -1,11 +1,11 @@
-"""Spec §6.4 and PD-10: the deterministic gates over a written report.
+"""The deterministic gates over a written report.
 
 Every fixture here builds a ``ReportComposition`` directly: the gates read
 typed state and the typed composition, never the Report Writer agent's own
 machinery, so a hand-built pass with the same shape exercises them exactly as
 a real one would. ``duplicate_fact_rows`` is the one gate with no fixture: the
 writer's ``fact_rows()`` already merges same-fact rows, so the gate guards
-hand-built compositions and future producers only (PD-10, F11).
+hand-built compositions and future producers only.
 """
 
 from __future__ import annotations
@@ -124,9 +124,9 @@ def _topic(index: int, target: EvidenceTarget | None = None) -> SubTopic:
 def _state(findings: Sequence[Finding]) -> ResearchState:
     """Five planned sub-topics, the first two carrying the required targets.
 
-    Five on purpose: the retired broad-plan gate fired at five or more topics
+    Five on purpose: a broad-plan gate would fire at five or more topics
     whose coverage fell below 80%, so a clean report over this plan proves
-    that gate is gone (PD-10) instead of being a shape it never reached.
+    no such gate exists instead of being a shape it never reached.
     """
     targets = [
         make_target(organisation=EIA),
@@ -189,7 +189,7 @@ def _clean_pair(
     Every required target is answered by a verified finding, every kept
     sentence was judged by the Statement Check, as-of and scope are declared,
     both artifacts are written, and the Key Facts table carries a forecast row
-    with its release (PD-24). ``findings`` only widens ``state.verified_
+    with its release. ``findings`` only widens ``state.verified_
     findings`` (e.g. an extra quoted finding); the two cited, fact-rowed
     findings are always ACTUAL and FORECAST.
     """
@@ -235,7 +235,7 @@ def clean_state() -> ResearchState:
     Every required target is answered by a verified finding, every kept
     sentence was judged by the Statement Check, as-of and scope are declared,
     both artifacts are written, and the Key Facts table carries a forecast row
-    with its release (PD-24).
+    with its release.
     """
     return _clean_pair()[0]
 
@@ -258,7 +258,7 @@ def with_unjudged_sentence(
     Without ``recorded_failure`` the composition carries no verdict for them
     at all — the defect ``unjudged_sentences`` exists for. With it they carry
     "unchecked" and the batch failure the writer records when its Statement
-    Check call fails, which is §6.4's recorded-batch-failure case.
+    Check call fails -- the recorded-batch-failure case.
     """
     if recorded_failure:
         return _clean_pair(failed_batch=True)
@@ -289,8 +289,8 @@ def with_uncited_point() -> tuple[ResearchState, ReportComposition]:
     """The clean pair with one kept point whose statement cites no finding.
 
     The point is *added* to the clean summary rather than standing in for a
-    statement that answers a required target: with the accounting rule (review
-    F2) a target whose only statement is defected is unaccounted for as well,
+    statement that answers a required target: with the accounting rule a
+    target whose only statement is defected is unaccounted for as well,
     and this fixture keeps to its one gate.
     """
     state, composition = _clean_pair()
@@ -386,7 +386,7 @@ def without_scope() -> tuple[ResearchState, ReportComposition]:
     ],
 )
 def test_each_gate_fires_on_its_own_defect(gate: str, build) -> None:
-    """One defect, one gate: no retired name and no second gate beside it."""
+    """One defect, one gate: no second gate fires beside it."""
     assert compute_report_quality(*build()).hard_failures == [gate]
 
 
@@ -410,7 +410,7 @@ def test_the_snapshot_records_what_the_pipeline_measured() -> None:
 
 
 def test_the_snapshot_counts_quoted_findings_separately() -> None:
-    """D21: a quoted finding (no figure; neither check judged it for
+    """A quoted finding (no figure; neither check judged it for
     relevance or attribution) is counted in its own bucket, not folded into
     verified_findings -- the published counts must not overstate what was
     actually checked."""
@@ -427,7 +427,7 @@ def test_the_snapshot_counts_quoted_findings_separately() -> None:
 
 
 def test_answered_targets_come_from_the_findings_not_the_statement_metadata() -> None:
-    """The claim-era statement check is not what answers a target (R2).
+    """A target is answered by the findings, not by statement metadata.
 
     Both kept statements here name no target at all, which the statement-level
     reading would score as "nothing is answered", and the two required targets
@@ -458,7 +458,7 @@ def test_a_missing_required_target_is_missing_but_accounted_when_listed_not_foun
 
 
 def test_a_forecast_finding_with_no_admitted_date_counts_without_a_release() -> None:
-    """§11.2: the gate reads the forecast's finding for an admitted
+    """The gate reads the forecast's finding for an admitted
     ``release_date``/``statement_date``, not the row's own ``release`` text --
     which can hold a vintage alone.
     """
@@ -551,7 +551,7 @@ def test_a_row_with_no_subject_is_not_a_duplicate_of_a_row_that_names_one() -> N
 
 
 def test_two_rows_answering_different_obligations_are_not_duplicates() -> None:
-    """I6: rows that answer different targets are two facts, however equal their values.
+    """Rows that answer different targets are two facts, however equal their values.
 
     ``fact_rows`` keeps a pair of figures apart exactly when each answers a
     different obligation, so the gate must not call that pair a duplicate: two
@@ -589,11 +589,11 @@ def _stating_composition(state: ResearchState, findings: Sequence[Finding], *,
                          not_found: NotFoundTarget | None = None) -> ReportComposition:
     """A composition whose summary states the answers these findings carry.
 
-    The gate reads the kept statements' own ``finding_ids`` (review F2), so a
+    The gate reads the kept statements' own ``finding_ids``, so a
     fixture states an answer by citing the finding that carries it -- exactly
     what the writer's packet asks the model to do. ``sub_topics`` and
     ``findings`` mirror the state's own (the real writer's compose step
-    copies both verbatim), which the P1-3 follow-up's shared
+    copies both verbatim), which the shared
     ``answered_not_stated_targets`` helper needs.
     """
     return ReportComposition(
@@ -627,15 +627,15 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
     snapshot = compute_report_quality(state, composition)
     assert "topic-03-target-01" in snapshot.answered_target_ids
     assert "topic-03-target-01" not in snapshot.missing_required_target_ids
-    # Stated, so this target is accounted for (review F2's other half). The
-    # plan's other required target has no finding at all, which is the pre-1A
+    # Stated, so this target is accounted for. The
+    # plan's other required target has no finding at all, which is a separate
     # case and not this test's subject.
     assert "topic-03-target-01" not in snapshot.unaccounted_target_ids
 
-    # Answered but never stated: now disclosed under the new "We found
+    # Answered but never stated: disclosed under the "We found
     # sources on these but could not state a checked answer:" group instead
     # of being a silent, undisclosed gap -- the gate reads that same
-    # disclosure set (``answered_not_stated_targets``), so it is no longer a
+    # disclosure set (``answered_not_stated_targets``), so it is not a
     # hard failure once the report discloses it this way.
     unstated = compute_report_quality(state, _stating_composition(state, []))
     assert "topic-03-target-01" not in unstated.missing_required_target_ids
@@ -656,12 +656,12 @@ def test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic() -> Non
 
 
 def test_an_explicitly_bound_answer_must_still_be_stated_or_listed() -> None:
-    """P1-3: an explicit binding is not enough on its own to be accounted
+    """An explicit binding is not enough on its own to be accounted
     for -- the target still has to reach the reader, through a printed
-    statement or a Not-found entry, the same rule §11.2/review F2 already
-    holds a fallback answer to. Without either, the obligation is silently
+    statement or a Not-found entry, the same rule a fallback answer is
+    held to. Without either, the obligation is silently
     lost -- the vanished-part scenario a redraft or an all-refused part can
-    produce, which no gate previously caught for an explicit binding.
+    produce, which no gate would otherwise catch for an explicit binding.
     """
     bound = _unbound_dated_finding().model_copy(
         update={"target_ids": ["topic-03-target-01"]})
@@ -691,18 +691,18 @@ def test_an_explicitly_bound_answer_must_still_be_stated_or_listed() -> None:
 
 
 def test_a_target_neither_answered_nor_listed_is_still_flagged() -> None:
-    """P1-3 disclosure follow-up, requirement 2: the one 'truly undisclosed'
-    case the gate still catches after the new disclosure group is a required
+    """The one 'truly undisclosed' case the gate still catches after the
+    disclosure group is a required
     target with no answering finding at all.
 
-    An *answered* target that nothing states can no longer be constructed as
+    An *answered* target that nothing states cannot be constructed as
     "neither stated nor disclosed": ``answered_not_stated_targets`` is the
-    exact set both the renderer's new group and this gate's exemption read,
+    exact set both the renderer's group and this gate's exemption read,
     so any answered, unstated, unlisted target is disclosed by construction
     the moment it exists -- see the "Answered but never stated" assertions
     in ``test_an_unbound_extraction_answers_the_targets_of_its_own_sub_topic``
     and ``test_an_explicitly_bound_answer_must_still_be_stated_or_listed``,
-    both of which now show the target accounted for rather than flagged.
+    both of which show the target accounted for rather than flagged.
     Bypassing the renderer's own list to fabricate a case is not possible
     either: the gate computes the exemption from the same composition, not
     from rendered text, so there is no separate "list" to go around. The

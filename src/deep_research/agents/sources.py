@@ -71,7 +71,7 @@ def source_domain(url: str) -> str:
     """Return the registrable-ish host for ``url``, or the normalized input.
 
     This is a lightweight host extraction used for lookup keys. Publisher
-    identity and claim-level independence are handled by the Fact Checker.
+    identity is resolved by :func:`publisher_identity`.
     """
     normalized = normalize_source_url(url)
     parts = urlsplit(normalized)

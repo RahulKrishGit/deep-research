@@ -170,7 +170,7 @@ async def test_with_retries_never_retries_a_spent_request_budget(monkeypatch) ->
 
 
 # ---------------------------------------------------------------------------
-# §7.3 telemetry: the retry loop is where a 429 is counted, and where a
+# Telemetry: the retry loop is where a 429 is counted, and where a
 # reserved attempt that failed stops being a call in flight.
 # ---------------------------------------------------------------------------
 
@@ -298,7 +298,7 @@ async def test_a_refused_attempt_is_not_reported_as_a_failed_attempt(
 
 
 # ---------------------------------------------------------------------------
-# Per-attempt records (stall-fix brief P1-B): ``with_retries`` is the one
+# Per-attempt records: ``with_retries`` is the one
 # place that knows an attempt's number, timing and outcome, so it is where
 # they are built rather than duplicated at every provider call site.
 # ---------------------------------------------------------------------------

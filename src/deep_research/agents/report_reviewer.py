@@ -1,14 +1,12 @@
 """The terminal semantic report review: one call, the report judged against its findings.
 
-Task 10 replaced a structural proxy — a keyword-and-length formula over counts
-— with a review that reads the report and the evidence behind it. Step 4
-(Task 4.2, spec §6.2-§6.3) makes it the one judgement the graph runs: the fact
-checker, the claim clusters and the Critic left with step 4 (D2, D6, PD-16), so
-this review judges the *report* against the question and the verified findings
-behind each sentence, and nothing else asks a second reviewer the same question.
+This review reads the report and the evidence behind it and is the one
+judgement the graph runs, so it judges the *report* against the question and
+the verified findings behind each sentence, and nothing else asks a second
+reviewer the same question.
 
-Four properties make this review different from the proxy in kind rather than
-in degree:
+Four properties make this review different from a structural proxy (a
+keyword-and-length formula over counts) in kind rather than in degree:
 
 * **It sees the whole report.** ``reader_content`` is the candidate verbatim,
   and no section, statement, or finding snippet is prefix-clipped.
@@ -72,7 +70,7 @@ from deep_research.agents.report import (
     # the finding that states it (all three over ``figure_label``), and
     # ``_finding_registry_pairs`` pairs each finding with its *own* registered
     # label — the one walk that survives two revision editions sharing a
-    # fingerprint (P2).
+    # fingerprint.
     _figure_label_for,
     _finding_registry_pairs,
     _point_labels,
@@ -102,8 +100,8 @@ from deep_research.utils.types import (
     REVIEW_DIMENSIONS,
     REVIEW_RUBRIC_VERSION,
     SEMANTIC_REVIEW_MEAN,
-    UNSETTLED_STATEMENT_DISPOSITIONS,
     UNREVIEWED_STATEMENT_DISPOSITION,
+    UNSETTLED_STATEMENT_DISPOSITIONS,
     AnswerContract,
     ContractModel,
     FactRow,
@@ -113,14 +111,14 @@ from deep_research.utils.types import (
     NoteDisposition,
     ReaderNoteKind,
     ReportPoint,
+    ReportReview,
     ReportSection,
     ReportStatement,
-    TableCell,
-    ReportReview,
     ResearchError,
     ResearchState,
     ReviewDefect,
     StatementReviewDisposition,
+    TableCell,
     UnitScore,
     active_reader_notes,
 )
@@ -137,26 +135,26 @@ fails the run before any collaborator exists.
 REPORT_REVIEW_PROMPT_VERSION = "report-review-7"
 """The prompt and reply contract this review's requests are versioned under.
 
-Version 2 was the whole-report Critic-era packet, which carried checked claims,
+Version 2 was a whole-report packet that carried checked claims,
 corroboration badges, evidence batches and coverage targets. Version 3 is the
-step-4 review: the statements with their code-built labels and the findings
-behind them, one request, dispositions in the three-valued step-4 vocabulary.
-Version 4 is D10's: the same packet in the static-first layout, with the shared
+statement review: the statements with their code-built labels and the findings
+behind them, one request, dispositions in a three-valued vocabulary.
+Version 4 is the same packet in the static-first layout, with the shared
 reply format and one example, and the rule for sentences that end with no label.
-Version 5 (spec §11.1) is the consumer report format's: ``# Key facts`` becomes
+Version 5 is the consumer report format's: ``# Key facts`` becomes
 ``# Verified figures``, ``# Not found`` becomes ``# What the report could not
 confirm``, a new ``# Table`` block carries the question-shaped table's own
 backing statement and fact-row ids, each finding block gains a ``status:``
 line, and the system prompt no longer tells the reviewer a sentence carries a
 label *beside* it in the report -- labels are code-built material this packet
-shows, never printed prose (spec §3.1 rule 8).
-Version 6 (D5/D13) gives each finding the same bounded passage the writer and
+shows, never printed prose.
+Version 6 gives each finding the same bounded passage the writer and
 the Statement Check read around a snippet with no kept figure, and reworks the
 rule for a sentence that credits a body or states a fact its cited findings do
 not carry: it is judged against that finding's snippet *or* passage, so a
 credit or fact the passage names but the snippet's own cut drops is supported,
 not a false defect.
-Version 7 (run-5 prompt review, W2) shows each finding the source evaluation's
+Version 7 shows each finding the source evaluation's
 kind line, the same line the writer names a weak page's kind from. A sentence
 may describe the page by that kind, in those words and in no others.
 The version is what keeps a stored judgement of the older packet from being
@@ -243,8 +241,8 @@ def review_defect_limit(packet: ReportReviewInput) -> int:
 
 
 # The dimensions, in a stable order, with the semantic definition of each. The
-# names are the whole-report campaign's own seven; the definitions are what
-# Task 10 changed from a formula to a judgement.
+# names are the review's own seven; the definitions are what
+# makes each a judgement.
 DIMENSION_GUIDANCE: tuple[tuple[str, str], ...] = (
     (
         "completeness",
@@ -411,8 +409,8 @@ _REVIEW_REPLY_EXAMPLES = (
 )
 
 
-# The example a review of a packet with reader notes shows (live-briefs spec
-# §4.6): the one above, plus the verdict on one note.
+# The example a review of a packet with reader notes shows: the one above,
+# plus the verdict on one note.
 _REVIEW_NOTES_REPLY_EXAMPLES = (
     (
         "Example input: statements S001 and S002; S001 restates the actual that "
@@ -505,7 +503,7 @@ class ReviewStatementView(ContractModel):
 
     ``label`` is the label a rendered statement *ends with* — the key facts
     label of every figure the sentence itself states — built by the report's
-    own label builders and never re-derived here (R1, D7). ``finding_refs``
+    own label builders and never re-derived here. ``finding_refs``
     names the findings the sentence cites in the registry's own notation
     (``F01``), the same notation the finding blocks below the statements are
     headed with, and ``finding_labels`` carries their code-built reader labels:
@@ -518,7 +516,7 @@ class ReviewStatementView(ContractModel):
     the only thing that tells the reviewer which snippet a sentence rests on.
 
     ``target_ids`` is the address a defect against this statement routes by
-    (Task 4.4's extra pass).
+    (the extra pass).
     """
 
     statement_id: str = Field(min_length=1)
@@ -538,13 +536,13 @@ class ReviewFindingView(ContractModel):
     the evidence a statement is judged against, so it is shown whole and never
     re-worded. ``passage`` is the same bounded window around the snippet the
     writer and the Statement Check read (``statement_passages`` in
-    ``report_writer.py``, D5/D13): a sentence that credits a body or states a
+    ``report_writer.py``): a sentence that credits a body or states a
     fact the snippet alone does not carry is still supported when the passage
     carries it, so a footnote or an attribution line just past the snippet's
     own cut is not a false defect. ``None`` for a finding this run has no read
     passage for. ``status`` is the finding's own verified/corrected/quoted
-    outcome (spec §11.1), rendered in the same words the evidence log uses.
-    ``kind_line`` (W2) is the run's own source evaluation of the page's kind,
+    outcome, rendered in the same words the evidence log uses.
+    ``kind_line`` is the run's own source evaluation of the page's kind,
     in that evaluation's own words -- the same ``source:`` line the writer's
     registry shows -- so a sentence naming a weak page's kind can be judged
     against what the writer was actually shown. ``None`` when the source
@@ -581,7 +579,7 @@ class ReviewDeterministic(ContractModel):
 
 
 class ReviewNoteView(ContractModel):
-    """One reader note as the review reads it (live-briefs spec §4.6): its id,
+    """One reader note as the review reads it: its id,
     so the reply can name it, and the run's own reading of it."""
 
     note_id: str = Field(min_length=1)
@@ -596,7 +594,7 @@ class ReportReviewInput(ContractModel):
     and the labels of the findings it cites, those findings' titles, hosts and
     snippets, the key facts lines, the obligations Not found could not answer,
     and the deterministic checks over the same candidate. It carries no checked
-    claim, no corroboration badge, no evidence batch, no Critic score, no prior
+    claim, no corroboration badge, no evidence batch, no other reviewer's score, no prior
     run's judgement, no threshold, and no suggested verdict.
 
     ``fingerprint`` covers the exact material above. A review is reused only
@@ -612,7 +610,7 @@ class ReportReviewInput(ContractModel):
     findings: list[ReviewFindingView] = Field(default_factory=list)
     fact_rows: list[str] = Field(default_factory=list)
     table_lines: list[str] = Field(default_factory=list)
-    """The question-shaped table's own rows (spec §11.1), one line per row,
+    """The question-shaped table's own rows, one line per row,
     with the cell texts and the backing statement and fact-row ids -- built
     once by :func:`_table_lines` from ``composition.table`` and never a raw
     dump of it, so the packet stays the reader-facing wording."""
@@ -620,20 +618,18 @@ class ReportReviewInput(ContractModel):
     deterministic: ReviewDeterministic = Field(default_factory=ReviewDeterministic)
     required_target_ids: list[str] = Field(default_factory=list)
     """The plan's own required targets, so a returned defect can be judged
-    against them (D11): a ``coverage`` defect naming one of these is always
+    against them: a ``coverage`` defect naming one of these is always
     material, whatever severity the reply gave it — the routing layer and
     ``_defects`` both read this list rather than trusting the model's own
     account of what the question required.
     """
     rubric_version: int = Field(default=REVIEW_RUBRIC_VERSION, ge=1)
     reader_notes: list[ReviewNoteView] = Field(default_factory=list)
-    """The reader's active notes as steering notes (live-briefs spec §4.6;
-    notes-progress-report spec §5.5), which the review judges one by one into
-    ``note_dispositions``: every steering note, and each mixed note with
+    """The reader's active notes as steering notes, which the review judges one
+    by one into ``note_dispositions``: every steering note, and each mixed note with
     ``new_angle`` left out of its kinds. A note whose only kind is ``new_angle``
     is never listed — its own topic's targets decide it. ``[]`` for a run
-    without such notes, whose packet and fingerprint are then exactly what
-    they were."""
+    without such notes, which adds nothing to the packet or its fingerprint."""
     composition_fingerprint: str = ""
     """The semantic fingerprint of the composition this packet was built from.
 
@@ -726,7 +722,7 @@ def build_report_review_input(
                 restatement=note.restatement,
                 kinds=list(note.kinds),
             )
-            # notes-progress-report spec §5.5 (D5, D20): the steering notes, and
+            # The steering notes, and
             # each mixed note's steering half.
             for note in steering_notes(active_reader_notes(state.reader_notes))
         ],
@@ -749,8 +745,8 @@ def _statement_views(
     The cited findings are resolved through ``_finding_registry_pairs``, the
     report's own label-to-finding walk: two revision editions of one page share
     a ``finding_fingerprint``, so a fingerprint-keyed lookup would hand the
-    later edition's snippet to a statement citing the earlier one (P2) and a
-    statement citing either would name no registry label at all (P1).
+    later edition's snippet to a statement citing the earlier one, and a
+    statement citing either would name no registry label at all.
     """
     if composition is None:
         return []
@@ -824,15 +820,15 @@ def _finding_views(
     Paired by ``_finding_registry_pairs`` rather than by inverting
     ``finding_labels`` into a fingerprint-keyed map: two revision editions of
     one page share a fingerprint, and that map hands the later edition's
-    snippet and figure labels to both labels (P2), so a statement citing the
+    snippet and figure labels to both labels, so a statement citing the
     earlier one would be judged against the wrong evidence.
 
     ``passages`` is the finding id -> bounded passage map the writer and the
-    Statement Check read from (``statement_passages`` in ``report_writer.py``,
-    D5/D13) -- the composition's own field, never a second computation of it.
+    Statement Check read from (``statement_passages`` in ``report_writer.py``)
+    -- the composition's own field, never a second computation of it.
     A finding this run has no read passage for carries ``None``. ``source_lines``
     is the same finding id -> ``source:`` registry line the Statement Check
-    now reads too (``finding_source_lines`` in ``report_writer.py``, W2): a
+    also reads (``finding_source_lines`` in ``report_writer.py``): a
     finding whose source carries no rationale line carries ``None``.
     """
     if composition is None:
@@ -906,8 +902,8 @@ _FINDING_STATUS_LABELS: dict[str, str] = {
 
 
 def _finding_status_label(finding: Finding) -> str:
-    """The finding's own verified/corrected/quoted outcome, in reader words
-    (spec §11.1). ``dropped`` never reaches here: a dropped finding earns no
+    """The finding's own verified/corrected/quoted outcome, in reader words.
+    ``dropped`` never reaches here: a dropped finding earns no
     registry label, so ``_finding_registry_pairs`` never cites it."""
     if finding.verification is None:
         return ""
@@ -927,7 +923,7 @@ def _table_cell_text(
     shape: str,
     is_last_column: bool,
 ) -> str:
-    """One reviewer-facing cell's own text (spec §11.1; R1's fix round).
+    """One reviewer-facing cell's own text.
 
     An options-table cell's verbatim span lives in ``cell.text`` (the
     "Option" column) or in its ``entries`` (a part cell or Recommended by),
@@ -957,13 +953,13 @@ def _table_cell_text(
 
 
 def _table_lines(composition: ReportComposition | None) -> list[str]:
-    """The question-shaped table's own rows, one line per row (spec §11.1).
+    """The question-shaped table's own rows, one line per row.
 
     Each line carries every cell's own text -- the writer's verbatim span
     when it marked one, else the page(s) behind it -- headed by its column
     name, with that cell's own backing statement ids attached to it, so a
     mis-credited cell can be pinned to the statement that supposedly backs
-    it (R1) rather than only to the row.
+    it rather than only to the row.
     """
     if composition is None or composition.table is None:
         return []
@@ -996,7 +992,7 @@ def composition_semantic_fingerprint(
     The rule is "replacing the composition invalidates the stored review unless
     its semantic fingerprint matches", and this is that fingerprint: the reader
     statements (text and record), the finding ids the report cites, the key
-    facts rows, Not found, the question-shaped table, the parts (spec §6.1)
+    facts rows, Not found, the question-shaped table, the parts
     and the unreachable pages. Option marks already ride on the statements, so
     the table's own hash catches only what a rebuild from the same marks could
     still change: its shape and cap. Those are exactly what the review reads.
@@ -1057,8 +1053,8 @@ def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
     presentation field: ``quality_status`` is a generated badge this packet
     never reads, so stamping "accepted" onto a composition cannot invalidate a
     judgement of its content, while a content or reference change always does.
-    ``reader_notes`` is left out while it is empty, so a packet without notes
-    keeps the fingerprint it had before notes existed (live-briefs spec §4.6).
+    ``reader_notes`` is left out while it is empty, so an empty list never
+    changes the fingerprint.
     """
     exclude = {"fingerprint"} | (set() if packet.reader_notes else {"reader_notes"})
     payload = packet.model_dump(mode="json", exclude=exclude)
@@ -1076,9 +1072,7 @@ def report_review_input_fingerprint(packet: ReportReviewInput) -> str:
 
 # A report is quoted inside a Markdown fence of its own, made longer than any
 # backtick run inside it so the report cannot close the fence early and have its
-# own headings read as request sections. The Critic's renderer did this and is
-# deleted with step 4 (PD-21), so the rule lives here rather than behind a
-# doomed import.
+# own headings read as request sections.
 _REPORT_FENCE_MIN = 3
 _REPORT_FENCE_INFO = "report"
 
@@ -1143,7 +1137,7 @@ class ReviewDefectDraft(ContractModel):
 
 
 class NoteDispositionDraft(ContractModel):
-    """One provider-reported verdict on one reader note (live-briefs spec §4.6).
+    """One provider-reported verdict on one reader note.
 
     ``status`` is a plain string for the reason ``ReviewDefectDraft.kind`` is:
     one invented verdict drops that one entry (``_note_dispositions``) rather
@@ -1175,11 +1169,10 @@ class ReportReviewDraft(ContractModel):
 
 
 class ReportReviewNotesDraft(ReportReviewDraft):
-    """A whole-report review of a packet that carries reader notes (live-briefs spec §4.6).
+    """A whole-report review of a packet that carries reader notes.
 
     The same reply plus one verdict per note. Its own schema, so a review
-    without notes asks for exactly the reply, and shows exactly the examples,
-    it always did.
+    without notes asks only for the base reply and shows only the base examples.
     """
 
     note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)
@@ -1371,9 +1364,9 @@ def _not_found_block(packet: ReportReviewInput) -> str:
 def _reader_notes_block(packet: ReportReviewInput) -> list[str]:
     """The ``# Reader notes`` section, with each note's id, or nothing at all.
 
-    live-briefs spec §4.6: only a packet that carries notes gains the section
+    Only a packet that carries notes gains the section
     (and the request to judge them), so a review without notes is byte-for-byte
-    the request it was.
+    the base request.
     """
     if not packet.reader_notes:
         return []
@@ -1397,7 +1390,7 @@ def _deterministic_block(packet: ReportReviewInput) -> str:
 def review_messages(packet: ReportReviewInput) -> list[ChatMessage]:
     """The one request a review makes: the report, its statements, its findings.
 
-    Static first (PD-29, D10): the response contract, what each dimension
+    Static first: the response contract, what each dimension
     means and the reply format lead, so a second review of the same run's
     packet shares them as a prefix; the packet itself follows.
 
@@ -1544,7 +1537,7 @@ def _defects(
             and severity not in GAP_MATERIAL_SEVERITIES
             and set(target_ids) & required_targets
         ):
-            # D11: a coverage defect naming a required target withholds
+            # A coverage defect naming a required target withholds
             # acceptance whatever severity the reply gave it — the model
             # called an identical missing-half-answer defect major in one
             # review and minor in the next, so the floor is code, not asked.
@@ -1580,7 +1573,7 @@ def _note_dispositions(
 
     An id the packet did not carry, a status outside the vocabulary, or a
     second verdict on the same note is dropped: a note is never a reason to
-    refuse the review of the report itself (live-briefs spec §4.6).
+    refuse the review of the report itself.
     """
     known = {note.note_id for note in packet.reader_notes}
     verdicts: dict[str, NoteDisposition] = {}
@@ -1861,7 +1854,7 @@ class ReportReviewer:
     ) -> ReportReview:
         """Re-judge a redraft's changed parts, carrying the rest forward.
 
-        T5 addendum: the first review of a pass is always full; this is the
+        The first review of a pass is always full; this is the
         one after a redraft, asked only when the redraft's carried-over parts
         verified byte-identical to what the previous review judged (baked
         into ``scoped`` by :func:`build_scoped_report_review_input`). Its own
@@ -2208,9 +2201,9 @@ def review_defects_as_refinement_jobs(
     return iter(review.material_defects)
 
 
-# --- T5 addendum: scoped re-review after a redraft --------------------------
+# --- Scoped re-review after a redraft ---------------------------------------
 #
-# The first review of a pass is always full. After a redraft (spec §6.9), a
+# The first review of a pass is always full. After a redraft, a
 # second full review would re-read and re-judge the whole report even though
 # most of it did not change; this section builds a *scoped* re-review instead:
 # the model still sees the whole report for context and coherence, but its
@@ -2259,8 +2252,8 @@ class ScopedReportReviewInput(ContractModel):
         default_factory=dict
     )
     carried_note_dispositions: list[NoteDisposition] = Field(default_factory=list)
-    """The previous review's verdicts on the reader's notes (live-briefs spec
-    §4.6), kept for every note the re-review's reply does not judge again."""
+    """The previous review's verdicts on the reader's notes,
+    kept for every note the re-review's reply does not judge again."""
     fingerprint: str = ""
 
 
@@ -2269,8 +2262,8 @@ def scoped_report_review_input_fingerprint(scoped: ScopedReportReviewInput) -> s
     ``scoped.base.fingerprint`` because the material a scoped re-review reads
     -- the changed/unchanged split and the carried previous defects -- is not
     the material a full review reads, even over an identical report. The
-    reader-note fields are left out while empty, so a scoped packet without
-    notes keeps the fingerprint it had before notes existed (spec §4.6)."""
+    reader-note fields are left out while empty, so empty notes never change
+    the fingerprint."""
     exclude: dict[str, object] = {"fingerprint": True}
     if not scoped.carried_note_dispositions:
         exclude["carried_note_dispositions"] = True
@@ -2294,7 +2287,7 @@ def _statement_shape(statement: ReportStatement | None) -> tuple[object, ...]:
     render order on *every* pass, so a carried-over part's ids shift whenever
     an earlier part's point count changes even though its own words never
     moved. Comparing everything except the id is the honest "byte-identical"
-    check the addendum asks for.
+    check a scoped review needs.
     """
     if statement is None:
         return ()
@@ -2344,7 +2337,7 @@ def _redraft_diff(
         for section in composition.sections
         if section.coverage_id
     }
-    # The bottom line is always re-asked last (spec §6.9): always changed.
+    # The bottom line is always re-asked last: always changed.
     changed: list[str] = [
         point.statement.statement_id
         for point in composition.summary
@@ -2540,7 +2533,7 @@ _SCOPED_REVIEW_ADDITION = (
 )
 
 SCOPED_REPORT_REVIEW_SYSTEM_PROMPT = REPORT_REVIEW_SYSTEM_PROMPT + _SCOPED_REVIEW_ADDITION
-"""The scoped re-review's own developer message (T5 addendum).
+"""The scoped re-review's own developer message.
 
 Built as the full review's own system prompt plus a short scoped-rules
 paragraph, rather than restated from scratch, so a changed statement is
@@ -2587,7 +2580,7 @@ _SCOPED_REVIEW_REPLY_EXAMPLES = (
         '"rationale":"The redraft closed review-01; nothing else changed."}',
     ),
 )
-# The scoped example a packet with reader notes shows (live-briefs spec §4.6).
+# The scoped example a packet with reader notes shows.
 _SCOPED_REVIEW_NOTES_REPLY_EXAMPLES = (
     (
         "Example input: changed statement S004; unchanged statement S001; "
@@ -2640,8 +2633,8 @@ def scoped_review_messages(scoped: ScopedReportReviewInput) -> list[ChatMessage]
     The whole report and every statement are still shown whole, for context
     and cross-part coherence -- only the disposition-judging and new-defect
     burden is scoped to the changed statement ids. Every section a full
-    review shows is reused verbatim here (P1: the scoped material must not
-    drop the explanatory lines a full review's judgement rests on).
+    review shows is reused verbatim here: the scoped material must not
+    drop the explanatory lines a full review's judgement rests on.
     """
     packet = scoped.base
     static = [
@@ -2741,7 +2734,7 @@ class ScopedReportReviewDraft(ContractModel):
 
 
 class ScopedReportReviewNotesDraft(ScopedReportReviewDraft):
-    """A scoped re-review of a packet that carries reader notes (live-briefs spec §4.6):
+    """A scoped re-review of a packet that carries reader notes:
     the same reply plus one verdict per note, for the reason ``ReportReviewNotesDraft`` exists."""
 
     note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)
@@ -2758,7 +2751,7 @@ def _merge_previous_defect_resolutions(
 ) -> tuple[list[ReviewDefect], list[str], list[str]]:
     """Carry every previous defect forward, resolved or not.
 
-    T5 addendum item 4: a resolved defect is recorded, not silently dropped
+    A resolved defect is recorded, not silently dropped
     -- ``ReviewDefect.resolution`` says which, and ``.material`` reads it, so
     a resolved defect no longer blocks acceptance but still shows in the
     merged review's own defect history. A previous defect the reply never
@@ -2811,14 +2804,14 @@ def _scoped_new_defects(
     """New defects, refused only when every statement id they name is
     unchanged.
 
-    T5 addendum: "new defects are accepted only in changed parts, or when
-    they cite a contradiction with a changed part" -- a defect naming a
+    New defects are accepted only in changed parts, or when they cite a
+    contradiction with a changed part: a defect naming a
     changed id together with the unchanged one it contradicts still names a
     changed id, so this one rule covers both. A defect that names *no*
-    statement at all -- a required-target coverage gap (D11), a table or
+    statement at all -- a required-target coverage gap, a table or
     source mis-credit scoped only to fact-row ids, a report-level problem --
     is not restricted by this rule at all: it goes through :func:`_defects`
-    exactly as a full review's would, D11 floor included, because there is
+    exactly as a full review's would, required-target floor included, because there is
     no "which statement" for the scoping rule to apply to.
     """
     defects, notes = _defects(drafts, packet=scoped.base)

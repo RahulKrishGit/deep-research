@@ -1,5 +1,4 @@
-"""The reader notes' routes: one targeted pass and one redraft per note (live-briefs spec §4.6,
-D11, D11a; AC17, AC18, AC20)."""
+"""The reader notes' routes: one targeted pass and one redraft per note."""
 
 from __future__ import annotations
 
@@ -278,7 +277,7 @@ def _drafted_state() -> ResearchState:
 
 @pytest.mark.asyncio
 async def test_the_review_marks_what_it_read_and_waits_for_a_note_still_being_read() -> None:
-    """spec §4.8 "A note arrives during Reviewing": the node waits for the note, then
+    """A note that arrives during Reviewing: the node waits for the note, then
     takes it in unreviewed, which buys it a redraft."""
     board = NoteBoard()
     board.receive("first", received_at=AT, received_during="report_writer")
@@ -331,11 +330,11 @@ async def test_the_review_waits_for_a_reading_no_longer_than_its_own_ceiling(
     )
 
 
-# --- the compiled graph: AC17, AC18, AC20 ------------------------------------------
+# --- The compiled graph ----------------------------------------
 
 
 class NoteJudge(FakeReviewer):
-    """A reviewer double that judges every note its packet carries (spec §4.6).
+    """A reviewer double that judges every note its packet carries.
 
     A note is ``first`` the first time a review reads it and ``later`` after that.
     ``arrivals`` land on the board one per review, while that review runs, and
@@ -430,11 +429,11 @@ async def test_ac18_a_note_the_report_ignores_gets_exactly_one_redraft(tracker: 
 
 
 @pytest.mark.asyncio
-async def test_ac20_ten_notes_each_buy_one_pass_and_one_redraft_within_the_recursion_limit(
+async def test_ten_notes_each_buy_one_pass_and_one_redraft_within_the_recursion_limit(
     tracker: Tracker,
 ) -> None:
-    """D11a's worst case: every note arrives alone, during a review, and is judged
-    without evidence the first time — so each buys its own redraft, then its own pass."""
+    """Every note arrives alone, during a review, and is judged without evidence
+    the first time — so each buys its own redraft, then its own pass."""
     board = NoteBoard()
     arrivals = [fake_reader_note(f"n{number}") for number in range(1, MAX_NOTES_PER_RUN + 1)]
     judge = NoteJudge(first="no_evidence", later="honoured", board=board, arrivals=arrivals)
@@ -459,7 +458,7 @@ async def test_ac20_ten_notes_each_buy_one_pass_and_one_redraft_within_the_recur
     assert NOTE_PASS_NODE in {e.metadata["node"] for e in state.events if e.event_type == "graph.node.started"}
 
 
-# --- notes-progress-report spec §5.4: the pass and redraft rules (D4, D5, D20, D22) -------
+# --- The pass and redraft rules -------
 
 
 def _completed(coverage_id: str, stop_reason: str) -> ResearchEvent:
@@ -471,9 +470,10 @@ def _completed(coverage_id: str, stop_reason: str) -> ResearchEvent:
 
 @pytest.mark.parametrize("review_status", [None, "scored", "incomplete", "provider_failed"])
 def test_notes_due_a_pass_research_notes_any_review_status(review_status: str | None) -> None:
-    """§5.4, AC5 (D5): a research note with no researched topic owes its one pass whatever the
-    review's status — none at all, or a provider failure — and the route takes it before
-    review_unavailable; once its topic has done its research it owes none."""
+    """A research note with no researched topic owes its one pass whatever the
+    review's status — none at all, or a provider failure — and the route takes
+    it before review_unavailable; once its topic has done its research it owes
+    none."""
     angle = fake_reader_note("n1", kinds=["new_angle"], reviewed=True)
     review = None if review_status is None else fake_report_review(status=review_status)
     owed = fake_research_state(
@@ -492,11 +492,12 @@ def test_notes_due_a_pass_research_notes_any_review_status(review_status: str | 
 
 @pytest.mark.asyncio
 async def test_research_notes_never_redraft() -> None:
-    """§5.4, AC5, AC7 (D20, D22): only a note with a steering kind buys a redraft. A note whose
-    only kind is new_angle never does, whatever the review said of it or whether it read it; a
-    mixed note's steering half does — on ignored_with_evidence, or when no review input carried
-    it — after the note's pass, and that redraft spends none of the review's own re-run. A mixed
-    note whose steering half was judged no_evidence buys no pass: its topic researched it."""
+    """Only a note with a steering kind buys a redraft. A note whose only kind
+    is new_angle never does, whatever the review said of it or whether it read
+    it; a mixed note's steering half does — on ignored_with_evidence, or when
+    no review input carried it — after the note's pass, and that redraft spends
+    none of the review's own re-run. A mixed note whose steering half was
+    judged no_evidence buys no pass: its topic researched it."""
     angle_unread = fake_reader_note("n1", kinds=["new_angle"])
     angle_ignored = fake_reader_note("n2", kinds=["new_angle"], reviewed=True)
     mixed_ignored = fake_reader_note("n3", kinds=["new_angle", "exclude"], reviewed=True)
@@ -530,11 +531,12 @@ async def test_research_notes_never_redraft() -> None:
 
 @pytest.mark.asyncio
 async def test_failed_note_thread_owes_one_pass(tracker: Tracker) -> None:
-    """AC35 (review I5; review 2, I-1 and M-2): a research note whose thread ended in a
-    provider failure, or whose planning-time topic stop left unstarted, owes its one note pass
-    unless a finding answered one of its targets; the pass reuses its topic and confines the
-    researcher to it; and when that topic has spent its acquisition budget, the pass is refused
-    as unfunded and opens no loop, and the note stays passed and reads not_found."""
+    """A research note whose thread ended in a provider failure, or whose
+    planning-time topic stop left unstarted, owes its one note pass unless a
+    finding answered one of its targets; the pass reuses its topic and confines
+    the researcher to it; and when that topic has spent its acquisition budget,
+    the pass is refused as unfunded and opens no loop, and the note stays
+    passed and reads not_found."""
     angle = fake_reader_note("n1", kinds=["new_angle"], reviewed=True)
     topic = note_sub_topic(angle, priority=2, reason="reader_note")
     failed = fake_research_state(
@@ -585,9 +587,9 @@ async def test_failed_note_thread_owes_one_pass(tracker: Tracker) -> None:
 
 @pytest.mark.asyncio
 async def test_replaced_note_before_topic_gets_none(tracker: Tracker) -> None:
-    """§5.8: a research note a later note replaced before it had a topic never gets one — not
-    from the planner, not from the researcher's dispatcher, not from a note pass — and the later
-    note is judged on its own kinds."""
+    """A research note a later note replaced before it had a topic never gets one
+    — not from the planner, not from the researcher's dispatcher, not from a
+    note pass — and the later note is judged on its own kinds."""
     angle = fake_reader_note("n1", kinds=["new_angle"])
     later = fake_reader_note("n2", kinds=["exclude"], replaces="n1")
     planner = _planner(tracker, ScriptedCompleter())
@@ -606,7 +608,7 @@ async def test_replaced_note_before_topic_gets_none(tracker: Tracker) -> None:
     assert opened.sub_topics[0].rationale.endswith("and the review found no evidence for it yet.")
 
 
-# --- AC10: the two worst cases ten notes allow, on the compiled graph ---------------------
+# --- The two worst cases ten notes allow, on the compiled graph ---------------------
 
 
 class StagedNoteJudge(FakeReviewer):
@@ -679,9 +681,10 @@ def _ten_passes_and_ten_redrafts(state: ResearchState) -> None:
 
 @pytest.mark.asyncio
 async def test_recursion_limit_steering_notes_pass_then_redraft(tracker: Tracker) -> None:
-    """AC10, case 1 (review I1): ten steering notes, each arriving during a different Writing
-    step, each judged no_evidence (it buys its pass) and then ignored_with_evidence (it buys its
-    redraft): ten passes and ten redrafts, under the unchanged recursion limit."""
+    """Ten steering notes, each arriving during a different Writing step, each
+    judged no_evidence (it buys its pass) and then ignored_with_evidence (it
+    buys its redraft): ten passes and ten redrafts, under the unchanged
+    recursion limit."""
     state = await _ten_notes_during_writing(tracker, ["emphasis"], ["no_evidence", "ignored_with_evidence"])
 
     _ten_passes_and_ten_redrafts(state)
@@ -690,9 +693,10 @@ async def test_recursion_limit_steering_notes_pass_then_redraft(tracker: Tracker
 
 @pytest.mark.asyncio
 async def test_recursion_limit_mixed_notes_during_writing(tracker: Tracker) -> None:
-    """AC10, case 2: ten mixed notes, each arriving during a different Writing step, each
-    buying its pass (its new_angle half has no topic) and then its redraft (its steering half
-    judged ignored_with_evidence): ten passes and ten redrafts, under the unchanged limit."""
+    """Ten mixed notes, each arriving during a different Writing step, each
+    buying its pass (its new_angle half has no topic) and then its redraft (its
+    steering half judged ignored_with_evidence): ten passes and ten redrafts,
+    under the unchanged limit."""
     state = await _ten_notes_during_writing(
         tracker, ["new_angle", "exclude"], ["ignored_with_evidence", "ignored_with_evidence"],
     )

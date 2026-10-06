@@ -40,9 +40,7 @@ DEFAULT_OUTPUT_DIRECTORY = Path("output/evaluations/e2e")
 CONTROLLED_REPETITIONS = 3
 
 # The controlled suite runs one harness: the real agents over the replay
-# matrix. PD-14 retires the six-agent scripted-double harness that used to
-# replay a graph that no longer exists -- the real-agent matrix covers the
-# new graph end to end, so the mode axis is gone rather than defaulted.
+# matrix, which covers the graph end to end, so there is no mode axis.
 REAL_AGENT_MODE = "real-agent"
 REPLAY_SUITE_FILENAME = "replay-suite.json"
 _REPLAY_STORAGE_DIRECTORY = "replay"
@@ -102,7 +100,7 @@ def canonical_report_fingerprint(report: str) -> str:
     not because the stamp is left out of the hash.
 
     The link line is the one exception: ``How this was researched: [evidence
-    log](...)`` (spec §3.1 rule 8) embeds the evidence log's own filename,
+    log](...)`` embeds the evidence log's own filename,
     which carries the *session* id, not anything the reader read -- two
     repetitions of one fixture run under two different sessions by design
     (``run_replay_scenario``'s own session isolation), so hashing the link

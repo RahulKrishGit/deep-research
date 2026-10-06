@@ -1726,7 +1726,7 @@ async def test_openai_native_react_fails_closed_without_leaking(
 
 @pytest.mark.asyncio
 async def test_openai_native_sdk_and_envelope_failures_are_distinguishable() -> None:
-    """The formerly ambiguous pair: one public category, two origins."""
+    """One public category, two origins."""
     tracker = local_tracker()
     sdk_provider = _native_provider(
         tracker, RecordingResponses(OpenAIError("sdk rejected the request"))
@@ -1767,8 +1767,6 @@ async def test_openai_native_sdk_and_envelope_failures_are_distinguishable() -> 
     assert envelope_error.retryable is False
     assert sdk_error.http_status_code is None
     assert envelope_error.http_status_code is None
-    assert sdk_error.status_code is None
-    assert envelope_error.status_code is None
 
 
 def test_fresh_provider_error_copies_the_failure_origin() -> None:

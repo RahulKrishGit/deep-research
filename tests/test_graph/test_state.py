@@ -16,7 +16,6 @@ from deep_research.graph.state import (
     DEFAULT_MAX_EXTRA_PASSES,
     EVIDENCE_VERIFIER_NODE,
     EXTRA_PASS_NODE,
-    extra_pass_target_ids,
     FINALIZE_NODE,
     GRAPH_ROUTES,
     GRAPH_STATUSES,
@@ -36,6 +35,7 @@ from deep_research.graph.state import (
     ROUTE_REDRAFT,
     SOURCE_EVALUATOR_NODE,
     dump_state,
+    extra_pass_target_ids,
     graph_quality_status,
     graph_recursion_limit,
     graph_route,
@@ -258,7 +258,7 @@ def test_only_enumerated_error_types_halt_a_run() -> None:
     assert is_halted(fake_research_state(errors=[halting_error()]))
 
 
-# --- routing after the Report Reviewer (spec 6.3-6.5, PD-23) ----------------
+# --- Routing after the Report Reviewer ----------------
 
 
 def _routed(**fields: object) -> tuple[str, str]:
@@ -386,7 +386,7 @@ def test_a_redraft_never_outranks_research_the_budget_can_still_buy() -> None:
 
 
 def test_a_coverage_defect_naming_a_required_target_buys_the_extra_pass() -> None:
-    """A reviewer's own coverage defect is missing evidence too (D10).
+    """A reviewer's own coverage defect is missing evidence too.
 
     ``missing_required_target_ids`` is code-stamped from whether a verified
     finding exists for the target; a required target can carry one and still
@@ -422,13 +422,11 @@ def test_a_coverage_defect_naming_a_required_target_buys_the_extra_pass() -> Non
 
 
 def test_extra_pass_target_ids_excludes_a_resolved_coverage_defect() -> None:
-    """ReRevFormatT5 P1: a coverage defect a scoped re-review marked
-    resolved (T5 addendum item 4) must not still read as an obligation the
-    next extra pass exists for -- mirrors the resolution filter
-    ``ReportReview.material_defects``/``semantic_review_passes`` already
-    apply, so a target the redraft already answered cannot buy another
-    pass just because the merged record still lists the old defect.
-    """
+    """A coverage defect a scoped re-review marked as resolved must not still
+    read as an obligation the next extra pass exists for — mirrors the
+    resolution filter ``ReportReview.material_defects``/``semantic_review_passes``
+    already apply, so a target the redraft already answered cannot buy another
+    pass just because the merged record still lists the old defect."""
     quality = ReportQualitySnapshot(required_target_ids=["t1", "t2"])
     resolved_defect = ReviewDefect(
         defect_id="review-01", kind="coverage", severity="major",
@@ -497,7 +495,7 @@ def test_missing_targets_buy_one_extra_pass_then_publish() -> None:
         input_fingerprint="packet-1",
     )
     assert _routed(review=missing) == ("extra_pass", "extra_pass_requested")
-    # PD-23: passes spent, gates clear, reviewer accepts -> completed, the target under Not found
+    # Passes spent, gates clear, reviewer accepts: completed, the target under Not found.
     assert _routed(review=missing, iteration=1) == ("finalize", "report_accepted")
     assert _routed(review=missing, max_extra_passes=0) == (
         "finalize",
@@ -597,8 +595,7 @@ def test_a_paused_run_cannot_buy_a_pass_it_cannot_pay_for() -> None:
 
 
 def test_every_routing_reason_is_enumerated_and_maps_to_a_status() -> None:
-    """``graph_route`` has exactly the nine enumerated reasons (spec 6.3-6.5, and
-    the reader notes' two of live-briefs spec §4.6)."""
+    """``graph_route`` has exactly the nine enumerated reasons."""
     missing = fake_report_review(missing_required_target_ids=["t2"])
     rejected = fake_report_review(dimensions={d: 0.5 for d in REVIEW_DIMENSIONS})
     defective = fake_report_review(
@@ -806,7 +803,7 @@ def test_the_request_attempt_limit_error_type_halts_a_run() -> None:
     assert graph_status(state) == "failed"
 
 
-# --- the pass's own sub-topic selection (spec 6.5, Task 4.4) ----------------
+# --- The pass's own sub-topic selection ----------------
 
 
 def _two_topic_state(**overrides: object) -> ResearchState:
@@ -840,7 +837,7 @@ def test_the_first_pass_runs_every_planned_sub_topic_in_priority_order() -> None
 
 
 def test_an_extra_pass_runs_only_the_topics_that_own_a_missing_target() -> None:
-    """``extra_pass_target_ids`` is that pass's whole job list (D4, Task 4.4).
+    """``extra_pass_target_ids`` is that pass's whole job list.
 
     Nothing is a coverage gap here: a topic outside the list is simply not
     part of the extra pass, which is why the reason is recorded as a
@@ -856,8 +853,8 @@ def test_an_extra_pass_runs_only_the_topics_that_own_a_missing_target() -> None:
 
 
 def test_a_checkpoint_written_before_event_ids_loads_with_fresh_distinct_ids() -> None:
-    """live-briefs spec E1: an event recorded before ``event_id`` existed loads with a
-    fresh id, and that id then survives every later dump and load, so the
+    """An event recorded before ``event_id`` existed loads with a fresh id,
+    and that id then survives every later dump and load, so the
     orchestrator's once-only rule holds across a resume."""
     channel = initial_graph_state(session_id="session-1", question="Why?")
     channel["state"]["events"] = [

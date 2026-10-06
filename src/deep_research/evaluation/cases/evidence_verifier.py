@@ -2,7 +2,7 @@
 
 Every controlled case seeds one page, the finding whose snippet is on it, and
 the figures the snippet states. The graded behaviour is the verifier's own
-enforcement (§5.2, D8): a scope correction the page carries is applied, a
+enforcement: a scope correction the page carries is applied, a
 relay is recorded under the organisation the page credits, and evidence words
 the page does not carry drop the figure whatever the Context Check asserts.
 

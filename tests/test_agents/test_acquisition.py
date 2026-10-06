@@ -12,9 +12,9 @@ import pytest
 from deep_research.agents.acquisition import (
     PASSAGE_SELECTION_OPERATION,
     READ_ADMISSION_OPERATION,
+    WEB_PASSAGE_CHARS,
     AcquisitionPolicy,
     ManifestSequence,
-    WEB_PASSAGE_CHARS,
     admit_read_result,
     allowed_acquisition_actions,
     build_acquisition_context,
@@ -418,7 +418,7 @@ def test_short_access_shell_is_not_admitted_as_usable_evidence() -> None:
 
 
 def test_scraped_page_dates_are_threaded_onto_the_read_record() -> None:
-    """D14: the scraper's own ``page_published``/``page_updated`` reach the
+    """The scraper's own ``page_published``/``page_updated`` reach the
     read record it builds."""
     result = ToolResult(
         tool_name="web_scraper",
@@ -455,11 +455,10 @@ def test_a_read_with_no_page_dates_leaves_both_fields_unset() -> None:
 
 
 # The navigation block, the solar paragraph, and the battery-storage paragraph
-# of the EIA Today in Energy page the audited run read (detail.php?id=64586),
-# in the page's own order: site navigation and a headline first, the figure
-# that answers the question last. Stored as one passage — which is what the run
-# did — the figure sits past every character a packet could show, and the claim
-# that states it was recorded as unsupported.
+# of the EIA Today in Energy page (detail.php?id=64586), in the page's own
+# order: site navigation and a headline first, the figure that answers the
+# question last. Stored as one passage, the figure sits past every character a
+# packet could show, and the claim that states it was recorded as unsupported.
 _EIA_NAVIGATION = (
     "Solar, battery storage to lead new U.S. generating capacity additions in "
     "2025 - U.S. Energy Information Administration (EIA) Skip to "
@@ -519,10 +518,10 @@ def _eia_web_result() -> ToolResult:
 def test_a_web_read_is_split_into_bounded_paragraph_passages() -> None:
     """A page is several passages, so a packet can address the figure's sentence.
 
-    The audited run stored every web page as one passage, so the first
-    characters of the page — its site navigation — were all an adjudicator
-    could be shown, and claims whose figures sat 2,000 characters in were
-    recorded as unsupported.
+    Without splitting, a page stored as one passage would show only its initial
+    navigation, leaving figures 2,000 characters in unaddressable and claims about
+    them unsupported. Splitting into bounded passages enables the figure to be
+    in a passage the packet can display.
     """
     result = _eia_web_result()
 
@@ -560,14 +559,13 @@ def test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones() -> None
     """The lede is evidence even when relevance ranks another passage first.
 
     Selection scores a page's passages by the query alone, and a release's
-    opening passage is its header. The audited run's market-monitor read
-    deferred its opening chunk — the headline "2025 U.S. Energy Storage
-    Installations Set New Record, Surpass 2024 by 52%" — in both batches
-    selection ran. A read's own first passage therefore ranks on the same
-    character budget (D1) as everything else: here both the lede and the
-    ranked passage are short enough to share it, so both are admitted, in
-    rank order; the header never depends on a separate rule to be shown at
-    all, and a genuinely over-budget passage neither of them took is still
+    opening passage is its header. The opening chunk — the headline "2025 U.S.
+    Energy Storage Installations Set New Record, Surpass 2024 by 52%" — ranks
+    in selection alongside the query-ranked passages. A read's own first passage
+    therefore ranks on the same character budget as everything else: here both
+    the lede and the ranked passage are short enough to share it, so both are
+    admitted, in rank order; the header never depends on a separate rule to be
+    shown at all, and a genuinely over-budget passage neither of them took is
     accounted for.
     """
     lede = (
@@ -654,18 +652,19 @@ def test_verification_selects_by_relevance_without_the_lede() -> None:
 
 
 def test_a_navigation_lede_is_never_forced_to_the_front_of_selection() -> None:
-    """Fix-round P0/RevSelectionR3 P2: a link-dense opening passage is never
-    forced to the front as the lede, on the real shape of the audited run's
-    own reads -- but whole-page admission still admits it in its normal fill
-    position, exactly like any other passage the query matched nothing in.
+    """A link-dense opening passage is never forced to the front as the lede:
+    on web pages the real opening is a site masthead and nav rail, which is
+    link-dense rather than headline prose. Whole-page
+    admission still admits it in its normal fill position, exactly like any
+    other passage the query matched nothing in.
 
     The lede rule exists for a wire release's own headline (see
-    :func:`select_passages_with_lede`), but the audited run's reads open on
-    a site's own masthead and nav rail instead -- measured link-dense on
-    all five real chunk-0s (SoundGuys, CNET, What Hi-Fi, Business Insider,
-    Tom's Hardware) -- and the old rule forced that navigation into every
-    packet regardless of relevance. A lede this link-dense is never forced
-    to the front; an ordinary prose opening still is
+    :func:`select_passages_with_lede`), but web pages open on a site's own
+    masthead and nav rail instead, which measures link-dense on real examples
+    (SoundGuys, CNET, What Hi-Fi, Business Insider, Tom's Hardware); forcing
+    that navigation into every packet would ignore relevance. A
+    lede this link-dense is never forced to the front; an ordinary prose
+    opening still is
     (``test_a_reads_opening_passage_is_selected_alongside_the_ranked_ones``).
     Excluding it from admission entirely -- rather than just from the front
     -- mislabelled it ``deferred_capacity`` when capacity was never the
@@ -708,7 +707,7 @@ def test_a_navigation_lede_is_never_forced_to_the_front_of_selection() -> None:
 
 
 def test_an_is_link_dense_misfire_on_prose_is_still_admitted() -> None:
-    """RevSelectionR3 P2: a genuine misfire never costs a disposition.
+    """A genuine misfire never costs a disposition.
 
     ``is_link_dense`` can misfire on ordinary prose (a long, unpunctuated
     run of words after a short opening sentence, with few digits) -- the
@@ -780,9 +779,9 @@ def _fix_round_fillers(site: str) -> dict[str, str]:
 
 
 def test_none_of_the_five_real_chunk_zeros_is_forced_first() -> None:
-    """Fix-round proof (1): none of the audited run's five real chunk-0s is
-    forced first as the lede, through :func:`select_passages_with_lede`
-    itself -- not through ``is_link_dense`` in isolation.
+    """Real chunk-0s with link-dense navigation are never forced first as the
+    lede through :func:`select_passages_with_lede` itself -- not through
+    ``is_link_dense`` in isolation.
     """
     soundguys_nav = (
         "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
@@ -846,9 +845,8 @@ def test_none_of_the_five_real_chunk_zeros_is_forced_first() -> None:
 
 
 def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
-    """Fix-round proof (2): on each page, the passage Fable identified as
-    the answer ranks above that page's own chunk-0, for the sub-topic's
-    query as S2 builds it (target questions plus the original question).
+    """On each page, the answer passage ranks above that page's own chunk-0,
+    reflecting the target questions plus the original question.
     """
     soundguys_nav = (
         "SoundGuys Headphones Earbuds Speakers Podcasts Deals Reviews "
@@ -857,7 +855,7 @@ def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
         "budget Best for calls Best noise cancelling Best true wireless "
         "How we test What to look for Skip to main content"
     )
-    # SoundGuys FAQ chunk-55/56 (Fable A1): "best headphones for calls and
+    # SoundGuys FAQ chunk-55/56: "best headphones for calls and
     # meetings ... clear voice capture and good noise suppression".
     soundguys_answer = (
         "Best headphones for calls and meetings: the Sony WH-1000XM6 and "
@@ -872,7 +870,7 @@ def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
         "noise cancelling Best battery life How we test headphones What "
         "to look for Skip to main content Continue Reading Below"
     )
-    # CNET chunk-8/9 (Fable A1): "Excellent voice-calling performance with
+    # CNET chunk-8/9: "Excellent voice-calling performance with
     # more mics" against the XM6's 9.3 score.
     cnet_answer = (
         "The Sony WH-1000XM6 scores 9.3 for excellent voice-calling "
@@ -887,7 +885,7 @@ def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
         "calls Best noise cancelling How we test What to look for when "
         "choosing headphones Skip to main content"
     )
-    # What Hi-Fi chunk-25 (Fable A1): best call results on over-ear
+    # What Hi-Fi chunk-25: best call results on over-ear
     # headphones.
     whathifi_answer = (
         "The WH-1000XM6 gets the best call results of any over-ear "
@@ -912,13 +910,12 @@ def test_the_answer_passage_ranks_above_its_pages_chunk_zero() -> None:
 
 
 def test_admission_spends_a_character_budget_not_a_fixed_count() -> None:
-    """D1: selection admits by a character budget, not a fixed passage count.
+    """Selection admits by a character budget, not a fixed passage count.
 
-    The audited run admitted twelve of a page's 208 chunks against a fixed
-    count of four, deferring several that answered the question. A page with
-    many short, relevant chunks is not capped at a raw count: as long as
-    their combined length fits the budget the count previously implied,
-    every one of them is admitted.
+    On a page with many short, relevant chunks, admission does not cap at a
+    fixed count like four; instead, as long as the combined length fits the
+    character budget, every relevant chunk is admitted. This example shows
+    twelve admitted from 208 chunks, reflecting the budget's true reach.
     """
     chunks = [
         f"Call quality scored best in class, item {index}." for index in range(6)
@@ -937,7 +934,7 @@ def test_admission_spends_a_character_budget_not_a_fixed_count() -> None:
 
 
 def test_the_packet_orders_a_reads_passage_dump_by_rank_when_a_query_is_given() -> None:
-    """D2: the packet renders selected chunks by rank first and spends its
+    """The packet renders selected chunks by rank first and spends its
     budget on them, never the document-order dump that put navigation
     first -- proof that a mid-page chunk answering the query outranks a
     read's chunk-0 navigation.
@@ -973,7 +970,7 @@ def test_the_packet_orders_a_reads_passage_dump_by_rank_when_a_query_is_given() 
 
 
 def test_read_ids_scopes_the_packet_to_one_page() -> None:
-    """S6: a per-page extraction packet renders only that page's own read,
+    """A per-page extraction packet renders only that page's own read,
     evidence and passage dump -- not doubled as both an evidence row and a
     passage row (that duplication is affordable only for owed
     re-extraction's handful of focused passages, never a whole page).
@@ -1037,8 +1034,8 @@ def test_read_ids_scopes_the_packet_to_one_page() -> None:
 
 
 def test_a_decision_packet_keeps_every_candidate_row_when_units_overflow_it() -> None:
-    """RevSelectionR3 P1: whole-page units must never crowd every candidate
-    row out of the decision packet.
+    """Whole-page units must never crowd every candidate row out of the
+    decision packet.
 
     A single read's admitted units alone exceed the 24,000-character decision
     budget as soon as one page is read under whole-page admission, so a
@@ -1157,8 +1154,7 @@ def test_a_split_page_defers_the_passages_past_the_selection_bound() -> None:
     Splitting a page must not turn the passage bound into a silent drop:
     everything the selection did not take stays visible as a disposition, so
     a passage nobody selected is never read as a passage that does not exist.
-    This page's own chunk-0 mixes its real headline with the site's nav rail
-    (fix-round P0: measured link-dense on the real EIA page), so it is not a
+    This page's own chunk-0 mixes its real headline with the site's nav rail, so it is not a
     genuine header and is not forced in; only the ranked, budgeted answer is.
     """
     result = _eia_web_result()
@@ -1595,11 +1591,8 @@ def test_a_short_shell_body_is_still_refused_its_read() -> None:
     )
 
 
-# The read the audited run recorded for the page the researcher guessed at:
 # EIA's site-wide error handler, served with status 200, admitted as a
-# complete read and scored 0.165 (read-997d6ebcf9d6d4a31f9f2af0,
-# sha 8048df6622b422312922b5eaf64dabd63eabbb9ec2247fb6d8ed18aa5ba0139f).
-# Title and body are verbatim.
+# complete read. Title and body are verbatim from a real example
 _ERROR_PAGE_URL = "https://eia.gov/todayinenergy/detail.php?id=64444"
 _ERROR_PAGE_TITLE = "EIA - Sorry! Unexpected Error"
 _ERROR_PAGE_BODY = (
@@ -1646,13 +1639,12 @@ def _web_step(result: ToolResult, url: str) -> ReActStep:
 
 
 def test_a_served_error_page_is_refused_its_read() -> None:
-    """The error handler the audited run scored is not a source.
+    """A served error handler is not a source.
 
     ``eia.gov/todayinenergy/detail.php?id=64444`` answered with EIA's own
     site-wide error handler. The status was 200, so nothing upstream refused
-    it, and the read was stored as complete and scored. A page that names an
-    error in its own title carries no publication, so it gets no read record
-    and the Source Evaluator has nothing to score.
+    it. A page that names an error in its own title carries no publication,
+    so it gets no read record and the Source Evaluator has nothing to score.
     """
     assert (
         build_read_record_from_tool_result(
@@ -1663,7 +1655,7 @@ def test_a_served_error_page_is_refused_its_read() -> None:
 
 
 def test_a_served_error_page_with_a_banner_h1_is_still_refused_its_read() -> None:
-    """RevW5Titles P1-a/P2: an organisation banner ``h1`` must never crowd
+    """An organisation banner ``h1`` must never crowd
     out an error page's own ``<title>``. The raw title is kept whenever it
     is not empty and does not name only the site, so the error label the
     read-admission check reads is unaffected by the banner underneath it.
@@ -1718,7 +1710,7 @@ def test_a_served_error_page_is_recorded_unusable_and_never_scored() -> None:
 
 
 def test_an_unusable_candidate_records_its_denial_reason() -> None:
-    """I2: a candidate the run could not use names why it could not, not just
+    """A candidate the run could not use names why it could not, not just
     that it could not, so the report can disclose unreachable pages."""
     policy = _gateway_policy(candidate_urls=[_ERROR_PAGE_URL], remaining_calls=2)
 
@@ -1731,7 +1723,7 @@ def test_an_unusable_candidate_records_its_denial_reason() -> None:
 
 
 def test_a_denied_candidate_records_its_denial_reason() -> None:
-    """I2: an access-refused candidate names the refusal (401/403/451-shaped),
+    """An access-refused candidate names the refusal (401/403/451-shaped),
     so the report can disclose which pages were unreachable and why."""
     url = "https://agency.example/blocked-report"
     policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
@@ -1770,9 +1762,9 @@ def _not_found_step(url: str) -> ReActStep:
 
 
 def test_a_404_records_not_found_not_access_denied() -> None:
-    """RevDatesR3 P2: every HTTP status failure used to say ``access_denied``,
-    which would describe a missing page as a refusal in 'what we couldn't
-    confirm'. A 404/410-shaped status names the actual failure instead."""
+    """A missing page must not be reported as ``access_denied``, which would
+    describe it as a refusal in 'what we couldn't confirm'. A 404/410-shaped
+    status names the actual failure instead."""
     url = "https://agency.example/missing-report"
     policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
 
@@ -1782,7 +1774,7 @@ def test_a_404_records_not_found_not_access_denied() -> None:
 
 
 def test_a_500_records_http_error_not_access_denied() -> None:
-    """RevDatesR3 P2: an HTTP failure that is neither an access refusal nor a
+    """An HTTP failure that is neither an access refusal nor a
     not-found gets its own honest label."""
     url = "https://agency.example/broken-report"
     policy = _gateway_policy(candidate_urls=[url], remaining_calls=2)
@@ -2043,7 +2035,7 @@ def _paged_result(pages: int, *, text: str) -> ToolResult:
 
     Padded to the reader's own passage bound (``WEB_PASSAGE_CHARS``): a
     synthetic chunk this short would never occur in a real read, and the
-    budget a real selection spends (D1) is real characters, not a count a
+    budget a real selection spends is real characters, not a count a
     tiny fixture happens to produce.
     """
 
@@ -2198,13 +2190,13 @@ def test_the_second_passage_batch_is_bounded_and_terminates() -> None:
 def test_a_bounded_packet_spends_its_budget_on_the_selected_evidence() -> None:
     """Selected units, and the reads they cite, reach the model first.
 
-    The audited run's topic-01 packet was the researcher's 24,000-character
-    budget: several earlier reads' passages filled it, and the market
-    monitor's own passages — including the one carrying "12,314 megawatts
-    (MW) and 37,143 megawatt hours (MWh) deployed" — were dropped whole
+    In a real example, a topic-01 packet within the researcher's 24,000-character
+    budget is filled by several earlier reads' passages, and the market
+    monitor's own passages — including one carrying "12,314 megawatts
+    (MW) and 37,143 megawatt hours (MWh) deployed" — are dropped whole
     behind a ``continuation_ids=packet_overflow`` marker. The extraction then
-    had nothing to mine, the monitor's selected units were recorded
-    "irrelevant", and the tracker's evidence never reached a finding.
+    has nothing to mine, the monitor's selected units are recorded
+    "irrelevant", and the tracker's evidence never reaches a finding.
 
     A second, narrower failure survives even once the evidence itself is
     shown: ``build_findings`` requires a finding's ``source_url`` and
@@ -2247,14 +2239,14 @@ def test_a_bounded_packet_spends_its_budget_on_the_selected_evidence() -> None:
         target_ids=["topic-01"],
     )
     # Ten reads, each split into many ordinary-sized passages the way a real
-    # web page or PDF is chunked, stand in for the audited run's other
-    # admitted reads: cumulatively their admitted content alone crowds the
-    # researcher's real 24,000-character budget, so the tracker's read
-    # record only survives a bounded packet if read rows are rendered ahead
-    # of every read's passage dump rather than interleaved with it. A single
-    # oversized passage would not prove this: an atomic row too big to fit
-    # is skipped without spending any of the budget, so this fixture uses
-    # many small chunks that are individually admitted and add up instead.
+    # web page or PDF is chunked, simulate earlier admitted reads. Cumulatively
+    # their admitted content crowds the researcher's real 24,000-character
+    # budget, so the tracker's read record only survives a bounded packet if
+    # read rows are rendered ahead of every read's passage dump rather than
+    # interleaved with it. A single oversized passage would not prove this: an
+    # atomic row too big to fit is skipped without spending any of the budget,
+    # so this fixture uses many small chunks that are individually admitted
+    # and add up instead.
     filler_reads = []
     for filler_index in range(10):
         filler_url = f"https://example.test/filler-report-{filler_index}"
@@ -2349,12 +2341,11 @@ def test_a_bounded_packet_spends_its_budget_on_the_selected_evidence() -> None:
 def test_a_focused_packet_shows_the_unit_it_was_narrowed_to_first() -> None:
     """A re-extraction's packet must show the passage it is asking about.
 
-    The audited run's release is 27 passages, and the first sixteen of them are
-    navigation: at the researcher's ~4,000-character packet budget, a renderer
-    that prints every passage of the read before the units it was narrowed to
-    spends the whole budget on menu text and asks the model for a passage it
-    never shows. The focused unit's row, its passage, and its read lead the
-    packet instead.
+    In a typical release with 27 passages, the first sixteen are navigation.
+    At the researcher's ~4,000-character packet budget, a renderer that prints
+    every passage of the read before the units it was narrowed to spends the
+    whole budget on menu text and asks the model for a passage it never shows.
+    The focused unit's row, its passage, and its read lead the packet instead.
     """
     page = "https://example.test/us-energy-storage-monitor"
     navigation = {
@@ -2524,8 +2515,8 @@ def test_a_retryable_extraction_failure_leaves_the_reads_pending() -> None:
 
 
 def test_complete_extraction_keeps_the_given_reads_pending() -> None:
-    """``except_read_ids`` (S6, RevSelectionR3 P1): a per-read defer rather
-    than clearing every pending read.
+    """Extraction defers reads on a per-read basis rather than clearing every
+    pending read.
 
     A page whose own extraction call failed keeps its read id pending --
     its passages were never actually mined -- while every other read whose
@@ -2730,11 +2721,10 @@ def test_both_targets_survive_a_second_admission_of_one_body() -> None:
 
 
 def test_a_cache_hit_validates_the_stored_read_exactly_once(monkeypatch) -> None:
-    """A cache hit must run ``validate_cached_read`` once, not twice (P1-A).
+    """A cache hit must run ``validate_cached_read`` exactly once.
 
     The ``ToolPolicyDecision`` short-circuit validates the stored read to
-    build the free cache-hit result; ``_read_observed`` used to validate the
-    same read again to admit it. One hit must cost one validation.
+    build the free cache-hit result. Validation happens in one place only.
     """
     from deep_research.agents import acquisition as acquisition_module
 
@@ -3054,7 +3044,7 @@ def test_a_selected_passage_is_not_marked_used_by_a_sibling_passage() -> None:
 
 
 def test_a_packet_overflow_unit_is_deferred_capacity_not_irrelevant() -> None:
-    """RevSelectionR3 P2: a unit the extraction packet never carried is a
+    """A unit the extraction packet never carried is a
     capacity fact, not a relevance one.
 
     Both chunks of this page are selected, but the packet's own budget only
@@ -3570,10 +3560,10 @@ def _search_step_result(
 async def test_a_late_csv_row_reaches_the_extraction_packet(tracker) -> None:
     """Every CSV row reaches extraction, whatever its rank.
 
-    Whole-page admission (fix-round 3): the reader chunks rows two at a
-    time, and every chunk of this small CSV is admitted in one pass, so the
-    row carrying the units and the footnote reaches extraction immediately
-    -- with no continuation batch, and no row silently dropped by rank.
+    In a real CSV, the reader chunks rows two at a time, and every chunk of a
+    small CSV is admitted in one pass. The row carrying the units and the
+    footnote reaches extraction immediately — with no continuation batch, and
+    no row silently dropped by rank.
     """
     pad = (
         " measured over the complete twelve month observation window used "
@@ -3734,9 +3724,9 @@ async def test_the_report_fixture_table_units_and_footnotes_reach_extraction(
 ) -> None:
     """A cover/contents report's late table and footnotes reach the packet.
 
-    Whole-page admission (fix-round 3): every passage of this small, 1.8 KB
-    fixture is admitted in one pass, so the late table and footnote reach the
-    extraction packet immediately, with no continuation batch needed at all.
+    Every passage of this small, 1.8 KB fixture is admitted in one pass. The
+    late table and footnote reach the extraction packet immediately, with no
+    continuation batch needed.
     """
     filename = "usgs-shaped-report.md"
     result = await _read_fixture(tracker, filename)
@@ -3866,11 +3856,10 @@ def test_a_hard_cut_never_splits_a_decomposed_character() -> None:
 def test_a_passage_cut_lands_on_a_clause_boundary_before_whitespace() -> None:
     """A clause and the object it carries stay in one passage.
 
-    The audited run's extraction cut a rule at the last space inside the
-    bound, so a snippet ended at the rule's clause and the object the page
-    attached to it sat in the next passage; the live report then closed the
-    sentence with an object of its own. A cut at the clause boundary keeps the
-    rule's own words together.
+    When a passage cut lands at a clause boundary rather than at the last
+    space inside the bound, the rule's own words stay together. A snippet that
+    would split at a clause and the object it carries remains unified in one
+    passage.
     """
     from deep_research.agents.acquisition import split_read_body
 
@@ -4134,9 +4123,9 @@ def test_a_dossier_leads_with_the_query_that_states_a_figure() -> None:
 
 
 def test_a_read_cannot_be_admitted_for_a_deleted_selector() -> None:
-    """Task FF1 follow-up: the admission path records the agent that selected a
-    passage, and the Fact Checker that used to verify claims is deleted, so the
-    dead selector is refused here rather than recorded on a unit."""
+    """The admission path records the agent that selected a passage. Only the
+    researcher selects, so any other selector is refused here rather than
+    recorded on a unit."""
     result = _chunked_document_result(
         "Grid-scale battery storage capacity additions reached 18.9 GW in 2025."
     )
@@ -4152,7 +4141,7 @@ def test_a_read_cannot_be_admitted_for_a_deleted_selector() -> None:
 
 
 def test_a_read_is_single_flighted_on_its_normalized_url_and_a_search_is_not() -> None:
-    """Latency audit O4: the flight key is the URL the policy's own cache and
+    """The flight key is the URL the policy's own cache and
     ledger key a read by, from either reader; a search downloads no page."""
     policy = _policy()
 

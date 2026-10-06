@@ -1540,9 +1540,8 @@ async def test_the_loop_rejects_unbounded_arguments(
 # Converting it into a failed ``ToolResult`` would record an
 # ``agent_tool_failed`` error and let the run continue, which is exactly the
 # behaviour the ceiling exists to remove: the refusal has to end the run. The
-# loop catches provider failures only, so nothing here has to change for that —
-# these tests pin it, because the conversion ``BaseTool.execute`` used to
-# perform is one edit away from coming back.
+# loop catches provider failures only, so nothing in it has to change for that —
+# these tests pin that.
 
 
 def _refused_tavily_budget() -> tuple[RequestBudget, RequestAttemptLimitError]:
@@ -1652,8 +1651,7 @@ async def test_the_request_attempt_limit_escape_leaves_ordinary_failures_recorde
 
 
 # ---------------------------------------------------------------------------
-# The run-wide tool lock (D9, §7.2), and the ToolGate that amends it
-# (latency audit O4)
+# The run-wide tool lock, and the ToolGate that amends it
 # ---------------------------------------------------------------------------
 
 
@@ -1854,7 +1852,7 @@ async def _probe_loops(
 async def test_the_gate_overlaps_two_pages_but_never_two_decisions_or_commits(
     tracker: Tracker,
 ) -> None:
-    """Latency audit O4: two loops' calls on different pages execute at once,
+    """Two loops' calls on different pages execute at once,
     while their model turns overlap too; the policy's admission decisions, and
     the reducers that commit results, still never run two at a time."""
     trace, _, runs = await _probe_loops(tracker, key=None)
@@ -1872,7 +1870,7 @@ async def test_two_loops_on_one_page_run_its_section_one_after_the_other(
     tracker: Tracker,
 ) -> None:
     """One body, one download: a second loop asking for the same page decides
-    only after the first one has committed what it read (D9's other half)."""
+    only after the first one has committed what it read."""
     trace, order, runs = await _probe_loops(tracker, key="https://example.test/page")
 
     assert trace.peak["tool"] == 1
@@ -1888,7 +1886,7 @@ async def test_two_loops_on_one_page_run_its_section_one_after_the_other(
 
 
 # ---------------------------------------------------------------------------
-# Tool timings (latency audit O8)
+# Tool timings
 # ---------------------------------------------------------------------------
 
 
@@ -1906,7 +1904,7 @@ class _SlowEchoTool(EchoTool):
 async def test_every_use_tool_decision_reports_its_lock_wait_and_run_time(
     tracker: Tracker,
 ) -> None:
-    """O8: ``on_tool_timing`` hears, for each tool call, how long it waited for
+    """``on_tool_timing`` hears, for each tool call, how long it waited for
     the tool lock and how long its tool ran. A call no tool ran reports no run
     time, and a finish is not a tool call. (Thresholds leave room for the
     Windows event loop, whose timers can fire up to one 15.6 ms tick early.)"""
@@ -1955,7 +1953,7 @@ async def test_every_use_tool_decision_reports_its_lock_wait_and_run_time(
 async def test_skipping_the_final_answer_turn_ends_the_loop_one_turn_early(
     tracker: Tracker,
 ) -> None:
-    """Latency audit O9: with ``skip_final_answer_turn`` the loop never asks the
+    """With ``skip_final_answer_turn`` the loop never asks the
     forced tool-free last turn; a loop still running ends as ``finished``."""
     asked: list[int] = []
 

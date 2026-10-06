@@ -3,7 +3,7 @@
 Stdlib ``argparse`` and ``print``, mirroring ``deep_research.cli``'s style:
 parse arguments, call a runner, render what came back, and choose an exit
 code. The one addition over the production CLI is the exit-code table this
-harness's spec requires (usage vs. infrastructure vs. failed-but-completed),
+harness requires (usage vs. infrastructure vs. failed-but-completed),
 so exceptions raised by ``preflight``/``run_agent_evaluation`` are mapped
 explicitly instead of being flattened into a single failure code.
 
@@ -145,7 +145,7 @@ class CliOptions:
     (``production_parity_source``)."""
     target_thinking_mode: str | None = None
     """``agent`` only: the target's thinking mode for this run; ``None``
-    keeps the harness's ``RUNTIME_THINKING_MODE`` (latency plan Task 19)."""
+    keeps the harness's ``RUNTIME_THINKING_MODE``."""
 
 
 def _add_shared_options(subparser: argparse.ArgumentParser) -> None:
@@ -481,7 +481,7 @@ def _default_suite_runner(
 
     Mirrors ``_default_agent_runner``: load the config file into
     ``ConfigSettings``, resolve git provenance, and hand everything to
-    ``run_suite_evaluation`` (Task 26), which builds a fresh
+    ``run_suite_evaluation``, which builds a fresh
     ``EvaluationRuntimeConfig`` and real target/judge providers per agent
     itself -- this function does no per-agent wiring of its own. Not
     exercised by any test in ``test_cli.py``: every ``suite`` test is an

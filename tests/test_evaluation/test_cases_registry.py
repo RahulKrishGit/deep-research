@@ -34,15 +34,8 @@ from deep_research.utils.types import MemorySnapshot
 # ``EXPECTED_LIVE_CASE_IDS``) and these tests compare the registry against
 # it: an inventory written down twice is two sources of truth, and the
 # second one is always the stale one. A literal list here would also have
-# to be edited by every round that adds a case, which is how a test that
+# to be edited by every change that adds a case, which is how a test that
 # was supposed to guard the registry becomes a rubber stamp.
-
-
-# The four count tests below are expected red until all six case files
-# land. strict=True turns the marker into a failure the moment a case
-# lands, so Task 15 must delete the remaining markers. The four
-# lookup/validation tests lost their markers in Task 10, when the Planner
-# cases made them pass.
 
 
 def test_the_registry_is_valid() -> None:
@@ -170,9 +163,8 @@ def test_the_registry_version_is_recorded() -> None:
     assert CASE_REGISTRY_VERSION == 2
 
 
-# The shared fixture builders are the API every case file (Tasks 10-15)
-# imports, and the validation rules are this task's deliverable, so both
-# get exercised here on synthetic catalogs rather than waiting for the
+# The shared fixture builders every case file imports, and the validation
+# rules, are exercised here on synthetic catalogs rather than waiting for the
 # registry to fill.
 
 

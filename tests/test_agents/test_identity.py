@@ -322,10 +322,10 @@ def test_one_passage_restated_twice_is_one_finding() -> None:
 
 
 def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
-    """D13: identity folds across sub-topics on (read, locator, figure set),
+    """Identity folds across sub-topics on (read, locator, figure set),
     for records each loop's extraction explicitly bound to one of its own
     targets -- the shape that published one page's chunk as three findings
-    (F01/F19/F27) for one fact.
+    for one fact.
 
     Three research loops each read the same page and mine the same passage,
     each stamping its own sub-topic and its own binding on what it extracted.
@@ -360,7 +360,7 @@ def test_one_passage_extracted_in_several_loops_is_one_finding() -> None:
 
 
 def test_an_unbound_records_own_sub_topic_survives_a_shared_passage() -> None:
-    """P1 regression: folding across sub-topics must never cost an *unbound*
+    """Folding across sub-topics must never cost an *unbound*
     record its only route to an answer.
 
     An unbound record's sole path to answering anything is the sub-topic
@@ -399,7 +399,7 @@ def test_an_unbound_records_own_sub_topic_survives_a_shared_passage() -> None:
 
 
 def test_two_subjects_of_one_comparison_sentence_stay_two_findings() -> None:
-    """P2 regression: the figure set D13 folds on must include the subject.
+    """The figure set the fold keys on must include the subject.
 
     One comparison-table sentence names two products at the same value and
     unit. Two loops each bind the one they were reading for; without subject

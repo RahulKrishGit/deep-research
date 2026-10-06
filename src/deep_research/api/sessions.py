@@ -67,14 +67,14 @@ class NotWaitingForInput(Exception):
 
 
 class NotesClosed(Exception):
-    """A note arrived for a session that no longer takes notes (a 409, spec §4.6)."""
+    """A note arrived for a session that no longer takes notes (a 409)."""
 
 
 StopRefusal: TypeAlias = Literal["finished", "publishing", "closing"]
 
 
 class NotStoppable(Exception):
-    """A stop for a session that can no longer be stopped (a 409, notes-progress-report spec §8.1).
+    """A stop for a session that can no longer be stopped (a 409).
 
     ``reason`` says why: ``finished`` once the session has ended (a stopped one
     included), ``publishing`` once the run has decided to publish or to end, and
@@ -104,7 +104,7 @@ class ClarificationSubmission:
 
 @dataclass(slots=True)
 class PendingClarification:
-    """The one-time check a ``needs_input`` session is waiting on (spec §4.4)."""
+    """The one-time check a ``needs_input`` session is waiting on."""
 
     questions: tuple[ClarityQuestion, ...]
     deadline_at: datetime
@@ -140,7 +140,7 @@ class ResearchSession:
     check: CheckRecord | None = None
     """The check this session asked, if any, kept for the status response."""
     note_board: NoteBoard = field(default_factory=NoteBoard)
-    """The reader's notes (live-briefs spec §4.6), bound for the run's task."""
+    """The reader's notes, bound for the run's task."""
     note_tasks: set[asyncio.Task[None]] = field(default_factory=set)
     notes_closed: bool = False
     """Set once the stream shows publication has begun: no note is taken after."""
@@ -148,12 +148,12 @@ class ResearchSession:
     run_settings: Any = None
     hitl: HitlConfig = field(default_factory=HitlConfig)
     stopped_step: str | None = None
-    """The step the reader stopped the run at (notes-progress-report spec §8.2), else ``None``."""
+    """The step the reader stopped the run at, else ``None``."""
 
     def publish(self, event: ResearchEvent) -> None:
         """Record one progress event and update the live status fields.
 
-        A stopped session takes no more events (notes-progress-report spec §8.2), so
+        A stopped session takes no more events, so
         ``session.stopped`` stays its last — whatever a task finishing its own
         cancellation still hands over, a replay's pacer for one.
         """
@@ -165,10 +165,10 @@ class ResearchSession:
         if event.event_type == "graph.node.started" and isinstance(node, str):
             self.current_agent = node
         # Only the graph's own events carry the pass: researcher.tool_call also
-        # carries an ``iteration``, but that is the ReAct step index (A6).
+        # carries an ``iteration``, but that is the ReAct step index.
         if event.event_type.startswith("graph.") and isinstance(iteration, int):
             self.iteration = iteration
-        # live-briefs spec §4.6: a decision to publish (or to end) closes the
+        # A decision to publish (or to end) closes the
         # notes — this is the event that makes Publishing the active row, so
         # the page and the API agree on when notes stop.
         if event.event_type == "graph.route.decided" and event.metadata.get(
@@ -236,7 +236,7 @@ def outcome_response_fields(
             context_unchecked_findings=counts.context_unchecked_findings,
             cited_findings=counts.cited_findings,
         )
-    # Notes-progress-report spec §7.5: the headings of the report ``/report``
+    # The headings of the report ``/report``
     # serves -- the Markdown and the outline come from one composition.
     composition = outcome.composition
     if composition is not None and outcome.report is not None:
@@ -247,7 +247,7 @@ def outcome_response_fields(
 
 
 def session_note_fields(session: ResearchSession) -> dict[str, object]:
-    """The session response's reader-side fields (live-briefs spec §4.4, §4.6).
+    """The session response's reader-side fields.
 
     Every note in receipt order with its reading and outcome, how many more
     notes the session takes, the note passes the run bought, and the one-time
@@ -255,7 +255,7 @@ def session_note_fields(session: ResearchSession) -> dict[str, object]:
     and the pass count; while it runs, the stream's count stands in.
     """
     state = session.outcome.state if session.outcome is not None else None
-    # notes-progress-report spec §5.6: a session that has ended never reports a
+    # A session that has ended never reports a
     # note ``pending``; a note nothing judged reads ``not_checked``.
     terminal = session.status in TERMINAL_STATUSES or session.finished_at is not None
     check = session.check
@@ -325,7 +325,7 @@ class SessionStore:
         """Register a running session synchronously and schedule its run.
 
         ``ask_clarifying_questions`` runs the one-time check before the runner
-        (live-briefs spec §4.4) when the store has a ``clarity_checker``;
+        when the store has a ``clarity_checker``;
         ``settings`` is what the checker reads and ``hitl`` holds its timings.
 
         The record is visible (and its status is ``running``) before the
@@ -347,7 +347,7 @@ class SessionStore:
             hitl=hitl or HitlConfig(),
         )
         self._sessions[session_id] = session
-        # live-briefs spec §4.6: the task copies this context, so the session's
+        # The task copies this context, so the session's
         # note board is bound for its whole run — every node and every task an
         # agent starts inside it reads the same board.
         with bind_note_board(session.note_board):
@@ -412,7 +412,7 @@ class SessionStore:
         return session
 
     def stop(self, session_id: str) -> ResearchSession:
-        """Stop one session at once (notes-progress-report spec §8.2, D17).
+        """Stop one session at once.
 
         Raises ``KeyError`` for an unknown session and ``NotStoppable`` when it can no
         longer be stopped: ``finished`` once it has ended (a stopped one included),
@@ -437,7 +437,7 @@ class SessionStore:
             row = active_row(session.events)
             if row is None:
                 # No row is active only once the run is ending: each event that leaves
-                # none follows the decision that closes notes (spec ambiguity 3).
+                # none follows the decision that closes notes.
                 raise NotStoppable(session_id, "publishing")
             step = row
         now = datetime.now(timezone.utc)
@@ -461,7 +461,7 @@ class SessionStore:
         return session
 
     def add_note(self, session_id: str, text: str) -> ReceivedNote:
-        """Accept one reader note for a running session (live-briefs spec §4.6).
+        """Accept one reader note for a running session.
 
         Raises ``KeyError`` for an unknown session; ``NotesClosed`` while the
         session waits for the one-time check's answers, once it has finished
@@ -501,7 +501,7 @@ class SessionStore:
 
         Any failure — no interpreter, a provider error, a timeout, an invalid
         reading — keeps the note as an emphasis in the reader's own words, and
-        its event says ``fallback`` (spec §4.6). Cancellation (the service
+        its event says ``fallback``. Cancellation (the service
         closing) drops the note from the board's pending set, so nothing waits
         on it.
         """
@@ -652,7 +652,7 @@ class SessionStore:
             )
         else:
             # A runner that caught the stop's cancellation and returned anyway does not
-            # undo the stop: a stopped session keeps no outcome (spec §8.4).
+            # undo the stop: a stopped session keeps no outcome.
             if session.status != "stopped":
                 session.status = outcome.status
                 session.iteration = outcome.state.iteration
@@ -680,7 +680,7 @@ class SessionStore:
         settings: Any,
         hitl: HitlConfig,
     ) -> tuple[ReaderAnswer, ...] | None:
-        """The one-time check (spec §4.4): the answers, or ``None`` if none were asked.
+        """The one-time check: the answers, or ``None`` if none were asked.
 
         The check call gets ``hitl.check_timeout_s``; any failure, a timeout
         included, asks nothing. With questions, the session waits in
@@ -746,7 +746,7 @@ def _record_failure(
     """Record one safe, non-recoverable failure on a session.
 
     A stopped session records none: whatever its cancellation raised on the way
-    out, the reader's stop is how it ended (notes-progress-report spec §8.4).
+    out, the reader's stop is how it ended.
     """
     if session.status == "stopped":
         return

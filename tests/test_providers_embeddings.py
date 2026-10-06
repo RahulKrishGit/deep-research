@@ -368,7 +368,7 @@ class _CountingModel:
 
 
 def test_the_local_model_is_built_once_and_reused(monkeypatch) -> None:
-    """Latency audit O2: one ONNX model per provider, however many calls."""
+    """One ONNX model per provider, however many calls."""
     import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as onnx_module
 
     from deep_research.providers import LocalEmbeddingProvider
@@ -387,9 +387,9 @@ def test_the_local_model_is_built_once_and_reused(monkeypatch) -> None:
 def test_the_kept_model_is_the_one_chromadbs_default_function_builds(
     monkeypatch,
 ) -> None:
-    """The vectors cannot change: chromadb's ``DefaultEmbeddingFunction`` --
-    what this provider used before O2 -- builds this same model class on every
-    call, so keeping one instance changes only how often it is built."""
+    """The vectors cannot change: chromadb's ``DefaultEmbeddingFunction``
+    builds this same model class on every call, so keeping one instance
+    changes only how often it is built."""
     import chromadb.utils.embedding_functions as chroma_embedding_functions
     import chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 as onnx_module
 

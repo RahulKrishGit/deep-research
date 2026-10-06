@@ -217,7 +217,7 @@ def chat_response(
     )
     if reasoning_tokens is not None:
         # Only set when a test asks for it: an absent attribute is what
-        # exercises "reasoning tokens absent is fine" (P1-B).
+        # exercises "reasoning tokens absent is fine".
         usage.completion_tokens_details = SimpleNamespace(
             reasoning_tokens=reasoning_tokens
         )
@@ -296,7 +296,7 @@ class CapturingTracker(Tracker):
 def _assert_single_ok_attempt(attempts: list[dict[str, object]]) -> None:
     """One attempt: succeeded on the first try, with plausible timing.
 
-    Every call now records at least this much (P1-B), even one that never
+    Every call records at least this much, even one that never
     retried; the exact timing is real wall time and so is never pinned.
     """
     assert len(attempts) == 1
@@ -2140,8 +2140,8 @@ async def test_deepseek_structured_applies_the_per_call_reasoning_effort_overrid
 
     The output-limit rule re-asks a truncated call at ``high`` with the same
     output budget, so the override has to reach the wire for that request
-    alone. The configured effort here is ``max`` — what the Critic's own
-    profile resolves to — and it must not be what the retry sends.
+    alone. The configured effort here is ``max``, and it must not be what the
+    retry sends.
     """
     completions = RecordingCompletions(
         chat_response(text='{"answer":"yes","confidence":9}')
@@ -2954,13 +2954,12 @@ async def test_deepseek_plain_retries_server_status_errors(monkeypatch) -> None:
 
 # --- Schema-enforced target structured transport -------------------------
 #
-# The target structured path previously used Chat Completions JSON mode
-# (``response_format={"type": "json_object"}``) plus a JSON-Schema system
-# message. Live Critic canaries recorded ``json_invalid`` at ``$`` on both the
-# initial attempt and the single repair, which is only reachable when the
-# provider returns non-empty text that is not parseable JSON. These tests pin
-# the repaired transport: schema-enforced ``json_schema`` on the Responses
-# endpoint, with the Chat Completions path retained for plain completions.
+# The target structured path uses schema-enforced ``json_schema`` on the
+# Responses endpoint, with the Chat Completions path retained for plain
+# completions. Chat Completions JSON mode plus a JSON-Schema system message
+# recorded ``json_invalid`` at ``$`` on both the initial attempt and the single
+# repair, which is only reachable when the provider returns non-empty text that
+# is not parseable JSON. These tests pin the schema-enforced transport.
 
 
 @pytest.mark.asyncio
@@ -3282,13 +3281,10 @@ async def test_deepseek_native_react_asks_auto_and_parses_one_tool_call() -> Non
 async def test_deepseek_native_react_accepts_two_tool_calls_in_one_turn() -> None:
     """Two native calls in one turn are well formed, not a malformed envelope.
 
-    This parser used to require exactly one call per ``tool_calls`` finish and
-    discarded the whole turn otherwise. The second live release gate attempt
-    lost 4 of its 30 requests to that rule — its probe diagnosis named every
-    residual failure ``call_count_not_one`` — while parallel tool calls are a
-    normal part of the provider protocol. Every call is still validated exactly
-    as the single one was, so a second call cannot smuggle in a shape the first
-    call's validation would have refused.
+    Parallel tool calls are a normal part of the provider protocol, so a turn
+    with several is accepted rather than discarded. Every call is still
+    validated exactly as a single one is, so a second call cannot smuggle in a
+    shape the first call's validation would have refused.
     """
     completions = RecordingCompletions(
         chat_response(
@@ -3503,12 +3499,12 @@ async def test_deepseek_native_react_fails_closed_without_leaking(
 
 @pytest.mark.asyncio
 async def test_deepseek_native_sdk_and_envelope_failures_are_distinguishable() -> None:
-    """The formerly ambiguous pair: one public category, two origins.
+    """One public category, two origins.
 
     An SDK rejection and a malformed native envelope both surface as
     ``failure_category="response"``, so both classify as ``provider_response``.
     Only ``failure_origin`` says whether the remedy is a transport/retry fix or
-    a response-grammar fix -- which is the whole point of adding the field.
+    a response-grammar fix.
     """
     tracker = local_tracker()
     sdk_provider = _native_provider(
@@ -3546,8 +3542,6 @@ async def test_deepseek_native_sdk_and_envelope_failures_are_distinguishable() -
     assert envelope_error.retryable is False
     assert sdk_error.http_status_code is None
     assert envelope_error.http_status_code is None
-    assert sdk_error.status_code is None
-    assert envelope_error.status_code is None
 
 
 def test_fresh_provider_error_copies_the_failure_origin() -> None:
@@ -3681,7 +3675,7 @@ async def test_slow_report_judge_timeout_retries_only_once(monkeypatch) -> None:
             )
 
     assert len(responses.calls) == 2
-    # Streaming by default (Phase 2): the role's own 360 s override now bounds
+    # Streaming by default: the role's own 360 s override bounds
     # the attempt's total wall time via ``asyncio.timeout``, not the per-chunk
     # httpx timeout, which carries the (unoverridden) global idle timeout.
     timeouts = [call["timeout"] for call in responses.calls]
@@ -3935,13 +3929,10 @@ async def test_deepseek_native_react_accepts_a_call_with_no_answer_text(
 async def test_deepseek_native_react_accepts_a_call_beside_answer_text() -> None:
     """A typed call beside non-blank content is still exactly one decision.
 
-    Task 4 made this envelope a rejection, and the first live release gate then
-    failed 8 of 30 requests to `local_response` — a rate far above the two
-    earlier pre-Task-4 live batches, which accepted 56 of 60 turns and produced
-    no final answers at all. The typed call field remains the *only* thing that
-    can select a tool, so content beside it cannot request execution; the
-    strictness bought no safety the typed-field rule did not already provide,
-    while rejecting well-formed provider output. The mixed-envelope rejection
+    The typed call field is the *only* thing that can select a tool, so
+    content beside it cannot request execution; rejecting the envelope would
+    buy no safety the typed-field rule does not already provide, while
+    rejecting well-formed provider output. The mixed-envelope rejection
     is therefore retained only where it is genuinely incoherent: a call on a
     `stop` finish, or tool-protocol *text* passed off as the answer.
     """
@@ -4297,7 +4288,7 @@ async def test_request_budget_responses_schema_call_reserves_and_records() -> No
     assert verdict.confidence == 3
 
 
-# MockTransport-based streaming timeout tests (Phase 2 (b)-(d)).
+# MockTransport-based streaming timeout tests.
 #
 # These test the real httpx timeout mechanisms integrated with asyncio.timeout,
 # using genuine Chat Completions SSE byte streams over httpx.MockTransport with
@@ -4575,11 +4566,12 @@ async def test_deepseek_streaming_steady_trickle_exceeds_total_cap() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Remaining Phase 2 scenarios (e), (f), (h): tool-call reassembly across
+# Streaming scenarios: tool-call reassembly across
 # chunks, usage (cache-hit + reasoning tokens) from the final chunk, and the
-# ``stream: false`` fallback. (a) and (g) are already exercised end-to-end by
+# ``stream: false`` fallback. The judge's Responses streaming is already
+# exercised end-to-end by
 # ``test_deepseek_judge_uses_responses_json_schema_with_prompt_parity`` and
-# ``test_deepseek_judge_responses_output_limit_is_typed`` above, now that
+# ``test_deepseek_judge_responses_output_limit_is_typed`` above, since
 # ``RecordingResponses`` streams by default -- both assert ``stream is True``
 # below to make that coverage explicit.
 # ---------------------------------------------------------------------------
@@ -4850,8 +4842,8 @@ async def test_a_repaired_reply_exposes_its_bounded_diagnostics() -> None:
 
     The provider survives a malformed reply by repairing it once and returning
     the repaired parse, so the categories and field paths that describe the
-    rejection were previously unreachable — and the historical trace's normal
-    ``stop`` finish reason identified neither. The additive hook records them,
+    rejection would otherwise be unreachable — the trace's normal
+    ``stop`` finish reason identifies neither. The hook records them,
     bounded, with no rejected text.
     """
     extra_key = "undeclared_responses_property"
@@ -4943,13 +4935,12 @@ def test_cached_input_tokens_are_read_from_both_usage_shapes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Per-attempt records and reasoning tokens (stall-fix-brief.md P1-B).
+# Per-attempt records and reasoning tokens.
 #
-# ``started_at`` used to be taken once, outside ``with_retries``, so a call's
-# ``seconds`` could not be split into what each transport attempt actually
-# cost. Each attempt is now timed and its outcome recorded, on the LLM span's
+# Each transport attempt is timed and its outcome recorded, on the LLM span's
 # outputs (where the trace fetch sees them) and in the run collector (where
-# the Telemetry line's "slowest call" reads them).
+# the Telemetry line's "slowest call" reads them), so a call's ``seconds`` can
+# be split into what each attempt actually cost.
 # ---------------------------------------------------------------------------
 
 
@@ -5148,9 +5139,7 @@ async def test_deepseek_judge_responses_schema_records_attempts(monkeypatch) -> 
 async def test_deepseek_complete_keeps_attempts_on_the_span_when_every_attempt_fails(
     monkeypatch,
 ) -> None:
-    """The call the stall investigation most needs recorded: every attempt
-    timed out, and the span must still carry what happened (RevTelemetry P3).
-    """
+    """Every attempt timed out, and the span must still carry what happened."""
     _recorded_sleeps(monkeypatch)
     sdk_error = APITimeoutError(request=httpx.Request("POST", DEEPSEEK_BASE_URL))
     completions = RecordingCompletions(sdk_error, sdk_error, sdk_error)
@@ -5206,11 +5195,11 @@ async def test_deepseek_native_react_keeps_attempts_on_the_span_when_every_attem
 
 
 # ---------------------------------------------------------------------------
-# RevStreaming review round: malformed chat deltas must fail typed and not
-# leak a chunk (P2), a chat stream with no finish reason must retry (P2),
-# failed attempts must still report first_event/first_token (P2), and those
+# Streaming robustness: malformed chat deltas must fail typed and not
+# leak a chunk, a chat stream with no finish reason must retry,
+# failed attempts must still report first_event/first_token, and those
 # marks must be measured from the attempt's own start, not from after the
-# response headers arrive (P3).
+# response headers arrive.
 # ---------------------------------------------------------------------------
 
 
@@ -5218,7 +5207,7 @@ async def test_deepseek_native_react_keeps_attempts_on_the_span_when_every_attem
 async def test_deepseek_complete_streaming_rejects_non_string_content() -> None:
     """A malformed ``content`` delta (not a string) fails as the same typed
     ``ProviderResponseError`` the non-streaming path raises, not a raw
-    ``TypeError`` (RevStreaming P2)."""
+    ``TypeError``."""
     chunks = [
         SimpleNamespace(
             id="deepseek-response",
@@ -5264,8 +5253,7 @@ async def test_deepseek_native_react_streaming_rejects_non_string_tool_arguments
     None
 ):
     """A malformed tool-call ``arguments`` delta (not a string) fails as the
-    same typed error the non-streaming path raises, not a raw ``TypeError``
-    (RevStreaming P2)."""
+    same typed error the non-streaming path raises, not a raw ``TypeError``."""
     chunks = [
         SimpleNamespace(
             id="deepseek-response",
@@ -5340,7 +5328,7 @@ async def test_deepseek_complete_streaming_retries_a_clean_stream_with_no_finish
     """A chat stream that ends cleanly -- no ``[DONE]``, no ``finish_reason``
     ever set -- must retry as the same retryable transport error the
     Responses path raises for a stream with no terminal event, not fail
-    non-retryably as though it had stopped cleanly (RevStreaming P2)."""
+    non-retryably as though it had stopped cleanly."""
     incomplete_chunks = [
         SimpleNamespace(
             id="deepseek-response",
@@ -5393,7 +5381,7 @@ async def test_deepseek_complete_streaming_records_marks_when_the_attempt_times_
 ):
     """Silence after two reasoning chunks must still record ``first_event``
     and ``first_token`` on the timed-out attempt: they must survive an
-    exception, not only a clean finish (RevStreaming P2)."""
+    exception, not only a clean finish."""
 
     class _SilentAfterTwo:
         def __init__(self, chunks: list[object]) -> None:
@@ -5481,8 +5469,7 @@ async def test_deepseek_complete_streaming_first_event_seconds_includes_time_bef
     None
 ):
     """``first_event_seconds`` must include time spent queued before the
-    response headers arrive, not only time since ``create()`` returned
-    (RevStreaming P3)."""
+    response headers arrive, not only time since ``create()`` returned."""
     import asyncio as _asyncio_module
 
     async def _create(**kwargs: object) -> _FakeAsyncStream:
@@ -5516,8 +5503,7 @@ async def test_deepseek_complete_streaming_completes_on_finish_reason_alone_when
     separate usage chunk (DeepSeek ignoring ``include_usage`` for some model
     or mode) must complete on one attempt -- usage maps to zero tokens, as
     it already does for a non-streaming reply with no usage -- not be
-    retried forever as though it never told us it finished (RevStreaming P2
-    hardening)."""
+    retried forever as though it never told us it finished."""
     chunks = [
         SimpleNamespace(
             id="deepseek-response",

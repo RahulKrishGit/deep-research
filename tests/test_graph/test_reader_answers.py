@@ -1,4 +1,4 @@
-"""The reader's answers to the one-time check in the run's state (live-briefs spec §4.4)."""
+"""The reader's answers to the one-time check in the run's state."""
 
 from __future__ import annotations
 

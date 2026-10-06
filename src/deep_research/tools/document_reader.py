@@ -50,7 +50,7 @@ _CONTENT_TYPE_FORMATS = {
 }
 # Suffixes the acquisition policy sends to this reader (``_required_reader``)
 # that no parser here reads. A remote source whose own path ends in one is
-# refused before any request (latency audit O11), with the error type and
+# refused before any request, with the error type and
 # message its download would have ended in: the download was the whole cost of
 # learning that. Two things differ: the refusal comes before any transport
 # error the download could have met, and its details name the suffix with an
@@ -96,9 +96,9 @@ class DocumentReaderTool(BaseTool):
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        """``transport`` is the run's shared connection pool (latency audit O4):
+        """``transport`` is the run's shared connection pool:
         each remote read still builds its own client, over it. ``None`` lets
-        each read's client build its own, as before; an injected ``client``
+        each read's client build its own; an injected ``client``
         wins."""
         super().__init__(tracker)
         if (
@@ -370,7 +370,7 @@ def _extract(
     csv_rows_per_chunk: int,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, str | None]:
     """Return ``chunks``, ``failures``, whether the extraction is complete,
-    and the document's own metadata title (D3), or ``None`` when its format
+    and the document's own metadata title, or ``None`` when its format
     carries no such metadata.
 
     Completeness is a property of the *document*, not of the transport: text,
@@ -430,7 +430,7 @@ def _pdf_chunks(
     payload: bytes, chunk_chars: int
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool, str | None]:
     """Return ``chunks``, per-page ``failures``, completeness, and the PDF's
-    own ``Title`` metadata field (D3), or ``None`` when it has none.
+    own ``Title`` metadata field, or ``None`` when it has none.
 
     A page whose text could not be extracted is skipped rather than reported
     as an empty page, and its loss makes the extraction incomplete: a scanned
@@ -479,12 +479,12 @@ def _pdf_metadata_title(document: object) -> str | None:
 
 
 # A heading is short: this is the same length the media-type guard elsewhere
-# in this project uses to distinguish a label from a body (D3).
+# in this project uses to distinguish a label from a body.
 _HEADING_MAX_CHARS = 200
 
 # A page number, running header, download stamp or copyright line is never
-# a document's title, however early it sits in the extracted text
-# (RevW5Titles P2): a scanned journal article's first text line is
+# a document's title, however early it sits in the extracted text:
+# a scanned journal article's first text line is
 # routinely one of these, not the paper's own title.
 _PAGE_NUMBER_LINE_PATTERN = re.compile(
     r"^(?:page\s+)?\d+(?:\s*(?:of|/)\s*\d+)?$", re.IGNORECASE
@@ -494,12 +494,12 @@ _RUNNING_HEADER_PATTERN = re.compile(r"\b(?:Vol|pp|No)\.", re.IGNORECASE)
 _SKIPPED_LINE_PREFIXES = ("\u00a9", "copyright", "downloaded from")
 
 # A heading names something in words: a rule of underscores or dashes -- a
-# PDF's own page-break ornament -- has none (D3, run 5).
+# PDF's own page-break ornament -- has none.
 _HEADING_LETTER_PATTERN = re.compile(r"[A-Za-z]")
 
 # A heading is one clause, or occasionally two ("Chapter 3. Results", "Fig.
 # 1. Overview"): what separates a genuine compound heading from a run-on
-# paragraph (ReRevW5) is not whether a line contains a second sentence at
+# paragraph is not whether a line contains a second sentence at
 # all, but how much of one it strings together. A line only fails this
 # check when it carries at least two sentence breaks (three-plus clauses),
 # or when a single embedded break sits in a line already too long to be a
@@ -531,7 +531,7 @@ def _is_skippable_heading_line(line: str) -> bool:
 
 
 # A heading cut off mid-phrase by a PDF's own line wrap ends on a bare,
-# lower-case function word, never on terminal punctuation (D3, run 5):
+# lower-case function word, never on terminal punctuation:
 # "... in the Decline of the" continues as "Roman Republic" on the next
 # line. The match is case-sensitive: a title-cased heading capitalises its
 # own last word ("Appendix A", "What We Work For"), while a genuine wrap
@@ -541,7 +541,7 @@ _INCOMPLETE_HEADING_ENDING_PATTERN = re.compile(
 )
 
 # A heading with no terminal punctuation whose continuation starts in lower
-# case is also a wrap (D3, run 5 follow-up): "... in the Decline" continuing
+# case is also a wrap: "... in the Decline" continuing
 # as "of the Late Republic" breaks after a content word, not a bare
 # function word, so the ending alone cannot tell it apart from a complete
 # heading -- the next line's own case is what does.
@@ -617,7 +617,7 @@ def _source_names(requested: str, resolved: str) -> set[str]:
     return names
 
 
-# Authoring-tool placeholders that name no document at all (RevW5Titles P2):
+# Authoring-tool placeholders that name no document at all:
 # a save dialog's default caption, never a document's own title.
 _JUNK_METADATA_TITLE_PATTERN = re.compile(
     r"^Microsoft (?:Word|PowerPoint|Excel) - |^untitled$|^PowerPoint Presentation$",
@@ -641,12 +641,11 @@ def _document_title(
     requested: str,
     resolved: str,
 ) -> str:
-    """The document's title (D3, RevW5Titles P1-b): a PDF's own metadata
+    """The document's title: a PDF's own metadata
     title, unless it is missing, names only the source itself, or is an
     authoring tool's placeholder, in which case its first heading-shaped
     line stands in for it. Every other format returns ``""`` so the read
-    registry's own URL-then-search-candidate title path applies, exactly as
-    it did before a document ever carried a title of its own.
+    registry's own URL-then-search-candidate title path applies.
     """
     if document_format != "pdf":
         return ""

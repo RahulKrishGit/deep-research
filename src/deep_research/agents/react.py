@@ -44,8 +44,8 @@ SufficiencyCallback: TypeAlias = Callable[[Sequence[ReActStep]], bool]
 ToolPolicyCallback: TypeAlias = Callable[
     [ReActDecision, Mapping[str, JsonValue]], object
 ]
-# ``(proposal_id, lock_wait_s, duration_s)`` for one ``use_tool`` decision
-# (latency audit O8): the seconds it waited for the caller's tool lock, and the
+# ``(proposal_id, lock_wait_s, duration_s)`` for one ``use_tool`` decision:
+# the seconds it waited for the caller's tool lock, and the
 # seconds its tool ran -- zero for a call the policy refused, answered from the
 # run's cache, or the budget stopped.
 ToolTimingCallback: TypeAlias = Callable[[str, float, float], None]
@@ -244,13 +244,12 @@ def _unexecuted_remainder_step(
 
 
 class ToolGate(asyncio.Lock):
-    """The run-wide gate every sub-topic loop's tool section passes (D9, as
-    amended on 2026-09-30 by latency audit O4).
+    """The run-wide gate every sub-topic loop's tool section passes.
 
-    D9 ran each call's whole tool section -- the policy's admission decision,
+    Holding a call's whole tool section -- the policy's admission decision,
     the tool's execution, and the reducer that commits the result to the run's
-    cache and ledger -- under one run-wide lock, so one slow fetch held every
-    topic. The gate keeps what that bought and drops what it cost:
+    cache and ledger -- under one run-wide lock would let one slow fetch hold
+    every topic. The gate keeps what that lock buys and drops what it costs:
 
     * a call's policy decision, and its reducer, each run under the gate
       itself, which is an ``asyncio.Lock``: the run's commit lock, so no two
@@ -262,7 +261,7 @@ class ToolGate(asyncio.Lock):
     * the execution itself runs under neither, so calls on different pages,
       and every search, overlap.
 
-    Being a lock, the gate goes wherever D9's lock went, under the same type.
+    Being a lock, the gate goes wherever a plain run-wide lock goes, under the same type.
     One gate per run, never a module global.
     """
 
@@ -443,26 +442,26 @@ async def run_react_loop(
     reached in one extra step, so a budget stop never hides work the provider
     asked for and did not get.
 
-    ``tool_lock`` is the caller's run-wide lock (D9). When it is a
-    ``ToolGate`` (D9 as amended by latency audit O4), a ``use_tool``
+    ``tool_lock`` is the caller's run-wide lock. When it is a
+    ``ToolGate``, a ``use_tool``
     decision's policy decision and ``after_action``'s reduction of its result
     into the run's cache and ledger each run under the gate itself; when the
     policy names a flight key for the call (``flight_key(tool_name,
     tool_input)``, a read's URL), its whole section runs under that key's own
     lock, so two loops sharing one run can never both download or both admit
     the same page, and the execution is under neither lock. A plain
-    ``asyncio.Lock`` keeps D9's original rule: the whole section under it. The
+    ``asyncio.Lock`` holds the whole section under it. The
     model turn is never inside the section.
 
     ``on_tool_timing`` is told, for every ``use_tool`` decision, how long it
-    waited for the gate's locks and how long its tool ran (latency audit O8).
+    waited for the gate's locks and how long its tool ran.
     It only observes: nothing a model reads, and no step, depends on it.
 
     The last of ``max_iterations`` turns is the one whose prompt tells the
     model to answer without calling a tool (``render_react_messages``). With
     ``skip_final_answer_turn`` the loop never asks it: a loop still running
     after the turn before it ends there, as ``finished``, having made one
-    model call fewer (latency audit O9). Only a caller that reads no final
+    model call fewer. Only a caller that reads no final
     answer may set it; with ``max_iterations`` of 1 it changes nothing, since
     that one turn is also the first.
     """
@@ -507,14 +506,14 @@ async def run_react_loop(
                         await value
                 decisions = await decide(iteration, steps)
                 for position, decision in enumerate(decisions):
-                    # D9 as amended (latency audit O4): with a ToolGate, a
+                    # With a ToolGate, a
                     # read's whole section runs under its URL's own flight
                     # lock, so a sibling loop wanting the same page cannot slip
                     # between this loop's download and the admission that
                     # makes it a cache hit; the policy decision and the reducer
                     # each run under the gate itself, and the execution under
                     # neither, so calls on different pages overlap. A plain
-                    # lock keeps D9's original rule, the whole section under
+                    # lock holds the whole section under
                     # it. The model turn above is outside all of it.
                     gated = tool_lock is not None and decision.action == "use_tool"
                     gate = tool_lock if gated and isinstance(tool_lock, ToolGate) else None

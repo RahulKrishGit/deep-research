@@ -30,11 +30,10 @@ from deep_research.utils.types import (
     SourceEvaluationStatus,
 )
 
-# ``needs_input`` is the one waiting status (live-briefs spec §4.4): the one-time
+# ``needs_input`` is the one waiting status: the one-time
 # check is waiting for the reader's answers. It is not terminal, and it returns to
 # ``running`` when the answers arrive, the reader skips, or the wait times out.
-# ``stopped`` is terminal: the reader stopped the run, which published nothing
-# (notes-progress-report spec §8).
+# ``stopped`` is terminal: the reader stopped the run, which published nothing.
 SessionStatus = Literal[
     "running",
     "needs_input",
@@ -65,13 +64,13 @@ class ApiModel(BaseModel):
 class ResearchRequest(ApiModel):
     """One validated request to start a research session.
 
-    ``max_iterations`` keeps the name existing clients send (PD-15) and is the
+    ``max_iterations`` keeps the name existing clients send and is the
     ceiling on *extra* research passes: zero is a legitimate request — a run
     that may buy no extra pass for a missing required target — so the bound is
     ``>= 0`` rather than ``>= 1``.
 
-    ``ask_clarifying_questions`` turns the one-time check on (live-briefs spec
-    §4.4, D16): before planning, a question that leaves something material open
+    ``ask_clarifying_questions`` turns the one-time check on: before planning,
+    a question that leaves something material open
     gets up to three questions for the reader. Off, no check call is made.
     """
 
@@ -122,7 +121,7 @@ class ClarificationAnswer(ApiModel):
 
 
 class ClarificationAnswersRequest(ApiModel):
-    """``POST /research/{id}/answers``: the reader's answers, once (spec §4.4).
+    """``POST /research/{id}/answers``: the reader's answers, once.
 
     A question left out takes its best guess. ``skip`` records that the reader
     chose to start now ("Just start") with whatever they had answered.
@@ -133,7 +132,7 @@ class ClarificationAnswersRequest(ApiModel):
 
 
 class NoteRequest(ApiModel):
-    """``POST /research/{id}/notes``: one reader note, 1-500 characters after trim (spec §4.6).
+    """``POST /research/{id}/notes``: one reader note, 1-500 characters after trim.
 
     Collapsed to one single-spaced line first, as an answer's text is: a note
     kept as written becomes its own restatement, and a restatement is one line
@@ -156,7 +155,7 @@ class NoteAcceptedResponse(ApiModel):
 
 
 class ReaderNoteResponse(ApiModel):
-    """One accepted note in the session response (live-briefs spec §4.6).
+    """One accepted note in the session response.
 
     ``restatement`` is the run's reading of it, ``None`` until the note is
     interpreted. ``outcome`` is the run's conclusion — ``covered``,
@@ -164,7 +163,7 @@ class ReaderNoteResponse(ApiModel):
     note, though the findings bore on it) or ``replaced`` — or, with nothing
     to judge the note by, ``pending`` while the session goes on and
     ``not_checked`` once it has ended: no session that has ended reports
-    ``pending`` (notes-progress-report spec §4 item 2).
+    ``pending``.
     """
 
     note_id: str = Field(min_length=1)
@@ -179,13 +178,13 @@ class ReaderNoteResponse(ApiModel):
         ]
         | None
     ) = None
-    """A mixed note's steering half (notes-progress-report spec §5.6, D20): the
+    """A mixed note's steering half: the
     review's verdict on what the note asked besides research, in ``outcome``'s
     words; ``None`` for every other note."""
 
 
 class ClarificationQuestionResponse(ApiModel):
-    """One question the one-time check asked (live-briefs spec §4.4)."""
+    """One question the one-time check asked."""
 
     id: str = Field(min_length=1)
     dimension: ClarityDimension
@@ -228,7 +227,7 @@ class CoverageProgressResponse(ApiModel):
 
 
 class EvidenceCountsResponse(ApiModel):
-    """Distinct quantities, each of a different thing (Section 2.5).
+    """Distinct quantities, each of a different thing.
 
     A read call is not a work, a work is not a publisher, a source URL is not
     a finding, and "checked" is not "cited". Each field here answers a
@@ -258,7 +257,7 @@ class EvidenceCountsResponse(ApiModel):
 
 
 class ReportOutlineEntryResponse(ApiModel):
-    """One ``##`` heading of the published report, in order (notes-progress-report spec §7.5).
+    """One ``##`` heading of the published report, in order.
 
     ``heading`` is the heading exactly as the Markdown prints it and ``label`` its
     short name in the console's contents list; ``topic_index`` and ``topic_count``
@@ -329,27 +328,27 @@ class ResearchSessionResponse(ApiModel):
     """The distinct counts, or ``None`` without a composition to count."""
 
     notes: list[ReaderNoteResponse] = Field(default_factory=list)
-    """Every note the reader added, in the order it was received (spec §4.6)."""
+    """Every note the reader added, in the order it was received."""
 
     notes_remaining: int = Field(default=MAX_NOTES_PER_RUN, ge=0, le=MAX_NOTES_PER_RUN)
-    """How many more notes this session accepts (D11a): ten less the accepted ones."""
+    """How many more notes this session accepts: ten less the accepted ones."""
 
     note_passes: int = Field(default=0, ge=0)
-    """The targeted research passes the reader's notes bought (D11)."""
+    """The targeted research passes the reader's notes bought."""
 
     clarification: ClarificationRecordResponse | None = None
     """The one-time check the session asked, or ``None`` when it asked nothing."""
 
     report_outline: list[ReportOutlineEntryResponse] | None = None
-    """The published report's ``##`` headings, in order (notes-progress-report spec
-    §7.5), so the console lays the report out as cards with a contents list;
+    """The published report's ``##`` headings, in order,
+    so the console lays the report out as cards with a contents list;
     ``None`` while the run goes on and for a session with no report."""
 
     stopped_step: str | None = None
     """The step the reader stopped the run at — ``check`` (the one-time check) or a
     pipeline row, ``planner`` … ``report_reviewer`` — when ``status`` is ``stopped``;
     ``None`` otherwise. A stop is refused once the run decides to publish, so it is
-    never ``finalize_report`` (notes-progress-report spec §4 item 3, §8.4)."""
+    never ``finalize_report``."""
 
 
 class SessionListResponse(ApiModel):
@@ -429,7 +428,7 @@ class EvidenceRefusedResponse(EvidenceModel):
 
 
 class EvidenceResponse(EvidenceModel):
-    """E1: every finding with its verification and source, the not-found
+    """Every finding with its verification and source, the not-found
     targets, the refused sentences.
     """
 

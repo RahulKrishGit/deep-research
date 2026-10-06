@@ -1,12 +1,13 @@
 """One run's HTTP connection pool, lent to every page and document read.
 
-Latency audit O4: each ``web_scraper`` and ``document_reader`` call opened a
-client of its own, so every read paid its own connection and TLS handshake --
-robots.txt and page alike -- even to a host a sibling loop had just read. The
-pool below is shared by the run's reads instead. Each call still builds its own
-``httpx.AsyncClient`` over it, so what a request carries -- its headers, its
-cookies (a call's own, never a sibling's), its redirects and timeouts -- is
-exactly what it carried before; only the connections underneath are reused.
+Without a shared pool, each ``web_scraper`` and ``document_reader`` call would
+open a client of its own, so every read would pay its own connection and TLS
+handshake -- robots.txt and page alike -- even to a host a sibling loop had
+just read. The pool below is shared by the run's reads instead. Each call still
+builds its own ``httpx.AsyncClient`` over it, so what a request carries -- its
+headers, its cookies (a call's own, never a sibling's), its redirects and
+timeouts -- is exactly what a per-call client would carry; only the
+connections underneath are reused.
 """
 
 from __future__ import annotations

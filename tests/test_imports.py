@@ -8,31 +8,11 @@ from pathlib import Path
 import pytest
 
 import deep_research
-from deep_research import (
-    agents,
-    graph,
-    memory,
-    observability,
-    providers,
-    tools,
-    utils,
-)
 
 
 def test_package_version() -> None:
     """Package exposes a version string."""
     assert deep_research.__version__ == "0.1.0"
-
-
-def test_all_subpackages_import() -> None:
-    """All sub-packages import without error."""
-    assert agents is not None
-    assert graph is not None
-    assert memory is not None
-    assert tools is not None
-    assert providers is not None
-    assert observability is not None
-    assert utils is not None
 
 
 def test_shared_research_types_import_from_utils_package() -> None:
@@ -296,9 +276,7 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
 
     ``test_agent_runtime_all_surface_is_fully_covered`` only checks that
     every ``__all__`` entry resolves — it doesn't catch a public name that
-    exists in a submodule but was never wired into ``__all__`` (the exact
-    gap that let ``extraction_provider_error`` and ``invalid_fields`` go
-    unexported after later fix-round commits added/renamed them). This
+    exists in a submodule but was never wired into ``__all__``. This
     test walks the submodule source with ``ast`` and asserts the
     complement: every public top-level name is either exported or on the
     small allowlist of deliberate internals below.
@@ -319,11 +297,8 @@ def test_agent_submodule_public_names_all_reach_all() -> None:
     }
 
     agents_dir = Path(agents_pkg.__file__).parent
-    # Derived from the filesystem, not hand-written. The previous list named
-    # 16 of the 18 modules: ``identity`` and ``quality`` were missing, and the
-    # omission of ``identity`` was the only reason this invariant appeared to
-    # hold for it (its five helpers are deliberately unexported). Any future
-    # module could have slipped out the same way.
+    # Derived from the filesystem, not hand-written, so a module added later
+    # cannot slip out of the walk.
     internal_modules = {
         # ``identity`` is deliberately internal: its five fingerprint and
         # snapshot-merge helpers are implementation detail of the agents that
@@ -404,7 +379,7 @@ def test_concrete_agents_expose_their_identity_and_tools() -> None:
     assert EvidenceVerifierAgent.allowed_tools == ()
     assert ReportWriterAgent.name == "report_writer"
     assert ReportWriterAgent.allowed_tools == ("write_document", "save_to_memory")
-    # Task 8: the reviewer judges the candidate's packet and calls no tool at
+    # The reviewer judges the candidate's packet and calls no tool at
     # all, so its allowlist is empty by declaration.
     assert ReportReviewer.name == "report_reviewer"
     assert ReportReviewer.allowed_tools == ()
@@ -641,7 +616,7 @@ def test_the_agent_names_match_the_graph_node_names() -> None:
     ],
 )
 def test_either_side_of_the_live_import_cycle_can_be_imported_first(module: str) -> None:
-    """live-briefs spec E2/E3: agents publish through ``deep_research.graph.live``, and
+    """Agents publish through ``deep_research.graph.live``, and
     ``deep_research.graph`` imports every agent while its package initialises, so a
     module-level import from an agent module would break whichever order a fresh
     process imports in. Each module here is imported first, in a fresh interpreter."""

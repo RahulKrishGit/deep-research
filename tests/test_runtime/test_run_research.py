@@ -150,7 +150,7 @@ async def test_generated_session_ids_are_unique(config_file, tracker) -> None:
 async def test_max_extra_passes_overrides_the_configured_budget(
     config_file, tracker
 ) -> None:
-    """An explicit ceiling wins over ``graph.max_extra_passes`` (PD-15)."""
+    """An explicit ceiling wins over ``graph.max_extra_passes``."""
     topic = fake_sub_topic(
         targets=[
             fake_target(),
@@ -504,7 +504,7 @@ def budget_runtime(
     ``assembly.py``; the budget surface ``run_research`` touches is only
     ``request_budget``, so a stand-in keeps this task's tests independent of
     that one. ``telemetry`` is the other surface ``run_research`` reads — the
-    run's §7.3 collector, which it installs on the budget's single observer
+    run's telemetry collector, which it installs on the budget's single observer
     slot — and it defaults to ``None`` for the same reason the budget is
     explicit here: a run with no collector must behave exactly as it did
     before there was one.
@@ -523,19 +523,6 @@ def budget_runtime(
     )
 
 
-def reserving_builder(tracker, budget, *, on_start=None):
-    """A runtime builder whose run reserves one Tavily attempt at start."""
-
-    async def build(settings, *, session_id, **_ignored):
-        if on_start is not None:
-            on_start(budget)
-        return budget_runtime(
-            settings, session_id=session_id, tracker=tracker, budget=budget
-        )
-
-    return build
-
-
 @pytest.mark.asyncio
 async def test_run_research_notifies_the_collector_and_the_handler_of_every_update(
     config_file, tracker
@@ -545,7 +532,7 @@ async def test_run_research_notifies_the_collector_and_the_handler_of_every_upda
     The CLI installs its stream here while the assembly installed the run's
     collector there, so ``run_research`` has to fan out: both see every update.
     A collector that was replaced would report a peak of zero for a run that
-    had a call in flight, which is the figure §7.3 exists to report.
+    had a call in flight, which is the very peak the collector exists to report.
     """
     budget = RequestBudget()
     collector = RunTelemetryCollector()
@@ -830,7 +817,7 @@ async def test_a_runtime_without_a_budget_fails_loudly(config_file, tracker) -> 
 
 
 # ---------------------------------------------------------------------------
-# The event-loop lag monitor (stall-fix-brief.md P1-B).
+# The event-loop lag monitor.
 # ---------------------------------------------------------------------------
 
 
@@ -922,7 +909,7 @@ async def test_run_research_skips_the_loop_lag_monitor_with_no_collector(
 async def test_reader_answers_start_in_the_state_the_planner_is_handed(
     config_file, tracker
 ) -> None:
-    """live-briefs spec §4.4: the reader's answers start in the run's state, so
+    """The reader's answers start in the run's state, so
     the planner reads them, and the finished state still holds them."""
     answer = ReaderAnswer(
         question_id="q1", dimension="geography", text="Which region should this cover?",
@@ -954,7 +941,7 @@ async def test_a_run_given_no_reader_answers_starts_with_none(config_file, track
 
 @pytest.mark.asyncio
 async def test_the_run_closes_its_runtimes_connection_pool(config_file, tracker) -> None:
-    """Latency audit O4: the pool a run's reads shared is closed when it ends."""
+    """The pool a run's reads shared is closed when it ends."""
     closed: list[bool] = []
 
     class _Pool:

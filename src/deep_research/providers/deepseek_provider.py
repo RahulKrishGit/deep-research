@@ -13,7 +13,7 @@ import asyncio
 import json
 import os
 import unicodedata
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from time import perf_counter
 from types import SimpleNamespace, UnionType
 from typing import Annotated, Any, TypeVar, Union, cast, get_args, get_origin
@@ -167,7 +167,7 @@ def _json_instruction(schema: type[BaseModel]) -> ChatMessage:
 def _with_schema_instruction(
     messages: list[dict[str, str]], instruction: ChatMessage
 ) -> list[dict[str, str]]:
-    """The JSON-schema instruction right after the role prompt (D10, S2).
+    """The JSON-schema instruction right after the role prompt.
 
     Static content first: every structured call of one kind then shares the
     role prompt, the schema and the request's static sections as one prefix
@@ -339,7 +339,7 @@ def _usage_from_response(response: Any) -> TokenUsage:
     completion token counts must be non-negative integers and any supplied
     total must agree with their sum; anything else is malformed.
     ``completion_tokens_details.reasoning_tokens`` is captured when present,
-    so reasoning and content tokens can be told apart (P1-B); it never
+    so reasoning and content tokens can be told apart; it never
     affects the total, since ``completion_tokens`` already counts it.
     """
     usage = getattr(response, "usage", None)
@@ -383,7 +383,7 @@ def _responses_usage_from_response(response: Any) -> TokenUsage:
     """Map a Responses usage object to project-owned token counts.
 
     ``output_tokens_details.reasoning_tokens`` is captured when present,
-    mirroring ``_responses_cached_input_tokens`` (P1-B, RevTelemetry P1): this
+    mirroring ``_responses_cached_input_tokens``: this
     is the transport ``DeepSeekSchemaChatProvider`` uses for live structured
     calls -- planner, extraction, writer -- so it is where most reasoning
     tokens are actually reported.
@@ -684,7 +684,7 @@ def _translate_deepseek_error(error: Exception) -> ProviderError:
     keeps the SDK object confined to the caller's handler, whose locals the
     interpreter clears when the handler exits.
 
-    The two ``httpx`` branches exist only for a streaming attempt (Phase 2):
+    The two ``httpx`` branches exist only for a streaming attempt:
     the SDK does not always wrap a mid-stream failure into its own
     ``APITimeoutError``/``APIConnectionError``, so the raw transport
     exception reaches here directly and is translated the same retryable way.
@@ -728,7 +728,7 @@ def _translate_deepseek_error(error: Exception) -> ProviderError:
 
 
 def _stream_timeout(idle_timeout: float) -> httpx.Timeout:
-    """The per-chunk inactivity bound for one streaming attempt (Phase 2).
+    """The per-chunk inactivity bound for one streaming attempt.
 
     httpx applies ``read`` to every chunk it waits for, so this is an idle
     timeout, not a cumulative one: the attempt's own wall-clock cap is the
@@ -738,7 +738,7 @@ def _stream_timeout(idle_timeout: float) -> httpx.Timeout:
 
 
 class _ChatStreamAccumulator:
-    """Rebuilds one Chat Completions response from streamed chunks (Phase 2).
+    """Rebuilds one Chat Completions response from streamed chunks.
 
     The result exposes exactly the attribute shape the existing parsing
     reads -- ``choices[0].message.{content,reasoning_content,tool_calls}``,
@@ -752,7 +752,7 @@ class _ChatStreamAccumulator:
     the existing ``_choice_text``/``_native_outcome`` type guards reject it
     exactly as they reject a malformed non-streaming reply: a raw
     ``TypeError`` must never escape with a chunk reachable from its
-    traceback (RevStreaming P2). A stream that ends before ever telling us
+    traceback. A stream that ends before ever telling us
     it completed -- a dedicated, choice-less final chunk (OpenAI's
     documented ``stream_options={"include_usage": True}`` behaviour), a
     chunk that instead attaches usage to the same chunk as the finish
@@ -764,14 +764,14 @@ class _ChatStreamAccumulator:
     being accepted as a clean, non-retryable response; a malformed-but-
     *present* ``finish_reason`` (``None``, ``42``, garbage text, ...) on an
     otherwise complete stream is an existing, separately handled "other"
-    category, not an incomplete stream (RevStreaming P2).
+    category, not an incomplete stream.
 
     ``marks`` is written to directly, during ``absorb()``, so a failed
     attempt (a timeout or disconnect mid-stream) still reports whatever
-    ``first_event_seconds``/``first_token_seconds`` it saw before failing
-    (RevStreaming P2); both are measured from ``started_at``, the attempt's
+    ``first_event_seconds``/``first_token_seconds`` it saw before failing;
+    both are measured from ``started_at``, the attempt's
     own start taken before the request was even sent, so time spent queued
-    before the response headers arrive is included (RevStreaming P3).
+    before the response headers arrive is included.
     """
 
     def __init__(self, marks: SimpleNamespace, started_at: float) -> None:
@@ -817,7 +817,7 @@ class _ChatStreamAccumulator:
             # A real (even if malformed-but-non-empty) finish reason means
             # the model itself declared the response finished, independent
             # of whether DeepSeek also delivers a usage chunk for this
-            # model/mode (RevStreaming P2 hardening).
+            # model/mode.
             self._saw_terminal_chunk = True
         delta = getattr(choice, "delta", None)
         if delta is None:
@@ -892,7 +892,7 @@ class _ChatStreamAccumulator:
         prematurely (a clean EOF with no ``[DONE]``, indistinguishable from
         real content otherwise) and must retry the same way the Responses
         path retries a stream with no terminal event, rather than being
-        accepted as a completed, non-retryable response (RevStreaming P2).
+        accepted as a completed, non-retryable response.
         """
         if not self._saw_terminal_chunk:
             raise ProviderResponseError(
@@ -940,7 +940,7 @@ _RESPONSES_TOKEN_EVENT_TYPES = frozenset(
 async def _consume_responses_stream(
     stream: Any, marks: SimpleNamespace, started_at: float
 ) -> Any:
-    """Consume a Responses API SSE stream to its terminal response (Phase 2).
+    """Consume a Responses API SSE stream to its terminal response.
 
     All three terminal events resolve the same way: ``event.response`` is
     handed to the existing, unchanged non-streaming parsing, whose own status
@@ -951,7 +951,7 @@ async def _consume_responses_stream(
 
     ``started_at`` is the attempt's own start, taken before the request was
     even sent, so ``first_event_seconds``/``first_token_seconds`` include any
-    time spent queued before the response headers arrive (RevStreaming P3).
+    time spent queued before the response headers arrive.
     """
     async with stream:
         async for event in stream:
@@ -1066,10 +1066,10 @@ class DeepSeekChatProvider:
     ) -> AttemptObserver:
         """One ``with_retries`` callback appending to this call's own list.
 
-        A fresh closure per call (P1-B): ``with_retries`` invokes it once per
+        A fresh closure per call: ``with_retries`` invokes it once per
         transport attempt, in order, with that attempt's number, start offset,
         duration and outcome -- exactly the fields ``CallAttemptTelemetry``
-        needs. ``marks`` carries a streaming attempt's own timing (Phase 2):
+        needs. ``marks`` carries a streaming attempt's own timing:
         the operation resets it at the start of each attempt and fills it
         during stream consumption, so by the time ``with_retries`` calls this
         callback for that attempt, ``marks`` holds exactly its own readings.
@@ -1099,9 +1099,9 @@ class DeepSeekChatProvider:
         Only reached when every transport attempt failed and ``with_retries``
         re-raised: no response ever arrived, so ``_set_span_result`` never ran
         and the span would otherwise carry no record of what happened. This
-        is exactly the call the stall investigation most needs recorded --
-        every attempt timing out at the 1,800 s read timeout (RevTelemetry
-        P3). Called from inside the still-open span so the trace fetch sees
+        is exactly the call most worth recording --
+        every attempt timing out at the 1,800 s read timeout.
+        Called from inside the still-open span so the trace fetch sees
         it; nothing to set when there were no attempts (a budget refusal).
         """
         if attempts:
@@ -1159,11 +1159,11 @@ class DeepSeekChatProvider:
         usage failed to parse: a token figure invented after a failed call
         would report spend that did not happen and hide spend that did.
 
-        The same rule is what makes the §7.3 per-call record honest: this call
+        The same rule is what makes the per-call telemetry record honest: this call
         is the run's slowest, its operation's largest reply and its truncation
         count only when the response really carried the numbers.
 
-        ``attempts`` and ``usage.reasoning_tokens`` are this call's own P1-B
+        ``attempts`` and ``usage.reasoning_tokens`` are this call's own
         contributions: the collector keeps the attempts of whichever call is
         currently its stage's slowest, and sums reasoning tokens across the run.
         """
@@ -1250,7 +1250,7 @@ class DeepSeekChatProvider:
         exactly as ``retry_count`` does above. ``total_timeout`` is the same
         value the non-streaming path already sends as its flat httpx
         timeout -- the per-role override, or the client's own default
-        (``self._config.timeout``) -- since Phase 2 repurposes it as the
+        (``self._config.timeout``) -- which serves as the
         per-attempt wall-clock cap rather than the per-chunk one.
         """
         stream = (
@@ -1902,11 +1902,10 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
 
     Chat Completions JSON mode only guarantees JSON *syntax*; it neither
     accepts a schema nor enforces one, so conformance is left to the model and
-    enforced locally by Pydantic. That was sufficient for the judge only after
-    this transport existed, and it is not sufficient for the target agents: a
-    live Critic canary recorded ``json_invalid`` at ``$`` on both the initial
-    attempt and the one repair, which is reachable only when the provider
-    returns non-empty text that is not parseable JSON at all.
+    enforced locally by Pydantic. That is not sufficient for the target
+    agents: a structured call recorded ``json_invalid`` at ``$`` on both the
+    initial attempt and the one repair, which is reachable only when the
+    provider returns non-empty text that is not parseable JSON at all.
 
     This base asks the model for the exact requested schema, so the provider
     constrains its own decoding. Pydantic remains the local authority, the

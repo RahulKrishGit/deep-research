@@ -94,8 +94,8 @@ def test_stream_returns_typed_progress_as_sse() -> None:
 
 
 def test_the_sse_payload_carries_the_event_id() -> None:
-    """live-briefs spec E1: the payload is the event's own JSON, so its ``event_id``
-    travels unchanged; the SSE ``id:`` line stays the per-subscriber position."""
+    """The payload is the event's own JSON, so its ``event_id`` travels unchanged;
+    the SSE ``id:`` line stays the per-subscriber position."""
     event = ResearchEvent(
         event_type="graph.node.started",
         source="graph.planner",

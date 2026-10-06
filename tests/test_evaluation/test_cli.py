@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 
-import pytest  # noqa: F401 - available for tests that grow a pytest.raises
+import pytest
 
 from deep_research.evaluation import cli as cli_module
 from deep_research.evaluation.cli import (
@@ -276,7 +276,7 @@ def test_production_parity_flags_are_mutually_exclusive() -> None:
 
 
 def test_the_suite_command_also_accepts_the_parity_flags() -> None:
-    """Shared options apply to both subcommands (Task 13 uses both)."""
+    """Shared options apply to both subcommands."""
     options = parse_arguments(["suite", "--production-parity"])
 
     assert options.production_parity is True
@@ -409,7 +409,7 @@ def test_nothing_printed_to_the_stream_contains_a_secret(
 
 
 def test_the_target_thinking_mode_reaches_the_runner(recording_runner) -> None:
-    """Latency plan Task 19: ``--target-thinking-mode`` is the agent command's."""
+    """The ``--target-thinking-mode`` flag is passed to the runner."""
     run(["agent", "researcher", "--target-thinking-mode", "disabled"], runner=recording_runner)
     run(["agent", "researcher"], runner=recording_runner)
 

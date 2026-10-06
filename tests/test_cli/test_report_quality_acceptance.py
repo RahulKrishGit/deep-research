@@ -1,10 +1,7 @@
 """Mocked acceptance: the recorded report pathologies stay gone.
 
-This file is the permanent guard for the plan that began at one committed live
-CLI artifact, ``docs/reports/cli-run-2026-09-13-grid-scale-battery-storage-
-854cddd3.md``. Its review section — ``docs/superpowers/plans/2026-09-14-cli-
-report-quality-and-agent-output-integrity.md``, "Review result this plan must
-correct" — recorded five structural pathologies:
+This file guards five structural pathologies that a recorded live CLI run
+showed (counts as recorded, then as asserted here):
 
     duplicate URL rows                     156 -> 0
     false numeric scores for unscored      221 -> 0
@@ -15,7 +12,7 @@ correct" — recorded five structural pathologies:
 Two of the five moved with the pipeline and are guarded where they now live:
 duplicate claim IDs belong to the claim registry the Evidence Verifier
 pipeline deleted (its successor, ``duplicate_fact_rows``, is an invariant
-``fact_rows()`` maintains by construction, PD-10/F11), and the numeric score an
+``fact_rows()`` maintains by construction), and the numeric score an
 unscored source must not carry is now ``Sources`` rendering only the cited
 assessments — no number is printed for a source the report did not cite because
 the report does not print uncited sources at all. The remaining three are
@@ -260,7 +257,7 @@ def _composition(state: ResearchState) -> ReportComposition:
 
     The key facts table comes from the production ``fact_rows`` builder; the
     prose points carry the statements the Statement Check judged, with the
-    verdicts the writer records for every kept sentence (spec §6.4).
+    verdicts the writer records for every kept sentence.
     """
     findings = state.verified_findings
     targets = _evidence_targets(state)
@@ -362,7 +359,7 @@ def test_the_reader_report_prints_one_row_per_record_and_no_duplicate_url() -> N
 
     Every assessed source the report cites is printed once in the reader's
     references, and every row of the evidence log's Verified figures table --
-    the fact-row table, moved there in full (spec §9) now that the reader no
+    the fact-row table, moved there in full, now that the reader no
     longer prints a Key facts table -- traces to a typed fact row. A
     duplicate URL in the references, or a duplicate row in that table, is
     exactly what this guards against, so the test counts occurrences per URL

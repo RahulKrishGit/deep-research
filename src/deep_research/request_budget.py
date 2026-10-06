@@ -1,8 +1,8 @@
 """Run-scoped bounds on transport attempts per provider category.
 
 A declared spend ceiling is worthless while it exists only as arithmetic in a
-plan document: a live canary breached its declared Tavily ceiling by roughly
-eleven percent and nothing in the running system noticed. ``RequestBudget`` is
+plan document: a run could breach its declared Tavily ceiling and nothing in
+the running system would notice. ``RequestBudget`` is
 what makes a ceiling real. Every transport attempt reserves one unit *before*
 the call goes out, and the attempt past the effective limit is refused before
 any network I/O happens.

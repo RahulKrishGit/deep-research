@@ -1,15 +1,13 @@
-"""Re-pin one agent's prompt fingerprint (latency plan, Task 1; the B-pin rule).
+"""Re-pin one agent's prompt fingerprint.
 
     python tests/pin_fingerprint.py --show
-    python tests/pin_fingerprint.py <agent> "<comment line>" ["<comment line>" ...]
+    python tests/pin_fingerprint.py <agent>
 
 ``--show`` prints every agent's pinned value. A re-pin reads the agent's value
-as it stands in ``tests/test_evaluation/test_config.py`` -- the baseline Task 1
-recorded, or what an earlier re-pin left -- never a value copied into a plan,
-so it applies whichever branch merged first. It computes the fingerprint of the
-current source, writes the comment lines above the entry (the last one ending
-"Moved `<old>` -> `<new>`."), and prints "<agent>: <old> -> <new>". It refuses
-when the value would not move: a re-pin follows an edit to that agent's module.
+as it stands in ``tests/test_evaluation/test_config.py``, computes the
+fingerprint of the current source, rewrites the entry and prints
+"<agent>: <old> -> <new>". It refuses when the value would not move: a re-pin
+follows an edit to that agent's module.
 
 Run from the repository root with ``PYTHONPATH=src``. Not collected by pytest:
 the filename does not match ``test_*.py``.
@@ -40,16 +38,14 @@ def main(argv: list[str]) -> int:
         for agent in AGENTS:
             print(agent, _entry(text, agent).group(1))
         return 0
-    if len(argv) < 2 or argv[0] not in AGENTS:
-        raise SystemExit("usage: pin_fingerprint.py --show | <agent> <comment line> [...]")
-    agent, comment = argv[0], argv[1:]
+    if len(argv) != 1 or argv[0] not in AGENTS:
+        raise SystemExit("usage: pin_fingerprint.py --show | <agent>")
+    agent = argv[0]
     match = _entry(text, agent)
     old, new = match.group(1), agent_prompt_fingerprint(agent)
     if old == new:
         raise SystemExit(f"{agent}: the pin did not move ({old})")
-    lines = [f"    # {line}" for line in comment]
-    lines[-1] += f" Moved `{old}` -> `{new}`."
-    entry = "\n".join(lines) + "\n" + f'    "{agent}": "{new}",'
+    entry = f'    "{agent}": "{new}",'
     PINS.write_text(text[: match.start()] + entry + text[match.end():], encoding="utf-8")
     print(f"{agent}: {old} -> {new}")
     return 0

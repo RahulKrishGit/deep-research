@@ -645,9 +645,9 @@ def _artifact(output: TargetOutput, name: str) -> object:
 
 def _report_body(output: TargetOutput) -> str:
     # ``SynthesizedReport`` exposes the composed reader artifact as
-    # ``markdown``.  ``report`` is the state-update spelling retained for the
-    # replace-merged ResearchState contract, and is only a compatibility
-    # fallback for older evaluation artifacts.
+    # ``markdown``. ``report`` is the state-update spelling of the
+    # replace-merged ResearchState contract, used when the result has no
+    # ``markdown``.
     report = _artifact(output, "markdown")
     if not isinstance(report, str):
         report = _artifact(output, "report")
@@ -695,7 +695,7 @@ def _reader_reference_urls(report: str) -> dict[int, str]:
     first-use order, so its markers are resolved through the list it printed
     rather than through a second, wider index computed from state. Each line
     reads ``n. Publisher — [Title](url)``, with an optional trailing
-    ``(date)``/``(updated date)`` (spec §3.1 rule 7, §8); the URL is the
+    ``(date)``/``(updated date)``; the URL is the
     markdown link's own target, never the date parenthetical after it. A
     marker with no matching reference line therefore resolves to nothing and
     the citation gate fails closed, which is the direction an integrity gate
@@ -741,10 +741,11 @@ def _uncovered_sub_topics(
 
 
 def _forbidden_publication_claims(reference: Mapping) -> list[str]:
-    """Read the Task 6 no-publication claim phrases from a case reference."""
+    """Read the no-publication claim phrases from a case reference."""
     claims = reference.get("forbidden_publication_claims")
-    # Keep old artifacts readable while the active catalog migrates. New
-    # cases must use the publication-oriented key so their contract cannot be
+    # ``forbidden_persistence_claims`` is the earlier spelling of this key,
+    # still read when the publication-oriented key is absent. New cases must
+    # use the publication-oriented key so their contract cannot be
     # mistaken for a write-recovery expectation.
     if claims is None:
         claims = reference.get("forbidden_persistence_claims")
@@ -1134,10 +1135,10 @@ def _no_invented_evidence_passes(
 ) -> bool:
     """Every kept figure's evidence words are words its own page carries.
 
-    §5.2's rule, re-derived from the artifact rather than trusted: the run
+    The rule is re-derived from the artifact rather than trusted: the run
     records the words the Context Check returned, and this predicate proves
     the page the finding cites really contains them. A kept figure with no
-    evidence words is an unchecked context (PD-26) and states nothing to
+    evidence words is an unchecked context and states nothing to
     invent; a figure whose words are not on its page is an invention however
     the checker worded its verdict, and a finding whose read is not among the
     seeded pages cannot be proven at all.
@@ -1340,7 +1341,7 @@ def _valid_report_passes(output: TargetOutput, case: EvaluationCase) -> bool:
     """Both artifacts are present, and every required target is accounted for.
 
     Presence alone would pass a report that silently dropped an obligation,
-    which is the failure §6.1 item 5 exists to prevent: a required target the
+    which is the failure this gate exists to prevent: a required target the
     run could not answer has to be listed under Not found, so it is either
     answered by a figure or named as missing, never absent from both.
     """
@@ -1382,7 +1383,7 @@ def _reported_citation_urls(output: TargetOutput) -> set[str]:
 def _finding_urls(output: TargetOutput) -> set[str] | None:
     """Every page the composition's own findings carry, or ``None``.
 
-    This is the writer's whole citation vocabulary: §6.1 renders the
+    This is the writer's whole citation vocabulary: the writer renders the
     reference list from the findings a pass composed, so a URL no finding
     carries is a citation the report cannot have derived — whatever the case
     declares as known.
@@ -1428,7 +1429,7 @@ def _refusals_logged_passes(
 ) -> bool:
     """Every refusal and every drop is published with the reason it earned.
 
-    §6.1 item 7: the evidence log prints every finding, every drop and every
+    The evidence log prints every finding, every drop and every
     refused sentence. A refusal that reaches no reader, or a drop published
     without its reason, is a fact quietly removed from the run's record — so
     the drafted text of each refused point, and the reason of each dropped
@@ -1553,7 +1554,7 @@ def _gate_no_persistence_calls(
         passed,
         ""
         if passed
-        else "Task 6 synthesis must not call document or memory persistence tools",
+        else "the report writer must not call document or memory persistence tools",
     )
 
 
@@ -1571,7 +1572,7 @@ def _gate_no_false_publication_claim(
 def _state_citation_urls(case: EvaluationCase) -> list[str]:
     """Every URL this state's own records can derive a citation from.
 
-    The assessed rows and the verified findings, in that order: §6.1 numbers
+    The assessed rows and the verified findings, in that order: the writer numbers
     the reader's references from the findings a pass composed, and the
     assessed rows are what name each page's readable copy, so this cannot
     drift from the URLs a composing run would derive.
@@ -1610,8 +1611,8 @@ def _citations_locally_derived_passes(
     list prints, and the URLs the state's assessed rows and checked claims
     derive. The report may print fewer of them than it holds — completeness is
     graded elsewhere — but nothing outside them: a URL no assessed source and
-    no checked claim carries is a citation the run invented, and Task 7
-    renders references from evidence ids precisely so that cannot happen.
+    no checked claim carries is a citation the run invented, and the
+    writer renders references from evidence ids precisely so that cannot happen.
 
     Deliberately not a second name for the ``citations_known`` gate. That gate
     compares the report against the case's *declaration* — the URLs the case
@@ -1631,7 +1632,7 @@ def _statements_labelled_passes(
 ) -> bool:
     """Every printed statement cites at least one known finding label.
 
-    §6.2's rule, re-checked from the artifact: code keeps only points that
+    The rule is re-checked from the artifact: code keeps only points that
     cite a known label and attaches that finding's id to the statement it
     builds, so a statement with no finding id — or with one no label in the
     registry points at — is prose the reader has no way to trace.
@@ -1670,7 +1671,7 @@ def _conflicting_figures_published_passes(
 
     A report that prints one forecaster's figure and drops the other has
     resolved a disagreement the evidence did not resolve — the failure this
-    case exists to catch, and one no wording check may make (D8): what is
+    case exists to catch, and one no wording check may make: what is
     graded is that both findings stayed citable.
     """
     conflicting = {
@@ -1874,13 +1875,13 @@ def _plan_still_valid_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return _distinct_subtopics_passes(output, case)
 
 
-# --- Task 12: scoped evidence targets ---------------------------------------
+# --- Scoped evidence targets ------------------------------------------------
 #
 # A plan is only as good as the obligations it declares, and the general
 # gates cannot see them: ``valid_subtopics`` validates the shape of a plan,
 # not whether its obligations are answerable. These metrics are the scoping
 # contract, so each one fails closed on a plan it cannot read and on a plan
-# that declares no obligation at all — Section 2.1 requires that a run which
+# that declares no obligation at all: a run which
 # produces nothing scores nothing.
 
 def _reference_strings(case: EvaluationCase, key: str) -> list[str]:
@@ -1956,7 +1957,7 @@ def _targets_have_measure_passes(
 ) -> bool:
     """Every obligation names the measure it asks for.
 
-    D10 opens the unit vocabulary, so the gate does not judge the dimension
+    The unit vocabulary is open, so the gate does not judge the dimension
     word: what a plan owes is the measure itself, which is the field an answer
     is checked against. A target whose measure is empty is not a readable plan
     at all — the contract's own ``measure`` is non-empty — so the gate fails
@@ -2015,7 +2016,7 @@ def _source_diversity_passes(output: TargetOutput, case: EvaluationCase) -> bool
     return len(domains) >= minimum
 
 
-# --- Task 12: read-bearing acquisition --------------------------------------
+# --- Read-bearing acquisition -----------------------------------------------
 #
 # A finding's provenance is not its URL's membership in a declared list: the
 # case declares the recalled lead as a known source precisely so that
@@ -2343,7 +2344,7 @@ def _no_fabricated_reputation_passes(
     return True
 
 
-# --- Task 12: work-role independence ----------------------------------------
+# --- Work-role independence -------------------------------------------------
 #
 # A page's serving host is a transport fact. A repository that hosts a copy
 # of a report, and a wire that reprints it, are not publishers of anything —
@@ -2466,14 +2467,14 @@ def _independent_work_recognized_passes(
 def _reader_markdown_present_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    """Task 6's reader artifact is the result's ``markdown`` field."""
+    """The reader artifact is the result's ``markdown`` field."""
     return bool(_report_body(output).strip())
 
 
 def _evidence_markdown_present_passes(
     output: TargetOutput, case: EvaluationCase
 ) -> bool:
-    """Task 6's evidence artifact is the result's ``evidence_markdown``."""
+    """The evidence artifact is the result's ``evidence_markdown``."""
     return bool(_evidence_body(output).strip())
 
 

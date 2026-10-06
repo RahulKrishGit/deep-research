@@ -1,4 +1,4 @@
-"""Latency plan Task 17: paired live runs, their metrics and the verdict."""
+"""Paired live runs, their metrics and the verdict."""
 
 from __future__ import annotations
 
@@ -206,7 +206,7 @@ async def test_a_run_has_its_own_memory_its_overrides_and_its_records(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_a_quality_record_that_cannot_be_read_keeps_the_runs_timing(tmp_path: Path) -> None:
-    """Review P2-5: a run without a quality snapshot publishes ``"quality": {}``;
+    """A run without a quality snapshot publishes ``"quality": {}``;
     the paid run's timing survives, and the reason is recorded."""
     quality_file = tmp_path / "report-0-quality.json"
     quality_file.write_text(json.dumps({"session_status": "completed", "quality": {}}), encoding="utf-8")
@@ -382,9 +382,9 @@ def test_a_run_that_published_nothing_fails_as_a_treatment_and_is_no_control() -
 
 @pytest.mark.asyncio
 async def test_a_crashed_run_still_writes_run_json_so_compare_fails_closed(tmp_path: Path) -> None:
-    """Task 17 review: a paid run whose ``research`` raises used to leave no
-    ``run.json``, so ``load_runs`` never saw it and its question silently
-    dropped out of ``compare``, which could then pass on the other questions."""
+    """A paid run whose ``research`` raises still leaves a ``run.json``, so
+    ``load_runs`` sees it and its question cannot silently drop out of
+    ``compare``, which could then pass on the other questions."""
     out = tmp_path / "live"
     events = [
         ResearchEvent(event_type="graph.node.started", source="graph.planner", message="m",
@@ -439,9 +439,9 @@ async def test_a_crashed_run_still_writes_run_json_so_compare_fails_closed(tmp_p
 async def test_a_cancelled_run_still_writes_run_json_and_the_cancellation_propagates(
     tmp_path: Path,
 ) -> None:
-    """Final review: ``CancelledError`` is a ``BaseException``, so a cancelled
-    paid run (a Ctrl-C, a timeout) used to leave no ``run.json``. It now leaves
-    the timing-only record and the cancellation still propagates."""
+    """``CancelledError`` is a ``BaseException``, so a cancelled
+    paid run (a Ctrl-C, a timeout) still leaves the timing-only ``run.json``
+    and the cancellation still propagates."""
     out = tmp_path / "live"
     events = [
         ResearchEvent(event_type="graph.node.started", source="graph.planner", message="m",
@@ -474,7 +474,7 @@ def _with_repetitions(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def test_compare_lists_every_baseline_it_considered_and_whether_it_was_used() -> None:
-    """Final review, then owner decision H10: the verdict names each baseline it
+    """The verdict names each baseline it
     considered per question with its session status and whether it was used,
     and the treatment runs it could not judge. Listing changes nothing: the
     verdict equals the one for the same runs without the excluded baseline."""
@@ -511,11 +511,10 @@ def test_compare_lists_every_baseline_it_considered_and_whether_it_was_used() ->
 
 
 def test_a_baseline_that_did_not_complete_is_no_control_and_does_not_widen_the_margins() -> None:
-    """Owner decision H10 (2026-10-01): a control must have completed. An
-    incomplete baseline at review 0.55 used to widen the review margin to its
-    0.25 spread from the completed baseline, which let a weak 0.70 treatment
-    through; now it is no control, the margin stays at the 0.03 floor and the
-    treatment fails."""
+    """A control must have completed. An incomplete baseline at review 0.55
+    is no control: it does not widen the review margin to its 0.25 spread from
+    the completed baseline (which would let a weak 0.70 treatment through), so
+    the margin stays at the 0.03 floor and the treatment fails."""
     faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
     weak = {**faster, "review_mean_score": 0.70}
 
@@ -539,8 +538,8 @@ def test_a_baseline_that_did_not_complete_is_no_control_and_does_not_widen_the_m
 
 
 def test_a_question_with_a_treatment_but_no_usable_control_fails_the_verdict() -> None:
-    """Owner decision H10 (2026-10-01): it used to drop out of the verdict and
-    let the other questions pass. A question with neither arm is still absent."""
+    """A question with a treatment but no usable control fails the verdict.
+    A question with neither arm is still absent."""
     faster = {"seconds": 1300.0, "stage_seconds": {"researcher": 500.0, "planner": 300.0}}
     runs = _with_repetitions(_runs({"tamil": faster, "latte": faster, "rome": faster}))
     # Rome's only baseline run did not complete.

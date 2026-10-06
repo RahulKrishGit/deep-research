@@ -1,9 +1,9 @@
-"""Tests for agents.report_table (spec §4, §14 T2): the question-shaped table.
+"""Tests for agents.report_table: the question-shaped table.
 
-Pure functions, no provider: ``build_table`` picks the shape (§4.1),
+Pure functions, no provider: ``build_table`` picks the shape,
 ``options_table`` and ``key_figures_table`` build it from checked statements and
-verified figures only (§4.2, §4.3; notes-progress-report spec §7.4). Fixtures follow the §4.2 Fable
-acceptance paragraph and the §13.2/§13.3 examples.
+verified figures only. Fixtures are a headphone-review options table and the
+worked report examples.
 """
 
 from __future__ import annotations
@@ -11,7 +11,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from deep_research.agents.identity import finding_fingerprint
-from deep_research.agents.report_table import build_table, key_figures_table, options_table
+from deep_research.agents.report_table import (
+    build_table,
+    key_figures_table,
+    options_table,
+)
 from deep_research.utils.types import (
     EarlierEdition,
     EvidenceTarget,
@@ -153,7 +157,7 @@ def _verdicts(*statement_ids: str, verdict: str = "consistent") -> dict[str, str
 
 
 # =============================================================================
-# (1) The §4.2 Fable options-table fixture.
+# The headphone-review options-table fixture.
 # =============================================================================
 
 SOUNDGUYS = "https://soundguys.com/best-headphones"
@@ -541,7 +545,7 @@ def test_fable_options_table_ninth_option_triggers_cap_caption() -> None:
 
 
 # =============================================================================
-# (2) The choice rule.
+# The choice rule.
 # =============================================================================
 
 
@@ -676,17 +680,17 @@ def test_choice_rule_one_row_gives_no_table() -> None:
 
 
 # =============================================================================
-# (2b) D10: an explanation/constraints answer's findings table only counts
+# An explanation/constraints answer's findings table only counts
 # rows that answer a quantity target (an EvidenceTarget with unit_dimension
 # set) -- being cited, or bound to a qualitative target (even a required
-# one), no longer qualifies a row for these two answer kinds.
+# one), does not qualify a row for these two answer kinds.
 # =============================================================================
 
 
 def test_explanation_ignores_figures_bound_to_qualitative_required_targets() -> None:
-    """D10: run 4's incidental rows were each bound to a *required* but
-    qualitative target (no ``unit_dimension``); for an explanation answer
-    that binding no longer qualifies a row for the findings table."""
+    """Incidental rows bound to a *required* but
+    qualitative target (no ``unit_dimension``) do not qualify for an
+    explanation answer's findings table."""
     row_a, finding_a = _row(
         "K001",
         url="https://a.test/x",
@@ -738,7 +742,7 @@ def test_explanation_ignores_figures_bound_to_qualitative_required_targets() -> 
 
 
 def test_explanation_builds_table_for_quantity_target_figures() -> None:
-    """D10: a target with ``unit_dimension`` set asks for a quantity, so two
+    """A target with ``unit_dimension`` set asks for a quantity, so two
     figures answering it still qualify for an explanation answer's table."""
     row_a, finding_a = _row(
         "K001",
@@ -787,9 +791,9 @@ def test_explanation_builds_table_for_quantity_target_figures() -> None:
 
 
 def test_factual_kind_keeps_qualitative_required_target_figures() -> None:
-    """D10 only restricts explanation/constraints answers: a factual
+    """Only explanation/constraints answers are restricted: a factual
     answer's findings table still qualifies rows bound to a required
-    qualitative target, exactly as before."""
+    qualitative target."""
     row_a, finding_a = _row(
         "K001",
         url="https://a.test/x",
@@ -843,11 +847,11 @@ def test_factual_kind_keeps_qualitative_required_target_figures() -> None:
 
 
 def test_constraints_ignores_cited_figures_bound_to_no_quantity_target() -> None:
-    """D10: for a constraints answer, a row cited by a kept statement no
-    longer qualifies unless it also answers a quantity target -- the closed
+    """For a constraints answer, a row cited by a kept statement does not
+    qualify unless it also answers a quantity target -- the closed
     "cited" fallback must not resurrect these rows. A regression that drops
     "constraints" from ``_QUANTITY_ONLY_ANSWER_KINDS``, or that checks the
-    cited fallback ahead of the D10 branch, would build a table here."""
+    cited fallback ahead of the quantity-only branch, would build a table here."""
     row_a, finding_a = _row("K001", url="https://a.test/x", value="10", unit="GW")
     row_b, finding_b = _row("K002", url="https://b.test/y", value="20", unit="GW")
     composition = _composition(
@@ -870,7 +874,7 @@ def test_constraints_ignores_cited_figures_bound_to_no_quantity_target() -> None
 
 
 # =============================================================================
-# (3) Marks on unchecked statements are ignored.
+# Marks on unchecked statements are ignored.
 # =============================================================================
 
 
@@ -947,7 +951,7 @@ def _row(
     evidence_words: str | None = None,
     vintage: str | None = None,
 ) -> tuple[FactRow, Finding]:
-    # Key figures label a row by its item (notes-progress-report spec §7.4): each
+    # Key figures label a row by its item: each
     # fixture row is its own item unless a test names one.
     subject = subject if subject is not None else f"Item {row_id}"
     snippet = evidence_words or f"{organisation} reports {value} {unit} for {row_id}."
@@ -1017,7 +1021,7 @@ def _cite(*finding_ids: str, statement_id: str) -> ReportPoint:
 
 
 # =============================================================================
-# (4) The Example 13.2 rows: rivals, who strings, mixed-kind suffixes.
+# The worked-example rows: rivals, who strings, mixed-kind suffixes.
 # =============================================================================
 
 
@@ -1525,11 +1529,6 @@ def test_cap_10_selection_priority() -> None:
     )
 
 
-# =============================================================================
-# Review round 1 fixes.
-# =============================================================================
-
-
 def test_capped_findings_table_keeps_the_forecast_caption() -> None:
     required_row, required_finding = _row(
         "K000",
@@ -1846,7 +1845,7 @@ def test_mark_credited_to_an_uncited_page_is_dropped() -> None:
 def test_choice_rule_two_required_parts_with_one_option_each_give_no_options_table() -> (
     None
 ):
-    """P1 regression: the >=2 test is per required part, not a cross-part union.
+    """Regression: the >=2 test is per required part, not a cross-part union.
 
     An optional part where BOTH options are marked is added deliberately: it
     gives ``_build_options_table`` a qualifying column to hang >= 2 rows on,
@@ -2213,7 +2212,7 @@ def test_option_keys_fold_case_whitespace_and_dash_variants() -> None:
 
 
 # =============================================================================
-# Review round 2: fail closed when a statement cites no known finding.
+# A statement that cites no known finding fails closed.
 # =============================================================================
 
 
@@ -2406,8 +2405,7 @@ def test_earlier_edition_with_no_known_finding_prints_no_date_and_no_vintage() -
 
 
 # =============================================================================
-# Whole-branch review: P1-1 (relay credit), P3-1 (dropped_marks dedup),
-# P3-3 (name the period_resolved_from basis).
+# Relay credit, dropped_marks dedup, and naming the period_resolved_from basis.
 # =============================================================================
 
 
@@ -2621,7 +2619,7 @@ def test_dropped_marks_are_not_duplicated_across_repeated_calls() -> None:
 
 
 # =============================================================================
-# Whole-branch re-review R-2: the relay credit must follow the finding the
+# The relay credit must follow the finding the
 # mark rests on, never whichever finding happens to share its page.
 # =============================================================================
 
@@ -2642,7 +2640,7 @@ def _relay_and_own_findings_on_one_page(bi_url: str) -> tuple[Finding, Finding]:
 
 
 def test_relay_credit_ignores_finding_list_order_when_the_statement_cites_one() -> None:
-    """R-2 repro: the relay decision must follow the finding the STATEMENT
+    """The relay decision must follow the finding the STATEMENT
     cites on that page, never whichever finding happens to come last in
     ``composition.findings`` for that URL."""
     bi_url = "https://businessinsider.com/best-headphones"
@@ -2701,7 +2699,7 @@ def test_relay_credit_ignores_finding_list_order_when_the_statement_cites_one() 
 def test_relay_credit_defers_to_the_page_when_the_statement_cites_mixed_findings() -> (
     None
 ):
-    """R-2: when a statement cites more than one finding on the same page and
+    """When a statement cites more than one finding on the same page and
     they disagree on who is credited, a bare mark (no ``finding_id``) never
     guesses which one it rests on — the page's own reading applies."""
     bi_url = "https://businessinsider.com/best-headphones"
@@ -2758,7 +2756,7 @@ def test_relay_credit_defers_to_the_page_when_the_statement_cites_mixed_findings
 def test_relay_credit_falls_back_to_statement_citations_when_mark_finding_id_is_none() -> (
     None
 ):
-    """R-2: ``ItemMark.finding_id`` defaults to ``None`` (unset by the writer,
+    """``ItemMark.finding_id`` defaults to ``None`` (unset by the writer,
     or older data); until it is set, the relay decision falls back to the
     statement's own cited findings on the mark's page."""
     assert ItemMark(name="x", source_url="https://a.test/x").finding_id is None
@@ -2807,7 +2805,7 @@ def test_relay_credit_falls_back_to_statement_citations_when_mark_finding_id_is_
 
 
 def test_relay_credit_prefers_the_marks_own_finding_id_over_the_fallback() -> None:
-    """R-2: when ``mark.finding_id`` names one of two mixed findings on the
+    """When ``mark.finding_id`` names one of two mixed findings on the
     same page explicitly, that decides the credit — the mark is not left to
     the "mixed citations, defer to the page" fallback that would otherwise
     apply when a bare mark cites both."""

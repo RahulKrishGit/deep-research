@@ -76,7 +76,7 @@ def test_target_classifier_preserves_output_limit_through_planner_wrapper() -> N
     assert "reach" not in reason
 
 
-def test_every_trace_carries_the_tags_the_spec_lists(
+def test_every_trace_carries_the_listed_tags(
     planner_case, runtime_config_for
 ) -> None:
     runtime = runtime_config_for("planner")
@@ -396,15 +396,14 @@ def test_a_bare_slash_or_www_mid_token_is_not_a_url() -> None:
 
 
 def test_a_researchers_thought_is_also_redacted() -> None:
-    """RevSelectionR3 P2: the clamp covers observations and thoughts alike.
+    """The clamp covers observations and thoughts alike.
 
-    ``thought`` is cut with the same clamp as ``observation_summary`` but,
-    before this fix, was never redacted first: a model thought naming the
-    exact source URL in full ("Next I will read https://...") survived once
-    the clamp grew past its length. The live-tier researcher harness always
-    synthesizes a fixed placeholder thought for its own reasons (native
-    tool-calling carries no free-text thought at all), so this is exercised
-    directly against the trajectory builder with a step whose ``thought``
+    ``thought`` is cut with the same clamp as ``observation_summary``.
+    A model thought naming the exact source URL in full ("Next I will read
+    https://...") should not survive in the redaction. The live-tier researcher
+    harness always synthesizes a fixed placeholder thought for its own reasons
+    (native tool-calling carries no free-text thought at all), so this is
+    exercised directly against the trajectory builder with a step whose ``thought``
     is real free text, exactly the shape a free-text ReAct loop produces.
     """
     url = "https://example.com/sodium-ion-energy-density"
@@ -451,7 +450,7 @@ async def test_live_researcher_artifact_marks_complete_source_provenance(
 async def test_the_artifact_separates_discovery_from_read_provenance(
     runtime_config_for, live_case_for, live_target_harness
 ) -> None:
-    """Task 5, R5/R6: the artifact proves a READ, not a search.
+    """The artifact proves a READ, not a search.
 
     This scripted live run only ever searches, so its discovery ledger holds
     the URL's identity while its read ledger — the one a verification-passage

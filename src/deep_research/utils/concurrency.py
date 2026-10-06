@@ -2,9 +2,9 @@
 
 ``asyncio.gather`` propagates the first failure at once and leaves every
 sibling running, and ``asyncio.TaskGroup`` wraps failures in an
-``ExceptionGroup`` that no caller here catches. The latency work (audit O3,
-O10) runs two or three model calls together where they used to run one after
-another, so it needs the one-after-another failure shape: the first failure
+``ExceptionGroup`` that no caller here catches. Running two or three model
+calls together where they used to run one after another needs the
+one-after-another failure shape: the first failure
 propagates as itself, and nothing it started keeps calling a provider.
 """
 

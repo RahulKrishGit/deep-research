@@ -432,7 +432,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         planner withholding ``query_memory`` once startup recall has supplied
         the guidance — offers the provider exactly the tools it will execute.
 
-        ``scratchpad`` is the caller's own notes for this loop (D9): an agent
+        ``scratchpad`` is the caller's own notes for this loop: an agent
         that runs several loops at once hands each one its own pad, so a
         prompt renders this loop's observations and no sibling's. ``None``
         keeps the agent's single shared pad, which is what every
@@ -531,7 +531,7 @@ class BaseAgent(ABC, Generic[ResultT]):
         """Write one iteration into the scratchpad the next prompt renders.
 
         ``scratchpad`` is the loop's own pad when a caller runs several loops
-        at once (D9); ``None`` writes to the agent's single shared pad.
+        at once; ``None`` writes to the agent's single shared pad.
         """
         pad = self._scratchpad if scratchpad is None else scratchpad
         pad.add(

@@ -179,7 +179,7 @@ class ReportReviewerLike(Protocol):
         self,
         scoped: ScopedReportReviewInput,
     ) -> ReportReview:
-        """Judge only a redraft's changed parts (T5 addendum), carrying the
+        """Judge only a redraft's changed parts, carrying the
         rest of the previous review forward."""
         raise NotImplementedError
 
@@ -208,9 +208,9 @@ def _halt(
 def _board_notes_update(state: ResearchState) -> ResearchStateUpdate:
     """The run board's notes the state does not hold yet, as one update, or ``{}``.
 
-    live-briefs spec §4.6: a node starts from every note received so far. A
+    A node starts from every note received so far. A
     note the state already holds keeps the state's flags; ``{}`` when the
-    board adds nothing, so a run without notes merges exactly what it did.
+    board adds nothing, so a run without notes merges nothing extra.
     """
     notes = with_board_notes(state.reader_notes, board_notes())
     if len(notes) == len(state.reader_notes):
@@ -221,7 +221,7 @@ def _board_notes_update(state: ResearchState) -> ResearchStateUpdate:
 def _closed_notes_update(state: ResearchState) -> ResearchStateUpdate:
     """The board's notes the state does not hold yet, taken in as closed, or ``{}``.
 
-    The terminal node's merge (owner decision O1): the run has already decided
+    The terminal node's merge: the run has already decided
     to publish, so a note read this late is owed neither a targeted pass nor a
     redraft, and it is marked so. Left unmarked it would read as due to
     ``graph_route``, and the run's status and quality status -- which the
@@ -265,7 +265,7 @@ def agent_node(
 
     ``node_name`` defaults to the agent's own name so a LangSmith trace and
     the graph read the same; it is overridable so the same agent class can
-    fill two slots if a later spec ever needs that.
+    fill two slots.
     """
     name = (node_name or agent.name).strip()
     if not name:
@@ -277,14 +277,14 @@ def agent_node(
             return _skipped(state, name)
 
         started_event = node_started_event(name, iteration=state.iteration)
-        # live-briefs spec §4.6: every node begins with the notes received so far.
+        # Every node begins with the notes received so far.
         started = merge_research_state(
             state, {"events": [started_event], **_board_notes_update(state)}
         )
-        # Published live (live-briefs spec E3): the object merged here is the one
+        # Published live: the object merged here is the one
         # this node's snapshot carries, so the orchestrator delivers it once.
         publish_live(started_event)
-        # Latency plan Task 16: an experiment's stage replay reads the state this
+        # An experiment's stage replay reads the state this
         # agent starts from; nothing is written unless one bound a capture.
         capture_node_input(name, started)
         try:
@@ -356,7 +356,7 @@ def report_writer_node(
     *earlier* pass, and re-scoring it would emit a verdict labelled with this
     pass's iteration for work this pass never did.
 
-    T5 addendum: this is also the redraft-to-reviewer handoff. ``composition``
+    This is also the redraft-to-reviewer handoff. ``composition``
     changing invalidates the stored review by construction
     (``merge_research_state``), which is right for a genuinely new report but
     would throw away exactly what a scoped re-review needs. When this pass
@@ -410,7 +410,7 @@ def report_writer_node(
 
 def _arrived_via_redraft_hop(events: Sequence[ResearchEvent]) -> bool:
     """Whether the writer-redraft hop, not an extra research pass, is what
-    most recently ran before this writer call (T5 addendum, P2).
+    most recently ran before this writer call.
 
     ``state.report_review`` surviving with material defects on hand does not
     by itself say *why* the writer is running again: an extra pass bought by
@@ -425,7 +425,7 @@ def _arrived_via_redraft_hop(events: Sequence[ResearchEvent]) -> bool:
     first (``graph.extra_pass.started``). Scanning from the most recent event
     for whichever marker comes first settles it without a new state field.
 
-    A reader note's own loops (live-briefs spec §4.6) read like the extra
+    A reader note's own loops read like the extra
     pass: after ``graph.note_pass.started`` the writer drafts over new
     evidence, and after ``graph.note_redraft.requested`` it drafts afresh with
     the notes, so neither judgement may be carried over as a scoped one.
@@ -476,7 +476,7 @@ class ReportPublisher(Protocol):
 
 @runtime_checkable
 class BatchReportPublisher(ReportPublisher, Protocol):
-    """A publisher that can also save many findings in one write (latency audit O2).
+    """A publisher that can also save many findings in one write.
 
     A separate protocol rather than a third method on ``ReportPublisher``: a
     publisher without it is still a publisher, and the finalizer then writes
@@ -560,7 +560,7 @@ def _terminal_artifacts(
         update={
             "quality_status": status,
             "errors": list(state.errors),
-            # Notes-progress-report spec §7.2: each reader note's line, from its
+            # Each reader note's line, from its
             # terminal outcome -- like ``errors``, outside the review's fingerprint.
             "reader_note_lines": report_note_lines(state, composition),
         }
@@ -641,8 +641,8 @@ async def _publish(
 
     Memory is written last and only for ``accepted`` — a partial report is
     published, never remembered. A publisher that can batch saves every cited
-    finding in one write (latency audit O2); when that write fails, or the
-    publisher cannot batch, each finding is written on its own as before, so
+    finding in one write; when that write fails, or the
+    publisher cannot batch, each finding is written on its own, so
     every failure is still recorded against its own finding.
     """
     if publisher is None:
@@ -785,7 +785,7 @@ def finalize_report_node(
     they are three separate writes, and what the incomplete case guarantees is
     that none of them is advertised.
 
-    ``run_telemetry`` is the run's §7.3 collector, stamped into the state
+    ``run_telemetry`` is the run's collector, stamped into the state
     before the record is rendered so the published JSON carries the run's own
     figures. It is optional in the same sense the budget is not: a graph built
     without one — a unit test, an injected double — publishes ``telemetry:
@@ -801,7 +801,7 @@ def finalize_report_node(
         started = merge_research_state(
             state,
             {
-                # The run's §7.3 reading, taken here because this is the one
+                # The run's telemetry reading, taken here because this is the one
                 # node that knows the run is over and the one whose renderer
                 # publishes it: the quality record rendered below reads the
                 # telemetry out of the state, so stamping it in the same merge
@@ -818,8 +818,8 @@ def finalize_report_node(
                         FINALIZE_NODE, iteration=state.iteration
                     )
                 ],
-                # Every note the run read gets its bottom-line line (owner
-                # decision O1): a note read after the review's last board merge
+                # Every note the run read gets its bottom-line line: a note read after
+                # the review's last board merge
                 # is on the board but not yet in the state, and the lines are
                 # stamped from the state. Closing stops new notes from being
                 # received once the run decides to publish, but a note received
@@ -899,7 +899,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
       writer node, and publishing it is what makes a refusal a missing
       judgement instead of a lost report.
 
-    PD-5: ``missing_required_target_ids`` is computed by code — the writer
+    ``missing_required_target_ids`` is computed by code — the writer
     node's quality pass measures it — and stamped onto the record here
     whatever the review said, because a reviewer that named no missing target
     of its own cannot clear an obligation the deterministic pass measured. The
@@ -908,7 +908,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
     A reused or skipped call is recorded as such in the review event, so the
     trace says whether a model was asked this pass.
 
-    The reader's notes (live-briefs spec §4.6): the node starts from every note
+    The reader's notes: the node starts from every note
     received so far, and each active one is marked ``reviewed``, a
     ``new_angle``-only note too, though the review input leaves it out. Before
     the route is read the node waits for any note still being interpreted — for
@@ -931,7 +931,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
                 **_board_notes_update(state),
             },
         )
-        # notes-progress-report spec §6.1: published live, so Reviewing's elapsed
+        # Published live, so Reviewing's elapsed
         # time starts on time; the same object stays in this node's snapshot,
         # which the orchestrator then skips by its event_id.
         publish_live(started_event)
@@ -956,7 +956,7 @@ def report_reviewer_node(reviewer: ReportReviewerLike | None) -> GraphNode:
             criteria=review_criteria(review),
             notes=review_note_results(started, review),
         )
-        # Published live before the notes wait (spec §6.1): Reviewing's checks land
+        # Published live before the notes wait: Reviewing's checks land
         # the moment the review does, not after a note still being read.
         publish_live(reviewed_event)
         await notes_settled(timeout=NOTES_WAIT_S)
@@ -1060,7 +1060,7 @@ async def _review_report(
             ],
             False,
         )
-    # T5 addendum: ``previous`` here is either the ordinary stored review (the
+    # ``previous`` here is either the ordinary stored review (the
     # reuse check above already handled the identical-fingerprint case) or a
     # remapped carried-over review ``report_writer_node`` restored after a
     # redraft (:func:`remap_review_for_redraft`). Only the latter yields a
@@ -1095,7 +1095,7 @@ async def _review_report(
             # it was captured from.
             scoped_records = reviewer.review_records
             if scoped_status is not None:
-                # The addendum's own promise: a scoped call that could not be
+                # A scoped call that could not be
                 # made -- a provider failure, an invalid reply, or one that
                 # judged an id this packet does not carry -- is not the final
                 # word. One full, fresh review (never the stale ``previous``)
@@ -1136,7 +1136,7 @@ async def _review_report(
             False,
         )
     if scoped_failure is not None:
-        # T5 addendum: the fallback happened -- recorded here rather than as
+        # The fallback happened -- recorded here rather than as
         # its own error, since (unlike every other entry in ``errors``) the
         # ordinary outcome is that this full review *did* produce a verdict.
         review = review.model_copy(
@@ -1175,8 +1175,8 @@ def _reviewed_notes_update(started: ResearchState) -> ResearchStateUpdate:
     (``build_report_review_input`` lists ``steering_notes``): the flag is read
     only for a note with a steering kind (``notes_due_a_redraft``), so for a
     ``new_angle``-only note it is inert. A note on the board that ``started``
-    did not hold is added unreviewed (live-briefs spec §4.6). ``{}`` for a run
-    with no notes, so its merge is exactly what it was.
+    did not hold is added unreviewed. ``{}`` for a run
+    with no notes, so its merge adds nothing.
     """
     reviewed = {note.note_id for note in active_reader_notes(started.reader_notes)}
     marked = [
@@ -1270,13 +1270,13 @@ def _quality_with_review(
 
 
 async def extra_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
-    """Open the one extra pass the missing required targets justify (§6.5, D4).
+    """Open the one extra pass the missing required targets justify.
 
     This exists as its own node because a LangGraph conditional edge routes
     but cannot write, and both the macro-iteration increment and the pass's
     job list have to happen somewhere the graph can see and a test can call.
 
-    The job list is ``extra_pass_target_ids(state)`` (D10): the targets the
+    The job list is ``extra_pass_target_ids(state)``: the targets the
     code-stamped gate recorded as missing a verified finding, plus any
     required target a reviewer's own ``coverage`` defect named even though
     that gate already counted it answered. It is *replaced*, never merged:
@@ -1349,7 +1349,7 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
     that door: a run that somehow arrives with the re-run spent records
     ``graph_invalid_route`` rather than paying for a draft its bound forbids.
 
-    A reader note's redraft (live-briefs spec §4.6) comes through this same
+    A reader note's redraft comes through this same
     hop and spends none of that bound: the notes it is for are flagged
     ``redrafted`` — each note buys one — and ``graph.note_redraft.requested``
     tells the writer to draft afresh with the notes.
@@ -1424,7 +1424,7 @@ async def writer_redraft_node(channel: ResearchGraphState) -> ResearchGraphState
 
 
 async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
-    """Open the one targeted pass the reader notes that owe one buy (spec §4.6, D11).
+    """Open the one targeted pass the reader notes that owe one buy.
 
     Its own hop, as ``extra_pass`` is, because the route cannot write: it
     confines the researcher to the due notes' topics' targets exactly as an
@@ -1432,7 +1432,7 @@ async def note_pass_node(channel: ResearchGraphState) -> ResearchGraphState:
     ``passed`` and counts the pass in ``note_passes`` — never in
     ``iteration``, so the extra-pass budget is untouched. A note whose
     ``note-{id}`` topic the run already holds — a research note whose thread
-    failed or never started (notes-progress-report spec §5.3, §5.4) — reuses
+    failed or never started — reuses
     it; every other due note gets its topic appended. A run that arrives with
     no note due records ``graph_invalid_route`` rather than researching
     nothing.

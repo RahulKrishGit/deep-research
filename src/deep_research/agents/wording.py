@@ -1,13 +1,11 @@
 """The wording rules the Evidence Verifier and the Report Writer share:
-forecast versus outcome, and the stated roles and scopes a page carries
-(PD-19).
+forecast versus outcome, and the stated roles and scopes a page carries.
 """
 
 from __future__ import annotations
 
 import re
 from typing import Literal
-
 
 # What separates one assertion from the next inside a sentence. The modality
 # and scope checks both decide per *clause*: a statement that hardens one
@@ -121,9 +119,8 @@ def stated_role(text: str) -> Literal["forecast", "actual", "mixed"]:
 
 
 # Segment and basis words of the one domain the scope check was measured on
-# (energy markets; Fable C-a): bounded, and a no-op for any other question,
-# whose scopes the Statement Check judges in prose (spec §6.2: "no ... scope
-# that the cited findings' verified fields do not carry"). Longest first.
+# (energy markets): bounded, and a no-op for any other question, whose
+# scopes the Statement Check judges in prose. Longest first.
 SCOPE_TERMS: tuple[str, ...] = (
     "commercial and industrial", "front-of-the-meter", "behind-the-meter",
     "utility-scale", "grid-scale", "all segments", "all sectors", "residential",

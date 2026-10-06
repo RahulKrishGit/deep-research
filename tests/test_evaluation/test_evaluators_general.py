@@ -36,7 +36,7 @@ def gate(results, gate_id):
     return next(item for item in results if item.gate_id == gate_id)
 
 
-def test_the_general_gates_cover_every_rule_the_spec_names() -> None:
+def test_the_general_gates_cover_every_declared_rule() -> None:
     assert set(GENERAL_GATE_IDS) == {
         "agent_constructed",
         "run_completed",
@@ -276,10 +276,10 @@ def test_merged_loops_each_inside_their_budget_pass_the_gate(
 
     The researcher runs one bounded loop per sub-topic and merges them, summing
     ``tool_calls`` and ``iterations``. Every loop respects its own budget, yet
-    the sum can exceed the per-loop ceiling the case declares -- which is
-    exactly what failed a live canary with ``tool_calls 11 exceed 10`` where
-    11 was two in-budget loops of 6 and 5. The gate must measure the per-loop
-    maximum, which is the bound the runtime actually enforces.
+    the sum can exceed the per-loop ceiling the case declares. For example, two
+    in-budget loops of 6 and 5 tool calls sum to 11, exceeding a per-loop ceiling
+    of 10. The gate must measure the per-loop maximum, which is the bound the
+    runtime actually enforces.
     """
     react = clean_target_output.react.model_copy(
         update={
@@ -414,10 +414,10 @@ def test_a_url_embedded_in_prose_with_trailing_punctuation_passes(
 
 
 def test_reader_reference_urls_reads_the_publisher_dash_markdown_link_line() -> None:
-    """The reader's Sources line is ``n. Publisher — [Title](url) (date)``
-    (spec §3.1 rule 7, §8), not the old bare-URL-at-end-of-line shape: the
-    URL is the markdown link's own target, and an optional trailing
-    ``(date)``/``(updated date)`` must not be read as part of it.
+    """The reader's Sources line is ``n. Publisher — [Title](url) (date)``,
+    not a bare URL at the end of the line: the URL is the markdown link's
+    own target, and an optional trailing ``(date)``/``(updated date)`` must
+    not be read as part of it.
     """
     report = (
         "1. Utility Dive — [US utility-scale energy storage to double]"
@@ -484,7 +484,7 @@ def test_a_live_case_without_known_urls_accepts_trajectory_urls(
     results = evaluate_general_gates(output, live_case, secrets=())
 
     assert gate(results, "citations_known").passed is True
-    # Not the old auto-pass skip: the trajectory branch really ran.
+    # The trajectory branch really ran; it was not skipped.
     assert "skipped" not in gate(results, "citations_known").detail
 
 
@@ -615,13 +615,13 @@ def test_a_live_case_accepts_urls_from_the_recorded_trajectory(
 def test_a_malformed_cited_url_fails_the_citation_gate_without_raising(
     researcher_case, researcher_target_output
 ) -> None:
-    """Finding 14: a hallucinated malformed URL must fail cleanly.
+    """A hallucinated malformed URL must fail cleanly.
 
     ``normalize_source_url`` defers to ``urlsplit(...).port``, which raises
     ``ValueError`` lazily on an out-of-range port. ``cited`` URLs come from
     arbitrary agent-generated prose, so this is reachable in production —
-    and pre-fix, it escaped ``_gate_citations_known`` uncaught, which in
-    ``runner.py`` silently drops the whole repetition from scoring instead
+    and an exception escaping ``_gate_citations_known`` would, in
+    ``runner.py``, silently drop the whole repetition from scoring instead
     of failing it (worse than a crash: it inflates the pass rate).
     """
     result = dict(researcher_target_output.result)
@@ -844,7 +844,7 @@ def _known_urls_for(case: EvaluationCase) -> list[str]:
     ``ResearchState`` (``raw_findings`` / ``evaluated_sources``) — exactly
     the data ``targets.py`` copies onto ``output.evidence.findings`` /
     ``output.evidence.sources`` for a real repetition. URLs are normalized
-    the way a production agent normalizes them before citing (finding 2),
+    the way a production agent normalizes them before citing,
     so a case declaring a ``www.``-prefixed URL still yields a bare,
     citable form.
     """

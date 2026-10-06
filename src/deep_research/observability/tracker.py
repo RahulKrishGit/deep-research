@@ -185,7 +185,7 @@ class TokenUsage(BaseModel):
     output_tokens: int = Field(default=0, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     reasoning_tokens: int = Field(default=0, ge=0)
-    """Output tokens DeepSeek reported as reasoning, apart from content (P1-B).
+    """Output tokens DeepSeek reported as reasoning, apart from content.
 
     Additional detail only: ``total_tokens`` stays ``input_tokens +
     output_tokens`` regardless, since ``output_tokens`` already counts every

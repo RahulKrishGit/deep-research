@@ -86,7 +86,7 @@ class LongTermMemoryBridge:
     ) -> list[str]:
         """Store several findings in one write; return their entry ids in order.
 
-        Latency audit O2: the entries are exactly the ones ``save`` builds, one
+        The entries are exactly the ones ``save`` builds, one
         by one, and the store embeds them in one batch and upserts them in one
         call. Any entry the store refuses fails the whole call, so a caller
         that must record each finding's own failure writes them one by one

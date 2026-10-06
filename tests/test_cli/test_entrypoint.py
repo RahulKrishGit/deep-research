@@ -96,7 +96,7 @@ def accepted_review() -> ReportReview:
 def accepted_state() -> ResearchState:
     """One pass the router accepted: passes spent, gates clear, review passes.
 
-    PD-23's accepted shape: the extra-pass ceiling is spent, the deterministic
+    The accepted shape: the extra-pass ceiling is spent, the deterministic
     pass found no hard failure, and the terminal review scored the report. The
     report publishes as ``completed`` and ``accepted``, which is the only case
     ``--require-quality`` exits 0 for.
@@ -199,7 +199,7 @@ def test_the_cli_passes_every_option_through_to_run_research() -> None:
 
 
 def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None:
-    """Step 6: the handler runs before the runner returns, and once only."""
+    """The handler runs before the runner returns, and once only."""
     events = [
         session_started(),
         node_started_event("planner", iteration=0),
@@ -229,7 +229,7 @@ def test_progress_streams_while_the_run_happens_and_is_never_reprinted() -> None
 
 
 def test_every_streamed_progress_line_is_flushed_immediately() -> None:
-    """Step 6: "live" progress must survive a redirected, block-buffered stream.
+    """Live progress must survive a redirected, block-buffered stream.
 
     ``main`` hands ``ProgressStream`` ``sys.stdout``, which is line-buffered
     only on a TTY. Redirected to a file or a pipe it is block-buffered at
@@ -340,7 +340,7 @@ def test_the_numeric_exit_code_contract_is_pinned() -> None:
 
 
 def test_the_help_documents_every_exit_code() -> None:
-    """Step 5: the codes live in the CLI's own help, not only in a test."""
+    """The exit codes are documented in the CLI's own help."""
     help_text = build_parser().format_help()
 
     assert "0  the run finished" in help_text
@@ -593,7 +593,7 @@ def test_a_limited_run_still_exits_zero() -> None:
 
 
 def test_require_quality_exits_four_for_a_partial_report() -> None:
-    """Step 5: the non-zero quality exit is opt-in."""
+    """The non-zero quality exit is opt-in."""
     runner = RecordingRunner(result=outcome(status="max_iterations"))
     stream = io.StringIO()
 
@@ -615,7 +615,7 @@ def test_require_quality_exits_four_without_any_quality_pass() -> None:
 
 
 def test_require_quality_exits_zero_for_an_accepted_run() -> None:
-    """PD-23: passes spent, gates clear, reviewer accepts -> exit 0.
+    """Passes spent, gates clear, and reviewer accepts -> exit 0.
 
     The status is asserted from ``graph_status`` over the same judged state the
     runner is handed, so the test fails if the router stops calling this run
@@ -1081,7 +1081,7 @@ def test_a_request_limit_graph_failure_exits_three_before_require_quality() -> N
 def test_a_halted_run_s_summary_still_prints_the_telemetry_line(
     tmp_path, monkeypatch
 ) -> None:
-    """The §7.3 line survives a halt — the outcome an operator most needs it for.
+    """The telemetry line survives a halt — the outcome an operator most needs it for.
 
     A run the graph halted is the run whose rate-limit advice matters, and it
     publishes no quality record for the finalizer to stamp: without the entry

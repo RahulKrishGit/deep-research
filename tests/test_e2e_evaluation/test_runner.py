@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -177,7 +176,7 @@ def test_the_suite_command_prints_the_real_agent_disclosure(
 
 
 def test_the_list_command_shows_the_real_agent_inventory(capsys) -> None:
-    """The retired scripted-double harness is gone (PD-14): one inventory, one label."""
+    """The list command shows one inventory, one label."""
     code = campaign_runner.main(["list"])
     printed = capsys.readouterr().out.splitlines()
 
@@ -200,7 +199,7 @@ def test_the_replay_suite_is_bounded_to_exactly_three_repetitions(tmp_path) -> N
 
 
 def test_cli_exposes_only_list_and_suite(capsys) -> None:
-    """The retired scripted-double harness's ``case`` command is gone with it (PD-14)."""
+    """The CLI exposes only list and suite commands."""
     actions = [
         action
         for action in build_parser()._subparsers._group_actions
@@ -314,7 +313,7 @@ def test_a_row_that_straddles_midnight_is_still_one_result(
 
     A row passes only if its repetitions published the same thing, and a
     published report says which day it was printed on. Three repetitions that
-    straddle 00:00 UTC therefore used to publish three differently dated
+    straddle 00:00 UTC would therefore publish three differently dated
     reports and be reported as a non-deterministic row -- a verdict about the
     clock the machine happened to be at, not about the agents. The harness
     stamps every repetition from its own clock, so the date is a constant of
@@ -374,8 +373,8 @@ def test_a_replay_report_is_dated_by_the_harness_clock(
 def _published_report(*, as_of: str, sources: int) -> str:
     """A report whose evidence line is the only thing that moves.
 
-    The evidence line is the reader's own line (``agents.report.render_written_report``,
-    spec §3.1 rule 2): the evidence date and the source count. Everything
+    The evidence line is the reader's own line (``agents.report.render_written_report``):
+    the evidence date and the source count. Everything
     below it is fixed, so two of these differ only in what the reader was
     told.
     """

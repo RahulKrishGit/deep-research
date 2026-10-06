@@ -2,7 +2,7 @@
 and the quality JSON.
 
 The written report is what a decision-maker reads: the answer-first skeleton
-of spec §3 -- title, evidence line, bottom line, the question-shaped table,
+-- title, evidence line, bottom line, the question-shaped table,
 part sections, what could not be confirmed, and sources. The finding log is
 the same pass read closely: the About-this-report audit block, every verified
 figure, every finding with its snippet and verification, every dropped figure
@@ -69,8 +69,8 @@ from deep_research.utils.types import (
     ReportTable,
     ResearchError,
     ResearchState,
-    RunTelemetry,
     ReviewDefect,
+    RunTelemetry,
     ScoredSource,
     SubTopic,
     TableCell,
@@ -406,7 +406,7 @@ def test_scope_is_stated_from_the_plan_alone() -> None:
 
 
 def test_citation_numbers_follow_bottom_line_then_sections() -> None:
-    """Notes-progress-report spec §7.5: ``written_citations`` order is bottom
+    """``written_citations`` order is bottom
     line, then the sections, then the table; with no table here, the bottom
     line's page takes reference 1.
     """
@@ -798,14 +798,13 @@ def test_the_quality_record_is_bounded_json_without_page_payloads() -> None:
     assert json.loads(encoded) == record
 
 
-# --- the errors the record publishes (§6.2) -----------------------------------
+# --- the errors the record publishes ------------------------------------------
 #
 # Two decisions live in ``agents/report.py`` and reach the reader through the
 # quality record: ``_published_details`` decides which error details may be
 # published at all, and ``error_reading`` decides which sentence a record gets
-# when one error type has several causes. Task 4.10's sweep deleted the tests
-# that held both decisions, because the ledger section they were written
-# against is gone; the artifact below publishes both, so these restore them.
+# when one error type has several causes. The tests below hold both decisions
+# through the quality record that publishes them.
 
 
 def test_the_quality_record_publishes_the_bounded_tool_failure_diagnosis() -> None:
@@ -967,7 +966,7 @@ def test_the_quality_record_reads_each_skip_reason_distinctly() -> None:
     assert "reason=provider_failure_stopped_processing" in stopped_details
 
 
-# --- the quality record a written pass publishes (§6.2; Task 4.5) -------------
+# --- the quality record a written pass publishes ------------------------------
 #
 # Built directly as ``ReportComposition``/``ResearchState``: this record is a
 # pure function of the composition and the state, so a hand-built pass with
@@ -1104,7 +1103,7 @@ def test_the_quality_record_publishes_the_review_the_reviewer_recorded() -> None
 
 
 def test_the_quality_record_surfaces_each_defects_resolution_and_coverage_ids() -> None:
-    """T5 addendum item 4: a scoped re-review's own resolved/unresolved
+    """A scoped re-review's own resolved/unresolved
     reading of a previous defect, and its carried ``coverage_ids``, are
     surfaced in the quality JSON's review record -- not only kept on the
     in-memory ``ReviewDefect`` for the acceptance gate to read. A fresh
@@ -1161,7 +1160,7 @@ def test_the_quality_record_surfaces_each_defects_resolution_and_coverage_ids() 
 def test_an_older_review_record_with_no_resolution_or_coverage_ids_still_loads() -> None:
     """A ``ReviewDefect`` built the way an older run's stored state would
     supply it -- with neither field named -- validates and dumps the same
-    ``None``/``[]`` defaults a fresh defect gets, so a pre-addendum snapshot
+    ``None``/``[]`` defaults a fresh defect gets, so an older snapshot
     is read exactly as it was written."""
     legacy_defect = ReviewDefect.model_validate(
         {
@@ -1194,7 +1193,7 @@ def test_an_older_review_record_with_no_resolution_or_coverage_ids_still_loads()
     assert row["coverage_ids"] == []
 
 
-# --- the run's telemetry block (§7.3; Task 4.14b) -----------------------------
+# --- the run's telemetry block ------------------------------------------------
 
 
 def run_telemetry_snapshot() -> RunTelemetry:
@@ -1221,7 +1220,7 @@ def run_telemetry_snapshot() -> RunTelemetry:
 
 
 def test_the_quality_record_carries_the_telemetry_block() -> None:
-    """The run's §7.3 figures are published beside the pass's own judgements.
+    """The run's telemetry figures are published beside the pass's own judgements.
 
     The record is the replay surface for the whole run, so a reader with only
     this file can say what the peak was, how many calls the run had in flight,
@@ -1251,7 +1250,7 @@ def test_a_run_without_a_collector_publishes_no_telemetry_figures() -> None:
 
 
 def test_the_finding_log_shows_the_passage_the_statement_check_read() -> None:
-    """Review F5: the checker reads the snippet's passage and its neighbours, so
+    """The checker reads the snippet's passage and its neighbours, so
     a verdict can rest on a sentence the snippet does not carry. The ledger
     prints the same bounded passage beside the snippet, and prints none for a
     composition whose writer had no reads in hand."""
@@ -1269,7 +1268,7 @@ def test_the_finding_log_shows_the_passage_the_statement_check_read() -> None:
 
 
 def test_a_quoted_findings_evidence_log_entry_says_so() -> None:
-    """D21: a no-figure finding the Evidence Verifier only quoted (its
+    """A no-figure finding the Evidence Verifier only quoted (its
     snippet is on the page, but neither check judged it for relevance or
     attribution) must never read as "verified" in the evidence log."""
     read = make_read("The grant covers travel.", url="https://example.test/grant",
@@ -1286,11 +1285,11 @@ def test_a_quoted_findings_evidence_log_entry_says_so() -> None:
 
 
 
-# --- §9: the quality JSON's new fields (spec §14 T3) ---------------------------
+# --- the quality JSON's answer_kind, table, parts and marks fields -------------
 
 
 def test_the_quality_record_publishes_answer_kind_table_parts_items_and_marks() -> None:
-    """§9: ``answer_kind``, ``table``, ``sources``, ``parts``, each statement's
+    """``answer_kind``, ``table``, ``sources``, ``parts``, each statement's
     ``part`` and ``items``, ``unreachable`` and ``dropped_marks``."""
     eia_id = finding_fingerprint(EIA_ACTUAL_2024)
     item = ItemMark(name="EIA", verdict="best positioned", picked=True, source_url=EIA_URL)
@@ -1362,7 +1361,7 @@ def test_a_section_statements_part_is_its_own_coverage_id() -> None:
 
 
 def test_the_quality_record_stores_the_review_problem_whole() -> None:
-    """D19: ``review.defects[*].problem`` is stored whole, never clamped."""
+    """``review.defects[*].problem`` is stored whole, never clamped."""
     long_problem = " ".join(["This report material defect explanation runs on at length."] * 10)
     assert len(long_problem) > 240
     composition = _written_composition()
@@ -1381,8 +1380,8 @@ def test_the_quality_record_stores_the_review_problem_whole() -> None:
 
 
 def test_the_quality_record_publishes_error_messages_whole() -> None:
-    """Alongside D19: an error's message and source print in full too --
-    ``report.py`` no longer clamps any published text (no strong limits)."""
+    """An error's message and source print in full too --
+    ``report.py`` does not clamp any published text."""
     long_message = " ".join(["An unusually long recorded error message."] * 10)
     assert len(long_message) > 240
     composition = _written_composition(

@@ -56,7 +56,7 @@ def _sample_case(agent_name: AgentName) -> EvaluationCase:
         agent_name=agent_name,
         tier="controlled",
         title=f"{agent_name} sample case",
-        purpose="Sample case for the Task 7 controlled-bundle tests.",
+        purpose="Sample case for controlled-bundle tests.",
         state=ResearchState(
             session_id=f"evaluation-{case_id}",
             original_question="Sample research question?",
@@ -475,9 +475,8 @@ def test_controlled_bundles_never_receive_a_tavily_key(
     """Even with a key in the environment, controlled mode must not use it.
 
     ``WebSearchTool`` folds the key into ``AsyncTavilyClient(api_key=...)``
-    at construction rather than storing it (notes-progress-report spec §8.3,
-    D25), so the proof is constructive: the patched constructor raises, and
-    building a bundle must never call it.
+    at construction rather than storing it, so the proof is constructive: the
+    patched constructor raises, and building a bundle must never call it.
     """
     from deep_research.tools import web_search as web_search_module
 

@@ -34,8 +34,8 @@ def graph_event(
     For a state-bound event -- every graph event is returned in its node's
     update and copied into ``ResearchState.events`` -- ``metadata`` must never
     contain ``str(exception)`` or raw provider text. Record counts,
-    identifiers, and enumerated reasons instead (notes-progress-report spec §4
-    item 1 lists the texts only a live-only progress event may carry).
+    identifiers, and enumerated reasons instead; only a live-only progress
+    event may carry such texts.
     """
     if not event_type.strip():
         raise ValueError("event_type must not be blank")
@@ -181,7 +181,7 @@ def note_pass_started_event(
     note_ids: Sequence[str],
     targets: Sequence[str],
 ) -> ResearchEvent:
-    """Announce the targeted pass the reader's notes just bought (spec §4.6).
+    """Announce the targeted pass the reader's notes just bought.
 
     Ids only: the notes it researches and the targets their own sub-topics
     carry. ``iteration`` is unchanged by a note pass, and ``note_passes`` is
@@ -204,7 +204,7 @@ def note_redraft_requested_event(
     iteration: int,
     note_ids: Sequence[str],
 ) -> ResearchEvent:
-    """Announce the writer re-run the reader's notes just bought (spec §4.6).
+    """Announce the writer re-run the reader's notes just bought.
 
     Its own event, not ``graph.report.redraft_requested``: a note redraft
     spends none of the review's own writer re-runs, and the writer drafts
@@ -267,10 +267,10 @@ def report_review_completed_event(
     review's prose and never a defect's text, which are provider output. The
     status is one of ``scored``/``incomplete``/``provider_failed``: the first
     means a judgement exists, the other two are the honest record that none
-    does. ``criteria`` and ``notes`` are what Reviewing's brief reads
-    (notes-progress-report spec §6.1, ``graph/review_brief.py``): the five
-    criteria with ``met`` and the defect kinds behind a miss, and each note's
-    enumerated result -- ids and enumerated values, never text.
+    does. ``criteria`` and ``notes`` are what ``graph/review_brief.py`` reads
+    for Reviewing's brief: the five criteria with ``met`` and the defect kinds
+    behind a miss, and each note's enumerated result -- ids and enumerated
+    values, never text.
     """
     return graph_event(
         event_type="graph.report.reviewed",

@@ -1,5 +1,4 @@
-"""Live publication (live-briefs spec E2, AC1): events reach the handler as they
-happen, exactly once."""
+"""Live publication: events reach the handler as they happen, exactly once."""
 
 from __future__ import annotations
 
@@ -79,7 +78,7 @@ class LivePlanner:
 
 @pytest.mark.asyncio
 async def test_a_sink_bound_around_the_graph_stream_reaches_node_tasks() -> None:
-    """Risk R1, tested first: LangGraph runs a node in a task that inherits the
+    """LangGraph runs a node in a task that inherits the
     ContextVar bound around ``astream``, and so does every task the node starts."""
     delivered: list[ResearchEvent] = []
     planner = LivePlanner(delivered)
@@ -121,9 +120,9 @@ def test_bind_live_sink_restores_the_previous_sink() -> None:
 
 @pytest.mark.asyncio
 async def test_live_sink_reaches_nodes(tracker: Tracker) -> None:
-    """The spec's named test (E2): a node's live events — its own, a child task's and
-    its graph.node.started — reach the handler while the node runs, before the node's
-    graph.node.completed."""
+    """A node's live events — its own, a child task's and its
+    graph.node.started — reach the handler while the node runs, before the
+    node's graph.node.completed."""
     received: list[ResearchEvent] = []
     planner = LivePlanner(received)
     graph = compile_research_graph(fake_research_agents(planner=planner))

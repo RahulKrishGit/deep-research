@@ -90,7 +90,7 @@ _ENTRY_FIELD_KEYS = frozenset(
 
 _EMBEDDING_DIMENSION = 8
 _MAX_SOURCE_URL_FINGERPRINTS = 128
-# Bounded read-bearing provenance (Task 5). Smaller than the source-URL bound
+# Bounded read-bearing provenance. Smaller than the source-URL bound
 # because a run reads far fewer pages than it searches, and because exceeding
 # it makes the artifact report itself incomplete — which the read-provenance
 # gate treats as "cannot prove the read".
@@ -313,7 +313,6 @@ class DependencyRecorder:
         self._scenario_misses: list[str] = []
         self._source_url_fingerprints: list[str] = []
         self._source_url_fingerprints_complete = True
-        self._real_services: list[str] = []
         self._memory_reads = 0
         self._memory_writes = 0
         self._document_writes = 0
@@ -379,9 +378,6 @@ class DependencyRecorder:
                     urls.append(source)
         self.record_source_url_fingerprints(urls)
 
-    def record_real_service(self, name: str) -> None:
-        self._real_services.append(name)
-
     def record_memory_read(self) -> None:
         self._memory_reads += 1
 
@@ -406,7 +402,6 @@ class DependencyRecorder:
             scenario_misses=list(self._scenario_misses),
             source_url_fingerprints=list(self._source_url_fingerprints),
             source_url_fingerprints_complete=self._source_url_fingerprints_complete,
-            real_services_used=list(self._real_services),
             memory_reads=self._memory_reads,
             memory_writes=self._memory_writes,
             document_writes=self._document_writes,
@@ -855,13 +850,13 @@ def isolated_settings(
 class _RecordingDocumentWriter(WriteDocumentTool):
     """``WriteDocumentTool`` that records every outcome in the ledger.
 
-    Task 18's ``persistence_truthful`` gate reads the ledger's
+    The ``persistence_truthful`` gate reads the ledger's
     ``write_document`` summary, so controlled mode must record both
     successes and failures — exactly what ``_ScriptedMemoryDouble``
     already does for ``save_to_memory``. ``BaseTool.execute`` converts
     every exception into a ``ToolResult`` (never raising), so the wrapper
-    records whatever came back. Live runs record real tool spans instead
-    (Task 21), which is why this wrapper exists only in controlled
+    records whatever came back. Live runs record real tool spans instead,
+    which is why this wrapper exists only in controlled
     bundles.
     """
 
@@ -1049,7 +1044,7 @@ def build_live_dependencies(
     carry the real Tavily/httpx clients unless a double is injected —
     offline tests always inject doubles, so nothing here ever touches the
     network. ``real_services_used`` stays empty on purpose: what a live run
-    actually exercised is recorded from real tool spans (Task 21), not from
+    actually exercised is recorded from real tool spans, not from
     what this bundle wired.
     """
     missing = [

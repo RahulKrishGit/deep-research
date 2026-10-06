@@ -1,17 +1,17 @@
-"""What Reviewing's brief reads from one review (notes-progress-report spec §6.1, §6.2, §6.7).
+"""What Reviewing's brief reads from one review.
 
 ``graph.report.reviewed`` carries the five criteria a review can mark not met,
 and what became of each of the reader's notes. Both are counts, ids and
 enumerated values only: never the review's prose, a defect's ``problem`` text
-or a score (spec §4 item 1, D11, D23).
+or a score.
 
-The notes' results are not Phase C's ``graph/note_outcomes.py`` outcomes, on
+The notes' results are not ``graph/note_outcomes.py``'s outcomes, on
 purpose. Those are a note's terminal outcome for the published report
 (``covered`` / ``not_found`` / ``not_addressed`` / ``not_checked``). These are
-Reviewing's view in the middle of a run (spec §6.7): a research note with no
+Reviewing's view in the middle of a run: a research note with no
 researched topic reads ``researched next``, because the route still owes it
 its pass, and one whose pass is already spent (``passed``, the unfunded
-refusal of §5.4) reads ``not found``.
+refusal) reads ``not found``.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from deep_research.utils.types import (
     active_reader_notes,
 )
 
-#: D23: prioritization and actionability have no defect kind, so no review can
+#: Prioritization and actionability have no defect kind, so no review can
 #: mark them not met; Reviewing shows the other five, in ``DIMENSION_GUIDANCE`` order.
 CRITERIA: tuple[str, ...] = tuple(
     name
@@ -38,7 +38,7 @@ CRITERIA: tuple[str, ...] = tuple(
     if name not in {"prioritization", "actionability"}
 )
 
-#: §6.2: the criterion each defect kind counts against.
+#: The criterion each defect kind counts against.
 CRITERION_FOR_KIND: dict[GapKind, str] = {
     "coverage": "completeness",
     "mechanism": "completeness",
@@ -54,7 +54,7 @@ CRITERION_FOR_KIND: dict[GapKind, str] = {
 
 
 def review_criteria(review: ReportReview) -> list[dict[str, JsonValue]]:
-    """The five criteria (spec §6.2): ``met`` is ``None`` without a scored review,
+    """The five criteria: ``met`` is ``None`` without a scored review,
     else ``False`` when a material defect maps to it; ``kinds`` lists the mapped
     kinds, one per material defect, in defect order."""
     scored = review.status == "scored"
@@ -75,11 +75,11 @@ def review_criteria(review: ReportReview) -> list[dict[str, JsonValue]]:
 def _research_half(
     note: ReaderNote, state: ResearchState, researched: set[str], answered: set[str]
 ) -> dict[str, JsonValue]:
-    """A research note's result from its own topic's targets (spec §5.6, §6.7).
+    """A research note's result from its own topic's targets.
 
-    Covered when a verified finding answers one of its targets (D31); not found
+    Covered when a verified finding answers one of its targets; not found
     when its topic was researched, or when its one note pass is already spent
-    (``passed``: the unfunded-refusal corner of §5.4); otherwise it is owed its
+    (``passed``: the unfunded-refusal corner); otherwise it is owed its
     pass and is researched next.
     """
     coverage_id = f"{NOTE_COVERAGE_PREFIX}{note.note_id}"
@@ -104,11 +104,11 @@ _STEERING_RESULT: dict[str, dict[str, JsonValue]] = {
 
 
 def review_note_results(state: ResearchState, review: ReportReview) -> list[dict[str, JsonValue]]:
-    """Each active note's result (spec §6.7), in receipt order.
+    """Each active note's result, in receipt order.
 
     A research note's result comes from its topic's targets, a steering note's
     from this review's disposition; a mixed note carries its research half in
-    ``result``/``reason`` and its steering half in ``steering`` (D20).
+    ``result``/``reason`` and its steering half in ``steering``.
     """
     answered = set(state.quality.answered_target_ids) if state.quality else set()
     researched = researched_note_topic_ids(state)

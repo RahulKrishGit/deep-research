@@ -9,7 +9,7 @@ from deep_research.tools.passage_selection import (
 
 
 def test_a_plural_query_term_matches_its_singular_form() -> None:
-    """D1: morphological expansion is domain-neutral -- plural/singular,
+    """Morphological expansion is domain-neutral -- plural/singular,
     -ing/-ed -- never a word list mapping one word to a different one."""
     passages = {
         "page-1": "Table of contents and executive summary.",
@@ -21,13 +21,12 @@ def test_a_plural_query_term_matches_its_singular_form() -> None:
 
 
 def test_no_domain_specific_synonym_list_stands_in_for_the_query() -> None:
-    """D1: selection must never fall back on a domain word list.
+    """Selection must never fall back on a domain word list.
 
-    The audited run's ranking mapped "interconnection" to "queue" through an
-    energy-only synonym group, so a page about a queue outside a venue
-    became a match for a query about grid interconnection. Selection may
-    expand a token's own morphology; it may not decide two different words
-    name the same thing, in energy or any other domain.
+    The tool's ranking must not map different words to the same concept through
+    domain-specific synonym groups. Selection may expand a token's own
+    morphology; it may not decide two different words name the same thing, in
+    energy or any other domain.
     """
     passages = {
         "queue-page": "The queue outside the venue stretched around the block.",
@@ -120,7 +119,7 @@ def test_benchmark_selection_over_statistical_figures_is_unchanged() -> None:
 
 
 def test_a_focused_short_match_outranks_a_diffuse_long_one() -> None:
-    """D1: weighted, length-normalised scoring beats plain term counting.
+    """Weighted, length-normalised scoring beats plain term counting.
 
     Both passages below mention every query term exactly once, so a plain
     count of distinct terms ties them and reader order decides -- exactly
@@ -144,13 +143,10 @@ def test_a_focused_short_match_outranks_a_diffuse_long_one() -> None:
 
 
 def test_real_review_site_navigation_shapes_are_link_dense() -> None:
-    """Fix-round P0/P1: the detector must hold on real chunk-0 shapes, not
-    toy strings with zero stop words. Built from the audited run's five
-    reads (SoundGuys, CNET, What Hi-Fi, Business Insider, Tom's Hardware):
-    each opens on its own masthead, category nav and "how we test" /
-    "what to look for" style labels, which is exactly the shape a plain
-    connective-word ratio could not separate from real prose (0.10-0.18 on
-    these five, overlapping real spec/pros-cons prose at 0.083-0.12)."""
+    """The detector correctly identifies real navigation shapes, not toy strings
+    with zero stop words. Real site navigation opens with masthead, category nav
+    and "how we test" style labels, which is exactly the shape a plain
+    connective-word ratio could not separate from real prose."""
     from deep_research.tools.passage_selection import is_link_dense
 
     soundguys_nav = (
@@ -202,7 +198,7 @@ def test_pros_cons_verdict_and_foreign_prose_are_not_link_dense() -> None:
     """The rule gates on sentence structure, never on English connective
     frequency: a pros/cons box, a verdict line, a feature list and a German
     or Spanish paragraph all break into ordinary clauses and must never be
-    caught the way the old stop-word ratio caught them."""
+    caught by a stop-word ratio."""
     from deep_research.tools.passage_selection import is_link_dense
 
     pros_cons = (
@@ -253,12 +249,9 @@ def test_a_short_title_page_and_a_real_opener_are_not_link_dense() -> None:
 
 
 def test_distinct_coverage_outweighs_one_repeated_term() -> None:
-    """Fix-round P0: a chunk repeating one query word must not outrank a
-    chunk that covers more of the query once each. The old plain-count
-    density let a navigation-shaped chunk repeating "best" and "headphones"
-    outrank the passage naming the microphone verdict (SoundGuys chunk-0
-    1.315 vs chunk-56 1.091); a saturating term frequency plus a read-level
-    inverse document frequency fixes it directly."""
+    """A chunk repeating one query word must not outrank a chunk that covers
+    more of the query once each. A saturating term frequency plus a read-level
+    inverse document frequency fixes the scoring directly."""
     query = "best wireless headphones microphone call quality noise cancelling"
     repeats_one_term = (
         "Best headphones best headphones best headphones best headphones "
@@ -287,7 +280,7 @@ def test_a_short_document_falls_back_to_a_single_passage() -> None:
 
 
 def test_a_data_row_with_no_connective_words_is_not_navigation() -> None:
-    """D1: the nav detector must not catch structured data, only chrome.
+    """The nav detector must not catch structured data, only chrome.
 
     A CSV row (or any tabular data) strings bare values together with no
     connective words too, exactly like a menu -- but it is dense with

@@ -1,15 +1,13 @@
 """End-to-end seam test: PlannerAgent's output feeds ResearcherAgent.
 
 Every other ``ResearcherAgent`` test builds ``ResearchState(sub_topics=...)``
-by hand, so nothing ever exercised the actual seam between the Planner
+by hand, so nothing else exercises the actual seam between the Planner
 (which produces 3-7 sub-topics) and the Researcher (whose
-``max_sub_topics`` used to default to 3). That gap is exactly why a
-5-sub-topic, all-high-priority plan used to have 2 sub-topics vanish with no
-record in ``state.errors`` and no trace in the event stream — see the Finding
-1 fix in ``researcher.py``. This test runs the real Planner, merges its plan
-into ``ResearchState`` the way the orchestrator would, then runs the real
+``max_sub_topics`` default covers that whole range). This test runs the
+real Planner, merges its plan into ``ResearchState`` the way the
+orchestrator would, then runs the real
 Researcher against it and asserts every sub-topic is accounted for: the
-default cap now attempts the whole plan, and every planned coverage id ends
+default cap attempts the whole plan, and every planned coverage id ends
 with either a source-backed finding or an explicit record saying why not.
 
 The plan is five materially different constraint mechanisms for one
@@ -233,11 +231,10 @@ def _researcher_for(
             search=FakeSearchClient([search_response() for _ in decisions]),
         ),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=4),
-        # Order-pinned (rule R3 of Task 4.13): both tests below script one
-        # loop's decisions in plan order under the order-based
-        # ScriptedCompleter, which is only unambiguous while one loop is in
-        # flight (D9). The other remedy R3 allows -- the target-keyed
-        # completer -- would be a rewrite of these fixtures, not a re-pin.
+        # Order-pinned: both tests below script one loop's decisions in plan
+        # order under the order-based ScriptedCompleter, which is only
+        # unambiguous while one loop is in flight. A target-keyed completer
+        # would be a rewrite of these fixtures, not a re-pin.
         sub_topic_concurrency=1,
     )
 
@@ -296,9 +293,8 @@ async def test_a_full_planner_output_composes_into_the_researcher(
     ] == researched_titles
 
     # Every planned coverage id is accounted for by evidence, and nothing was
-    # skipped: this is the regression pin for Finding 1, now that the default
-    # cap covers the whole plan instead of dropping the two least important
-    # mechanisms.
+    # skipped: the default cap covers the whole plan instead of dropping the
+    # two least important mechanisms.
     assert state.errors == []
     findings_by_title = {
         finding.related_sub_topic for finding in state.raw_findings

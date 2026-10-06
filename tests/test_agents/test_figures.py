@@ -1,4 +1,4 @@
-"""Spec §5.1 step 2: the fixed, question-independent figure normalisation."""
+"""The fixed, question-independent figure normalisation."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from decimal import Decimal
 import pytest
 
 from deep_research.agents.figures import (
-    is_a_date,
     figure_in_text,
+    is_a_date,
     parse_figure,
     quantities_in,
     same_quantity,
@@ -102,13 +102,13 @@ def test_same_quantity_compares_across_scales() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D13: currency and score spellings compare as one unit, unscaled
+# Currency and score spellings compare as one unit, unscaled
 # ---------------------------------------------------------------------------
 
 
 def test_currency_spellings_are_one_unit_for_comparison() -> None:
     """"dollars", "USD", "$" and "US$" name one unit when two figures are
-    compared (D13), so the same price extracted with two spellings is one
+    compared, so the same price extracted with two spellings is one
     fact. Never scaled: ``unit_dimension`` still reads ``None`` for either."""
     dollars = parse_figure("390", "$")
     assert dollars is not None
@@ -137,7 +137,7 @@ def test_different_score_denominators_are_not_one_scale() -> None:
 
 
 def test_currency_and_score_spellings_still_match_the_pages_own_words() -> None:
-    """P1 regression: the comparison-only fold must never change what
+    """Regression: the comparison-only fold must never change what
     ``figure_in_text`` searches for -- it has to find the figure exactly as
     the page spelled it, not a canonical spelling no page ever wrote."""
     assert figure_in_text("390", "dollars", "It costs 390 dollars.")
@@ -147,7 +147,7 @@ def test_currency_and_score_spellings_still_match_the_pages_own_words() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round 3, Defect B: a unit written with its own abbreviation in brackets.
+# A unit written with its own abbreviation in brackets.
 # ---------------------------------------------------------------------------
 
 
@@ -160,11 +160,10 @@ def test_currency_and_score_spellings_still_match_the_pages_own_words() -> None:
     ],
 )
 def test_a_bracketed_unit_keeps_its_dimension(unit: str, dimension: str, base: Decimal) -> None:
-    """Round 3 (pre-flight run 3): the page writes "26 gigawatts (GW)", and the
-    unit then had no dimension at all — so the figure could not answer a power
-    or energy target, could not be compared, and its row fell back to "stated
-    figure". Pages in every domain write a unit with its abbreviation in
-    brackets, in either order.
+    """The page writes "26 gigawatts (GW)": the unit keeps its dimension, so
+    the figure can answer a power or energy target and be compared, rather than
+    its row falling back to "stated figure". Pages in every domain write a unit
+    with its abbreviation in brackets, in either order.
     """
     quantity = parse_figure("26", unit)
 
@@ -183,10 +182,10 @@ def test_a_bracketed_unit_naming_two_known_units_stays_unparsed() -> None:
 
 
 def test_a_bracketed_qualifier_that_scales_or_denominates_stays_unparsed() -> None:
-    """RevFF1r3's Important 3: the bracketed form is the unit's own
+    """The bracketed form is the unit's own
     abbreviation, so a half that scales it ("kWh (millions)") or denominates it
     ("kWh (per capita)") is not that: reading one half and dropping the other
-    gave 26 million kWh the base of 26 kWh.
+    would give 26 million kWh the base of 26 kWh.
 
     An ac/dc qualifier is the exception the parser already reads beside a unit.
     """
@@ -200,7 +199,7 @@ def test_a_bracketed_qualifier_that_scales_or_denominates_stays_unparsed() -> No
 
 
 def test_a_slash_joined_qualifier_still_reads_the_unit() -> None:
-    """ReRevFF1p1's N2: a page writing capacity as "MW (AC/DC)" (solar and wind
+    """A page writing capacity as "MW (AC/DC)" (solar and wind
     datasheets do) keeps its dimension, so the qualifier is tested with its
     separators normalised."""
     for unit in ("MW (AC/DC)", "GW (ac/dc)", "GW (A.C.)", "MW (a/c)"):
@@ -222,6 +221,6 @@ def test_a_slash_joined_qualifier_still_reads_the_unit() -> None:
     ("2025", "year", False),
 ])
 def test_a_date_is_not_a_measure(value, unit, dated) -> None:
-    """Run-2 improvement 9: the run's five spurious corrections were all dates
-    read as measured figures, so a date figure is told apart by its own words."""
+    """A date read as a measured figure would raise a spurious correction,
+    so a date figure is told apart by its own words."""
     assert is_a_date(value, unit) is dated

@@ -1,4 +1,4 @@
-"""The reader's notes in the bottom line (notes-progress-report spec §7.2, §7.5; AC23, AC34).
+"""The reader's notes in the bottom line.
 
 At publication each active note gets one line, stamped from its terminal outcome:
 a research note points at its topic's kept line or names its outcome; a steering
@@ -158,9 +158,9 @@ _ROW_CASES = [
 @pytest.mark.parametrize(("note", "fields", "kept"), [case[1:] for case in _ROW_CASES],
                          ids=[case[0] for case in _ROW_CASES])
 def test_every_active_note_prints_exactly_one_bottom_line_row(note, fields, kept) -> None:
-    """Final review P2-2 (spec §7.2 "one line per note"): whatever the note's kind, and whether
-    or not its `note-{id}` topic kept a line, the published bottom line holds one row under
-    the note's label, and the topic line's sentence is printed once, inside that row."""
+    """Whatever the note's kind, and whether or not its `note-{id}` topic
+    kept a line, the published bottom line holds one row under the note's
+    label, and the topic line's sentence is printed once, inside that row."""
     state = _state(note, **fields)
 
     reader, _, _, finalized = _terminal_artifacts(state, "accepted")
@@ -175,8 +175,8 @@ def test_every_active_note_prints_exactly_one_bottom_line_row(note, fields, kept
 
 
 def test_a_steering_note_that_bought_a_note_pass_prints_its_topic_line_in_its_own_row() -> None:
-    """Final review P2-2: the steering note's row is its kept topic line, then its code text,
-    under one label -- not a topic row and a second row with the same label."""
+    """The steering note's row is its kept topic line, then its code text,
+    under one label — not a topic row and a second row with the same label."""
     state = _state(CLOSED, verdicts={"n2": "no_evidence"}, topic_notes=("n2",))
 
     [line] = report_note_lines(state, state.composition)
@@ -193,8 +193,8 @@ def test_a_steering_note_that_bought_a_note_pass_prints_its_topic_line_in_its_ow
 
 
 def test_the_writer_render_prints_a_note_topic_line_as_a_plain_topic_line() -> None:
-    """Spec §7.5 item 4: before publication stamps the note lines -- the render the
-    reviewer reads -- a note's topic line prints with its label and no mark."""
+    """Before publication stamps the note lines — the render the reviewer
+    reads — a note's topic line prints with its label and no mark."""
     state = _state(PASTRIES, CLOSED)
     assert _bottom_line(render_written_report(state.composition)) == (
         "Agency One reports the answer [1].\n\n"
@@ -204,8 +204,8 @@ def test_the_writer_render_prints_a_note_topic_line_as_a_plain_topic_line() -> N
 
 
 def test_mixed_note_line_both_results() -> None:
-    """D20 (AC23, AC34): a mixed note's line is its topic line, then a sentence for
-    its steering half; ✗ when either half is not found or not followed."""
+    """A mixed note's line is its topic line, then a sentence for its steering
+    half; ✗ when either half is not found or not followed."""
     state = _state(MIXED, verdicts={"n6": "ignored_with_evidence"}, answered=("note-n6-target-01",))
 
     [line] = report_note_lines(state, state.composition)
@@ -265,8 +265,8 @@ def test_a_composition_without_a_layout_still_prints_its_note_lines() -> None:
 
 
 def test_fingerprint_ignores_note_lines() -> None:
-    """Spec §7.2: the bottom line's layout, the note lines and the reader's answers
-    never enter the review's fingerprint -- stamping them at publication cannot
+    """The bottom line's layout, the note lines and the reader's answers never
+    enter the review's fingerprint — stamping them at publication cannot
     invalidate the judgement made of the same content."""
     composition = _state(PASTRIES).composition
     stamped = composition.model_copy(update={
@@ -278,7 +278,7 @@ def test_fingerprint_ignores_note_lines() -> None:
     assert composition_semantic_fingerprint(stamped) == composition_semantic_fingerprint(composition)
 
 
-# --- the finalizer reads the board: every note the run read gets its line (owner decision O1) ---
+# --- The finalizer reads the board: every note the run read gets its line ---
 
 AT = "2026-10-01T10:00:00.000+00:00"
 LATE_STEERING = fake_reader_note("n1", kinds=["emphasis"], restatement="more weight on fire-safety standards",
@@ -337,9 +337,10 @@ async def _published_run(
 async def test_a_note_read_after_the_reviews_last_merge_still_gets_its_line_in_the_report(
     monkeypatch: pytest.MonkeyPatch, tracker: Tracker, note, line
 ) -> None:
-    """O1: the finalizer merges the board's notes before it stamps the note lines, so a note the
-    run read after the review's last merge gets the line spec §7.2 words for a note no pass took
-    up, in the report it published and in the state it kept -- and /status says the same."""
+    """The finalizer merges the board's notes before it stamps the note lines,
+    so a note the run read after the review's last merge gets the line for a
+    note no pass took up, in the report it published and in the state it kept
+    — and /status says the same."""
     board, publisher, run = await _published_run(monkeypatch, tracker, note, read_before_publishing=True)
 
     assert run.status == "completed"
@@ -376,8 +377,9 @@ async def test_a_note_read_after_the_reviews_last_merge_still_gets_its_line_in_t
 async def test_a_note_the_run_never_read_adds_no_line_to_the_report(
     monkeypatch: pytest.MonkeyPatch, tracker: Tracker, note
 ) -> None:
-    """O1's counter-case: a note still being read when the run publishes has no restatement, so it
-    has no line -- as today -- while /status still lists it, not checked, with no restatement."""
+    """A note still being read when the run publishes has no restatement, so
+    it has no line, while /status still lists it, not checked, with no
+    restatement."""
     board, publisher, run = await _published_run(monkeypatch, tracker, note, read_before_publishing=False)
 
     assert run.status == "completed"
@@ -394,9 +396,10 @@ async def test_a_note_the_run_never_read_adds_no_line_to_the_report(
 async def test_a_late_note_that_names_an_earlier_one_replaces_nothing(
     monkeypatch: pytest.MonkeyPatch, tracker: Tracker
 ) -> None:
-    """O1 fix round 2 (P3-1): a note read after the run decided to publish retires no note. The
-    report was drafted and reviewed with the earlier note still active, so the earlier note keeps
-    its line and its outcome, the late one reads "Not checked", and /status says the same."""
+    """A note read after the run decided to publish retires no note. The
+    report was drafted and reviewed with the earlier note still active, so the
+    earlier note keeps its line and its outcome, the late one reads "Not
+    checked", and /status says the same."""
     first = fake_reader_note("n1", kinds=["emphasis"], restatement="only downtown", short="downtown")
     late = fake_reader_note("n2", kinds=["scope"], restatement="only San Jose", short="San Jose", replaces="n1")
     board, _, run = await _published_run(
@@ -421,9 +424,10 @@ async def test_a_late_note_that_names_an_earlier_one_replaces_nothing(
 
 @pytest.mark.asyncio
 async def test_a_late_note_does_not_retire_a_note_that_owns_a_kept_topic_line() -> None:
-    """O1 fix round 2 (P3-1): n1 owns ``note-n1`` and its kept topic line; a late n2 names it in
-    ``replaces``. Taken in at finalize, n2 retires nothing: n1 keeps its one "✓" row (not an
-    unmarked row for a replaced note), n2 reads "Not checked", and /status agrees."""
+    """When a late note replaces an earlier note that owns a kept topic line,
+    the late note does not actually retire it. The earlier note keeps its one
+    "✓" row (not an unmarked row for a replaced note), the late one reads
+    "Not checked", and /status agrees."""
     late = fake_reader_note("n2", kinds=["scope"], restatement="only San Jose", short="San Jose", replaces="n1")
     state = _state(PASTRIES)
     board = NoteBoard()

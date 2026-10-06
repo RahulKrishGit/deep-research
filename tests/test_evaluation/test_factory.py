@@ -102,7 +102,7 @@ def test_the_factory_matches_production_build_agents(
 def test_the_factory_builds_one_agent_not_six(
     tracker, settings, runtime_config_for, monkeypatch
 ) -> None:
-    """Assembling every agent to test one is what the spec forbids."""
+    """Assembling every agent to test one is forbidden."""
     built: list[str] = []
     real = assembly.build_agent
 

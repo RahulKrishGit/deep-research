@@ -46,22 +46,21 @@ from deep_research.utils.types import (
 CASE_REGISTRY_VERSION = 2
 """The version of the registry's *semantics*, not of this file.
 
-Task 12 requires that existing case ids are preserved where they are
-meaningful and that their semantics are versioned when they change. This
-is the version at which one high-risk case per agent joins the registry
-and the inventory stops being a literal "exactly three controlled and one
-live" and becomes a declared id contract.
+Existing case ids are preserved where they are meaningful, and their
+semantics are versioned when they change. This is the version at which one
+high-risk case per agent joins the registry and the inventory stops being a
+literal "exactly three controlled and one live" and becomes a declared id
+contract.
 
-The bump lands ahead of the six cases it names, deliberately. A version
-that moves early over-approximates — two artifacts stamped 2 may hold
-different case sets — while one that moves late lies: if the number had
-stayed at 1 while Rounds 4-6 added cases, artifacts would record
+A version that moves early over-approximates — two artifacts stamped 2 may
+hold different case sets — while one that moves late lies: if the number
+stayed at 1 while cases were added, artifacts would record
 ``case_registry_version: 1`` beside a case set no v1 run ever scored, and
 provenance would fail silently rather than loudly. Where the two
 directions of error are not symmetric, take the one that fails safe.
 
 v1: three controlled and one live case per agent, the original fixtures.
-v2: the declared-inventory registry and Task 12's high-risk cases.
+v2: the declared-inventory registry and the high-risk cases.
 """
 
 # The declared inventory. Not a count in an assertion: the registry's
@@ -450,12 +449,11 @@ def evaluation_state(
     here would leave every seeded read identifying itself as something it
     was not.
 
-    ``max_extra_passes`` is the step-4 field (it replaces the removed
-    ``max_iterations``): the number of extra researcher passes the state
+    ``max_extra_passes`` is the number of extra researcher passes the state
     allows on top of the first, never a lower bound on the first pass, and
     ``ResearchState`` refuses a state whose ``iteration`` exceeds it.
 
-    Task 7 review: the controlled memory double drops a scripted
+    The controlled memory double drops a scripted
     ``"timestamp"`` field from a seeded entry and falls back to the real
     clock, so a memory seed can never be pinned to a fixed time. Keep any
     assertion on a scripted memory entry's timestamp out of the
@@ -525,8 +523,8 @@ def rubric(
     )
 
 
-# Failure-injection scenarios are scripted in dependencies.py (Tasks 10-15).
-# Task 7 review: scripted failures typed as ``httpx.TimeoutException`` /
+# Failure-injection scenarios are scripted in dependencies.py.
+# Scripted failures typed as ``httpx.TimeoutException`` /
 # ``httpx.HTTPStatusError`` are retried by the real tools (3 attempts each),
 # so a scripted failure shows up triple-counted in call counts. Prefer a
 # plain ``RuntimeError`` for failure-recovery scenarios, or assert the

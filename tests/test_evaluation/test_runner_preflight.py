@@ -35,7 +35,7 @@ async def run(settings, runtime, tmp_path, **overrides):
     return await preflight(settings, runtime, **kwargs)
 
 
-def test_every_spec_preflight_failure_has_a_reason() -> None:
+def test_every_preflight_failure_has_a_reason() -> None:
     assert set(PREFLIGHT_REASONS) == {
         "invalid_registry",
         "unknown_case",
@@ -59,7 +59,7 @@ async def test_a_clean_preflight_passes(
 def _long_absolute_output_base(tmp_path: Path) -> Path:
     base = tmp_path
     for name in (
-        "task10-output-root-" + "a" * 64,
+        "output-root-" + "a" * 64,
         "windows-long-path-" + "b" * 64,
         "controlled-preflight-" + "c" * 64,
         "legal-component-" + "d" * 64,
@@ -69,7 +69,7 @@ def _long_absolute_output_base(tmp_path: Path) -> Path:
     return base
 
 
-TASK10_PREFLIGHT_CASES = (
+PREFLIGHT_CASES = (
     (
         "researcher",
         "cross-agent-planner-fix-parity-baseline-researcher",
@@ -101,11 +101,11 @@ TASK10_PREFLIGHT_CASES = (
 @pytest.mark.skipif(os.name != "nt", reason="Windows long-path regression")
 @pytest.mark.parametrize(
     ("agent_name", "experiment_prefix", "case_id"),
-    TASK10_PREFLIGHT_CASES,
-    ids=[item[1] for item in TASK10_PREFLIGHT_CASES],
+    PREFLIGHT_CASES,
+    ids=[item[1] for item in PREFLIGHT_CASES],
 )
 @pytest.mark.asyncio
-async def test_task10_preflight_uses_a_long_runtime_output_root(
+async def test_preflight_uses_a_long_runtime_output_root(
     settings,
     runtime_config_for,
     tmp_path,
@@ -172,9 +172,8 @@ async def test_a_missing_credential_fails_with_its_reason(
 async def test_a_live_run_missing_tavily_fails_with_missing_credentials(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    """Researcher's live tier also needs Tavily; step 4 must catch that as
-    ``missing_credentials``, not defer it to step 7's
-    ``guards_uninstallable``."""
+    """Researcher's live tier requires Tavily; when missing, the error is
+    ``missing_credentials``, not a later uninstallable guard error."""
     with pytest.raises(PreflightError) as caught:
         await run(
             settings,
@@ -191,14 +190,9 @@ async def test_a_live_run_missing_tavily_fails_with_missing_credentials(
 async def test_a_live_run_with_an_openai_embedding_model_needs_its_key(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    """Task 8 dropped ``OPENAI_API_KEY`` from ``required_credentials``
-    unconditionally; Task 11 then reintroduced a path that needs it -- a
-    live run whose ``evaluation.embedding_provider`` resolves to
-    ``"openai"`` builds an ``OpenAIEmbeddingProvider`` (``dependencies.py``).
-    Step 4 must catch a missing key here, as ``missing_credentials``, rather
-    than passing preflight and failing later at the first memory tool call
-    (scored as the agent failing its own gates). This is the restored
-    coverage for the deleted ``test_a_live_run_checks_the_embedding_model``.
+    """A live run whose ``evaluation.embedding_provider`` resolves to
+    ``"openai"`` requires ``OPENAI_API_KEY``; when missing, the error is
+    ``missing_credentials``, not a later memory-tool call error.
     """
     runtime = runtime_config_for("source_evaluator", tier="live").model_copy(
         update={

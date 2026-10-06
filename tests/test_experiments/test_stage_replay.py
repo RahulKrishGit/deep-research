@@ -1,4 +1,4 @@
-"""Latency plan Task 18: the stage replay asks a capture again under one arm."""
+"""The stage replay asks a capture again under one arm."""
 
 from __future__ import annotations
 

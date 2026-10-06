@@ -1,5 +1,5 @@
-"""API test guard: no API test reaches the live one-time check (live-briefs spec §4.4)
-or the live note interpreter (§4.6).
+"""API test guard: no API test reaches the live one-time check
+or the live note interpreter.
 
 ``create_app`` picks ``live_clarity_check`` for a live-mode app built without a
 ``clarity_checker``, and every live-mode test app here is built that way. The

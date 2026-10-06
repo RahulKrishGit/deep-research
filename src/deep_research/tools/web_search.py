@@ -55,7 +55,7 @@ class AsyncSearchClient(Protocol):
     """The asynchronous subset of a Tavily client, the default's (``AsyncTavilyClient``).
 
     The tool awaits it on the run's own loop, so cancelling the run — a stop —
-    cancels a search in flight (notes-progress-report spec §8.3, D25).
+    cancels a search in flight.
     """
 
     async def search(
@@ -116,7 +116,7 @@ class WebSearchTool(BaseTool):
         ):
             raise ValueError("max_retries must be a non-negative integer")
         # The client is never closed at the end of a run, as the provider's
-        # ``AsyncOpenAI`` client is not (notes-progress-report spec §8.3 item 6).
+        # ``AsyncOpenAI`` client is not.
         self._client: SearchClient | AsyncSearchClient = client or AsyncTavilyClient(
             api_key=api_key
         )
@@ -156,9 +156,9 @@ class WebSearchTool(BaseTool):
     ) -> Mapping[str, Any]:
         budget = self._request_budget
         client = self._client
-        # notes-progress-report spec §8.3 (D25): an async client — the default — is
+        # An async client — the default — is
         # awaited on the run's own loop, so cancelling the run cancels its request;
-        # an injected synchronous client runs in a worker thread, as before.
+        # an injected synchronous client runs in a worker thread.
         awaited = inspect.iscoroutinefunction(client.search)
 
         def search_once() -> Mapping[str, Any]:

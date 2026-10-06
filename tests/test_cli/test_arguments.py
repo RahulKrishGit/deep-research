@@ -107,7 +107,7 @@ def test_a_negative_iteration_budget_is_a_usage_error() -> None:
 
 
 def test_the_iteration_help_says_what_the_budget_buys() -> None:
-    """PD-15: the flag keeps its name, and now sets the extra passes."""
+    """The flag keeps its name and now sets the extra passes."""
     help_text = build_parser().format_help()
 
     assert "extra research passes for missing required targets" in help_text
