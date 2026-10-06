@@ -22,6 +22,7 @@ htmlcov/
 .env
 .env.*
 !.env.example
+.envrc
 
 # Logs
 *.log
@@ -34,6 +35,8 @@ htmlcov/
 # Local tooling and scratch space
 .worktrees/
 .superpowers/
+# Specs and plans written by agent workflows stay local, never in the repo.
+docs/superpowers/
 .dsh-project-memory/
 /.local-deepseek/
 /scratch/

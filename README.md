@@ -1,13 +1,13 @@
 # Deep Research
 
 Deep Research turns a research question into a cited Markdown report. A
-[LangGraph](https://langchain-ai.github.io/langgraph/) pipeline of six agents does the work: a **Planner** splits
+[LangGraph](https://langchain-ai.github.io/langgraph/) pipeline of five agents and a reviewer does the work: a **Planner** splits
 the question into sub-topics, a **Researcher** searches and reads the web, a
 **Source Evaluator** scores every source, an **Evidence Verifier** checks each
 finding against the page it came from, a **Report Writer** drafts a report that
 cites only verified findings, and a **Report Reviewer** judges the draft and
 decides whether to publish it, buy one more research pass for required targets
-nobody answered, or ask for a redraft. Every run publishes three files: the
+nobody answered, or ask for a redraft. A finished run publishes three files: the
 reader report, an evidence ledger and a machine-readable quality record.
 
 It runs from a command line, a FastAPI service, or a Next.js console that
@@ -332,15 +332,15 @@ Two separate harnesses measure quality. Neither is part of the default test run.
 `python -m deep_research.evaluation` runs controlled and live experiments for one
 agent at a time (`planner`, `researcher`, `source-evaluator`,
 `evidence-verifier`, `report-writer`) against LangSmith, scored by deterministic
-gates and a judge model. It never imports `deep_research.graph`, so it does not
-exercise routing, redrafts or publication.
+gates and a judge model. It runs agents directly and never runs the graph, so it
+does not exercise routing, redrafts or publication.
 
 ```bash
 python -m deep_research.evaluation list                                    # agents, tiers, cases, dataset names
 python -m deep_research.evaluation agent researcher                        # all controlled cases, 3 repetitions
 python -m deep_research.evaluation agent researcher --case conflicting-evidence
 python -m deep_research.evaluation agent researcher --tier live            # the agent's one live case
-python -m deep_research.evaluation agent researcher --reasoning-effort medium
+python -m deep_research.evaluation agent researcher --reasoning-effort max
 python -m deep_research.evaluation agent researcher --target-thinking-mode disabled
 python -m deep_research.evaluation suite                                   # controlled experiments, all five agents
 ```

@@ -217,7 +217,8 @@ Otherwise the session waits (`needs_input`) and the check takes the pipeline car
 place below the locked question and its settings strip: one question at a time, at most
 three, two to four answers each with one marked `best guess`, and **Other…** for the
 reader's own words. A tapped answer moves on after 240ms. The footer offers Back, Skip
-this one and Just start, and its cap counts down to the start on best guesses.
+this one and Just start, and its cap counts down to the start on best guesses
+(`hitl.answer_wait_s`, 60 s).
 The answers are shown once, in the summary line, and never again: there is no
 assumptions UI. No purple at rest: the only accent is the focus ring, because
 nothing on the card is the page's primary action. Two refusals have their own face, in

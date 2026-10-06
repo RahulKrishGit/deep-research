@@ -31,7 +31,7 @@ from deep_research.utils.types import MAX_NOTES_PER_RUN, ReaderNote
 
 
 class NoteLimitReached(Exception):
-    """The run already holds ``MAX_NOTES_PER_RUN`` accepted notes (D11a)."""
+    """The run already holds ``MAX_NOTES_PER_RUN`` accepted notes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +72,7 @@ class NoteBoard:
 
     @property
     def remaining(self) -> int:
-        """How many more notes this run accepts (D11a)."""
+        """How many more notes this run accepts."""
         return max(0, MAX_NOTES_PER_RUN - len(self._received))
 
     @property

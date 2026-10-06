@@ -688,7 +688,7 @@ class EvidenceTargetDraft(ContractModel):
     No ``Field`` constraints, for the same reason ``SubTopicDraft`` has none:
     this model is converted to a strict JSON schema. The planner assigns the
     id; the model supplies the question the obligation answers, whether the
-    question names it (``required``), and the fields a program
+    question names it (``required``, spec §7.1), and the fields a program
     checks an answer against — empty when the question does not name one.
     """
 
@@ -1228,7 +1228,7 @@ def _evidence_period_requirement(
 # Natural-language phrases that state an explicit evidence cutoff, the way
 # an ISO date in the question already does: "as of December 31, 2025", "as
 # of the end of 2025", "at the end of 2025" and "by the end of 2025" all
-# freeze the date they name (user decision 2). A bare observation year with
+# freeze the date they name. A bare observation year with
 # no such phrase — "for 2025" — still does not: :func:`_past_years` reads
 # that as the period the answer is *about*, not a cutoff.
 _EXPLICIT_CUTOFF_PREFIX_PATTERN = re.compile(
@@ -1325,7 +1325,7 @@ def derive_answer_contract(
     evidence period — "answer it as of 2025-12-31 and never substitute today's
     figures" — which forbids the later revisions and the published 2025
     outturn the reader needs, on a session whose question is exactly about
-    them (user decision 2, review rank 4). The period requirement says which
+    them. The period requirement says which
     period the answer is *about*; the delivery date says when the evidence was
     read, and only a stated date freezes anything.
 

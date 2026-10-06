@@ -468,7 +468,7 @@ class SessionStore:
         or stopped, once the store is closing (its tasks are being cancelled
         while the session still reads ``running`` without a ``finished_at``),
         and once its stream shows publication has begun; and
-        ``NoteLimitReached`` past the tenth accepted note (D11a). A refused
+        ``NoteLimitReached`` past the tenth accepted note. A refused
         note is never counted. An accepted note is published at once, then
         interpreted in the background: the interpreted note joins the run's
         board and ``session.note.interpreted`` follows.

@@ -6,8 +6,8 @@ same-origin streaming proxy (`app/api/[...path]/route.ts`).
 ## Run
 
 1. API — from the repository root, in one of two modes:
-   - **replay** (free, offline; replays recorded runs): `python -m deep_research.api --mode replay`
-     (`--replay-case ID` and `--replay-delay-ms N` pick and pace the recorded case).
+   - **replay** (free, offline; the real graph on scripted cases): `python -m deep_research.api --mode replay`
+     (`--replay-case ID` and `--replay-delay-ms N` pick and pace the scripted case).
    - **live** (the default; needs the configured secrets and spends their credit):
      `python -m deep_research.api --mode live`.
 

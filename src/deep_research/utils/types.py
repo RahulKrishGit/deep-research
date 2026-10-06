@@ -2016,7 +2016,7 @@ class WriterPointDraft(ContractModel):
 
 
 class SectionDraft(ContractModel):
-    """One part's drafted reply: a title and its kept points."""
+    """One part's drafted reply: a title and its kept points (spec §6.3)."""
 
     title: str
     points: list[WriterPointDraft] = Field(default_factory=list)
@@ -2026,14 +2026,14 @@ class SectionDraft(ContractModel):
 
 
 class TopicLineDraft(WriterPointDraft):
-    """One drafted bottom-line line for one listed topic."""
+    """One drafted bottom-line line for one listed topic (notes-progress-report spec §7.1)."""
 
     topic: str = ""
     """The coverage id at the start of the topic's ``## {id} · {title}`` heading."""
 
 
 class BottomLineDraft(ContractModel):
-    """The bottom-line call's drafted reply: a direct answer of one or two sentences, then one line per topic."""
+    """The bottom-line call's drafted reply: a direct answer of one or two sentences, then one line per topic (notes-progress-report spec §7.1)."""
 
     sentences: list[WriterPointDraft] = Field(default_factory=list)
     topics: list[TopicLineDraft] = Field(default_factory=list)

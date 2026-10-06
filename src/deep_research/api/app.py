@@ -333,7 +333,7 @@ def create_app(
         ``404`` for an unknown session; ``409 notes_closed`` while the session
         waits for the one-time check's answers, once it has finished or
         stopped, and once publication has begun; ``409 note_limit_reached``
-        past the tenth accepted note (D11a); ``422`` for an empty or overlong
+        past the tenth accepted note; ``422`` for an empty or overlong
         note. The note is interpreted after this answer, which is why its
         status is ``received``.
         """

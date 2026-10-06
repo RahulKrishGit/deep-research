@@ -1302,7 +1302,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
                 <span class="cap">Now</span>
                 <div class="now-stage" id="runNow">Planning</div>
                 <p class="sm" id="runningBlurb">Turning the question into sub-topics and evidence targets.</p>
-                <!-- The loop's reason, shown while a loop is taken (Q3). Hidden when none. -->
+                <!-- The loop's reason, shown while a loop is taken. Hidden when none. -->
                 <p class="loop-tag" id="runLoopTag" hidden><span class="tag"></span><span class="why"></span></p>
               </div>
               <div class="row-between">
@@ -1348,7 +1348,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
         <div class="report-head">
           <div class="report-head-bar">
             <p class="cap" id="reportMeta" data-od-id="report-meta">—</p>
-            <!-- Report | Evidence (Q2): two views over one session; Report is the default, the
+            <!-- Report | Evidence: two views over one session; Report is the default, the
                  choice is per session and not persisted. Same recipe as the composer's segments. -->
             <div class="seg seg-view" role="group" aria-label="Report view" id="segView">
               <button type="button" data-view="report" aria-pressed="true">Report</button>
@@ -1494,7 +1494,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
           </aside>
         </div>
 
-        <!-- ── the Evidence view (Q4) ──────────────────────────────────
+        <!-- ── the Evidence view ──────────────────────────────────
              A flat list of findings with status filters, a target tag per row and a detail pane
              in the rail track. Until the service serves GET /research/{id}/evidence (api-gaps E1)
              the real app shows one muted line here; the prototype renders the target state from a
@@ -3403,7 +3403,7 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
     ev.sessionId = null;
     setView("report");
   }
-  /* ═══ the Evidence view (Q4) ═══
+  /* ═══ the Evidence view ═══
      One fixture in E1's shape, for the one battery-storage report every finished
      session reuses: at least one finding per status, one not-found target (T04) and one refused
      sentence. F03's source scores 0.80 overall, which paints yellow on purpose (DESIGN.md §3.6). */

@@ -1137,7 +1137,7 @@ class ReviewDefectDraft(ContractModel):
 
 
 class NoteDispositionDraft(ContractModel):
-    """One provider-reported verdict on one reader note.
+    """One provider-reported verdict on one reader note (live-briefs spec §4.6).
 
     ``status`` is a plain string for the reason ``ReviewDefectDraft.kind`` is:
     one invented verdict drops that one entry (``_note_dispositions``) rather
@@ -1169,10 +1169,11 @@ class ReportReviewDraft(ContractModel):
 
 
 class ReportReviewNotesDraft(ReportReviewDraft):
-    """A whole-report review of a packet that carries reader notes.
+    """A whole-report review of a packet that carries reader notes (live-briefs spec §4.6).
 
     The same reply plus one verdict per note. Its own schema, so a review
-    without notes asks only for the base reply and shows only the base examples.
+    without notes asks for exactly the reply, and shows exactly the examples,
+    it always did.
     """
 
     note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)
@@ -2734,7 +2735,7 @@ class ScopedReportReviewDraft(ContractModel):
 
 
 class ScopedReportReviewNotesDraft(ScopedReportReviewDraft):
-    """A scoped re-review of a packet that carries reader notes:
+    """A scoped re-review of a packet that carries reader notes (live-briefs spec §4.6):
     the same reply plus one verdict per note, for the reason ``ReportReviewNotesDraft`` exists."""
 
     note_dispositions: list[NoteDispositionDraft] = Field(default_factory=list)

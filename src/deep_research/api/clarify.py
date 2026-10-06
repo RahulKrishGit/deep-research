@@ -263,7 +263,7 @@ REPLAY_CLARITY_CHECK = ClarityCheck(
         ),
     ]
 )
-"""The fixed set the replay checker asks when ``X-Replay-Clarify: on`` (pick 4B's own copy)."""
+"""The fixed set the replay checker asks when ``X-Replay-Clarify: on``."""
 
 
 async def scripted_clarity_check(question: str, settings: object) -> ClarityCheck:
