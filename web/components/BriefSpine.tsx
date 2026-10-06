@@ -6,21 +6,21 @@ import { useTween } from "@/lib/tween";
 import { useLoopArc } from "./loop-arc";
 import { EvaluatingLines, PlanningSlots, ReviewingLines, StatusLine, VerifyingLines, WritingLines } from "./StepBodies";
 
-/* How long the two hand-off roles stay on their rows (live-briefs spec §4.3 motion table): past the
+/* How long the two hand-off roles stay on their rows: past the
    last line's rise with ten topics, 900 + 10 × 60 + 240 = 1740 ms. */
 export const HANDOFF_HOLD_MS = 2000;
 /* `awaiting` is the row the active row just left before that row was marked done. A route decision
    moves the active row one event before the row it leaves reports its own completion
-   (graph.route.decided precedes the reviewer's graph.node.completed, web/lib/run-state.ts:145-158 and
-   :100-108; 150 ms apart in replay). Until that completion arrives the awaited row keeps painting as
-   the active row, open; then it takes the `from` role and folds with the 3B timings.
-   `held` (decision D39, notes-progress-report spec §6.7 as amended): a loop route — the extra pass, a
+   (graph.route.decided precedes the reviewer's graph.node.completed, per the handlers in
+   web/lib/run-state.ts; 150 ms apart in replay). Until that completion arrives the awaited row keeps
+   painting as the active row, open; then it takes the `from` role and folds on the stylesheet's hand-off timings.
+   `held`: a loop route — the extra pass, a
    redraft, a note pass, a note redraft — holds Reviewing as the awaited row for HANDOFF_HOLD_MS, open on
    its checks and its verdict, while the row the run goes back to waits, closed and pending, with no role;
    then Reviewing takes the `from` role and the ordinary hand-off runs. The hold paints; it never marks. */
 interface Handoff { from: NodeId | null; to: NodeId | null; awaiting: NodeId | null; held: boolean }
-/* `frozen`: the row the reader stopped the run at, on the stopped stage (notes-progress-report spec §8.5). */
-/* `now`: RunningPipeline's one-second clock (notes-progress-report spec §6.9), which the elapsed times tick with. */
+/* `frozen`: the row the reader stopped the run at, on the stopped stage. */
+/* `now`: RunningPipeline's one-second clock, which the elapsed times tick with. */
 interface Props { marks: Partial<Record<NodeId, PaintedMark>>; run: RunState; onToggle(id: NodeId): void; frozen?: NodeId; now?: number }
 
 const lineStyle = (i: number) => ({ ["--i" as string]: String(i) }) as CSSProperties;
@@ -28,15 +28,15 @@ const finishedState = (st: RowState | undefined) => st === "done" || st === "loo
 
 function ResearchSubtitle({ subtitle }: { subtitle: Extract<Subtitle, { kind: "research" }> }) {
   /* An unmeasured count (null) tweens as 0 so the hooks stay unconditional, and is passed on as null:
-     its phrase stays out of the line (D19). */
+     its phrase stays out of the line. */
   const done = useTween(subtitle.done), pages = useTween(subtitle.pages ?? 0), findings = useTween(subtitle.findings ?? 0);
   return <>{subtitleText({ ...subtitle, done, pages: subtitle.pages === null ? null : pages, findings: subtitle.findings === null ? null : findings })}</>;
 }
 
-/* The running stage's spine (picks 1A, 2C, 3B): each row is li > bullet + (head, brief). The active
+/* The running stage's spine: each row is li > bullet + (head, brief). The active
    row is always open; a done or loop row shows its outcome and reopens from its head; a pending row
    never opens. The Failed and service-stopped stages keep the compact <Spine>.
-   With `frozen` (notes-progress-report spec §8.5) it is the stopped stage's spine, frozen at the row the
+   With `frozen` it is the stopped stage's spine, frozen at the row the
    reader stopped: the rows before it as recorded, that row "stopped" (it opens to its frozen brief),
    every later row "off" — with no hand-off and no arc. */
 export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
@@ -52,7 +52,7 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
   if (frozen === undefined && run.active !== prevActive) {
     setPrevActive(run.active);
     if (prevActive === "report_reviewer" && run.arc !== null && run.active === ARCS[run.arc].to) {
-      // D39: a loop route — the run left Reviewing for the lit arc's own destination. A finalize or end
+      // A loop route — the run left Reviewing for the lit arc's own destination. A finalize or end
       // route, graph.session.completed and session.stopped all clear the arc; it stays lit when the
       // loop's own start event lands in the same render; a burst already past the destination hands
       // over as usual.
@@ -68,7 +68,7 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
   }
   useEffect(() => {
     if (!handoff) return;
-    // D39: the hold is a dwell on a timer, kept under reduced motion; when it ends Reviewing takes the
+    // The hold is a dwell on a timer, kept under reduced motion; when it ends Reviewing takes the
     // `from` role (a loop's own completion of the reviewer is inert, so no mark would ever release it).
     if (handoff.held) {
       const to = handoff.to;
@@ -90,7 +90,7 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
       : awaited ? "active" : handoff?.held && handoff.to === s.id ? "pending" : marks[s.id] || "pending";
     const prev = i > 0 ? marks[STAGES[i - 1].id] || "pending" : null;
     const finished = finishedState(st);
-    // D39: once the hold has ended, the hollow Reviewing row (the loop's rearm took its mark) reopens to
+    // Once the hold has ended, the hollow Reviewing row (the loop's rearm took its mark) reopens to
     // its checks and its verdict, until Reviewing runs again (graph.node.started resets run.reviewing).
     const reopenable = s.id === "report_reviewer" && st === "pending" && run.rearmed.report_reviewer === true && run.reviewing.landed;
     const openable = finished || st === "stopped" || reopenable;
@@ -118,9 +118,9 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
     const lines: ReactNode[] = [];
     if (brief.why) lines.push(<p key="why" className="ln b-why" data-kind={brief.why.kind} style={lineStyle(n++)}>{brief.why.text}</p>);
     const body = brief.body;
-    // notes-progress-report spec §6.3: Planning's status line leads its brief; the acknowledgements follow it.
+    // Planning's status line leads its brief; the acknowledgements follow it.
     if (body.kind === "planning") lines.push(<StatusLine key="status" stack={body.status} i={n++} />);
-    // live-briefs spec §4.7 (D9): the reader's notes, acknowledged at the top of the running row's
+    // The reader's notes, acknowledged at the top of the running row's
     // brief — a muted dot, then the run's reading of the note, never the note echoed back. Each line
     // is a polite live region: nothing moves focus, so a screen reader hears the line whole when
     // "Reading your note…" becomes "Got it — …".
@@ -139,7 +139,7 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
         <div key="topics" className="ps-topics" role="list">
           {body.topics.map((t) => {
             // A topic still running when the reader stopped reads "stopped", with the ring; one that had
-            // not started reads "not run", with no ring (§8.5).
+            // not started reads "not run", with no ring.
             const halted = st === "stopped" && t.state === "running";
             const unrun = st === "stopped" && t.state === "waiting";
             return (
@@ -153,7 +153,7 @@ export function BriefSpine({ marks, run, onToggle, frozen, now }: Props) {
         </div>,
       );
     }
-    // notes-progress-report spec §6.3-§6.7: each step's own body, numbered on from the lines above it.
+    // Each step's own body, numbered on from the lines above it.
     if (body.kind === "planning") lines.push(<PlanningSlots key="body" slots={body.slots} first={n} />);
     if (body.kind === "evaluating") lines.push(<EvaluatingLines key="body" body={body} first={n} />);
     if (body.kind === "verifying") lines.push(<VerifyingLines key="body" body={body} first={n} />);

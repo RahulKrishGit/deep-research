@@ -11,7 +11,7 @@ const base: ResearchSessionResponse = {
 const coverage = (notFound: string[]) => ({ required_targets: 4, answered_targets: 4 - notFound.length, missing_required_target_ids: [], not_found_target_ids: notFound });
 
 describe("statusNote — one rule per API status", () => {
-  it("running names the active step and never a pass (live-briefs spec §4.2)", () => {
+  it("running names the active step and never a pass", () => {
     expect(statusNote(toSessionView(base, "Researching"))).toBe("Researching");
     expect(statusNote(toSessionView(base))).toBe("starting");
     expect(statusNote(toSessionView({ ...base, iteration: 1 }, "Writing report"))).toBe("Writing report");
@@ -37,11 +37,11 @@ describe("statusNote — one rule per API status", () => {
   it("failed → halted", () => {
     expect(statusNote(toSessionView({ ...base, status: "failed" }))).toBe("halted");
   });
-  it("needs_input → Waiting for you · a few quick questions, on the warn dot (live-briefs spec §4.5)", () => {
+  it("needs_input → Waiting for you · a few quick questions, on the warn dot", () => {
     expect(statusNote(toSessionView({ ...base, status: "needs_input" }, "Planning"))).toBe("a few quick questions");
     expect(STATUS.needs_input).toEqual({ label: "Waiting for you", dot: "dot-warn" });
   });
-  it("stopped → Stopped by you · at {step}, on the neutral dot (notes-progress-report spec §8.4)", () => {
+  it("stopped → Stopped by you · at {step}, on the neutral dot", () => {
     expect(statusNote(toSessionView({ ...base, status: "stopped", stopped_step: "researcher" }, "Researching"))).toBe("at Researching");
     expect(statusNote(toSessionView({ ...base, status: "stopped", stopped_step: "check" }, "the questions"))).toBe("at the questions");
     expect(statusNote(toSessionView({ ...base, status: "stopped" }))).toBe("step not recorded");
@@ -57,7 +57,7 @@ describe("helpers", () => {
     expect(qFitClass("a".repeat(80))).toBe(" q-center");
     expect(qFitClass("a".repeat(81))).toBe("");
   });
-  it("passFact says the passes in plain words (live-briefs spec §4.2 table)", () => {
+  it("passFact says the passes in plain words", () => {
     expect(passFact(0)).toBe("One research round");
     expect(passFact(1)).toBe("Went back once to fill gaps");
     expect(passFact(2)).toBe("Went back twice to fill gaps");

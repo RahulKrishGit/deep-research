@@ -1,5 +1,5 @@
-// The two DESIGN.md handoffs' state machines (DESIGN.md:1359-1490; prototype clearFlight :1941,
-// flyQuestionToLock :2009, holdBeat :2069, REPORT_HANDOFF/enterReport :3195). jsdom has no layout
+// The two DESIGN.md handoffs' state machines (DESIGN.md §5.6, "The two handoffs"; prototype clearFlight,
+// flyQuestionToLock, holdBeat, REPORT_HANDOFF/enterReport). jsdom has no layout
 // engine (every rect is 0x0x0x0), so these tests cover the state machine — session matching,
 // one-shot consumption, cancellation, graceful degradation with no usable geometry — not pixel
 // animation, which e2e/handoff.spec.ts proves against a real browser.
@@ -85,7 +85,7 @@ describe("armIdleToRunningFlight / takeIdleToRunningFlight", () => {
     expect(resolved).toBe(true);
     vi.useRealTimers();
   });
-  it("never creates a .q-flight box under prefers-reduced-motion, even with real geometry — DESIGN.md:1485-1487", async () => {
+  it("never creates a .q-flight box under prefers-reduced-motion, even with real geometry (DESIGN.md §5.6)", async () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: true, media: q }) as MediaQueryList);
     document.body.innerHTML = '<form id="composer"></form>';
     const composer = document.getElementById("composer")!;
@@ -96,7 +96,7 @@ describe("armIdleToRunningFlight / takeIdleToRunningFlight", () => {
     const flight = takeIdleToRunningFlight("s1"); // beats one and three still run — the flight is still recorded, just boxless
     expect(flight?.box ?? null).toBeNull();
   });
-  describe("deferClearIdleToRunningFlight / cancelDeferredClearIdleToRunningFlight (fix round 2: React StrictMode dev)", () => {
+  describe("deferClearIdleToRunningFlight / cancelDeferredClearIdleToRunningFlight (React StrictMode dev)", () => {
     // next.config.ts's reactStrictMode:true mounts, cleans up and remounts every effect
     // synchronously in `next dev` — an unmount cleanup that clears the flight immediately would
     // kill it before the remounted effect ever runs. Deferring by one tick and cancelling if the
@@ -219,7 +219,7 @@ describe("runReportSlide", () => {
     expect(el2.style.transition).toBe("");
     vi.useRealTimers();
   });
-  it("resets a stale transform but applies no new one under prefers-reduced-motion, even with real geometry — DESIGN.md:1485-1489", () => {
+  it("resets a stale transform but applies no new one under prefers-reduced-motion, even with real geometry (DESIGN.md §5.6)", () => {
     vi.stubGlobal("matchMedia", (q: string) => ({ matches: true, media: q }) as MediaQueryList);
     document.body.innerHTML = '<div id="q"></div>';
     const el = document.getElementById("q")!;

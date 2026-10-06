@@ -2,8 +2,8 @@ import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ResearchSessionResponse } from "../../lib/api";
 
-// K14: ReportStage must not swallow ApiUnreachableError into an endless "loading report" — it has
-// to hand the failure to the console's own banner (spec §4.4 "API unreachable"), with a Retry that
+// ReportStage must not swallow ApiUnreachableError into an endless "loading report" — it has
+// to hand the failure to the console's own banner ("API unreachable"), with a Retry that
 // repeats the same read. useConsole() is mocked so this test proves ReportStage's own wiring
 // without depending on ConsoleProvider's unrelated session-list poll (a real race: both mount at
 // once and either could resolve first).
@@ -30,7 +30,7 @@ afterEach(() => {
   mockConsole.clearUnreachable.mockClear();
 });
 
-describe("ReportStage — K14: ApiUnreachableError on the report fetch raises the console banner", () => {
+describe("ReportStage — ApiUnreachableError on the report fetch raises the console banner", () => {
   it("calls noteUnreachable under its own \"report\" key with the failed request's target; its own retry re-fetches and then clears that key", async () => {
     let reportCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -53,7 +53,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("report");
   });
 
-  it("C1: registers report and evidence under independent keys, so each can be retried on its own without touching the other", async () => {
+  it("registers report and evidence under independent keys, so each can be retried on its own without touching the other", async () => {
     let reportCalls = 0;
     let evidenceCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -73,7 +73,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("report", "http://127.0.0.1:8010", expect.any(Function)));
     await waitFor(() => expect(mockConsole.noteUnreachable).toHaveBeenCalledWith("evidence", "http://127.0.0.1:8010", expect.any(Function)));
     expect(mockConsole.clearUnreachable).not.toHaveBeenCalled();
-    // C1: the provider (not ReportStage) now runs "every registered retry" for a single Retry
+    // The provider (not ReportStage) runs "every registered retry" for a single Retry
     // click — this proves ReportStage's own half of the contract: each key's retry repeats only
     // that read, so calling the report retry alone must never touch the evidence read.
     const reportRetry = mockConsole.noteUnreachable.mock.calls.find((c) => c[0] === "report")!.at(-1) as () => void;
@@ -89,7 +89,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     expect(mockConsole.clearUnreachable).toHaveBeenCalledWith("evidence");
   });
 
-  it("minor 4: any other ApiError (neither 409 nor unreachable) also shows Not published, never an endless loading state", async () => {
+  it("any other ApiError (neither 409 nor unreachable) also shows Not published, never an endless loading state", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes("/report")) return json(500, { error: { code: "internal_error", message: "boom", reason: null, issues: [] } });
@@ -113,7 +113,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
     expect(mockConsole.noteUnreachable).not.toHaveBeenCalled();
   });
 
-  it("NB1: unmounting while report and evidence are both stuck unreachable clears both keys", async () => {
+  it("unmounting while report and evidence are both stuck unreachable clears both keys", async () => {
     const unreachable502 = () => json(502, { error: { code: "api_unreachable", message: "Research service not reachable.", reason: null, issues: [], target: "http://127.0.0.1:8010" } });
     vi.stubGlobal("fetch", vi.fn(async () => unreachable502()));
     const { unmount } = render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
@@ -128,7 +128,7 @@ describe("ReportStage — K14: ApiUnreachableError on the report fetch raises th
   });
 });
 
-describe("ReportStage — the head bar states the passes in plain words (live-briefs spec §4.2, D15)", () => {
+describe("ReportStage — the head bar states the passes in plain words", () => {
   it("ends the meta line with the pass fact, never a pass counter", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } })));
     render(<ReportStage sessionId="s1" status={STATUS} strip={null} />);
@@ -138,7 +138,7 @@ describe("ReportStage — the head bar states the passes in plain words (live-br
   });
 });
 
-describe("ReportStage — q-center (controller ruling 1)", () => {
+describe("ReportStage — the heading centres on a short question", () => {
   it("centres #report-h for a question at or under 80 characters, following the report-q + qFitClass pattern", async () => {
     const fetchMock = vi.fn(async () => json(409, { error: { code: "session_not_complete", message: "not complete", reason: null, issues: [] } }));
     vi.stubGlobal("fetch", fetchMock);

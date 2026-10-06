@@ -36,7 +36,7 @@ describe("EvidenceView", () => {
   });
 });
 
-describe("evidenceRows ordering (controller ruling, fix round 1)", () => {
+describe("evidenceRows ordering", () => {
   it("sorts findings F-labels numerically first, then X-labels numerically, ahead of not-found and refused rows", () => {
     const data: EvidenceResponse = {
       session_id: "s", iteration: 0,

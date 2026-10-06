@@ -27,7 +27,7 @@ describe("StatusChip", () => {
   });
 });
 
-describe("StatusChip — the focus target (owner decision O2)", () => {
+describe("StatusChip — the focus target", () => {
   it("takes focus by script only (tabIndex -1), so Stop's withdrawal can hand it focus, and passes its ref through", () => {
     const ref = createRef<HTMLSpanElement>();
     const { container } = render(<StatusChip view={view({})} ref={ref} />);
@@ -39,7 +39,7 @@ describe("StatusChip — the focus target (owner decision O2)", () => {
   });
 });
 
-describe("StatusChip — a session the reader stopped (notes-progress-report spec §8.4)", () => {
+describe("StatusChip — a session the reader stopped", () => {
   it("reads Stopped by you · at {step} on the neutral dot", () => {
     const { container } = render(<StatusChip view={view({ status: "stopped", step: "Researching" })} />);
     expect(text(container)).toBe("Stopped by you · at Researching");

@@ -1,5 +1,5 @@
 // @vitest-environment node — reads the replay captures (same reason as run-state.test.ts).
-// notes-progress-report spec §8.2, AC32: the step a stop records is the row the page shows as active.
+// The step a stop records is the row the page shows as active.
 // This recomputes the page's own rule (`run.active`, lib/run-state.ts) after every prefix of every
 // captured replay and compares it with test/fixtures/active-rows.json, which
 // tests/test_api/test_stop.py::test_active_row_matches_web_rule holds the API's `active_row` to.
@@ -39,7 +39,7 @@ if (process.env.WRITE_ACTIVE_ROWS === "1") {
 }
 const golden = JSON.parse(readFileSync(goldenPath, "utf8")) as Record<string, Run[]>;
 
-describe("the page's active row after every prefix of every captured replay (AC32)", () => {
+describe("the page's active row after every prefix of every captured replay", () => {
   it("covers every capture, and nothing else", () => {
     expect(Object.keys(golden).sort()).toEqual(cases);
   });

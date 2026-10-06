@@ -1,6 +1,6 @@
-// notes-progress-report spec §8 (D17, D18, D24, D29, D33; AC28, AC30, AC31, AC33): Stop on the replay
+// Stop on the replay
 // server. Replay paces the stream (150 ms an event) while the engine runs ahead unpaced, so the page's
-// active row is the stream's — and the step a stop records is read from that same stream (AC32).
+// active row is the stream's — and the step a stop records is read from that same stream.
 import { expect, test, type Page } from "@playwright/test";
 import { API, submit, waitTerminal } from "./support";
 
@@ -9,7 +9,7 @@ const chip = (page: Page) => page.locator("#topbarStatus .chip");
 const stop = (page: Page) => page.locator("#stopBtn");
 const popover = (page: Page) => page.getByRole("dialog", { name: "Stop this research?" });
 const row = (page: Page, stage: string) => page.locator(`#stage-user-stopped #spine > li[data-stage="${stage}"]`);
-/* Researching has just become the active row: about 3 s of its first pass remain (see Task 9's note). */
+/* Researching has just become the active row: about 3 s of its first pass remain. */
 const researching = (page: Page) => page.locator('#spine li[data-stage="researcher"][data-state="active"]').waitFor({ timeout: 15_000 });
 async function stopNow(page: Page) {
   await stop(page).click();
@@ -22,7 +22,7 @@ test.beforeEach(async ({ context }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
 });
 
-test("Stop is offered through the run, gone once Publishing starts, and a stop after the end is refused (AC30, AC33)", async ({ page, request }) => {
+test("Stop is offered through the run, gone once Publishing starts, and a stop after the end is refused", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await expect(stop(page)).toHaveText("Stop");
@@ -36,9 +36,9 @@ test("Stop is offered through the run, gone once Publishing starts, and a stop a
   expect((await refused.json()).error).toEqual({ code: "not_stoppable", message: "Research session can no longer be stopped.", reason: "finished", issues: [] });
 });
 
-// Phase D minor (owner decision O2, 2026-10-01): Stop is withdrawn at Publishing, not by the reader. If it held
+// Stop is withdrawn at Publishing, not by the reader. If it held
 // focus, focus goes to the status chip in the top bar (tabIndex -1) rather than falling to <body>.
-test("when Publishing withdraws Stop while it holds focus, focus goes to the status chip, not the page (owner decision O2)", async ({ page, request }) => {
+test("when Publishing withdraws Stop while it holds focus, focus goes to the status chip, not the page", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await stop(page).focus();
@@ -52,7 +52,7 @@ test("when Publishing withdraws Stop while it holds focus, focus goes to the sta
   await expect(chip(page)).toBeFocused(); // the finished run's chip is the same element: focus stays on it
 });
 
-test("confirm and stop mid-run: the stopped stage, its chip, the frozen pipeline, the sidebar and the API's answers (AC28, AC31-AC33)", async ({ page, request }) => {
+test("confirm and stop mid-run: the stopped stage, its chip, the frozen pipeline, the sidebar and the API's answers", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await stop(page).click();
@@ -60,7 +60,7 @@ test("confirm and stop mid-run: the stopped stage, its chip, the frozen pipeline
   await expect(popover(page).getByRole("button", { name: "Keep going" })).toBeFocused();
   await popover(page).getByRole("button", { name: "Stop research" }).click();
   await expect(page.locator("#stage-user-stopped")).toBeVisible();
-  // Task 8: after a real stop focus moves to the stopped stage's first line (it was on the popover's button).
+  // After a real stop focus moves to the stopped stage's first line (it was on the popover's button).
   await expect(page.locator("#stoppedLine")).toBeFocused();
   const status = await (await request.get(`${API}/research/${id}/status`)).json();
   expect([status.status, status.stopped_step]).toEqual(["stopped", "researcher"]);
@@ -88,13 +88,13 @@ test("confirm and stop mid-run: the stopped stage, its chip, the frozen pipeline
   }
   const note = await request.post(`${API}/research/${id}/notes`, { data: { text: "too late" } });
   expect([note.status(), (await note.json()).error.code]).toEqual([409, "notes_closed"]);
-  // D29: the sidebar names the session as stopped in its accessible name only.
+  // The sidebar names the session as stopped in its accessible name only.
   const item = page.locator(`#sessionList [data-session="${id}"]`);
   await expect(item).toHaveAttribute("aria-label", /— stopped by you$/);
   await expect(item).toHaveAttribute("data-run", "0");
 });
 
-test("Keep going, Escape and a click outside close the confirmation and give focus back to Stop (AC33)", async ({ page, request }) => {
+test("Keep going, Escape and a click outside close the confirmation and give focus back to Stop", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await stop(page).click();
@@ -113,11 +113,11 @@ test("Keep going, Escape and a click outside close the confirmation and give foc
   await waitTerminal(request, id);
 });
 
-test("a refusal that reaches the open confirmation says it is too late (AC33)", async ({ page, request }) => {
+test("a refusal that reaches the open confirmation says it is too late", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   // The page hides Stop as its stream shows Publishing, and the API refuses from that same event, so a
-  // real 409 reaches an open popover only inside a few milliseconds (spec ambiguity 17): this is the
+  // real 409 reaches an open popover only inside a few milliseconds: this is the
   // API's own refusal body, answered for the page's POST.
   await page.route("**/api/research/*/stop", (route) => route.fulfill({
     status: 409, contentType: "application/json",
@@ -133,7 +133,7 @@ test("a refusal that reaches the open confirmation says it is too late (AC33)", 
   expect((await (await request.get(`${API}/research/${id}/status`)).json()).status).toBe("completed");
 });
 
-test("Ask again starts a new session with the same question (AC33)", async ({ page, request }) => {
+test("Ask again starts a new session with the same question", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await stopNow(page);
@@ -146,7 +146,7 @@ test("Ask again starts a new session with the same question (AC33)", async ({ pa
   await waitTerminal(request, fresh);
 });
 
-test("a stop while the one-time check asks shows no pipeline card (D33)", async ({ page, request, context }) => {
+test("a stop while the one-time check asks shows no pipeline card", async ({ page, request, context }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass", "X-Replay-Clarify": "on" });
   const id = await submit(page, QUESTION);
   await expect(page.locator("#clarifyCard")).toBeVisible({ timeout: 10_000 });
@@ -159,7 +159,7 @@ test("a stop while the one-time check asks shows no pipeline card (D33)", async 
 
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
-  test("Stop keeps its label, the confirmation fits the screen, and the stopped stage has no sideways scroll (AC33)", async ({ page }) => {
+  test("Stop keeps its label, the confirmation fits the screen, and the stopped stage has no sideways scroll", async ({ page }) => {
     await submit(page, QUESTION);
     await researching(page);
     await expect(stop(page)).toHaveText("Stop");

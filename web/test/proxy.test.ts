@@ -14,7 +14,7 @@ function upstream(handler: (req: IncomingMessage, res: ServerResponse, body: str
       .listen(0, "127.0.0.1", () => resolve(`http://127.0.0.1:${(server!.address() as { port: number }).port}`));
   });
 }
-// K11: no hard-coded refused port — reserve an ephemeral port with a real bind, then close it
+// No hard-coded refused port — reserve an ephemeral port with a real bind, then close it
 // so the same port is guaranteed refused for the duration of the assertion below.
 function reservePort(): Promise<number> {
   return new Promise((resolve) => {
@@ -28,7 +28,7 @@ function reservePort(): Promise<number> {
 
 // These specs drive a real node:http server over a real socket and assert on genuine elapsed
 // wall-clock time (the frame must arrive before the upstream's second write, and the abort must
-// propagate to a real TCP close) — exactly what T-W4/AC13 require proof of; fake timers would
+// propagate to a real TCP close); fake timers would
 // prove nothing about buffering.
 describe("the proxy", () => {
   it("streams an SSE body frame by frame without buffering", async () => {
@@ -71,7 +71,7 @@ describe("the proxy", () => {
     expect(seen.headers!["accept"]).toBe("application/json");
     expect(seen.headers!["cookie"]).toBeUndefined();
   });
-  it("forwards x-replay-clarify, so replay's scripted check can be asked for (live-briefs spec §4.4)", async () => {
+  it("forwards x-replay-clarify, so replay's scripted check can be asked for", async () => {
     const seen: { headers?: IncomingMessage["headers"] } = {};
     process.env.DEEP_RESEARCH_API_URL = await upstream((req, res) => {
       seen.headers = req.headers;
@@ -84,7 +84,7 @@ describe("the proxy", () => {
     expect((await POST(request, ctx("research"))).status).toBe(202);
     expect(seen.headers!["x-replay-clarify"]).toBe("on");
   });
-  it("forwards x-replay-hold-after, so a capture can hold replay's stream at one step (notes-progress-report spec §6.10)", async () => {
+  it("forwards x-replay-hold-after, so a capture can hold replay's stream at one step", async () => {
     const seen: { headers?: IncomingMessage["headers"] } = {};
     process.env.DEEP_RESEARCH_API_URL = await upstream((req, res) => {
       seen.headers = req.headers;
@@ -120,7 +120,7 @@ describe("the proxy", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(closed).toBe(true);
   });
-  it("I1: ends the proxied body cleanly when the upstream body errors mid-stream (300 s idle timeout), never throwing", async () => {
+  it("ends the proxied body cleanly when the upstream body errors mid-stream (300 s idle timeout), never throwing", async () => {
     process.env.DEEP_RESEARCH_API_URL = await upstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write("id: 1\nevent: a\ndata: {}\n\n");
@@ -139,11 +139,11 @@ describe("the proxy", () => {
     const second = await reader.read();
     expect(second.done).toBe(true);
   });
-  it("NB5: a non-SSE body (e.g. /report) that errors mid-send rejects instead of ending cleanly, so a truncated body never renders as a complete response", async () => {
+  it("a non-SSE body (e.g. /report) that errors mid-send rejects instead of ending cleanly, so a truncated body never renders as a complete response", async () => {
     process.env.DEEP_RESEARCH_API_URL = await upstream((_req, res) => {
       res.writeHead(200, { "content-type": "text/markdown" });
       res.write("# Partial report\n\nSome content that never finishes");
-      // Real delay, not a fake timer: see the I1 test above for why (drives a real socket
+      // Real delay, not a fake timer: see the SSE test above for why (drives a real socket
       // destroy(), needs to fire after the first real chunk lands on the wire).
       setTimeout(() => res.destroy(), 50);
     });
@@ -151,11 +151,11 @@ describe("the proxy", () => {
     const reader = response.body!.getReader();
     const first = await reader.read();
     expect(new TextDecoder().decode(first.value)).toContain("Partial report");
-    // Unlike the SSE case (I1), a cut /report must surface as an error, never as a clean 200 the
+    // Unlike the SSE case, a cut /report must surface as an error, never as a clean 200 the
     // browser would render as a complete, correct report.
     await expect(reader.read()).rejects.toBeTruthy();
   });
-  it("M6: strips a trailing slash from DEEP_RESEARCH_API_URL so the target path never doubles up", async () => {
+  it("strips a trailing slash from DEEP_RESEARCH_API_URL so the target path never doubles up", async () => {
     const seen: { url?: string } = {};
     const base = await upstream((req, res) => {
       seen.url = req.url;

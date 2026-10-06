@@ -12,11 +12,11 @@ export type EvidenceRow =
   | { kind: "not_found"; status: "not_found"; id: string; item: EvidenceNotFound }
   | { kind: "refused"; status: "refused"; id: string; item: EvidenceRefused };
 
-/* Controller ruling (fix round 1): findings sort by label — F-labels in numeric order first, then
-   X-labels (report.py:1921-1927's ids for a finding the report never registered) in numeric order
-   — ahead of the not-found and refused rows, which keep E1's own order (reference/08-evidence.png).
-   E1 itself is not re-sorted (api/evidence.py keeps recording order, matching the evidence log's
-   own "### {label}" heading order, AC5/T-A3a) — this is a presentation-only sort in the view. */
+/* Findings sort by label — F-labels in numeric order first, then
+   X-labels (the ids api/evidence.py gives a finding the report never registered) in numeric order
+   — ahead of the not-found and refused rows, which keep the response's own order.
+   The response itself is not re-sorted (api/evidence.py keeps recording order, matching the evidence log's
+   own "### {label}" heading order) — this is a presentation-only sort in the view. */
 const labelSortKey = (label: string): [number, number] => [label.startsWith("X") ? 1 : 0, parseInt(label.slice(1), 10) || 0];
 export function evidenceRows(data: EvidenceResponse): EvidenceRow[] {
   const findings = [...data.findings].sort((a, b) => {

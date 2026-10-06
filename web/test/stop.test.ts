@@ -1,10 +1,10 @@
 // @vitest-environment node
-// notes-progress-report spec §8.4-§8.5: the stopped session's words — the step's label, the time,
+// The stopped session's words — the step's label, the time,
 // how far in. Times are built in local time, so the clock reads the same in any time zone.
 import { describe, expect, it } from "vitest";
 import { localClock, minutesIn, secondsBetween, stoppedLine, stoppedStepLabel } from "../lib/stop";
 
-describe("the stopped session's words (notes-progress-report spec §8.4-§8.5)", () => {
+describe("the stopped session's words", () => {
   it("labels the step a stop records: a row's label, or the questions for the one-time check", () => {
     expect(["check", "planner", "researcher", "report_reviewer", "finalize_report", null, "nonsense"].map((step) => stoppedStepLabel(step)))
       .toEqual(["the questions", "Planning", "Researching", "Reviewing", "Publishing", null, null]);

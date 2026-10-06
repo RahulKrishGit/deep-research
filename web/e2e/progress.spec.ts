@@ -1,6 +1,6 @@
-// notes-progress-report spec §6.3-§6.10 (AC14-AC18, AC20, AC21): each step's brief on the replay
-// stream, held after a named event with X-Replay-Hold-After (§6.10 item 2), then stopped with Phase
-// D's POST /stop so the next test starts on an idle server. The default case is
+// Each step's brief on the replay
+// stream, held after a named event with X-Replay-Hold-After, then stopped with
+// POST /stop so the next test starts on an idle server. The default case is
 // missing-target-triggers-one-extra-pass: three topics, four sources, four findings, two parts.
 import { expect, test, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import { API, submit } from "./support";
@@ -11,7 +11,7 @@ const stop = async (request: APIRequestContext, id: string) => expect((await req
 const row = (page: Page, id: string) => page.locator(`#spine li[data-stage="${id}"]`);
 const animations = (page: Page) => page.evaluate(() => document.getAnimations().map((a) => (a as CSSAnimation).animationName).filter(Boolean));
 
-test("Planning: the status line, four skeleton slots that say 'drafting', the elapsed time (AC14)", async ({ page, context, request }) => {
+test("Planning: the status line, four skeleton slots that say 'drafting', the elapsed time", async ({ page, context, request }) => {
   await holdAt(context, "planner.progress");
   const id = await submit(page, "q");
   const planning = row(page, "planner");
@@ -23,7 +23,7 @@ test("Planning: the status line, four skeleton slots that say 'drafting', the el
   await stop(request, id);
 });
 
-test("Planning: titles fill the slots and the check runs; the surplus skeleton leaves (AC14)", async ({ page, context, request }) => {
+test("Planning: titles fill the slots and the check runs; the surplus skeleton leaves", async ({ page, context, request }) => {
   await holdAt(context, "planner.progress#2");
   const id = await submit(page, "q");
   const planning = row(page, "planner");
@@ -37,7 +37,7 @@ test("Planning: titles fill the slots and the check runs; the surplus skeleton l
   await stop(request, id);
 });
 
-test("Evaluating: the lead, the full bar and the Strong / Fair / Weak split once the batch lands (AC15)", async ({ page, context, request }) => {
+test("Evaluating: the lead, the full bar and the Strong / Fair / Weak split once the batch lands", async ({ page, context, request }) => {
   await holdAt(context, "source_evaluator.progress#2");
   const id = await submit(page, "q");
   const evaluating = row(page, "source_evaluator");
@@ -50,7 +50,7 @@ test("Evaluating: the lead, the full bar and the Strong / Fair / Weak split once
   await stop(request, id);
 });
 
-test("Verifying: a real finding with its verdict and its source, the bar and the tally (AC16)", async ({ page, context, request }) => {
+test("Verifying: a real finding with its verdict and its source, the bar and the tally", async ({ page, context, request }) => {
   await holdAt(context, "evidence_verifier.progress#2");
   const id = await submit(page, "q");
   const verifying = row(page, "evidence_verifier");
@@ -64,7 +64,7 @@ test("Verifying: a real finding with its verdict and its source, the bar and the
   await stop(request, id);
 });
 
-test("Writing: the tally grows as the sections return; the placeholder waits for the first checked sentence (AC17)", async ({ page, context, request }) => {
+test("Writing: the tally grows as the sections return; the placeholder waits for the first checked sentence", async ({ page, context, request }) => {
   await holdAt(context, "report_writer.progress#3");
   const id = await submit(page, "q");
   const writing = row(page, "report_writer");
@@ -76,8 +76,8 @@ test("Writing: the tally grows as the sections return; the placeholder waits for
   await stop(request, id);
 });
 
-// WCAG 2.2.2 (Pause, Stop, Hide), owner decision O2, 2026-10-01 -- DESIGN.md section 5.6, spec 6.5: a ticker has
-// no pause control, which is an accepted, owner-delegated risk, not a conformance claim (it does not meet 2.2.2's
+// WCAG 2.2.2 (Pause, Stop, Hide) -- DESIGN.md section 5.6: a ticker has
+// no pause control, which is an accepted risk, not a conformance claim (it does not meet 2.2.2's
 // "essential" exception on its own). Two of the three things that limit it are checked here: it is not a live
 // region, so a screen reader is not interrupted at each sample, and under reduced motion its settle is dropped and
 // its change is a fade. (The third: every count is also in the subtitle, bar and tally.)
@@ -102,7 +102,7 @@ test("the ticker is not a live region, and under reduced motion its change is a 
   await stop(request, id);
 });
 
-test("Writing: a drafted sentence with its Statement Check verdict and its section (AC17)", async ({ page, context, request }) => {
+test("Writing: a drafted sentence with its Statement Check verdict and its section", async ({ page, context, request }) => {
   await holdAt(context, "report_writer.progress#4");
   const id = await submit(page, "q");
   const writing = row(page, "report_writer");
@@ -113,7 +113,7 @@ test("Writing: a drafted sentence with its Statement Check verdict and its secti
   await stop(request, id);
 });
 
-test("Reviewing: five checks land with no score; the status line waits for the route (AC18)", async ({ page, context, request }) => {
+test("Reviewing: five checks land with no score; the status line waits for the route", async ({ page, context, request }) => {
   await holdAt(context, "graph.report.reviewed");
   const id = await submit(page, "q");
   const reviewing = row(page, "report_reviewer");
@@ -126,12 +126,12 @@ test("Reviewing: five checks land with no score; the status line waits for the r
   await expect(reviewing.locator(".rv-notes-h")).toHaveCount(0);
   await expect(reviewing).not.toContainText(/\d\.\d\d/);
   // Held after graph.report.reviewed: the review has landed, so the row reads in the past tense, frozen at the
-  // moment it landed (owner decision O2, 2026-10-01); while the call runs it reads "reading the draft · {elapsed}".
+  // moment it landed; while the call runs it reads "reading the draft · {elapsed}".
   await expect(reviewing.locator(".m-live")).toHaveText(/^read the draft in \dm \d\ds$/);
   await stop(request, id);
 });
 
-test("a loop route holds Reviewing open on its checks and verdict, then hands over; Reviewing reopens (D39, AC18)", async ({ page, context, request }) => {
+test("a loop route holds Reviewing open on its checks and verdict, then hands over; Reviewing reopens", async ({ page, context, request }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Case": "scoped-redraft-after-a-named-defect", "X-Replay-Hold-After": "graph.route.decided" });
   const id = await submit(page, "q");
   const reviewing = row(page, "report_reviewer"), writing = row(page, "report_writer");
@@ -147,7 +147,7 @@ test("a loop route holds Reviewing open on its checks and verdict, then hands ov
   await stop(request, id);
 });
 
-test.describe("the two loops (D21, AC20)", () => {
+test.describe("the two loops", () => {
   test("the sheen runs only on Planning's skeleton slots, and the drift only while Reviewing's call runs", async ({ page, context, request }) => {
     await holdAt(context, "planner.progress");
     let id = await submit(page, "q");
@@ -197,7 +197,7 @@ test.describe("the two loops (D21, AC20)", () => {
 for (const [label, viewport] of [["1252×853", { width: 1252, height: 853 }], ["390×844", { width: 390, height: 844 }]] as const) {
   test.describe(label, () => {
     test.use({ viewport });
-    test("no step's brief scrolls the page sideways (AC21)", async ({ page, context, request }) => {
+    test("no step's brief scrolls the page sideways", async ({ page, context, request }) => {
       for (const [hold, stage] of [["planner.progress#2", "planner"], ["source_evaluator.progress#2", "source_evaluator"], ["evidence_verifier.progress#2", "evidence_verifier"], ["report_writer.progress#4", "report_writer"], ["graph.report.reviewed", "report_reviewer"]] as const) {
         await holdAt(context, hold);
         const id = await submit(page, "q");

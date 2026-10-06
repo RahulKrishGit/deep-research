@@ -6,7 +6,7 @@ test("the default case ends on the Report stage with the body, the rail and both
   await waitTerminal(request, id);
   await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 });
   await expect(page.locator("#topbarStatus .chip")).toContainText(/^Completed · review accepted · \d\.\d\d/);
-  // notes-progress-report spec §7.6: the evidence line is lifted out of the cards; each card keeps its h2.
+  // The evidence line is lifted out of the cards; each card keeps its h2.
   await expect(page.locator("#reportEvidence")).toContainText(/^Evidence as of|^No source could be checked/);
   await expect(page.locator("#stage-report .rsec .prose h2", { hasText: "Bottom line" })).toBeVisible();
   await expect(page.locator("#stage-report .rsec .prose h2", { hasText: "Sources" })).toBeVisible();
@@ -15,7 +15,7 @@ test("the default case ends on the Report stage with the body, the rail and both
     const href = await page.locator(sel).getAttribute("href");
     expect((await request.get(`http://127.0.0.1:3010${href}`)).status()).toBe(200);
   }
-  await expect(page.locator("#repFactPass")).toHaveText("Went back once to fill gaps"); // live-briefs spec §4.2 (AC8)
+  await expect(page.locator("#repFactPass")).toHaveText("Went back once to fill gaps");
 });
 
 test("review unavailable: Partially completed · review unavailable, not scored", async ({ page, request, context }) => {
@@ -34,7 +34,7 @@ test("empty but clean: extra passes used · 3 targets not found, with the engine
   await expect(page.locator("#topbarStatus .chip")).toHaveText("Partially completed · extra passes used · 3 targets not found", { timeout: 20_000 });
   await expect(page.locator("#stage-report")).toBeVisible();
   await expect(page.locator("#repCovNotFound")).toContainText("topic-01-target-01 — ");
-  // K16: three not-found targets in this case — assert all three, not just the first and last.
+  // Three not-found targets in this case — assert all three, not just the first and last.
   await expect(page.locator("#repCovNotFound")).toContainText("topic-02-target-01 — ");
   await expect(page.locator("#repCovNotFound")).toContainText("topic-03-target-01 — ");
   await expect(page.locator("#stage-report")).not.toContainText("Executive Summary");

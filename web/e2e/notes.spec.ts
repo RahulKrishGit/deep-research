@@ -1,4 +1,4 @@
-// live-briefs spec §4.6-§4.8 (D8, D9, D11a; AC15, AC19, AC20): reader notes on the replay server.
+// Reader notes on the replay server.
 // Replay's interpreter restates a note as written, as an emphasis. Replay runs the graph at full
 // speed and paces only the stream, so a note the page sends reaches the run's board after the
 // engine has finished: these specs prove the note's flow through the API and the page; the engine's
@@ -22,7 +22,7 @@ test.beforeEach(async ({ context }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Case": "missing-target-triggers-one-extra-pass" });
 });
 
-test("a note sent while Researching is received, read and acknowledged in the running row within 1 s (AC15)", async ({ page, request }) => {
+test("a note sent while Researching is received, read and acknowledged in the running row within 1 s", async ({ page, request }) => {
   await installNoteRecorder(page);
   await installMotionRecorder(page);
   const id = await submit(page, QUESTION);
@@ -36,7 +36,7 @@ test("a note sent while Researching is received, read and acknowledged in the ru
   await expect(ack.locator(".said")).toHaveText("More on fire-safety standards");
   await expect.poll(async () => (await noteRecord(page)).acks.length).toBe(1);
   const record = await noteRecord(page);
-  // Timed from the send, which the interpreted event can only follow: an upper bound on AC15's measure.
+  // Timed from the send, which the interpreted event can only follow: an upper bound on the acknowledgement's latency.
   expect(record.acks[0].at - record.sent[0]).toBeLessThan(1000);
   // It rises in over 200 ms, with no wait, in the row that is already open.
   const rise = (await motion(page)).filter((m) => m.part === "ack");
@@ -49,7 +49,7 @@ test("a note sent while Researching is received, read and acknowledged in the ru
   expect(stream).toContain('"restatement":"More on fire-safety standards","kinds":["emphasis"],"replaces":null,"fallback":false');
 });
 
-test("under reduced motion an acknowledgement fades in place, with no travel (§4.8)", async ({ page, request }) => {
+test("under reduced motion an acknowledgement fades in place, with no travel", async ({ page, request }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await installMotionRecorder(page);
   const id = await submit(page, QUESTION);
@@ -61,7 +61,7 @@ test("under reduced motion an acknowledgement fades in place, with no travel (§
   await waitTerminal(request, id);
 });
 
-test("after the tenth note the line is disabled with nothing added, and an eleventh is refused (AC20, D11a)", async ({ page, request }) => {
+test("after the tenth note the line is disabled with nothing added, and an eleventh is refused", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   for (let k = 1; k <= 9; k++) expect((await request.post(`${API}/research/${id}/notes`, { data: { text: `note ${k}` } })).status()).toBe(202);
@@ -78,7 +78,7 @@ test("after the tenth note the line is disabled with nothing added, and an eleve
   await waitTerminal(request, id);
 });
 
-test("once publishing has begun a note is refused and one caption takes the line's place (AC19, §4.8)", async ({ page, request }) => {
+test("once publishing has begun a note is refused and one caption takes the line's place", async ({ page, request }) => {
   await installNoteRecorder(page);
   const id = await submit(page, QUESTION);
   await page.locator('#spine li[data-stage="finalize_report"][data-state="active"]').waitFor({ timeout: 60_000 });
@@ -92,13 +92,13 @@ test("once publishing has begun a note is refused and one caption takes the line
   expect((await (await request.get(`${API}/research/${id}/status`)).json()).notes).toEqual([]);
 });
 
-test("the report shows no Your notes block, and a note the run never read adds no line to its bottom line (AC19, AC27)", async ({ page, request }) => {
+test("the report shows no Your notes block, and a note the run never read adds no line to its bottom line", async ({ page, request }) => {
   const id = await submit(page, QUESTION);
   await researching(page);
   await note(page, "More on fire-safety standards");
   expect((await request.post(`${API}/research/${id}/notes`, { data: { text: "Only the United States" } })).status()).toBe(202);
   await waitTerminal(request, id);
-  // notes-progress-report spec §7.6: a note's line lives in the bottom line, stamped at publication from
+  // A note's line lives in the bottom line, stamped at publication from
   // the run's own notes. Replay's engine finished before these notes arrived (api-gaps 3.9), so the run
   // holds none: the bottom line prints no note line, and /status still lists both.
   await expect(page.locator("#rep-bottom-line")).toBeVisible({ timeout: 20_000 });
@@ -115,7 +115,7 @@ test("the report shows no Your notes block, and a note the run never read adds n
 test.describe("at phone width", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
-  test("the note line spans the card, its send is a 44 px target, and nothing scrolls sideways (§4.8)", async ({ page, request }) => {
+  test("the note line spans the card, its send is a 44 px target, and nothing scrolls sideways", async ({ page, request }) => {
     const id = await submit(page, QUESTION);
     await researching(page);
     await note(page, "More on fire-safety standards");

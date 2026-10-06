@@ -5,7 +5,7 @@ import { isLive, type SessionView } from "@/lib/format";
 
 type SidebarMode = "expanded" | "collapsed";
 interface Unreachable { target: string; retry: () => void }
-/* notes-progress-report spec §8.5: the session the topbar's Stop acts on, and how the screen takes the
+/* The session the topbar's Stop acts on, and how the screen takes the
    stopped session the API answers with. */
 export interface StopTarget { sessionId: string; onStopped(response: ResearchSessionResponse): void }
 export interface ConsoleState {
@@ -13,12 +13,12 @@ export interface ConsoleState {
   chip: SessionView | null; setChip(view: SessionView | null): void;
   sessions: ResearchSessionResponse[]; sessionsLoaded: boolean; refreshSessions(): Promise<void>;
   sidebar: SidebarMode; setSidebar(mode: SidebarMode): void;
-  /* C1: keyed by owner ("sidebar", "session", "report", "evidence", "composer", …) so one
+  /* Keyed by owner ("sidebar", "session", "report", "evidence", "composer", …) so one
      component's success never silently dismisses another component's still-broken read. The
      banner is up while any key is registered; its target comes from whichever entry exists, and
      its Retry (`unreachable.retry`) re-runs every registered retry, not just the last one noted. */
   unreachable: Unreachable | null; noteUnreachable(key: string, target: string, retry: () => void): void; clearUnreachable(key: string): void;
-  /* Set by SessionScreen while its session can be stopped; null otherwise (spec §8.5). */
+  /* Set by SessionScreen while its session can be stopped; null otherwise. */
   stop: StopTarget | null; setStop(target: StopTarget | null): void;
 }
 const ConsoleContext = createContext<ConsoleState | null>(null);
@@ -48,8 +48,8 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     delete next[key];
     registryRef.current = next;
     setRegistry(next);
-    // C1 residual: a read that just succeeded (or landed a definite 404) is decent evidence the
-    // outage affecting *other* still-registered owners is over too — spec §4.3:522 says the
+    // A read that just succeeded (or landed a definite 404) is decent evidence the
+    // outage affecting *other* still-registered owners is over too — the
     // banner disappears on the first success, not only on the first success of every owner
     // independently. Without this, a key with no automatic ladder of its own (the sidebar's list
     // read has none — its 5 s poll only runs while the last *successfully loaded* list showed a
@@ -75,14 +75,14 @@ export function ConsoleProvider({ children }: { children: ReactNode }) {
     }
   }, [noteMode, noteUnreachable, clearUnreachable]);
   useEffect(() => { void refreshSessions(); }, [refreshSessions]);
-  const anyRunning = sessions.some((s) => isLive(s.status)); // needs_input too (live-briefs spec §4.5): its mark must clear when the run ends
+  const anyRunning = sessions.some((s) => isLive(s.status)); // needs_input too: its mark must clear when the run ends
   useEffect(() => {
     if (!anyRunning) return;
     const timer = setInterval(() => void refreshSessions(), 5000);
     return () => clearInterval(timer);
   }, [anyRunning, refreshSessions]);
   useEffect(() => {
-    // On the drawer breakpoint (<= 1080 px) "expanded" means "open", so a phone starts closed (index.html:1891-1899).
+    // On the drawer breakpoint (<= 1080 px) "expanded" means "open", so a phone starts closed.
     if (window.matchMedia("(max-width:1080px)").matches) { setSidebarState("collapsed"); return; }
     const saved = window.localStorage.getItem("dr.console.sidebar");
     if (saved === "collapsed" || saved === "expanded") setSidebarState(saved);

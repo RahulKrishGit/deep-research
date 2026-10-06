@@ -2,9 +2,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import Markdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
-// M9: `mdast` types only, never a runtime import — they arrive transitively through
-// react-markdown/remark-gfm's own `@types/mdast` dependency, so AC19's "no new dependency" holds
-// without declaring `@types/mdast` in package.json.
+// `mdast` types only, never a runtime import — they arrive transitively through
+// react-markdown/remark-gfm's own `@types/mdast` dependency, so no new dependency is needed
+// and `@types/mdast` is not declared in package.json.
 import type { Emphasis, Paragraph, Parent, PhrasingContent, Root, RootContent, Text } from "mdast";
 import type { ReportOutlineEntry } from "@/lib/api";
 import { reducedMotion } from "@/lib/handoff";
@@ -13,13 +13,13 @@ import {
   type CardKind, type ContentsMode, type ReportCard,
 } from "@/lib/report";
 
-/* remarkCitationAnchors (spec §4.3 Report rendering): marks what the design adapts with
+/* remarkCitationAnchors: marks what the design adapts with
    hProperties the components below read — the caption after a table, the Sources list ids, the
    evidence-log link line — and turns every "[n]" whose source n exists into a link to #src-n
-   (prototype index.html:1378, :1398-1415: class "cite"). A bracketed number with no matching
-   source (minor 3, fix round 1) stays plain text. Hand-written recursion over node.children:
+   (the prototype's class "cite" links). A bracketed number with no matching
+   source stays plain text. Hand-written recursion over node.children:
    unist-util-visit is not a dependency.
-   The report renders one card per "## " section (notes-progress-report spec §7.6), so
+   The report renders one card per "## " section, so
    `sourceIds` — the "src-n" ids the Sources card's list will carry, read from the whole report
    before any card renders (lib/report.ts sourceIdsOf) — lets a citation in any card link to its
    source; a Sources list in this tree adds its own ids too. */
@@ -40,7 +40,7 @@ function citationAnchors(node: Parent, sourceIds: ReadonlySet<string>): void {
       let m: RegExpExecArray | null;
       while ((m = re.exec(child.value)) !== null) {
         const id = `src-${m[1]}`;
-        if (!sourceIds.has(id)) continue; // minor 3: no matching source — leave the bracket as plain text
+        if (!sourceIds.has(id)) continue; // no matching source — leave the bracket as plain text
         if (m.index > last) out.push({ type: "text", value: child.value.slice(last, m.index) });
         const anchor: PhrasingContent = { type: "link", url: `#${id}`, data: { hProperties: { "data-cite": m[1] } }, children: [{ type: "text", value: m[0] }] };
         setProps(anchor, { className: "cite" }); // through setProps, not the literal: hast's Properties types className as string[]
@@ -55,8 +55,8 @@ function citationAnchors(node: Parent, sourceIds: ReadonlySet<string>): void {
   }
   node.children = out;
 }
-/* I2 (fix round 1): a table cell whose rendered content is only citation link(s) — the Source
-   column — gets class "n" (index.html:1384-1390: <td class="n"><a class="cite" …>). Runs after
+/* A table cell whose rendered content is only citation link(s) — the Source
+   column — gets class "n" (the prototype's <td class="n"><a class="cite" …>). Runs after
    citationAnchors has already replaced the cell's "[n]" text with link nodes. */
 function markCitationOnlyCells(table: Parent): void {
   for (const row of table.children as Parent[]) {
@@ -99,7 +99,7 @@ export function remarkCitationAnchors(options: CitationOptions = {}) {
 const span = (className: string, children: PhrasingContent[]): Emphasis =>
   ({ type: "emphasis", data: { hName: "span", hProperties: { className: [className] } }, children });
 
-/* remarkBottomLine (notes-progress-report spec §7.5 items 3-4, §7.6 Cards): in the Bottom line
+/* remarkBottomLine: in the Bottom line
    card the answer paragraph becomes p.lead; an emphasis-only paragraph — the assembled line, or the
    no-answer disclosure ("The direct answer could not be checked this time; …"), which stands where
    the answer would — becomes a muted p.b-sub, with no lead; and the list becomes ul.bl-list, each
@@ -136,7 +136,7 @@ export function remarkBottomLine() {
   };
 }
 
-/* remarkKeyFigures (spec §7.4, §7.6 "Key figures on a phone", D32): in the What / Figure / Source
+/* remarkKeyFigures: in the What / Figure / Source
    table every third cell gets class kf-source, and each What cell also carries a copy of its row's
    Source cell as span.kf-src. At ≤ 480 px the CSS hides the column and shows the copy, so the
    forecast issuer and release stay visible; above that the copy is hidden. Runs before the
@@ -164,7 +164,7 @@ function pluginsFor(kind: CardKind, sourceIds: ReadonlySet<string>): Plugins {
 }
 
 /* "Evidence as of {date} · {n} sources" (+ " · {answer}" per reader answer) as spans: at ≤ 480 px
-   .ev-pre and .ev-ans are hidden, leaving "{date} · {n} sources" (spec §7.6). Any other line
+   .ev-pre and .ev-ans are hidden, leaving "{date} · {n} sources". Any other line
    ("No source could be checked.") renders whole. */
 function EvidenceLine({ line }: { line: string }) {
   const parts = parseEvidenceLine(line);
@@ -178,7 +178,7 @@ function EvidenceLine({ line }: { line: string }) {
 }
 
 interface CardProps { card: ReportCard; sourceIds: ReadonlySet<string>; evidenceLoaded: boolean; onOpenEvidence(): void }
-/* One section card (spec §7.6 Cards): a topic card opens with its "Topic i of N" eyebrow above
+/* One section card: a topic card opens with its "Topic i of N" eyebrow above
    its own h2; every other card prints its heading as h2.eyebrow. Each heading is the focus target
    of a contents jump (tabIndex -1). Memoised, with stable Markdown components: a new component
    function would remount the heading a jump has just focused whenever the current entry changes. */
@@ -228,7 +228,7 @@ const PIN_MS = 1500;
 
 interface Props { markdown: string; outline: readonly ReportOutlineEntry[] | null; evidenceLoaded: boolean; onOpenEvidence(): void }
 
-/* The report as section cards with a contents list (notes-progress-report spec §7.6, D16, D28):
+/* The report as section cards with a contents list:
    the server's Markdown split at its "## " headings, paired with /status's report_outline. The
    contents list is a sticky rail left of the cards when the report stage is at least
    CONTENTS_RAIL_MIN wide, otherwise a sticky row of chips above them. */
@@ -249,7 +249,7 @@ export function ReportBody({ markdown, outline, evidenceLoaded, onOpenEvidence }
   useEffect(() => { openRef.current = onOpenEvidence; }, [onOpenEvidence]);
   const openEvidence = useCallback(() => openRef.current(), []);
 
-  // D28: measured on the report stage (the viewport less the sidebar and gutters); the CSS rail
+  // Measured on the report stage (the viewport less the sidebar and gutters); the CSS rail
   // rules sit under the matching @container query, so both read the same width.
   useLayoutEffect(() => {
     const stage = rootRef.current?.closest<HTMLElement>("#stage-report");

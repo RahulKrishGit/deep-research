@@ -1,4 +1,4 @@
-// notes-progress-report spec §6.5: a ticker's visible sample changes at most once every
+// A ticker's visible sample changes at most once every
 // TICKER_HOLD_MS. A dwell, like HANDOFF_HOLD_MS (components/BriefSpine.tsx), not an animation
 // duration, so it holds under reduced motion too. A sample that arrives sooner waits; when the hold
 // ends the newest waiting sample shows, so a burst and a replay end on the same sample.

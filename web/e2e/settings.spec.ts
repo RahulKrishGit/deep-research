@@ -1,4 +1,4 @@
-// live-briefs spec §4.2 (D15, AC8): no extra-passes control anywhere, and the POST body carries no
+// No extra-passes control anywhere, and the POST body carries no
 // max_iterations, so the API applies the configured budget.
 import { expect, test } from "@playwright/test";
 import { API, waitTerminal } from "./support";
@@ -21,9 +21,9 @@ test("the composer offers no extra-passes control and never sends max_iterations
   await expect(page.locator("#runningOpts, #submittedOpts").first()).not.toContainText(/extra pass/i);
 });
 
-// live-briefs spec D16, AC13: with the setting off the session makes no check at all — even with
+// With the setting off the session makes no check at all — even with
 // X-Replay-Clarify: on, which makes replay's scripted checker ask whenever it is called.
-test("with 'Ask me when the question is unclear' off, no check is made (AC13)", async ({ page, context, request }) => {
+test("with 'Ask me when the question is unclear' off, no check is made", async ({ page, context, request }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   await page.goto("/");
   await page.locator("#plusBtn").click();

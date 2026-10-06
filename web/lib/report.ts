@@ -1,9 +1,9 @@
-// The report as cards (notes-progress-report spec §7.6): the server's Markdown split at its "## "
+// The report as cards: the server's Markdown split at its "## "
 // headings and paired, by position, with /status's report_outline. Pure: no DOM but the two
 // measuring helpers at the foot, which take the elements they measure.
 import type { ReportOutlineEntry, ReportOutlineKind } from "./api";
 
-/* The report stage's width at which the contents list becomes a rail (D28): 176 px of rail, the
+/* The report stage's width at which the contents list becomes a rail: 176 px of rail, the
    32 px gap, the 770 px cards, the 32 px gap and the 300 px Review rail. */
 export const CONTENTS_RAIL_MIN = 1310;
 export type ContentsMode = "rail" | "chips";
@@ -66,7 +66,7 @@ export function reportCards(chunks: readonly ReportChunk[], outline: readonly Re
   });
 }
 
-/* "Evidence as of {date} · {n} source(s)" then " · {answer}" per reader answer (spec §7.5); any
+/* "Evidence as of {date} · {n} source(s)" then " · {answer}" per reader answer; any
    other line ("No source could be checked.") is not split. */
 export interface EvidenceParts { date: string; count: string; answers: string[] }
 export function parseEvidenceLine(line: string): EvidenceParts | null {

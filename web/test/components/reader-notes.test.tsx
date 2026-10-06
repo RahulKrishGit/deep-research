@@ -20,7 +20,7 @@ function researchingWithNotes(count: number): RunState {
 const pipeline = (run: RunState, notesRemaining?: number) =>
   render(<RunningPipeline sessionId="s1" run={run} question="q" strip={null} startedAt="2026-09-27T00:00:00+00:00" onToggleRow={() => {}} notesRemaining={notesRemaining} />);
 
-describe("the running stage's notes (live-briefs spec §4.7)", () => {
+describe("the running stage's notes", () => {
   it("acknowledges the notes at the top of the running row's brief: a dot, the reading, where it applies", () => {
     const run = researchingWithNotes(2);
     const { container } = render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={() => {}} />);
@@ -64,10 +64,9 @@ const NOTES = [
   { note_id: "n1", text: "More on fire safety", restatement: "more weight on fire-safety standards", outcome: "covered" as const },
 ];
 
-/* notes-progress-report spec §7.6: the report no longer lists the reader's notes above its prose; each
-   note's line is in the bottom line (test/components/report-body.test.tsx). The rail still counts the
-   note passes. */
-describe("the report rail's pass fact (live-briefs spec §4.2, D11)", () => {
+/* The report does not list the reader's notes above its prose; each note's line is in the bottom line
+   (test/components/report-body.test.tsx). The rail counts the note passes. */
+describe("the report rail's pass fact", () => {
   it("names the note passes in the pass fact", () => {
     const status: ResearchSessionResponse = {
       session_id: "s", query: "q", status: "completed", current_agent: null, iteration: 1, started_at: "2026-09-16T14:02:11Z",

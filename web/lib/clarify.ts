@@ -1,4 +1,4 @@
-// The one-time check's derivations (live-briefs spec §4.4-§4.5): which face the check shows, the
+// The one-time check's derivations: which face the check shows, the
 // answers as the API takes them and as the run starts with them, the summary line and the
 // countdown. Pure — a function of the stream's RunState and the reader's picks only.
 import type { ClarificationAnswer, SessionStatus } from "./api";

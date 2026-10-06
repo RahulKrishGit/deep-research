@@ -1,5 +1,5 @@
-// Issue 2B — running → report: the header block slides down (DESIGN.md:1453-1484; prototype
-// REPORT_HANDOFF/enterReport, index.html:3195-3231). SessionScreen swaps RunningPipeline for
+// Running → report: the header block slides down (DESIGN.md §5.6, "The two handoffs"; prototype
+// REPORT_HANDOFF/enterReport). SessionScreen swaps RunningPipeline for
 // ReportStage directly (no route change), so this half of lib/handoff.ts stays a same-tree
 // "note, then consume", unlike the idle→running lift's cross-route seam.
 import { expect, test, type Page } from "@playwright/test";
@@ -73,7 +73,7 @@ test("opening a finished session from the sidebar does not slide the header", as
   expect(["none", "matrix(1, 0, 0, 1, 0, 0)"]).toContain(style.computed); // never mid-transition either
 });
 
-test("a session watched running earlier, then reached again via the sidebar after opening a different finished session in between, does not slide (review fix round 1, Important #2)", async ({ page, request }) => {
+test("a session watched running earlier, then reached again via the sidebar after opening a different finished session in between, does not slide", async ({ page, request }) => {
   const s0 = await submit(page, "s0 question");
   await waitTerminal(request, s0);
   await expect(page.locator("#stage-report")).toBeVisible({ timeout: 20_000 }); // s0: the older, already-finished session

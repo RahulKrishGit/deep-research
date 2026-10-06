@@ -11,7 +11,7 @@ interface Props { open: boolean; settings: SubmittedSettings; onChange(next: Sub
 
 export function SettingsPopover({ open, settings, onChange, onClose, anchor }: Props) {
   const pop = useRef<HTMLDivElement>(null);
-  /* Where the panel can actually be read: above the bar when it fits, else below (index.html:2150-2189). */
+  /* Where the panel can actually be read: above the bar when it fits, else below (as the prototype's popover placement does). */
   useLayoutEffect(() => {
     const el = pop.current;
     if (!open || !el) return;
@@ -37,7 +37,7 @@ export function SettingsPopover({ open, settings, onChange, onClose, anchor }: P
     return () => window.removeEventListener("resize", place);
   }, [open, anchor]);
   useEffect(() => {
-    // index.html:1908-1912, :2386-2392 — Escape or a click outside (the anchor button excepted) closes the panel.
+    // Escape or a click outside (the anchor button excepted) closes the panel.
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     const onClickAway = (e: MouseEvent) => {
@@ -76,7 +76,7 @@ export function SettingsPopover({ open, settings, onChange, onClose, anchor }: P
         <label className="lbl" htmlFor="outputDir">Output directory</label>
         <input className="input mono-in" id="outputDir" value={settings.outputDir} onChange={(e) => onChange({ ...settings, outputDir: e.target.value })} />
       </div>
-      {/* live-briefs spec §4.5 (D16): in the slot the extra-passes stepper left; on by default. */}
+      {/* Whether the one-time check is asked for; on by default. */}
       <div className="pop-row">
         <span className="lbl" id="lblAsk">Ask me when the question is unclear</span>
         <div className="seg" role="group" aria-labelledby="lblAsk" id="segAsk">

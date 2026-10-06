@@ -5,11 +5,11 @@ import { answersBody, countdownText, resolvedAnswers, secondsLeft, summaryText, 
 import { qFitClass } from "@/lib/format";
 import type { ClarifyQuestion, ClarifyState, RunState } from "@/lib/run-state";
 
-/* A tapped answer shows as chosen for this long before the next question (pick 4B). */
+/* A tapped answer shows as chosen for this long before the next question. */
 export const CHOICE_ADVANCE_MS = 240;
 type Sent = "idle" | "sending" | "sent" | "late" | "failed";
 
-/* live-briefs spec §4.5 (pick 4B; D5-D7, D17): the one-time check takes the pipeline card's place on
+/* The one-time check takes the pipeline card's place on
    page 2, one question at a time. The header is the running stage's own — the locked question and
    the settings strip — so when the planner starts only the card below it changes. The card arrives
    once the stream has delivered the questions (.is-arriving, like the pipeline card). */

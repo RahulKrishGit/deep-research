@@ -23,7 +23,7 @@ function researching(): RunState {
 const row = (c: HTMLElement, id: NodeId) => c.querySelector<HTMLElement>(`#spine > li[data-stage="${id}"]`)!;
 const show = (run: RunState, onToggle = vi.fn()) => render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={onToggle} />);
 
-describe("BriefSpine — row anatomy (live-briefs spec §4.3, AC4, AC5)", () => {
+describe("BriefSpine — row anatomy", () => {
   it("keeps the seven li.spine-row[data-stage] rows in ol#spine inside #spineWrap", () => {
     const { container } = show(researching());
     expect([...container.querySelectorAll("#spineWrap > ol#spine.spine-lg.briefs > li.spine-row[data-stage]")].map((li) => li.getAttribute("data-stage")))
@@ -42,7 +42,7 @@ describe("BriefSpine — row anatomy (live-briefs spec §4.3, AC4, AC5)", () => 
       .toEqual([["running", "1", "1Adoption rate", "reading"], ["done", "2", "2Widget funding", "2 findings"], ["waiting", "3", "3Widget exports", "not yet"]]);
     expect(topics.map((t) => t.getAttribute("style"))).toEqual(["--i: 0;", "--i: 1;", "--i: 2;"]);
   });
-  it("leaves an unmeasured count out of the active Researching subtitle and prints the one it measured (D19)", () => {
+  it("leaves an unmeasured count out of the active Researching subtitle and prints the one it measured", () => {
     // A topic is done, so the count phrases print; the pages are not measured (null), the findings are.
     const unmeasuredPages = researching();
     unmeasuredPages.pagesRead = null;
@@ -110,7 +110,7 @@ describe("BriefSpine — row anatomy (live-briefs spec §4.3, AC4, AC5)", () => 
   });
 });
 
-describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)", () => {
+describe("BriefSpine — the hand-off roles", () => {
   it("marks the row that finished 'from' and the next 'to' for HANDOFF_HOLD_MS, then clears both", () => {
     vi.useFakeTimers();
     const run = researching();
@@ -164,7 +164,7 @@ describe("BriefSpine — the hand-off roles (spec §4.3 motion table, pick 3B)",
     act(() => { vi.advanceTimersByTime(HANDOFF_HOLD_MS); });
     expect(container.querySelector("[data-handoff]")).toBeNull();
   });
-  it("never awaits a row a loop sends the run back from: the hold's own timer hands it over (D39)", () => {
+  it("never awaits a row a loop sends the run back from: the hold's own timer hands it over", () => {
     vi.useFakeTimers();
     const run = newRunState();
     for (const node of ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer"] as const) {
@@ -198,12 +198,12 @@ describe("BriefSpine — the arcs stay attached while rows change height", () =>
   });
 });
 
-describe("BriefSpine — frozen at the stopped row (notes-progress-report spec §8.5)", () => {
+describe("BriefSpine — frozen at the stopped row", () => {
   const frozenAt = (id: NodeId) => {
     const run = researching();
     return render(<BriefSpine marks={marksFor(run, run.active)} run={run} onToggle={vi.fn()} frozen={id} />);
   };
-  it("keeps the outcome out of the frozen and not-run rows, so a row is as tall as its own line (phase review P3-1)", () => {
+  it("keeps the outcome out of the frozen and not-run rows, so a row is as tall as its own line", () => {
     const { container } = frozenAt("researcher");
     const states = ["planner", "researcher", "source_evaluator", "evidence_verifier", "report_writer", "report_reviewer", "finalize_report"]
       .map((id) => [row(container, id as NodeId).getAttribute("data-state"), row(container, id as NodeId).querySelector(".m-out")!.textContent]);
@@ -212,7 +212,7 @@ describe("BriefSpine — frozen at the stopped row (notes-progress-report spec �
       ["off", ""], ["off", ""], ["off", ""], ["off", ""], ["off", ""],
     ]);
   });
-  it("reads a topic that never started 'not run', and one that was running 'stopped' (phase review P3-2)", () => {
+  it("reads a topic that never started 'not run', and one that was running 'stopped'", () => {
     const { container } = frozenAt("researcher");
     const topics = [...row(container, "researcher").querySelectorAll(".ps-topics > [data-topic]")];
     expect(topics.map((t) => [t.getAttribute("data-topic"), t.querySelector(".tf")!.textContent])).toEqual([
@@ -228,7 +228,7 @@ describe("BriefSpine — frozen at the stopped row (notes-progress-report spec �
   });
 });
 
-describe("BriefSpine — a loop route holds Reviewing on its checks and verdict (decision D39)", () => {
+describe("BriefSpine — a loop route holds Reviewing on its checks and verdict", () => {
   /* Writing done and Reviewing's call running; then the review lands with one criterion not met and the
      route sends the draft back to the writer, with `also` applied in the same render. */
   function sentBack(also: Parameters<typeof applyEvent>[1][] = []) {
@@ -312,10 +312,10 @@ describe("BriefSpine — a loop route holds Reviewing on its checks and verdict 
   });
 });
 
-// WCAG 2.2.2 (owner decision O2, 2026-10-01; DESIGN.md section 5.6, spec 6.5): a ticker has no pause control, an
-// accepted owner-delegated risk; one thing that limits it is that it is not announced at each sample, so it is
-// not a live region. The only live region in the running spine is a note's acknowledgement.
-describe("BriefSpine — what is announced (WCAG 2.2.2 rationale, owner decision O2)", () => {
+// WCAG 2.2.2 (DESIGN.md section 5.6): a ticker has no pause control, an accepted risk; one thing that limits it
+// is that it is not announced at each sample, so it is not a live region. The only live region in the running
+// spine is a note's acknowledgement.
+describe("BriefSpine — what is announced (WCAG 2.2.2 rationale)", () => {
   const LIVE = "[aria-live], [role='status'], [role='alert'], [role='log']";
   const sample = (verdict: string) => ({ text: "A finding.", verdict, correction: null, drop_reason: null, source: { role: "original_report", host: "eia.gov" } });
   function playing(events: Parameters<typeof applyEvent>[1][]): RunState {
@@ -348,9 +348,9 @@ describe("BriefSpine — what is announced (WCAG 2.2.2 rationale, owner decision
   });
 });
 
-// O2 fix round 2 (2026-10-01): a Writing row that finished with nothing drafted reopens on what happened, not on
-// the in-flight "Writing the bottom line…".
-describe("BriefSpine — Writing's placeholder on a running and on a finished row (O2 fix round 2)", () => {
+// A Writing row that finished with nothing drafted reopens on what happened, not on the in-flight "Writing the
+// bottom line…".
+describe("BriefSpine — Writing's placeholder on a running and on a finished row", () => {
   function writerRun(finished: boolean): RunState {
     const run = newRunState();
     for (const e of [

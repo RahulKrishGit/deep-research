@@ -7,7 +7,7 @@ import { recordSubmission, type SubmittedSettings } from "@/lib/session-store";
 import { useConsole } from "./ConsoleProvider";
 import { SettingsPopover, shortModel } from "./SettingsPopover";
 
-// page.tsx's <section id="stage-idle">: the host the Clear beat drains (DESIGN.md:1371-1377).
+// page.tsx's <section id="stage-idle">: the host the Clear beat drains (DESIGN.md §5.6, "The two handoffs").
 const IDLE_STAGE_ID = "stage-idle";
 
 export const STARTERS = [
@@ -21,15 +21,15 @@ export const STARTERS = [
 export const DEFAULT_SETTINGS: SubmittedSettings = { model: "deepseek-flash", thinking: "enabled", outputDir: "output/", askWhenUnclear: true };
 
 /* The body the design specifies, with no max_iterations: the API applies the configured
-   extra-pass budget (live-briefs spec §4.2, D15). The one-time check is asked for unless the
-   reader turned it off (D16). */
+   extra-pass budget. The one-time check is asked for unless the
+   reader turned it off. */
 export function buildRequest(question: string, s: SubmittedSettings): ResearchRequest {
   const config_overrides: Record<string, unknown> = { llm: { model: s.model, thinking_mode: s.thinking } };
   if (s.outputDir.trim()) config_overrides.output = { directory: s.outputDir.trim() };
   return { query: question.trim(), output_format: "markdown", config_overrides, ask_clarifying_questions: s.askWhenUnclear };
 }
 
-/* K19 (governing rule, spec §4.4): an unavailable value is never invented — a configuration error
+/* An unavailable value is never invented — a configuration error
    with no enumerated reason reads as the bare sentence, never "· unknown". */
 function configurationErrorText(reason: string | null): string {
   return reason === null ? "Service configuration error" : `Service configuration error · ${reason}`;
@@ -47,7 +47,7 @@ export function Composer() {
   const plus = useRef<HTMLButtonElement>(null);
   const prompt = useRef<HTMLTextAreaElement>(null);
 
-  /* index.html:2303-2317, DESIGN.md:371-376 — the box fits what has been typed, capped at the
+  /* The box fits what has been typed (DESIGN.md §3.2), capped at the
      stylesheet's own min(232px,32vh) (.composer textarea's max-height), read back rather than
      repeated here so the viewport-relative half of the cap keeps working unmodified. */
   useLayoutEffect(() => {
@@ -65,7 +65,7 @@ export function Composer() {
   async function submit(raw: string) {
     const text = raw.trim();
     if (!text) {
-      // index.html:2404-2410 — an empty submit never reaches the network.
+      // An empty submit never reaches the network.
       setError("A question is required.");
       setInvalid(true);
       prompt.current?.focus();
@@ -73,7 +73,7 @@ export function Composer() {
     }
     if (busy) return;
     setBusy(true); setError(null); setInvalid(false);
-    // Beat one (DESIGN.md:1371-1377): drain page 1 around the composer now, in parallel with the
+    // Beat one (DESIGN.md §5.6, "The two handoffs"): drain page 1 around the composer now, in parallel with the
     // POST below — the deadline is what beat two waits out, whichever finishes last.
     const clearDeadline = beginIdleToRunningClear(IDLE_STAGE_ID);
     try {
@@ -92,7 +92,7 @@ export function Composer() {
       // A failed POST restores the composer intact, with its error shown — nothing was ever handed
       // off to a flight that a route change would strand.
       cancelIdleToRunningClear(IDLE_STAGE_ID);
-      // C1: "composer" is this tab's own key. Retry never re-POSTs (M2) — it only re-checks
+      // "composer" is this tab's own key. Retry never re-POSTs — it only re-checks
       // reachability via the sidebar's own read; once that succeeds, this key clears too, so the
       // banner doesn't outlive the outage it reported just because a resubmit never happened.
       if (e instanceof ApiUnreachableError) noteUnreachable("composer", e.target, () => { void refreshSessions().then(() => clearUnreachable("composer")); });
@@ -103,7 +103,7 @@ export function Composer() {
     } finally { setBusy(false); }
   }
   const onSubmit = (e: FormEvent) => { e.preventDefault(); void submit(question); };
-  // index.html:2381-2385 — any error (the empty-required message included) clears on the next keystroke.
+  // Any error (the empty-required message included) clears on the next keystroke.
   const onQuestionChange = (value: string) => { setQuestion(value); setError(null); setInvalid(false); };
   return (
     <>
@@ -136,7 +136,7 @@ export function Composer() {
         <p className="cap">Try</p>
         <div className="starter-list" id="starterList">
           {STARTERS.map((q) => (
-            /* A starter is a complete question: it is submitted in the same click (index.html:2325-2333). */
+            /* A starter is a complete question: it is submitted in the same click. */
             <button key={q} type="button" className="starter" data-question={q} onClick={() => { setQuestion(q); void submit(q); }}>
               <span className="arw" aria-hidden="true">→</span><span className="q">{q}</span>
             </button>

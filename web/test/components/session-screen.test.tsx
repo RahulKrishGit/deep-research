@@ -27,7 +27,7 @@ const unreachableBody = { error: { code: "api_unreachable", message: "Research s
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-describe("SessionScreen — service stopped (K7)", () => {
+describe("SessionScreen — service stopped", () => {
   it("streams the recorded events once, freezes the pipeline with no chip, and never reconnects even past the backoff ladder", async () => {
     // Installed before render so the component's own sleep() timer is fake from the moment it is
     // created; shouldAdvanceTime keeps it ticking with real time too, so RTL's waitFor below still
@@ -48,21 +48,21 @@ describe("SessionScreen — service stopped (K7)", () => {
     await waitFor(() => expect(document.getElementById("stage-stopped")).toBeTruthy());
     expect(document.querySelector("#stage-stopped .note.bad")!.textContent).toContain("The service stopped while this run was in progress. Nothing was published.");
     await waitFor(() => expect(document.querySelector('li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done"));
-    // M6: the halting row is the node that actually started (openNode) — the next row in the
+    // The halting row is the node that actually started (openNode) — the next row in the
     // pipeline never started and must stay pending, never read as falsely "active".
     expect(document.querySelector('li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("pending");
-    // M3: a stopped session shows no topbar chip — the sentence above the frozen pipeline already
+    // A stopped session shows no topbar chip — the sentence above the frozen pipeline already
     // says what happened, and a green "Running" chip would contradict it.
     expect(document.querySelector("#topbarStatus .chip")).toBeNull();
-    // M5: 50 ms proves nothing — the first backoff delay is 1000 ms. Fake-forward well past the
-    // ladder's steady 30 s cadence: if the K7 "stop reconnecting" guard were ever removed, the
+    // 50 ms proves nothing — the first backoff delay is 1000 ms. Fake-forward well past the
+    // ladder's steady 30 s cadence: if the "stop reconnecting" guard were ever removed, the
     // effect would sleep and reconnect, and streamCalls would become 2 well within this window.
     await act(async () => { await vi.advanceTimersByTimeAsync(31_000); });
     expect(streamCalls).toBe(1);
   });
 });
 
-describe("SessionScreen — C1: the ladder retries getStatus before any status has ever loaded", () => {
+describe("SessionScreen — the ladder retries getStatus before any status has ever loaded", () => {
   it("recovers on its own, with no click, once the service answers again", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let statusCalls = 0;
@@ -89,7 +89,7 @@ describe("SessionScreen — C1: the ladder retries getStatus before any status h
   });
 });
 
-describe("SessionScreen — C2: no false Planning state during an outage", () => {
+describe("SessionScreen — no false Planning state during an outage", () => {
   it("a failed reconnect leaves the last-rendered stage and active row untouched under the banner", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let statusCalls = 0;
@@ -117,13 +117,13 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done"));
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-state")).toBe("active");
-    // live-briefs spec §4.3: the active row is open on its brief; the done row is closed on its outcome.
+    // The active row is open on its brief; the done row is closed on its outcome.
     expect(document.querySelector('#spine li[data-stage="researcher"]')?.getAttribute("data-open")).toBe("1");
     expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-open")).toBe("0");
     // Drive the loop through the outage: the stream ends, the follow-up /status answers 502
-    // (raising the banner), the ladder sleeps, and the reconnect attempt itself also fails. Before
-    // C2, the loop reset `run.current` to a fresh RunState before *every* attempt — including this
-    // doomed one — which painted a false "Planning" pipeline under the banner.
+    // (raising the banner), the ladder sleeps, and the reconnect attempt itself also fails. The
+    // loop must not reset `run.current` to a fresh RunState before *every* attempt — including this
+    // doomed one — which would paint a false "Planning" pipeline under the banner.
     await act(async () => { await vi.advanceTimersByTimeAsync(2_500); });
     await waitFor(() => expect(document.querySelector('[role="alert"]')).toBeTruthy());
     expect(document.querySelector('#spine li[data-stage="planner"]')?.getAttribute("data-state")).toBe("done");
@@ -132,7 +132,7 @@ describe("SessionScreen — C2: no false Planning state during an outage", () =>
   });
 });
 
-describe("SessionScreen — live-briefs final review M2: a reconnect keeps the rows the reader reopened", () => {
+describe("SessionScreen — a reconnect keeps the rows the reader reopened", () => {
   it("replays from event 0 into a fresh run state without folding a done row the reader reopened", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let streamCalls = 0;
@@ -195,7 +195,7 @@ describe("SessionScreen — live-briefs final review M2: a reconnect keeps the r
   });
 });
 
-describe("SessionScreen — final-wave item 2: refreshSessions on reaching a terminal status", () => {
+describe("SessionScreen — refreshSessions on reaching a terminal status", () => {
   it("refreshes the sidebar's session list once this tab's run leaves \"running\", not only via the sidebar's own poll", async () => {
     let listCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -220,7 +220,7 @@ describe("SessionScreen — final-wave item 2: refreshSessions on reaching a ter
   });
 });
 
-describe("SessionScreen — re-review item 4: no false Running chip on the not-in-memory page", () => {
+describe("SessionScreen — no false Running chip on the not-in-memory page", () => {
   it("blanks the topbar chip once a stale running status resolves to not-in-memory", async () => {
     let statusCalls = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -241,14 +241,14 @@ describe("SessionScreen — re-review item 4: no false Running chip on the not-i
     render(<ConsoleProvider><AppShell><SessionScreen sessionId="s1" /></AppShell></ConsoleProvider>);
     await waitFor(() => expect(document.querySelector("#topbarStatus .chip")).toBeTruthy());
     await waitFor(() => expect(document.getElementById("stage-not-found")).toBeTruthy());
-    // Before this fix: `stopped` is false (finished_at is null on the stale RUNNING record), so
-    // the chip kept reading the old status — "Running · Planning" — over a page that itself
+    // `stopped` is false (finished_at is null on the stale RUNNING record), so the chip must not
+    // keep reading the old status — "Running · Planning" — over a page that itself
     // says the session isn't in memory.
     expect(document.querySelector("#topbarStatus .chip")).toBeNull();
   });
 });
 
-describe("SessionScreen — the one-time check (live-briefs spec §4.5)", () => {
+describe("SessionScreen — the one-time check", () => {
   const QUESTIONS = [{ id: "q1", dimension: "geography", text: "Which region should this cover?", short: "Region", options: ["United States", "European Union", "Global"], best_guess: "Global" }];
   const WAITING: ResearchSessionResponse = { ...RUNNING, status: "needs_input" };
   const requested = () => frame(1, "session.clarification.requested", { questions: QUESTIONS, deadline_at: new Date(Date.now() + 60_000).toISOString() });
@@ -292,7 +292,7 @@ describe("SessionScreen — the one-time check (live-briefs spec §4.5)", () => 
   });
 });
 
-describe("SessionScreen — Stop (notes-progress-report spec §8.5, D17)", () => {
+describe("SessionScreen — Stop", () => {
   const planning = frame(1, "graph.node.started", { node: "planner", iteration: 0 });
   const publishing = planning + frame(2, "graph.node.completed", { node: "planner" })
     + frame(3, "graph.route.decided", { destination: "finalize", reason: "report_accepted", iteration: 0 });
@@ -347,7 +347,7 @@ describe("SessionScreen — Stop (notes-progress-report spec §8.5, D17)", () =>
     await waitFor(() => expect(document.querySelector("#topbarStatus .chip")!.textContent!.replace(/\s+/g, " ").trim()).toBe("Stopped by you · at Planning"));
   });
 
-  // Spec ambiguity 11, through the real flow: the reader presses "Stop research" (it holds focus, as a
+  // Through the real flow: the reader presses "Stop research" (it holds focus, as a
   // press or a Tab+Enter leaves it), the 202 unmounts the popover and the running stage, and the stopped
   // stage's first line must end up focused, not the page. Focus is given explicitly because fireEvent
   // does not move it as a real press would.
@@ -367,10 +367,10 @@ describe("SessionScreen — Stop (notes-progress-report spec §8.5, D17)", () =>
     await waitFor(() => expect(document.activeElement).toBe(document.getElementById("stoppedLine")));
   });
 
-  // Phase D minor (owner decision O2, 2026-10-01): Stop is withdrawn when the run can no longer be stopped
-  // (Publishing, finished, failed). If Stop or its popover held focus, the page's focus would fall to <body>;
-  // it goes to the status chip, the element that says what the run is doing now. The chip is not a control:
-  // it takes focus by script only (tabIndex -1) and keeps the app's own focus style.
+  // Stop is withdrawn when the run can no longer be stopped (Publishing, finished, failed). If Stop or its
+  // popover held focus, the page's focus would fall to <body>; it goes to the status chip, the element that
+  // says what the run is doing now. The chip is not a control: it takes focus by script only (tabIndex -1)
+  // and keeps the app's own focus style.
   describe("when Stop is withdrawn while it holds focus (not a stop by the reader)", () => {
     async function mountRunning() {
       let push!: (frames: string) => void;

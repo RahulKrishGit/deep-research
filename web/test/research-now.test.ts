@@ -1,6 +1,6 @@
 // @vitest-environment node — a plain data/logic test (see run-state.test.ts).
-// Phase A end-of-phase review: a research note's acknowledgement says "now" only while its own
-// thread runs in THIS researcher run (notes-progress-report spec §5.7). A loop that re-opens
+// A research note's acknowledgement says "now" only while its own
+// thread runs in THIS researcher run. A loop that re-opens
 // Researching (an extra pass, a note pass) starts a new run of the researcher, so an earlier run's
 // thread no longer counts; the note's own started event sets it again.
 import { describe, expect, it } from "vitest";
@@ -34,7 +34,7 @@ const toReviewing: RunEvent[] = [
   started("report_writer"), completed("report_writer"), started("report_reviewer"),
 ];
 
-describe("a research note says 'now' only while its own thread runs in this researcher run (spec §5.7)", () => {
+describe("a research note says 'now' only while its own thread runs in this researcher run", () => {
   it("does not say 'now' in an extra pass the note's earlier thread does not belong to", () => {
     const run = play(toReviewing);
     expect(run.notes[0]).toMatchObject({ where: "researcher", threadStarted: true });

@@ -1,4 +1,4 @@
-// live-briefs spec §4.5 and §4.8 (D5-D7; AC10-AC12): the one-time check on the replay server.
+// The one-time check on the replay server.
 // Replay's scripted checker asks its three fixed questions only when POST /research carried
 // X-Replay-Clarify: on (api/clarify.py), so every other spec sees no check at all.
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
@@ -8,7 +8,7 @@ const ALL_BEST_GUESSES = "Starting research with: Region: Global (best guess) ·
 const streamText = async (request: APIRequestContext, id: string) => (await request.get(`${API}/research/${id}/stream`)).text();
 const top = (page: Page, selector: string) => page.locator(selector).evaluate((el) => el.getBoundingClientRect().top);
 
-test("a clear question skips the check: no card and no needs_input (AC10)", async ({ page, request }) => {
+test("a clear question skips the check: no card and no needs_input", async ({ page, request }) => {
   await installClarifyRecorder(page);
   const id = await submit(page, "q");
   await expect(page.locator("#stage-running")).toBeVisible({ timeout: 10_000 });
@@ -17,7 +17,7 @@ test("a clear question skips the check: no card and no needs_input (AC10)", asyn
   expect(await streamText(request, id)).not.toContain("session.clarification");
 });
 
-test("the check asks one question at a time, posts the answers once and the run starts on them (AC11)", async ({ page, context, request }) => {
+test("the check asks one question at a time, posts the answers once and the run starts on them", async ({ page, context, request }) => {
   await installClarifyRecorder(page);
   await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   const posts: string[] = [];
@@ -48,7 +48,7 @@ test("the check asks one question at a time, posts the answers once and the run 
   expect(await streamText(request, id)).toContain('"reason":"answered"');
 });
 
-test("with no answer the check starts on best guesses when its wait ends (AC12)", async ({ page, request }) => {
+test("with no answer the check starts on best guesses when its wait ends", async ({ page, request }) => {
   await installClarifyRecorder(page);
   // The wait starts when the POST lands, so the app is warmed first: the card must still be asking
   // when the page gets there. 8 s leaves several seconds of margin on a slow VM.
@@ -63,10 +63,10 @@ test("with no answer the check starts on best guesses when its wait ends (AC12)"
   expect(await streamText(request, id)).toContain('"reason":"timed_out"');
 });
 
-test("the check follows the Submitted beat and the question never moves across either hand-off (§4.5)", async ({ page, context, request }) => {
+test("the check follows the Submitted beat and the question never moves across either hand-off", async ({ page, context, request }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   const id = await submit(page, "What limits grid-scale battery storage?");
-  // Measured once the Submitted beat's header has settled (its reveal rises 6px, globals.css:220-224).
+  // Measured once the Submitted beat's header has settled (its reveal rises 6px, see globals.css).
   await expect(page.locator("#stage-submitted")).toHaveClass(/is-revealing/);
   await page.locator("#submitted-h").evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)).then(() => null));
   const submitted = await top(page, "#submitted-h");
@@ -81,7 +81,7 @@ test("the check follows the Submitted beat and the question never moves across e
   expect(await streamText(request, id)).toContain('"reason":"skipped"');
 });
 
-test("a reload while the check waits rebuilds the card from the stream (§4.8)", async ({ page, context, request }) => {
+test("a reload while the check waits rebuilds the card from the stream", async ({ page, context, request }) => {
   await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
   const id = await submit(page, "q");
   await expect(page.locator("#clarifyCard")).toBeVisible({ timeout: 10_000 });
@@ -95,7 +95,7 @@ test("a reload while the check waits rebuilds the card from the stream (§4.8)",
 
 test.describe("reduced motion", () => {
   test.use({ reducedMotion: "reduce" });
-  test("the next question fades in place, with no travel (§4.8)", async ({ page, context, request }) => {
+  test("the next question fades in place, with no travel", async ({ page, context, request }) => {
     await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
     const id = await submit(page, "q");
     await expect(page.locator("#clarifyCard")).toBeVisible({ timeout: 10_000 });
@@ -118,7 +118,7 @@ test.describe("reduced motion", () => {
 
 test.describe("390×844", () => {
   test.use({ viewport: { width: 390, height: 844 } });
-  test("the card and its answers are full width, with no sideways scroll (§4.8)", async ({ page, context, request }) => {
+  test("the card and its answers are full width, with no sideways scroll", async ({ page, context, request }) => {
     await context.setExtraHTTPHeaders({ "X-Replay-Clarify": "on" });
     const id = await submit(page, "q");
     await expect(page.locator("#clarifyCard")).toBeVisible({ timeout: 10_000 });

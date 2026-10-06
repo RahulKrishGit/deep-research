@@ -53,7 +53,7 @@ describe("the client", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error.body.code).toBe("session_not_found");
   });
-  it("posts the check's answers once to the session's answers route (live-briefs spec §4.4)", async () => {
+  it("posts the check's answers once to the session's answers route", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(202, { session_id: "s1", status: "needs_input" }, { "x-deep-research-mode": "replay" }));
     vi.stubGlobal("fetch", fetchMock);
     const body = { answers: [{ question_id: "q1", choice: "Global" }, { question_id: "q2", text: "since 2021" }], skip: false };
@@ -73,7 +73,7 @@ describe("the client", () => {
     expect([error.status, error.body.code]).toEqual([409, "not_waiting_for_input"]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
-  it("posts a stop once, with no body, to the session's stop route (notes-progress-report spec §8.1)", async () => {
+  it("posts a stop once, with no body, to the session's stop route", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => json(202, { session_id: "s1", status: "stopped", stopped_step: "researcher" }, { "x-deep-research-mode": "replay" }));
     vi.stubGlobal("fetch", fetchMock);
     const result = await stopResearch("s1");

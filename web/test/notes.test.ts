@@ -1,7 +1,7 @@
 // @vitest-environment node — a plain data/logic test (see run-state.test.ts).
 import { describe, expect, it } from "vitest";
 import { rowBrief } from "../lib/briefs";
-import { NOTE_LIMIT, OUTCOME_TEXT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
+import { NOTE_LIMIT, RESEARCH_NOW, RESEARCH_WHERE, WHERE, ackFor, earlierNotesText, notePassLine, noteRedraftLine, notesLeft, visibleAcks } from "../lib/notes";
 import { COUNTER_ROWS, applyEvent, marksFor, newRunState, stepLabel, type NodeId, type RunEvent, type RunState } from "../lib/run-state";
 
 const ev = (type: string, metadata: Record<string, unknown> = {}): RunEvent => ({ type, metadata });
@@ -23,7 +23,7 @@ const toReviewing: RunEvent[] = [
   started("evidence_verifier"), completed("evidence_verifier"), started("report_writer"), completed("report_writer"), started("report_reviewer"),
 ];
 
-describe("lib/notes — the note line's copy and each note's acknowledgement (live-briefs spec §4.7)", () => {
+describe("lib/notes — the note line's copy and each note's acknowledgement", () => {
   it("names where the note takes effect, by the step that was running when it was read", () => {
     expect(WHERE).toEqual({
       planner: ", shaping the plan",
@@ -64,22 +64,16 @@ describe("lib/notes — the note line's copy and each note's acknowledgement (li
     expect(earlierNotesText(2)).toBe("and 2 earlier notes");
   });
 
-  it("words the loops' first lines, the report's outcomes and the notes left", () => {
+  it("words the loops' first lines and the notes left", () => {
     const run = play([started("planner"), received("n1", "a"), interpreted("n1", "fire safety"), received("n2", "b"), interpreted("n2", "recycling")]);
     expect(notePassLine(["n1"], run.notes)).toBe("Researching your note: fire safety");
     expect(notePassLine(["n1", "n2"], run.notes)).toBe("Researching your notes: fire safety; recycling");
     expect(noteRedraftLine(["n2"], run.notes)).toBe("Rewriting for your note: recycling");
-    // notes-progress-report spec §4 item 2: "pending" occurs only while a run is going, and a session
-    // that has ended reads "not_checked".
-    expect(OUTCOME_TEXT).toEqual({
-      covered: "covered", not_found: "couldn't find evidence", not_addressed: "not addressed in the report",
-      pending: "not checked yet", not_checked: "not checked", replaced: "replaced by a later note",
-    });
     expect([notesLeft(undefined, 0), notesLeft(10, 3), notesLeft(7, 1), notesLeft(4, 9), notesLeft(0, 0)]).toEqual([10, 7, 7, 1, 0]);
   });
 });
 
-describe("run-state — the note events and the note routes (live-briefs spec §4.6-§4.7)", () => {
+describe("run-state — the note events and the note routes", () => {
   it("counts a replayed note once, drops one with no id, and moves no row", () => {
     const run = play([started("planner"), received("n1", "x"), received("n1", "x"), received("", "y"), ev("session.note.interpreted", { restatement: "z" })]);
     expect(run.notes.map((n) => n.id)).toEqual(["n1"]);
@@ -170,7 +164,7 @@ describe("run-state — the note events and the note routes (live-briefs spec §
   });
 });
 
-describe("briefs — the active row acknowledges the notes (live-briefs spec §4.7)", () => {
+describe("briefs — the active row acknowledges the notes", () => {
   it("only the running row carries the acknowledgements, the latest two and the rest counted", () => {
     const run = play([started("planner"), completed("planner"), started("researcher"),
       ...[1, 2, 3].flatMap((k) => [received("n" + k, "note " + k), interpreted("n" + k, "reading " + k)])]);
@@ -184,7 +178,7 @@ describe("briefs — the active row acknowledges the notes (live-briefs spec §4
   });
 });
 
-describe("a research note's acknowledgement and thread (notes-progress-report spec §5.7, AC12)", () => {
+describe("a research note's acknowledgement and thread", () => {
   const angle = (id: string, restatement: string, kinds: string[] = ["new_angle"]) => interpreted(id, restatement, { kinds });
   const ownThread = (id: string) => ev("researcher.sub_topic.started", { coverage_id: "note-" + id, note_id: id, sub_topic: "Your note: pastries in the cafe", index: 2 });
   const restOf = (run: RunState) => ackFor(run.notes[0], run.notes, run.active).rest;
@@ -224,7 +218,7 @@ describe("a research note's acknowledgement and thread (notes-progress-report sp
     ]);
   });
 
-  it("says 'now' while Researching runs the note's own topic, whichever step read the note (review P3-5)", () => {
+  it("says 'now' while Researching runs the note's own topic, whichever step read the note", () => {
     const run = play([...upTo("report_writer"), received("n1", "Pastries too"), angle("n1", "pastries in the cafe")]);
     expect(restOf(run)).toBe(", researched as its own topic after this draft is reviewed");
     for (const e of [completed("report_writer"), started("report_reviewer"),

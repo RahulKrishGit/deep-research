@@ -35,7 +35,7 @@ describe("Sidebar session count", () => {
   });
 });
 
-describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)", () => {
+describe("Sidebar — a session waiting for the reader", () => {
   it("carries the live mark and says it is waiting for you; the list keeps polling every 5 s", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     let listCalls = 0;
@@ -51,7 +51,7 @@ describe("Sidebar — a session waiting for the reader (live-briefs spec §4.5)"
   });
 });
 
-describe("Sidebar — a session the reader stopped (notes-progress-report spec §8.4, D29)", () => {
+describe("Sidebar — a session the reader stopped", () => {
   it("carries no mark and says it was stopped in its accessible name only", async () => {
     const now = new Date().toISOString();
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [{ ...session("a", now), status: "stopped", stopped_step: "researcher" }] })));

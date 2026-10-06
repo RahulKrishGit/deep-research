@@ -26,7 +26,7 @@ const tap = (name: string) => { fireEvent.click(option(name)); act(() => { vi.ad
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-describe("ClarifyStage — the card (live-briefs spec §4.5, pick 4B)", () => {
+describe("ClarifyStage — the card", () => {
   it("asks question 1 of 3 with its step dots, the best guess marked, Other… last, and no purple", () => {
     vi.useFakeTimers({ now: NOW });
     show();

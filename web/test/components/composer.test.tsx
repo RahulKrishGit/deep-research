@@ -9,7 +9,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Composer", () => {
-  it("builds the request the design specifies, with no max_iterations (live-briefs spec §4.2, AC8)", () => {
+  it("builds the request the design specifies, with no max_iterations", () => {
     const body = buildRequest("  q  ", DEFAULT_SETTINGS);
     expect(body).toEqual({
       query: "q", output_format: "markdown",
@@ -20,7 +20,7 @@ describe("Composer", () => {
     expect("max_iterations" in body).toBe(false);
     expect(buildRequest("q", { ...DEFAULT_SETTINGS, outputDir: "" }).config_overrides).toEqual({ llm: { model: "deepseek-flash", thinking_mode: "enabled" } });
   });
-  it("offers no extra-passes control: no pill and no stepper in the popover (AC8)", () => {
+  it("offers no extra-passes control: no pill and no stepper in the popover", () => {
     vi.stubGlobal("fetch", vi.fn(async () => json(200, { sessions: [] })));
     const { container } = render(<ConsoleProvider><Composer /></ConsoleProvider>);
     fireEvent.click(screen.getByRole("button", { name: "Run settings" }));
@@ -28,7 +28,7 @@ describe("Composer", () => {
     expect(document.querySelector("#stepExtra")).toBeNull();
     expect(document.querySelector("#settingsPop")!.textContent).not.toMatch(/extra pass/i);
   });
-  it("offers 'Ask me when the question is unclear' as On/Off, on by default, and sends the choice (live-briefs spec D16)", async () => {
+  it("offers 'Ask me when the question is unclear' as On/Off, on by default, and sends the choice", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
       init?.method === "POST" ? json(422, { error: { code: "validation_error", message: "Request validation failed.", reason: null, issues: [] } }) : json(200, { sessions: [] }));
     vi.stubGlobal("fetch", fetchMock);
@@ -68,7 +68,7 @@ describe("Composer", () => {
     fireEvent.submit(screen.getByLabelText("Research question").closest("form")!);
     await waitFor(() => expect(screen.getByRole("alert").textContent).toBe("Service configuration error · missing_secrets"));
   });
-  it("omits the reason clause on a configuration error with no reason (K19: never invent a value)", async () => {
+  it("omits the reason clause on a configuration error with no reason (never invent a value)", async () => {
     vi.stubGlobal("fetch", vi.fn(async (_i: RequestInfo | URL, init?: RequestInit) =>
       init?.method === "POST" ? json(500, { error: { code: "configuration_error", message: "Research service configuration is unavailable.", reason: null, issues: [] } }) : json(200, { sessions: [] })));
     render(<ConsoleProvider><Composer /></ConsoleProvider>);

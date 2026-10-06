@@ -1,11 +1,10 @@
-// Stop in the web app (notes-progress-report spec §8.4-§8.5; D18, D24, D33): the confirmation's copy,
+// Stop in the web app: the confirmation's copy,
 // the stopped stage's sentences, and the label of the step a stop records. Pure — a function of the
 // status response and the stream's RunState only.
 import { stepLabel } from "./run-state";
 
 export const STOP_LABEL = "Stop";
 export const STOP_TITLE = "Stop this research?";
-/* D24: the canvas copy, verbatim. */
 export const STOP_BODY = "It stops right away and nothing more is spent. What's done so far stays here, but no report is written.";
 export const STOP_KEEP = "Keep going";
 export const STOP_CONFIRM = "Stop research";
@@ -15,10 +14,10 @@ export const STOP_FAILED = "Couldn't stop — try again";
 export const STOPPED_EYEBROW = "Stopped by you";
 export const STOPPED_KEPT = "No report was written. The plan and what research found so far are kept below until the service restarts.";
 export const ASK_AGAIN = "Ask again";
-/* This plan's words (the spec names none): a POST /research from "Ask again" that failed. */
+/* A POST /research from "Ask again" that failed. */
 export const ASK_AGAIN_FAILED = "Couldn't ask again — try again";
 
-/* The label of the step a stop records (spec §4 item 3): a row's STAGES label, "the questions" for the
+/* The label of the step a stop records: a row's STAGES label, "the questions" for the
    one-time check, null for none or a step the page does not know. */
 export function stoppedStepLabel(step: string | null | undefined): string | null {
   return step === "check" ? "the questions" : stepLabel(step);
@@ -42,7 +41,7 @@ export function secondsBetween(startedAt: string | null | undefined, finishedAt:
   const ms = new Date(finishedAt).getTime() - new Date(startedAt).getTime();
   return Number.isFinite(ms) && ms >= 0 ? Math.floor(ms / 1000) : null;
 }
-/* The stopped note's first line (spec §8.5): when, and how far in — or, for a stop during the one-time
+/* The stopped note's first line: when, and how far in — or, for a stop during the one-time
    check, that the run had not started. A part the page cannot read is left out, never invented. */
 export function stoppedLine(step: string | null, at: string | null | undefined, seconds: number | null): string {
   const clock = localClock(at);

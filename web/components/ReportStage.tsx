@@ -17,18 +17,17 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
   const [evidence, setEvidence] = useState<Loaded<EvidenceResponse>>({ kind: "loading" });
   useEffect(() => {
     let live = true;
-    // C1: the provider now owns the "run every registered retry, clear the banner once every key
+    // The provider owns the "run every registered retry, clear the banner once every key
     // clears" logic (ConsoleProvider.tsx) — this only has to register its own two keys and clear
-    // each one for itself. A single shared { target, retry } pair used to mean whichever read
-    // failed *last* silently dropped the other read's retry forever; two independent keys survive
-    // the usual outage where both fail at mount.
+    // each one for itself. Two independent keys mean neither read's retry is dropped when
+    // the usual outage hits and both fail at mount.
     const fetchReport = () => {
       getReport(sessionId)
         .then((r) => { if (!live) return; setReport({ kind: "ready", value: r.data }); clearUnreachable("report"); })
         .catch((e) => {
           if (!live) return;
           if (e instanceof ApiUnreachableError) { noteUnreachable("report", e.target, fetchReport); return; }
-          setReport({ kind: "unavailable" }); // minor 4: any other ApiError (409 or otherwise) → "Not published", never endless loading
+          setReport({ kind: "unavailable" }); // any other ApiError (409 or otherwise) → "Not published", never endless loading
           clearUnreachable("report");
         });
     };
@@ -46,7 +45,7 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
     fetchEvidence();
     return () => {
       live = false;
-      // NB1: without this, a report/evidence read stuck on ApiUnreachableError leaves its key
+      // Without this, a report/evidence read stuck on ApiUnreachableError leaves its key
       // registered forever once the user navigates away — Retry can never reach it again (there
       // is no more ReportStage to run it), so the banner would stay up until an unrelated key
       // happened to clear too.
@@ -54,7 +53,7 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
       clearUnreachable("evidence");
     };
   }, [sessionId, noteUnreachable, clearUnreachable]);
-  /* enterReport, ported (index.html:3195-3231, DESIGN.md:1453-1483 "the header block slides
+  /* The prototype's enterReport (DESIGN.md §5.6, "Running → report: the header block slides
      down"): the running stage's own rects — noted while it was mounted, RunningPipeline.tsx —
      are consumed once and paired with this stage's own #report-h/#reportOpts. Opening a finished
      session straight from the sidebar never rendered RunningPipeline for it in this page load, so
@@ -85,9 +84,9 @@ export function ReportStage({ sessionId, status, strip }: { sessionId: string; s
             {status.trace_url ? <a className="btn btn-ghost" href={status.trace_url} target="_blank" rel="noopener" id="traceBtn">Open LangSmith trace <span aria-hidden="true">↗</span></a> : null}
           </div>
         </div>
-        {/* Controller ruling 1: #report-h follows the Task 16 q-center pattern and the prototype's
-            Q_HOSTS/CSS (index.html:372, :1798) — the base class is report-q, as the prototype's own
-            #report-h markup uses (":1362"), not ask-q/ask-locked (those style the other stages' h1). */}
+        {/* A short question sits centred in the frame via the .q-center class (qFitClass). The base
+            class is report-q, as the prototype's own #report-h markup uses, not ask-q/ask-locked
+            (those style the other stages' h1). */}
         <h1 className={"report-q" + qFitClass(status.query)} id="report-h">{status.query}</h1>
         {strip}
       </div>

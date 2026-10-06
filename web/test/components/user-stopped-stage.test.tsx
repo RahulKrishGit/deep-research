@@ -1,6 +1,5 @@
-// notes-progress-report spec §8.5 (D18, D33; Stop.dc.html column 3): the stage of a session the reader
-// stopped, rendered by SessionScreen from /status and the stream. Times are built in local time, so the
-// clock reads the same in any time zone.
+// The stage of a session the reader stopped, rendered by SessionScreen from /status and the stream.
+// Times are built in local time, so the clock reads the same in any time zone.
 import { fireEvent, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConsoleProvider } from "../../components/ConsoleProvider";
@@ -57,7 +56,7 @@ const said = (id: string) => {
 
 afterEach(() => { vi.unstubAllGlobals(); push.mockReset(); });
 
-describe("the stopped stage (notes-progress-report spec §8.5; D18)", () => {
+describe("the stopped stage", () => {
   it("says when the reader stopped and how far in, and that nothing was written, under the stopped chip", async () => {
     vi.stubGlobal("fetch", serve(STOPPED, RESEARCHING));
     render(<ConsoleProvider><Topbar /><SessionScreen sessionId="s1" /></ConsoleProvider>);
@@ -124,7 +123,7 @@ describe("the stopped stage (notes-progress-report spec §8.5; D18)", () => {
     ]));
   });
 
-  it("shows no pipeline card after a stop during the one-time check, and says the run had not started (D33)", async () => {
+  it("shows no pipeline card after a stop during the one-time check, and says the run had not started", async () => {
     const check: ResearchSessionResponse = { ...STOPPED, stopped_step: "check" };
     const frames = frame(1, "session.clarification.requested", { questions: [], deadline_at: STOPPED_AT })
       + frame(2, "session.stopped", { step: "check", stopped_at: STOPPED_AT, elapsed_seconds: 30 });

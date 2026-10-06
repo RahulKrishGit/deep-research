@@ -1,12 +1,10 @@
-// Reader notes in the web app (live-briefs spec §4.7; D8, D9, D11a; pick 6A,
-// docs/design/running-stage-picks/Hitl3.dc.html column A): the note line's copy, each note's
-// acknowledgement, the first lines of the loops a note buys, and the report's outcome words.
+// Reader notes in the web app: the note line's copy, each note's acknowledgement and the first
+// lines of the loops a note buys.
 // Pure — a function of RunState or of the status response only, so a burst and a replay from
 // event 1 paint the same (DESIGN.md §5.7).
-import type { ReaderNoteOutcome } from "./api";
 import type { NodeId, NoteState } from "./run-state";
 
-/* D11a: a run takes at most ten notes. The page never says so: the line only disables. */
+/* A run takes at most ten notes. The page never says so: the line only disables. */
 export const NOTE_LIMIT = 10;
 export const NOTE_MAX_CHARS = 500;
 export const NOTE_PLACEHOLDER = "Add a note — something to focus on, leave out or change";
@@ -14,10 +12,10 @@ export const NOTE_FIELD_LABEL = "Add a note for this research";
 export const NOTE_SEND_LABEL = "Add note";
 export const NOTES_CLOSED = "Notes are closed — the report is being published";
 /* Any failure but the two 409s (a 5xx, a network error): the text stays, and this caption says so
-   until the next edit (this plan's words; the spec names only the two 409s). */
+   until the next edit. */
 export const NOTE_SEND_FAILED = "Couldn't send — try again";
 
-/* Where a note takes effect, by the step that was active when the run read it (§4.7 table).
+/* Where a note takes effect, by the step that was active when the run read it.
    Publishing has none: notes are closed by then. */
 export const WHERE: Readonly<Partial<Record<NodeId, string>>> = {
   planner: ", shaping the plan",
@@ -28,7 +26,7 @@ export const WHERE: Readonly<Partial<Record<NodeId, string>>> = {
   report_reviewer: "; the review will check it",
 };
 
-/* notes-progress-report spec §5.7 (D1-D4): a research note — its kinds include new_angle, a mixed note
+/* A research note — its kinds include new_angle, a mixed note
    included — is researched as its own topic, so its acknowledgement says when, by the step that was
    running when the run read it. "Now" while Researching is the active row and the note's own thread
    has started — a planning-time topic, a research-time thread or a note pass — and only then: a note
@@ -50,7 +48,7 @@ function whereFor(note: NoteState, active: NodeId | null): string {
   return RESEARCH_WHERE[note.where] ?? "";
 }
 
-/* One acknowledgement line: `lead`, then the run's reading in `said` (the pick's .said), then `rest`.
+/* One acknowledgement line: `lead`, then the run's reading in `said`, then `rest`.
    `active` is the run's active row (RunState.active); a research note's "now" needs it. */
 export interface Ack { key: string; lead: string; said: string | null; rest: string }
 
@@ -62,7 +60,7 @@ export function ackFor(note: NoteState, notes: readonly NoteState[], active: Nod
   return { key: note.id, lead: "Got it — ", said: note.restatement ?? note.text, rest: whereFor(note, active) + replacing };
 }
 
-/* §4.7: with more than two notes, the brief shows the latest two (oldest first) and how many
+/* With more than two notes, the brief shows the latest two (oldest first) and how many
    earlier notes it leaves out. */
 export function visibleAcks(notes: readonly NoteState[], active: NodeId | null = null): { acks: Ack[]; earlier: number } {
   const shown = notes.slice(-2);
@@ -85,21 +83,6 @@ export function notePassLine(ids: readonly string[], notes: readonly NoteState[]
 export function noteRedraftLine(ids: readonly string[], notes: readonly NoteState[]): string {
   return (ids.length === 1 ? "Rewriting for your note: " : "Rewriting for your notes: ") + noteSubjects(ids, notes);
 }
-
-/* The outcome words, one per ReaderNoteOutcome (§4.7; "not addressed in the report", "not checked" and
-   "replaced by a later note" are this plan's words for the three outcomes the spec's table leaves
-   unnamed). Kept and pinned by its own test; no component reads it, since the report's notes moved
-   into its bottom line (notes-progress-report spec §7.2). A note the report still ignores is never
-   "covered". A session that has ended reads "not_checked" for a note nothing judged, and "pending" —
-   "not checked yet" — occurs only while a run is going (spec §4 item 2). */
-export const OUTCOME_TEXT: Readonly<Record<ReaderNoteOutcome, string>> = {
-  covered: "covered",
-  not_found: "couldn't find evidence",
-  not_addressed: "not addressed in the report",
-  pending: "not checked yet",
-  not_checked: "not checked",
-  replaced: "replaced by a later note",
-};
 
 /* How many more notes the run takes: the last /status's count, lowered by every note the stream has
    seen since (a note is counted once it is received, whether or not it has been read yet). */

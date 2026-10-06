@@ -1,78 +1,56 @@
 # Deep Research console (`web/`)
 
-The Next.js 16 console for the FastAPI service. It renders `docs/design/` from the live
-API through a same-origin streaming proxy (`app/api/[...path]/route.ts`).
+The Next.js 16 console for the FastAPI service. It renders `docs/design/` from the API through a
+same-origin streaming proxy (`app/api/[...path]/route.ts`).
 
 ## Run
 
-1. API: from the repository root, `python -m deep_research.api --mode replay` (free, offline)
-   or `--mode live` (needs the configured secrets and spends their credit). Default `127.0.0.1:8000`.
-2. App: `npm install` once, then `npm run dev` → http://localhost:3000 (bound to
-   127.0.0.1 only — the API binds loopback on purpose and the proxy would
-   otherwise undo that).
-   `DEEP_RESEARCH_API_URL` overrides the API origin (default `http://127.0.0.1:8000`).
+1. API — from the repository root, in one of two modes:
+   - **replay** (free, offline; replays recorded runs): `python -m deep_research.api --mode replay`
+     (`--replay-case ID` and `--replay-delay-ms N` pick and pace the recorded case).
+   - **live** (the default; needs the configured secrets and spends their credit):
+     `python -m deep_research.api --mode live`.
 
-## Test
+   Both bind `127.0.0.1:8000` unless `--host`/`--port` say otherwise.
+2. App — `npm install` once, then `npm run dev` → http://localhost:3000. It binds 127.0.0.1 only: the
+   API binds loopback on purpose and the proxy would otherwise undo that. `DEEP_RESEARCH_API_URL`
+   overrides the API origin (default `http://127.0.0.1:8000`). The topbar shows a muted "replay mode"
+   chip when the API answers `X-Deep-Research-Mode: replay`.
 
-- `npm test` — Vitest: the event core on real replay captures, the display helpers, the
-  SSE reader, the client, the proxy, the components.
-- `npm run test:e2e` — `next build` then Playwright against the API in replay mode
-  (three servers: the API on 8010, the app on 3010, an app on 3011 pointed at a closed
-  port). Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter
-  (`…/deep-research/.venv/Scripts/python.exe`); `npx playwright install chromium` once.
-- `npm run capture:visual` — the thirty-three full-page captures (13 stages/views × 1252 and
-  390 px, the report's cards at 1920 px, and the five step briefs at 1252 px with Planning's at
-  390 px too) into `visual/<VISUAL_CHECKPOINT>/` (default `C4`).
-- `npm run capture:events -- <case-id>` — records a replay session's frames into
-  `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at
-  `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`). After a re-capture, rewrite the
-  page's active-row pin from the new frames: `WRITE_ACTIVE_ROWS=1 npx vitest run
-  test/active-row.test.ts`.
-- `npm run check:css` — `app/globals.css` begins with the prototype's CSS, verbatim.
+## Scripts
 
-## Notes
+| Script | What it does |
+| --- | --- |
+| `npm run dev` / `build` / `start` | Next.js dev server, production build, production server (all on 127.0.0.1). |
+| `npm run typecheck` | `tsc --noEmit`. |
+| `npm test` | Vitest: the event core on recorded replay captures, the display helpers, the SSE reader, the API client, the proxy and the components. |
+| `npm run test:e2e` | `next build`, then Playwright (chromium project) against its own servers: the API in replay mode on 8010, the app on 3010, and a second app on 3011 pointed at a closed port. Run `npx playwright install chromium` once. Inside a `.worktrees/*` tree set `DEEP_RESEARCH_PYTHON` to the venv interpreter (`…/deep-research/.venv/Scripts/python.exe`). |
+| `npm run capture:visual` | Playwright `visual` project: full-page screenshots of the stages and views into `visual/<VISUAL_CHECKPOINT>/` (default `C4`; git-ignored). |
+| `npm run capture:events -- <case-id>` | Records a replay session's frames into `test/fixtures/events/` (needs the API in replay mode with `--replay-delay-ms 0` at `DEEP_RESEARCH_API_URL`, default `http://127.0.0.1:8010`). After a re-capture, rewrite the page's active-row pin from the new frames: `WRITE_ACTIVE_ROWS=1 npx vitest run test/active-row.test.ts`. |
+| `npm run check:css` | `app/globals.css` begins with the prototype's CSS (`docs/design/prototype/index.html` lines 7-1137) verbatim; anything after it sits under the app-only header. |
 
-- The one-time check (live-briefs spec §4.4-§4.5): the composer sends
-  `ask_clarifying_questions` (the settings row "Ask me when the question is unclear", on by
-  default). In replay mode the check asks nothing unless `POST /research` carries
-  `X-Replay-Clarify: on` — the proxy forwards it — and then asks a fixed set of three
-  questions (Region, Period, For); `e2e/clarify.spec.ts` and the `10-clarify` capture use it.
-- Reader notes (live-briefs spec §4.6-§4.7): the note line at the foot of the running
-  pipeline card posts `POST /research/{id}/notes` (the proxy forwards it); replay mode reads
-  each note with a scripted interpreter that keeps it as written. Replay runs the engine
-  ahead of its paced stream, so a note added on the replay server is acknowledged but never
-  applied: `/status` reads it `not_checked`. The report's bottom line prints a line for every
-  note the run has read by the time it publishes (a note read after the reviewer's last merge
-  is taken in as already settled, so it changes no route); a note that arrives after the run
-  has ended gets none, which on the replay server is every note, because the engine finishes
-  first, so its report has no "Your note" row (notes-progress-report spec §7.2);
-  `e2e/notes.spec.ts` and the `11-note-ack` and `12-report-notes` captures use it.
-- The report (notes-progress-report spec §7.6): one card per section, with a contents list
-  that is a sticky rail left of the cards from a 1310px report stage and a sticky row of
-  chips above them below that; `e2e/report-layout.spec.ts` and the `18-report-cards` and
-  `18b-report-cards-1920` captures use it.
-- Live progress per step (notes-progress-report spec §6): each running step's brief reads its
-  own live-only progress event — `planner.progress`, `source_evaluator.progress`,
-  `evidence_verifier.progress`, `report_writer.progress` — and Reviewing reads
-  `graph.report.reviewed`, which is now published as the review lands. In replay mode
-  `POST /research` may carry `X-Replay-Hold-After: <event type>[#<n>]` (the proxy forwards it):
-  the stream holds after that event until the session is stopped. `e2e/progress.spec.ts` and the
-  step briefs' captures use it, then `POST /research/{id}/stop`: `npm run capture:visual` adds
-  `13-planning-brief` (with its `-phone` twin), `14-evaluating-brief`, `15-verifying-brief`,
-  `16-writing-brief` and `17-reviewing-brief`.
-  `03-running` and `11-note-ack` are taken the same way, from a run held after its second topic
-  completes and only once the Researching row has settled (every mark drawn, the subtitle done
-  counting): the replay's own pacing never leaves that row still. `09` and `12` are each a second run.
-- Stop (notes-progress-report spec §8): the topbar's Stop, beside the running chip, asks once and
-  posts `POST /research/{id}/stop` (the proxy forwards it); the session ends `stopped` and its page
-  keeps the pipeline frozen where it stopped, with "Ask again". On the replay server the engine runs
-  ahead of its paced stream, so by the time a step can be stopped it has usually finished — its
-  files land in the replay's temporary directory, which the server deletes on exit — but the session
-  itself still ends `stopped`, with no report on the API. `e2e/stop.spec.ts` and the
-  `19-stop-confirm` and `20-stopped` captures use it.
-- Replay mode's `duration_seconds` is the unpaced span (about 0.2 s), so the report head
-  bar reads `0m 00s` there; a dropped finding is labelled `X01`; not-found targets read
-  `topic-01-target-01`. All three are the engine's own values.
-- The tree lives under OneDrive. If `npm install` or `next build` fails with `EPERM`/`EBUSY`,
-  pause syncing for the command; if it persists, junction `node_modules` and `.next` to a
-  directory outside OneDrive (`mklink /J`).
+## Replay mode
+
+The proxy forwards the replay server's request headers, so a test or capture can steer it:
+
+- `X-Replay-Clarify: on` on `POST /research` makes the one-time check ask a fixed set of three
+  questions (Region, Period, For). Without it the replay asks nothing. `e2e/clarify.spec.ts` uses it.
+- `X-Replay-Hold-After: <event type>[#<n>]` holds the stream after that event until the session is
+  stopped, so a step's live brief can be inspected. `e2e/progress.spec.ts` and the step-brief captures
+  use it.
+
+Replay runs the engine ahead of its paced stream, which shapes what the API can show:
+
+- A note added on the replay server is acknowledged but never applied: `/status` reads it
+  `not_checked`, and the report has no "Your note" row.
+- By the time a step can be stopped the engine has usually finished, so the session ends `stopped`
+  with no report on the API (its files land in the replay's temporary directory, deleted on exit).
+- `duration_seconds` is the unpaced span (about 0.2 s), so the report head bar reads `0m 00s`; a
+  dropped finding is labelled `X01` and not-found targets read `topic-01-target-01`. All three are
+  the engine's own values.
+
+## OneDrive
+
+The tree lives under OneDrive. If `npm install` or `next build` fails with `EPERM`/`EBUSY`, pause
+syncing for the command; if it persists, junction `node_modules` and `.next` to a directory outside
+OneDrive (`mklink /J`).

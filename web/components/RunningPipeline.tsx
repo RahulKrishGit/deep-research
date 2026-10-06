@@ -7,14 +7,14 @@ import { marksFor, type NodeId, type RunState } from "@/lib/run-state";
 import { BriefSpine } from "./BriefSpine";
 import { NoteLine } from "./NoteLine";
 
-/* live-briefs spec §4.2 (D12, D13, D14): no "Now" header, no counters block and no pass counter —
-   the pipeline card holds the spine alone, whose active row is open on its live brief (§4.3). The
+/* No "Now" header, no counters block and no pass counter —
+   the pipeline card holds the spine alone, whose active row is open on its live brief. The
    row's accessible name (" (in progress)") and aria-current="step" are the non-colour state signals. */
-/* live-briefs spec §4.7: the note line is the card's last element; `notesRemaining` is the last
+/* The note line is the card's last element; `notesRemaining` is the last
    /status's count, lowered by every note the stream has received since (lib/notes.ts notesLeft). */
 export function RunningPipeline({ sessionId, run, question, strip, startedAt, onToggleRow, notesRemaining }: { sessionId: string; run: RunState; question: string; strip: ReactNode; startedAt: string; onToggleRow(id: NodeId): void; notesRemaining?: number }) {
   const [elapsed, setElapsed] = useState(0);
-  // notes-progress-report spec §6.9: the same one-second clock ticks the steps' elapsed times.
+  // The same one-second clock ticks the steps' elapsed times.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const tick = () => {
@@ -28,14 +28,14 @@ export function RunningPipeline({ sessionId, run, question, strip, startedAt, on
   }, [startedAt]);
   // Noted on every render while this stage is mounted, so the rects are as fresh as the moment
   // status flips to a terminal one allows — see enterReport/runReportSlide (ReportStage.tsx),
-  // ported from REPORT_HANDOFF (index.html:3195) / DESIGN.md:1453-1483.
+  // ported from the prototype's REPORT_HANDOFF (DESIGN.md §5.6, "Running → report: the header block slides down").
   useLayoutEffect(() => {
     const q = document.getElementById("running-h");
     const o = document.getElementById("runningOpts");
     if (q && o) noteRunningLayout(sessionId, q, o);
   });
   return (
-    // no-enter + is-arriving (index.html:2440, :3797, DESIGN.md:1438-1451 "submitted → running"):
+    // no-enter + is-arriving (DESIGN.md §5.6, "Submitted → running"):
     // both stages share the same header offset inside the same .run-wrap, so the seam is held
     // still — the generic slide is suppressed and only the card below the header rises in.
     <section className="stage is-on no-enter is-arriving" id="stage-running" aria-labelledby="running-h">

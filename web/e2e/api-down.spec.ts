@@ -4,7 +4,7 @@ import { DEAD_APP, deadPort } from "./support";
 test("the banner names the unreachable service; the composer stays usable and never retries a POST", async ({ page }) => {
   const posts: string[] = [];
   page.on("request", (r) => { if (r.method() === "POST" && r.url().endsWith("/api/research")) posts.push(r.url()); });
-  // Stub the load-time sidebar list: ConsoleProvider's own GET on mount (ConsoleProvider.tsx:31-41)
+  // Stub the load-time sidebar list: ConsoleProvider's own GET on mount
   // would otherwise raise the banner before any submit, making every assertion below vacuous —
   // after this, only a POST can raise it.
   await page.route(/\/api\/research\?limit=/, (r) => r.fulfill({ json: { sessions: [] } }));
