@@ -1,4 +1,4 @@
 {
- "missing-target-triggers-one-extra-pass": [["planner",8],["researcher",22],["source_evaluator",6],["evidence_verifier",5],["report_writer",10],["report_reviewer",4],["researcher",11],["source_evaluator",6],["evidence_verifier",5],["report_writer",12],["report_reviewer",4],["finalize_report",4],[null,2]],
+ "missing-target-triggers-one-extra-pass": [["planner",8],["researcher",21],["source_evaluator",6],["evidence_verifier",5],["report_writer",10],["report_reviewer",4],["researcher",12],["source_evaluator",6],["evidence_verifier",5],["report_writer",12],["report_reviewer",4],["finalize_report",4],[null,2]],
  "scoped-redraft-after-a-named-defect": [["planner",8],["researcher",13],["source_evaluator",6],["evidence_verifier",5],["report_writer",10],["report_reviewer",4],["report_writer",12],["report_reviewer",4],["finalize_report",4],[null,2]]
 }

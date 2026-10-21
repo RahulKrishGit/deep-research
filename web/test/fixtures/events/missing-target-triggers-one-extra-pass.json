@@ -1,16 +1,16 @@
 {
  "case_id": "missing-target-triggers-one-extra-pass",
- "captured_at": "2026-10-01T11:53:02.060Z",
+ "captured_at": "2026-10-02T17:23:12.721Z",
  "api_mode": "replay",
  "status": {
-  "session_id": "d73685ebcd2042b0b6965f1e9e8b2bb8",
+  "session_id": "6c70aba5d8e44d6cbcac00f9f21b1339",
   "query": "What was the Acme widget adoption rate in the United States in 2024?",
   "status": "completed",
   "current_agent": null,
   "iteration": 1,
-  "started_at": "2026-10-01T11:53:01.312586Z",
-  "finished_at": "2026-10-01T11:53:02.052799Z",
-  "report_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1.md",
+  "started_at": "2026-10-02T17:23:12.540149Z",
+  "finished_at": "2026-10-02T17:23:12.718046Z",
+  "report_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1.md",
   "trace_url": null,
   "errors": [
    {
@@ -18,7 +18,7 @@
     "source": "agent.researcher",
     "message": "web_scraper failed; the agent continued with an observation.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.484484+00:00",
+    "timestamp": "2026-10-02T17:23:12.568117+00:00",
     "details": {
      "tool": "web_scraper",
      "iteration": 2,
@@ -33,7 +33,7 @@
     "source": "agent.researcher",
     "message": "web_scraper failed; the agent continued with an observation.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.497946+00:00",
+    "timestamp": "2026-10-02T17:23:12.568117+00:00",
     "details": {
      "tool": "web_scraper",
      "iteration": 3,
@@ -48,7 +48,7 @@
     "source": "agent.researcher",
     "message": "web_scraper failed; the agent continued with an observation.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.652423+00:00",
+    "timestamp": "2026-10-02T17:23:12.569116+00:00",
     "details": {
      "tool": "web_scraper",
      "iteration": 4,
@@ -63,7 +63,7 @@
     "source": "agent.researcher",
     "message": "web_scraper failed; the agent continued with an observation.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.654044+00:00",
+    "timestamp": "2026-10-02T17:23:12.570115+00:00",
     "details": {
      "tool": "web_scraper",
      "iteration": 5,
@@ -78,25 +78,10 @@
     "source": "agent.researcher",
     "message": "web_scraper failed; the agent continued with an observation.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.655815+00:00",
+    "timestamp": "2026-10-02T17:23:12.571115+00:00",
     "details": {
      "tool": "web_scraper",
      "iteration": 6,
-     "tool_error_type": "HTTPStatusError",
-     "attempts": 1,
-     "retries": 0,
-     "status_code": 403
-    }
-   },
-   {
-    "error_type": "agent_tool_failed",
-    "source": "agent.researcher",
-    "message": "web_scraper failed; the agent continued with an observation.",
-    "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.657237+00:00",
-    "details": {
-     "tool": "web_scraper",
-     "iteration": 7,
      "tool_error_type": "HTTPStatusError",
      "attempts": 1,
      "retries": 0,
@@ -108,21 +93,36 @@
     "source": "agent.researcher",
     "message": "A high-priority sub-topic produced no findings; the report will be incomplete for it.",
     "recoverable": true,
-    "timestamp": "2026-10-01T11:53:01.657857+00:00",
+    "timestamp": "2026-10-02T17:23:12.571115+00:00",
     "details": {
      "sub_topic": "Adoption rate",
      "priority": 1,
-     "stop_reason": "max_iterations",
-     "tool_calls": 7
+     "stop_reason": "finished",
+     "tool_calls": 6
+    }
+   },
+   {
+    "error_type": "agent_tool_failed",
+    "source": "agent.researcher",
+    "message": "web_scraper failed; the agent continued with an observation.",
+    "recoverable": true,
+    "timestamp": "2026-10-02T17:23:12.631936+00:00",
+    "details": {
+     "tool": "web_scraper",
+     "iteration": 1,
+     "tool_error_type": "HTTPStatusError",
+     "attempts": 1,
+     "retries": 0,
+     "status_code": 403
     }
    }
   ],
-  "evidence_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1-evidence.md",
-  "quality_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1-quality.json",
+  "evidence_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1-evidence.md",
+  "quality_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1-quality.json",
   "quality_contract_version": "2",
   "semantic_review_status": "scored",
   "semantic_review_score": 0.9,
-  "duration_seconds": 0.605558,
+  "duration_seconds": 0.155472,
   "coverage": {
    "required_targets": 3,
    "answered_targets": 3,
@@ -215,66 +215,66 @@
    "event_type": "graph.session.started",
    "source": "graph",
    "message": "Research session started.",
-   "timestamp": "2026-10-01T11:53:01.462591+00:00",
+   "timestamp": "2026-10-02T17:23:12.561576+00:00",
    "metadata": {
-    "session_id": "d73685ebcd2042b0b6965f1e9e8b2bb8",
+    "session_id": "6c70aba5d8e44d6cbcac00f9f21b1339",
     "max_extra_passes": 1,
     "checkpointing": false
    },
-   "event_id": "166fac24aaf94b3d929739d3dcf7fb5c"
+   "event_id": "4c00c03cec2541e088aeae0a7e3d5964"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.planner",
    "message": "Node planner started.",
-   "timestamp": "2026-10-01T11:53:01.471688+00:00",
+   "timestamp": "2026-10-02T17:23:12.563112+00:00",
    "metadata": {
     "node": "planner",
     "iteration": 0
    },
-   "event_id": "79706d6dff3d4c1fbc8b858296560397"
+   "event_id": "3e879c052f16435781560fdb5791834e"
   },
   {
    "event_type": "planner.planning.started",
    "source": "agent.planner",
    "message": "Planning started.",
-   "timestamp": "2026-10-01T11:53:01.471753+00:00",
+   "timestamp": "2026-10-02T17:23:12.563112+00:00",
    "metadata": {
     "iteration": 0,
     "min_sub_topics": 1,
     "max_sub_topics": 10
    },
-   "event_id": "8a89ddd9cf694f87adb9de7126580257"
+   "event_id": "96ee6b1b13b0427c8518e244b26df524"
   },
   {
    "event_type": "planner.memory.recalled",
    "source": "agent.planner",
    "message": "Memory recall complete.",
-   "timestamp": "2026-10-01T11:53:01.471778+00:00",
+   "timestamp": "2026-10-02T17:23:12.563112+00:00",
    "metadata": {
     "recalled_findings": 0,
     "known_source_reputations": 0,
     "suggested_strategies": 0
    },
-   "event_id": "4acf8b74cf534deba123e9ee2fdec22e"
+   "event_id": "611c3c95aba8415c9c960bf18616ba4e"
   },
   {
    "event_type": "planner.progress",
    "source": "agent.planner",
    "message": "Planning progress.",
-   "timestamp": "2026-10-01T11:53:01.471801+00:00",
+   "timestamp": "2026-10-02T17:23:12.564117+00:00",
    "metadata": {
     "step": "drafting",
     "check_round": 0,
     "sub_topics": []
    },
-   "event_id": "5d48c4e3fb24472b80191f85b20b5f12"
+   "event_id": "1e025708a1f4431c8a9e7aa345fa056b"
   },
   {
    "event_type": "planner.progress",
    "source": "agent.planner",
    "message": "Planning progress.",
-   "timestamp": "2026-10-01T11:53:01.471826+00:00",
+   "timestamp": "2026-10-02T17:23:12.564117+00:00",
    "metadata": {
     "step": "checking",
     "check_round": 1,
@@ -296,13 +296,13 @@
      }
     ]
    },
-   "event_id": "c0349a5ecc3049ec93aad318521b0940"
+   "event_id": "0a35170ad30d43c88d79338b7d4d88a1"
   },
   {
    "event_type": "planner.planning.completed",
    "source": "agent.planner",
    "message": "Planning complete.",
-   "timestamp": "2026-10-01T11:53:01.471865+00:00",
+   "timestamp": "2026-10-02T17:23:12.564117+00:00",
    "metadata": {
     "sub_topic_count": 3,
     "sub_topics": [
@@ -328,37 +328,37 @@
     "iterations": 1,
     "tool_calls": 0
    },
-   "event_id": "543627a5383e42bc88f7493499a997a1"
+   "event_id": "a9586b61177148078d5ce3b6527789a6"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.planner",
    "message": "Node planner completed.",
-   "timestamp": "2026-10-01T11:53:01.473123+00:00",
+   "timestamp": "2026-10-02T17:23:12.564117+00:00",
    "metadata": {
     "node": "planner",
     "iteration": 0,
     "event_count": 3,
     "error_count": 0
    },
-   "event_id": "bf6987bf6fa04100af407512d37aa15d"
+   "event_id": "61bd729dc27c4f1492a78ecc29f1c236"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.researcher",
    "message": "Node researcher started.",
-   "timestamp": "2026-10-01T11:53:01.473793+00:00",
+   "timestamp": "2026-10-02T17:23:12.565115+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 0
    },
-   "event_id": "c78aa65c42074ec8bd83576f1620c219"
+   "event_id": "f6258d77821d428ca99664f2e9d03b9e"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 1.",
-   "timestamp": "2026-10-01T11:53:01.477946+00:00",
+   "timestamp": "2026-10-02T17:23:12.566116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "coverage_id": "topic-01",
@@ -366,13 +366,13 @@
     "index": 1,
     "existing_sources": 0
    },
-   "event_id": "e5c272f6305147c2b2dd3a3c8b753df5"
+   "event_id": "dd8b6261cb1d4c9f86dd4060446e3190"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 2.",
-   "timestamp": "2026-10-01T11:53:01.478005+00:00",
+   "timestamp": "2026-10-02T17:23:12.566116+00:00",
    "metadata": {
     "sub_topic": "Widget funding",
     "coverage_id": "topic-02",
@@ -380,13 +380,13 @@
     "index": 2,
     "existing_sources": 0
    },
-   "event_id": "bde72dd1f723450290b6548eb6fdbaff"
+   "event_id": "8d6706e57ea0483fba7117af6eb39c81"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 3.",
-   "timestamp": "2026-10-01T11:53:01.478032+00:00",
+   "timestamp": "2026-10-02T17:23:12.566116+00:00",
    "metadata": {
     "sub_topic": "Widget exports",
     "coverage_id": "topic-03",
@@ -394,244 +394,122 @@
     "index": 3,
     "existing_sources": 0
    },
-   "event_id": "d8b2b8bcb01348cf860ef6a7ce058f70"
+   "event_id": "64bc53dafbb9464f82a24053ba475335"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_search call completed.",
-   "timestamp": "2026-10-01T11:53:01.480206+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_search",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-1/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-1/call-0",
     "iteration": 1,
     "success": true,
-    "error_type": null
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.001
    },
-   "event_id": "6611ffd0dcc8473f9de6e6d224d3371d"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_search call completed.",
-   "timestamp": "2026-10-01T11:53:01.481809+00:00",
-   "metadata": {
-    "sub_topic": "Widget funding",
-    "tool": "web_search",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-02/turn-1/call-0",
-    "iteration": 1,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "8e35da3de75d455b9889a3e20fe64d65"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_search call completed.",
-   "timestamp": "2026-10-01T11:53:01.485321+00:00",
-   "metadata": {
-    "sub_topic": "Widget exports",
-    "tool": "web_search",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-03/turn-1/call-0",
-    "iteration": 1,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "bf0d006d33634b10950670de9085f3cd"
+   "event_id": "60f40fb23b7c4bd0b88a571dbb72cece"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.485452+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-2/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-2/call-0",
     "iteration": 2,
     "success": false,
-    "error_type": "HTTPStatusError"
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "8379336a3cfc42a4a3bb1c5d4c9b8177"
+   "event_id": "eee8089c4ce44f609f5a9f8478495276"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.494996+00:00",
-   "metadata": {
-    "sub_topic": "Widget funding",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-02/turn-2/call-0",
-    "iteration": 2,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "8c9e681b41fb4d4c852b39ae9d5f22c1"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.495080+00:00",
-   "metadata": {
-    "sub_topic": "Widget exports",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-03/turn-2/call-0",
-    "iteration": 2,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "097e52e5748941c7adc4a04a73d48ba3"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.502268+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-3/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-3/call-0",
     "iteration": 3,
     "success": false,
-    "error_type": "HTTPStatusError"
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "18638c3186954b8a99208f12105a421c"
+   "event_id": "b998d50de3ba49a39e0964c3cf70871d"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.502322+00:00",
-   "metadata": {
-    "sub_topic": "Widget funding",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-02/turn-3/call-0",
-    "iteration": 3,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "61bcbecb20bd4dbbbab4e81444aca010"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.657985+00:00",
-   "metadata": {
-    "sub_topic": "Widget exports",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-03/turn-3/call-0",
-    "iteration": 3,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "9a873666bffb4783bd830971d376afae"
-  },
-  {
-   "event_type": "researcher.sub_topic.completed",
-   "source": "agent.researcher",
-   "message": "Sub-topic 2 complete.",
-   "timestamp": "2026-10-01T11:53:01.658047+00:00",
-   "metadata": {
-    "sub_topic": "Widget funding",
-    "coverage_id": "topic-02",
-    "index": 2,
-    "stop_reason": "finished",
-    "iterations": 4,
-    "tool_calls": 3,
-    "cache_hits": 0,
-    "findings": 2,
-    "findings_dropped_duplicate": 0,
-    "findings_dropped_cap": 0,
-    "sources_retained": 2,
-    "publishers_retained": 2,
-    "source_urls_retained": 2,
-    "findings_retained": 2,
-    "works_retained": 2,
-    "successful_reads": 2,
-    "useful_evidence_yield": 2,
-    "acquired_work_count": 4,
-    "target_obligation_completed": true,
-    "elapsed_s": 0
-   },
-   "event_id": "aa24210ebd9a4bb6950ee623a376b1ca"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.658087+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-4/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-4/call-0",
     "iteration": 4,
     "success": false,
-    "error_type": "HTTPStatusError"
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "c159eb6415e145d4b5bd31f32ca73a33"
+   "event_id": "3466554453dd4e9180d2f1ac86f438b7"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.658111+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-5/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-5/call-0",
     "iteration": 5,
     "success": false,
-    "error_type": "HTTPStatusError"
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "28c97a08c9ee4e2cb51dda52ed4b8808"
+   "event_id": "b409bd1d457b409cb1c871ac1191e6d6"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.658135+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-6/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-6/call-0",
     "iteration": 6,
     "success": false,
-    "error_type": "HTTPStatusError"
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "2e8c82789db443ae89889dec6022c16e"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.658159+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-7/call-0",
-    "iteration": 7,
-    "success": false,
-    "error_type": "HTTPStatusError"
-   },
-   "event_id": "a79c1c68229d4455b4b8ceca5e68a7b8"
+   "event_id": "34d037c8bea543c9b1f24310e3b29394"
   },
   {
    "event_type": "researcher.sub_topic.completed",
    "source": "agent.researcher",
    "message": "Sub-topic 1 complete.",
-   "timestamp": "2026-10-01T11:53:01.658182+00:00",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "coverage_id": "topic-01",
     "index": 1,
-    "stop_reason": "max_iterations",
-    "iterations": 7,
-    "tool_calls": 7,
+    "stop_reason": "finished",
+    "iterations": 6,
+    "tool_calls": 6,
     "cache_hits": 0,
     "findings": 0,
     "findings_dropped_duplicate": 0,
@@ -643,17 +521,156 @@
     "works_retained": 0,
     "successful_reads": 0,
     "useful_evidence_yield": 0,
-    "acquired_work_count": 4,
+    "acquired_work_count": 0,
     "target_obligation_completed": false,
-    "elapsed_s": 0.2
+    "elapsed_s": 0,
+    "extraction_wait_s": 0,
+    "owed_round_s": 0,
+    "owed_calls": 0,
+    "slowest_page_s": 0
    },
-   "event_id": "2ce1c707bda84b61a8cd8916229077e8"
+   "event_id": "f242a30ba63640f297c5e97226e4e4e6"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_search call completed.",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
+   "metadata": {
+    "sub_topic": "Widget funding",
+    "tool": "web_search",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-02/turn-1/call-0",
+    "iteration": 1,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.006
+   },
+   "event_id": "0327c47112e545619d89aeceebb31e3b"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
+   "metadata": {
+    "sub_topic": "Widget funding",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-02/turn-2/call-0",
+    "iteration": 2,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.001
+   },
+   "event_id": "421b3e4fea8242a3a444a9347bb0fb9c"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-10-02T17:23:12.577116+00:00",
+   "metadata": {
+    "sub_topic": "Widget funding",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-02/turn-3/call-0",
+    "iteration": 3,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.001
+   },
+   "event_id": "699548bc7d404ee78aa5e5d91f6978bf"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_search call completed.",
+   "timestamp": "2026-10-02T17:23:12.578116+00:00",
+   "metadata": {
+    "sub_topic": "Widget exports",
+    "tool": "web_search",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-03/turn-1/call-0",
+    "iteration": 1,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.009
+   },
+   "event_id": "1d3074df325f4406b37c8907e018dd3a"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-10-02T17:23:12.578116+00:00",
+   "metadata": {
+    "sub_topic": "Widget exports",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-03/turn-2/call-0",
+    "iteration": 2,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.001
+   },
+   "event_id": "474a6c5dbec9429ba0570abafb8b79b2"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-10-02T17:23:12.578116+00:00",
+   "metadata": {
+    "sub_topic": "Widget exports",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-03/turn-3/call-0",
+    "iteration": 3,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0
+   },
+   "event_id": "0887f3f59df246fbaaa6f8610b0b03f9"
+  },
+  {
+   "event_type": "researcher.sub_topic.completed",
+   "source": "agent.researcher",
+   "message": "Sub-topic 2 complete.",
+   "timestamp": "2026-10-02T17:23:12.582120+00:00",
+   "metadata": {
+    "sub_topic": "Widget funding",
+    "coverage_id": "topic-02",
+    "index": 2,
+    "stop_reason": "finished",
+    "iterations": 4,
+    "tool_calls": 3,
+    "cache_hits": 0,
+    "findings": 2,
+    "findings_dropped_duplicate": 0,
+    "findings_dropped_cap": 0,
+    "sources_retained": 2,
+    "publishers_retained": 2,
+    "source_urls_retained": 2,
+    "findings_retained": 2,
+    "works_retained": 2,
+    "successful_reads": 2,
+    "useful_evidence_yield": 2,
+    "acquired_work_count": 4,
+    "target_obligation_completed": true,
+    "elapsed_s": 0,
+    "extraction_wait_s": 0,
+    "owed_round_s": 0,
+    "owed_calls": 0,
+    "slowest_page_s": 0
+   },
+   "event_id": "51563ea0e0e14687bd03cc3b701c1ff3"
   },
   {
    "event_type": "researcher.sub_topic.completed",
    "source": "agent.researcher",
    "message": "Sub-topic 3 complete.",
-   "timestamp": "2026-10-01T11:53:01.659464+00:00",
+   "timestamp": "2026-10-02T17:23:12.582120+00:00",
    "metadata": {
     "sub_topic": "Widget exports",
     "coverage_id": "topic-03",
@@ -674,63 +691,67 @@
     "useful_evidence_yield": 2,
     "acquired_work_count": 4,
     "target_obligation_completed": true,
-    "elapsed_s": 0
+    "elapsed_s": 0,
+    "extraction_wait_s": 0,
+    "owed_round_s": 0,
+    "owed_calls": 0,
+    "slowest_page_s": 0
    },
-   "event_id": "245437f694a844eb96f5d9a584af1c51"
+   "event_id": "4d5fa1cde8cd41b7a80ae691a088952c"
   },
   {
    "event_type": "researcher.research.completed",
    "source": "agent.researcher",
    "message": "Research pass complete.",
-   "timestamp": "2026-10-01T11:53:01.665647+00:00",
+   "timestamp": "2026-10-02T17:23:12.584120+00:00",
    "metadata": {
     "sub_topics_planned": 3,
     "sub_topics_researched": 3,
     "sub_topics_skipped": 0,
     "findings": 4
    },
-   "event_id": "41c5efd7c7ed45d78a1ccff7c71732ee"
+   "event_id": "6b3803039d0f4b8ca05d6f209b1085fa"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.researcher",
    "message": "Node researcher completed.",
-   "timestamp": "2026-10-01T11:53:01.665702+00:00",
+   "timestamp": "2026-10-02T17:23:12.584120+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 0,
-    "event_count": 20,
-    "error_count": 7
+    "event_count": 19,
+    "error_count": 6
    },
-   "event_id": "5d1f446b26cc483bbc44528ae182267d"
+   "event_id": "a51f3749d86e41de86ef3fc34b76fae9"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator started.",
-   "timestamp": "2026-10-01T11:53:01.670114+00:00",
+   "timestamp": "2026-10-02T17:23:12.587120+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 0
    },
-   "event_id": "79b7084d07db4860bc8d6487b0084098"
+   "event_id": "d30e86dc888940c59e4f0b995b1ed18c"
   },
   {
    "event_type": "source_evaluator.evaluation.started",
    "source": "agent.source_evaluator",
    "message": "Source evaluation started.",
-   "timestamp": "2026-10-01T11:53:01.670170+00:00",
+   "timestamp": "2026-10-02T17:23:12.587120+00:00",
    "metadata": {
     "finding_count": 4,
     "source_count": 4
    },
-   "event_id": "db33ec61e250408ca05ad7af393c834c"
+   "event_id": "870a69d1d7b7444aab4b915333a55e43"
   },
   {
    "event_type": "source_evaluator.progress",
    "source": "agent.source_evaluator",
    "message": "Source evaluation progress.",
-   "timestamp": "2026-10-01T11:53:01.671910+00:00",
+   "timestamp": "2026-10-02T17:23:12.587120+00:00",
    "metadata": {
     "to_rate": 4,
     "reused": 0,
@@ -743,13 +764,13 @@
     "batches": 1,
     "batches_done": 0
    },
-   "event_id": "62328f0265364788ad7299949a064a0c"
+   "event_id": "b27b54e16fe24dfc9e9fae8b9c8af7ff"
   },
   {
    "event_type": "source_evaluator.progress",
    "source": "agent.source_evaluator",
    "message": "Source evaluation progress.",
-   "timestamp": "2026-10-01T11:53:01.676541+00:00",
+   "timestamp": "2026-10-02T17:23:12.588120+00:00",
    "metadata": {
     "to_rate": 4,
     "reused": 0,
@@ -762,13 +783,13 @@
     "batches": 1,
     "batches_done": 1
    },
-   "event_id": "563dc71cc6eb4ffa81b03653baf83322"
+   "event_id": "7827c4215b26496aa224410ec4bcfee0"
   },
   {
    "event_type": "source_evaluator.evaluation.completed",
    "source": "agent.source_evaluator",
    "message": "Source evaluation complete.",
-   "timestamp": "2026-10-01T11:53:01.681890+00:00",
+   "timestamp": "2026-10-02T17:23:12.591120+00:00",
    "metadata": {
     "source_count": 4,
     "average_score": 0.9,
@@ -784,37 +805,37 @@
     "reputation_hits": 0,
     "reputation_failures": 0
    },
-   "event_id": "88bbdecd5d0547d593cae15f30cb647f"
+   "event_id": "c6960e3833694deaa9953b6390798cc5"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator completed.",
-   "timestamp": "2026-10-01T11:53:01.684215+00:00",
+   "timestamp": "2026-10-02T17:23:12.591120+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 0,
     "event_count": 2,
     "error_count": 0
    },
-   "event_id": "316fb31742304fe0837853ba42c1e097"
+   "event_id": "5096626ec83b4da6850d19598c29a094"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier started.",
-   "timestamp": "2026-10-01T11:53:01.690796+00:00",
+   "timestamp": "2026-10-02T17:23:12.593119+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 0
    },
-   "event_id": "c8a6a56faedf4845a0f3b03292545dee"
+   "event_id": "08323dc2cc5841ceaa2bebaf6af09847"
   },
   {
    "event_type": "evidence_verifier.progress",
    "source": "agent.evidence_verifier",
    "message": "Verification progress.",
-   "timestamp": "2026-10-01T11:53:01.690885+00:00",
+   "timestamp": "2026-10-02T17:23:12.593119+00:00",
    "metadata": {
     "total": 4,
     "checked": 0,
@@ -826,13 +847,13 @@
     "batches_done": 0,
     "sample": null
    },
-   "event_id": "a55377cefcbb493daebbd6a62ae69193"
+   "event_id": "fefbd0160c154a2f8a90ae9e186ee122"
   },
   {
    "event_type": "evidence_verifier.progress",
    "source": "agent.evidence_verifier",
    "message": "Verification progress.",
-   "timestamp": "2026-10-01T11:53:01.701795+00:00",
+   "timestamp": "2026-10-02T17:23:12.594119+00:00",
    "metadata": {
     "total": 4,
     "checked": 4,
@@ -853,13 +874,13 @@
      }
     }
    },
-   "event_id": "281816981b034ab3bb5891f0faf126fa"
+   "event_id": "4aa6dbf2047346d18734009746a80aa9"
   },
   {
    "event_type": "evidence_verifier.verification.completed",
    "source": "agent.evidence_verifier",
    "message": "Verified 4 findings.",
-   "timestamp": "2026-10-01T11:53:01.709351+00:00",
+   "timestamp": "2026-10-02T17:23:12.596860+00:00",
    "metadata": {
     "verified": 4,
     "verified_corrected": 0,
@@ -867,41 +888,42 @@
     "dropped": 0,
     "context_unchecked": 0
    },
-   "event_id": "b10cc04a3fbe410ebc63e768cd2e1ab4"
+   "event_id": "da08fd9013d64b1184c0903775900826"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier completed.",
-   "timestamp": "2026-10-01T11:53:01.711636+00:00",
+   "timestamp": "2026-10-02T17:23:12.597865+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "500ea71f4a13490bbc577b0e6b39f741"
+   "event_id": "5a9f581113bb4194a268cdffbcea085b"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_writer",
    "message": "Node report_writer started.",
-   "timestamp": "2026-10-01T11:53:01.725720+00:00",
+   "timestamp": "2026-10-02T17:23:12.600863+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0
    },
-   "event_id": "a5575aeebc044f41ba7359e285df4683"
+   "event_id": "f29486845c8e4debb8e3b5a2d354f704"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.725814+00:00",
+   "timestamp": "2026-10-02T17:23:12.600863+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 2,
     "parts_returned": 0,
+    "parts_failed": 0,
     "sentences_drafted": 0,
     "sentences_checked": 0,
     "backed": 0,
@@ -910,17 +932,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "d4aea282dc554ac3aef011baace1938b"
+   "event_id": "3f1b7b332d5146088a53f3d4b572782f"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.731179+00:00",
+   "timestamp": "2026-10-02T17:23:12.602864+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 2,
     "parts_returned": 1,
+    "parts_failed": 0,
     "sentences_drafted": 2,
     "sentences_checked": 0,
     "backed": 0,
@@ -929,17 +952,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "b2bcf9b3c441417994dd51427bb0bbf7"
+   "event_id": "e27e2f15e9a34dbd81d4fc65157a3af2"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.731258+00:00",
+   "timestamp": "2026-10-02T17:23:12.602864+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 2,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 4,
     "sentences_checked": 0,
     "backed": 0,
@@ -948,17 +972,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "e8314219139841d2b5a2fa8a3c6536c2"
+   "event_id": "33802038743d4ecf87751ea27c299651"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.733057+00:00",
+   "timestamp": "2026-10-02T17:23:12.603864+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 2,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 4,
     "sentences_checked": 2,
     "backed": 2,
@@ -972,17 +997,18 @@
      "section": "Widget funding"
     }
    },
-   "event_id": "1d874cd15d404138ad986cc050f1f9a6"
+   "event_id": "407813f5fa2b44f19393f6f511cc96da"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.733129+00:00",
+   "timestamp": "2026-10-02T17:23:12.603864+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 2,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 4,
     "sentences_checked": 4,
     "backed": 4,
@@ -996,17 +1022,18 @@
      "section": "Widget exports"
     }
    },
-   "event_id": "01dd70cf17244a3b8d1f75123c53cb89"
+   "event_id": "fe43d34ad451421ba44f711fda776728"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.734935+00:00",
+   "timestamp": "2026-10-02T17:23:12.604864+00:00",
    "metadata": {
     "phase": "bottom_line",
     "parts_total": 2,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 4,
     "sentences_checked": 4,
     "backed": 4,
@@ -1015,17 +1042,18 @@
     "fraction": 0.667,
     "sample": null
    },
-   "event_id": "e0f3c288ab7e403f9a5f11372afc9f77"
+   "event_id": "5b191aff132847cdbec0d269a3047f97"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.736410+00:00",
+   "timestamp": "2026-10-02T17:23:12.604864+00:00",
    "metadata": {
     "phase": "bottom_line",
     "parts_total": 2,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 7,
     "sentences_checked": 7,
     "backed": 7,
@@ -1039,13 +1067,13 @@
      "section": "Bottom line"
     }
    },
-   "event_id": "60db8b49a86b47c780ccf165470232b1"
+   "event_id": "83eb7f35d737408b9d12edbdc9bfb2e6"
   },
   {
    "event_type": "report_writer.report.written",
    "source": "agent.report_writer",
    "message": "Wrote 7 statement(s) citing 4 source(s); 0 drafted point(s) refused.",
-   "timestamp": "2026-10-01T11:53:01.759288+00:00",
+   "timestamp": "2026-10-02T17:23:12.612864+00:00",
    "metadata": {
     "statements": 7,
     "citations": 4,
@@ -1056,26 +1084,26 @@
     "parts": 3,
     "failed_parts": []
    },
-   "event_id": "78b6939ea99443a7b24939ef755af023"
+   "event_id": "a7d2357791e04e9ea4e97b22a0316047"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_writer",
    "message": "Node report_writer completed.",
-   "timestamp": "2026-10-01T11:53:01.762568+00:00",
+   "timestamp": "2026-10-02T17:23:12.614866+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "398557e375964060884856dc3300293c"
+   "event_id": "4dec63a96d5e4f81b3ffb8a1cc86d783"
   },
   {
    "event_type": "graph.quality.assessed",
    "source": "graph",
    "message": "The report quality gates found no hard failure.",
-   "timestamp": "2026-10-01T11:53:01.762668+00:00",
+   "timestamp": "2026-10-02T17:23:12.614866+00:00",
    "metadata": {
     "iteration": 0,
     "hard_failures": [],
@@ -1093,31 +1121,31 @@
     ],
     "uncited_settled_points": 0
    },
-   "event_id": "986173c260bf4c5eafd0fe3109021553"
+   "event_id": "cbc8f66dcea6405193c5f9ab131ea0eb"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer started.",
-   "timestamp": "2026-10-01T11:53:01.783752+00:00",
+   "timestamp": "2026-10-02T17:23:12.620868+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0
    },
-   "event_id": "6c8a3f47489a4dbabfbea9796a976c00"
+   "event_id": "f7d08de101034dacb76cf9924857fce7"
   },
   {
    "event_type": "graph.report.reviewed",
    "source": "graph.report_reviewer",
    "message": "The report was reviewed and scored.",
-   "timestamp": "2026-10-01T11:53:01.783884+00:00",
+   "timestamp": "2026-10-02T17:23:12.620868+00:00",
    "metadata": {
     "iteration": 0,
     "review_status": "scored",
     "mean_score": 0.9,
     "material_defects": 0,
     "reviewed_statements": 7,
-    "input_fingerprint": "0a5e229b40c7",
+    "input_fingerprint": "9ede1b9a6973",
     "reused": false,
     "criteria": [
      {
@@ -1148,13 +1176,13 @@
     ],
     "notes": []
    },
-   "event_id": "c717cd15c98147a9a356ab3934217cfb"
+   "event_id": "600fe734e0cd4296849cc6ef8d9adf8f"
   },
   {
    "event_type": "graph.route.decided",
    "source": "graph",
    "message": "Required targets have no verified finding, or the terminal review's own coverage defect names one as still missing, and an extra pass remains; the researcher runs for those targets only.",
-   "timestamp": "2026-10-01T11:53:01.792490+00:00",
+   "timestamp": "2026-10-02T17:23:12.623867+00:00",
    "metadata": {
     "destination": "extra_pass",
     "reason": "extra_pass_requested",
@@ -1164,37 +1192,37 @@
      "topic-01-target-01"
     ]
    },
-   "event_id": "48c5607d039740f98a10498cb403ad9e"
+   "event_id": "27943a5402b046058137a1fc146c55c7"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer completed.",
-   "timestamp": "2026-10-01T11:53:01.792579+00:00",
+   "timestamp": "2026-10-02T17:23:12.623867+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 0,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "f9a58b9099334257ada0df4d86050d85"
+   "event_id": "81928a226ade42c08f1dd3a13c7ab8c0"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.extra_pass",
    "message": "Node extra_pass started.",
-   "timestamp": "2026-10-01T11:53:01.806517+00:00",
+   "timestamp": "2026-10-02T17:23:12.628369+00:00",
    "metadata": {
     "node": "extra_pass",
     "iteration": 0
    },
-   "event_id": "b71874e8b7c742d9a8124876e0e3aba9"
+   "event_id": "d881106de19848b186ece95f5b9d48a5"
   },
   {
    "event_type": "graph.extra_pass.started",
    "source": "graph",
    "message": "Extra pass 1 started.",
-   "timestamp": "2026-10-01T11:53:01.806599+00:00",
+   "timestamp": "2026-10-02T17:23:12.628369+00:00",
    "metadata": {
     "iteration": 1,
     "max_extra_passes": 1,
@@ -1202,37 +1230,37 @@
      "topic-01-target-01"
     ]
    },
-   "event_id": "9b15827241c54688973ccc9e9866c848"
+   "event_id": "9ac8fe87277f43b3af74efb5d5743d1c"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.extra_pass",
    "message": "Node extra_pass completed.",
-   "timestamp": "2026-10-01T11:53:01.806629+00:00",
+   "timestamp": "2026-10-02T17:23:12.628369+00:00",
    "metadata": {
     "node": "extra_pass",
     "iteration": 1,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "605dd554c86f48038b9f7f33727abb40"
+   "event_id": "663373d3b74a48099b4723c9fd27f599"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.researcher",
    "message": "Node researcher started.",
-   "timestamp": "2026-10-01T11:53:01.811238+00:00",
+   "timestamp": "2026-10-02T17:23:12.630936+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 1
    },
-   "event_id": "ecb053a2f7d74d409b2b7de4aed3b17d"
+   "event_id": "ec6438035a39431f81954f8bfdfbc1f4"
   },
   {
    "event_type": "researcher.sub_topic.started",
    "source": "agent.researcher",
    "message": "Researching sub-topic 1.",
-   "timestamp": "2026-10-01T11:53:01.812950+00:00",
+   "timestamp": "2026-10-02T17:23:12.631936+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "coverage_id": "topic-01",
@@ -1240,50 +1268,71 @@
     "index": 1,
     "existing_sources": 0
    },
-   "event_id": "db702e7f99a440b9b784d0690edd12fe"
-  },
-  {
-   "event_type": "researcher.tool_call",
-   "source": "agent.researcher",
-   "message": "web_search call completed.",
-   "timestamp": "2026-10-01T11:53:01.818474+00:00",
-   "metadata": {
-    "sub_topic": "Adoption rate",
-    "tool": "web_search",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-1/call-0",
-    "iteration": 1,
-    "success": true,
-    "error_type": null
-   },
-   "event_id": "10a196d0b71f4726ae284704ee3af570"
+   "event_id": "0a38f8d0d2ad43c39098a5c31f650d6c"
   },
   {
    "event_type": "researcher.tool_call",
    "source": "agent.researcher",
    "message": "web_scraper call completed.",
-   "timestamp": "2026-10-01T11:53:01.818535+00:00",
+   "timestamp": "2026-10-02T17:23:12.631936+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "tool": "web_scraper",
-    "proposal_id": "researcher/d73685ebcd2042b0b6965f1e9e8b2bb8/topic-01/turn-2/call-0",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-1/call-0",
+    "iteration": 1,
+    "success": false,
+    "error_type": "HTTPStatusError",
+    "lock_wait_s": 0,
+    "duration_s": 0
+   },
+   "event_id": "f2b2d58a01084887a61aee27f75c19f5"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_search call completed.",
+   "timestamp": "2026-10-02T17:23:12.635439+00:00",
+   "metadata": {
+    "sub_topic": "Adoption rate",
+    "tool": "web_search",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-2/call-0",
     "iteration": 2,
     "success": true,
-    "error_type": null
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0
    },
-   "event_id": "67e694f185be472fa848d2ed8531b680"
+   "event_id": "db142ffb2db64473ab332bc438580508"
+  },
+  {
+   "event_type": "researcher.tool_call",
+   "source": "agent.researcher",
+   "message": "web_scraper call completed.",
+   "timestamp": "2026-10-02T17:23:12.635439+00:00",
+   "metadata": {
+    "sub_topic": "Adoption rate",
+    "tool": "web_scraper",
+    "proposal_id": "researcher/6c70aba5d8e44d6cbcac00f9f21b1339/topic-01/turn-3/call-0",
+    "iteration": 3,
+    "success": true,
+    "error_type": null,
+    "lock_wait_s": 0,
+    "duration_s": 0.001
+   },
+   "event_id": "99df7ded78204c45b6036d9057ea66a1"
   },
   {
    "event_type": "researcher.sub_topic.completed",
    "source": "agent.researcher",
    "message": "Sub-topic 1 complete.",
-   "timestamp": "2026-10-01T11:53:01.822476+00:00",
+   "timestamp": "2026-10-02T17:23:12.636959+00:00",
    "metadata": {
     "sub_topic": "Adoption rate",
     "coverage_id": "topic-01",
     "index": 1,
     "stop_reason": "finished",
-    "iterations": 3,
-    "tool_calls": 2,
+    "iterations": 4,
+    "tool_calls": 3,
     "cache_hits": 0,
     "findings": 1,
     "findings_dropped_duplicate": 0,
@@ -1297,63 +1346,67 @@
     "useful_evidence_yield": 1,
     "acquired_work_count": 5,
     "target_obligation_completed": true,
-    "elapsed_s": 0
+    "elapsed_s": 0,
+    "extraction_wait_s": 0,
+    "owed_round_s": 0,
+    "owed_calls": 0,
+    "slowest_page_s": 0
    },
-   "event_id": "2fc56b1ad88f40eba39cbd84d5a0a33d"
+   "event_id": "b6832c5506864f7aab33f87acb9efd12"
   },
   {
    "event_type": "researcher.research.completed",
    "source": "agent.researcher",
    "message": "Research pass complete.",
-   "timestamp": "2026-10-01T11:53:01.834894+00:00",
+   "timestamp": "2026-10-02T17:23:12.641607+00:00",
    "metadata": {
     "sub_topics_planned": 3,
     "sub_topics_researched": 1,
     "sub_topics_skipped": 0,
     "findings": 1
    },
-   "event_id": "17e5313fd8f9469b9192ff875127bbe6"
+   "event_id": "8249fdc512914b5193bdd043248ce8f8"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.researcher",
    "message": "Node researcher completed.",
-   "timestamp": "2026-10-01T11:53:01.834964+00:00",
+   "timestamp": "2026-10-02T17:23:12.641607+00:00",
    "metadata": {
     "node": "researcher",
     "iteration": 1,
-    "event_count": 5,
-    "error_count": 0
+    "event_count": 6,
+    "error_count": 1
    },
-   "event_id": "e2aaa969d4374c2a9e56b2e49e939620"
+   "event_id": "89b807159bdf46e9aed863651577b1ca"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator started.",
-   "timestamp": "2026-10-01T11:53:01.842263+00:00",
+   "timestamp": "2026-10-02T17:23:12.645701+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 1
    },
-   "event_id": "38865de702df4a9abd31a3c36d827a79"
+   "event_id": "a0473747909f4cafa619a3aca0133dd5"
   },
   {
    "event_type": "source_evaluator.evaluation.started",
    "source": "agent.source_evaluator",
    "message": "Source evaluation started.",
-   "timestamp": "2026-10-01T11:53:01.842334+00:00",
+   "timestamp": "2026-10-02T17:23:12.645701+00:00",
    "metadata": {
     "finding_count": 5,
     "source_count": 5
    },
-   "event_id": "8faacd016beb4b9aa737f723ee31b1c8"
+   "event_id": "68e3691537ef4b30a22600e9cbb3af1d"
   },
   {
    "event_type": "source_evaluator.progress",
    "source": "agent.source_evaluator",
    "message": "Source evaluation progress.",
-   "timestamp": "2026-10-01T11:53:01.844204+00:00",
+   "timestamp": "2026-10-02T17:23:12.646705+00:00",
    "metadata": {
     "to_rate": 1,
     "reused": 4,
@@ -1366,13 +1419,13 @@
     "batches": 1,
     "batches_done": 0
    },
-   "event_id": "d90ab6b2984c438cb52fd875a0bd74c8"
+   "event_id": "dfd9043b797544ad878d87e5bf0ba887"
   },
   {
    "event_type": "source_evaluator.progress",
    "source": "agent.source_evaluator",
    "message": "Source evaluation progress.",
-   "timestamp": "2026-10-01T11:53:01.845862+00:00",
+   "timestamp": "2026-10-02T17:23:12.646705+00:00",
    "metadata": {
     "to_rate": 1,
     "reused": 4,
@@ -1385,13 +1438,13 @@
     "batches": 1,
     "batches_done": 1
    },
-   "event_id": "84d1801b70d74e9b833f1c7009b9ed69"
+   "event_id": "4ced719413af45f38a81e8783077cbb4"
   },
   {
    "event_type": "source_evaluator.evaluation.completed",
    "source": "agent.source_evaluator",
    "message": "Source evaluation complete.",
-   "timestamp": "2026-10-01T11:53:01.855721+00:00",
+   "timestamp": "2026-10-02T17:23:12.651704+00:00",
    "metadata": {
     "source_count": 5,
     "average_score": 0.9,
@@ -1407,37 +1460,37 @@
     "reputation_hits": 0,
     "reputation_failures": 0
    },
-   "event_id": "7a0bf254631145e094a60104aa6c80a2"
+   "event_id": "79c313ed019f447580e0214d0794bba6"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.source_evaluator",
    "message": "Node source_evaluator completed.",
-   "timestamp": "2026-10-01T11:53:01.859257+00:00",
+   "timestamp": "2026-10-02T17:23:12.652704+00:00",
    "metadata": {
     "node": "source_evaluator",
     "iteration": 1,
     "event_count": 2,
     "error_count": 0
    },
-   "event_id": "b9fec95c33f946f491f5adc999d0a8bc"
+   "event_id": "cda1ca1e467744c492530afce5beb7f4"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier started.",
-   "timestamp": "2026-10-01T11:53:01.866153+00:00",
+   "timestamp": "2026-10-02T17:23:12.655706+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 1
    },
-   "event_id": "193122c3e37e4ebca5dda6adf4b3521e"
+   "event_id": "e7b4e1d8334c4418bdde7ea8987eceb7"
   },
   {
    "event_type": "evidence_verifier.progress",
    "source": "agent.evidence_verifier",
    "message": "Verification progress.",
-   "timestamp": "2026-10-01T11:53:01.866224+00:00",
+   "timestamp": "2026-10-02T17:23:12.655706+00:00",
    "metadata": {
     "total": 1,
     "checked": 0,
@@ -1449,13 +1502,13 @@
     "batches_done": 0,
     "sample": null
    },
-   "event_id": "afb5244d3ce046f989f5073ed871726f"
+   "event_id": "35002ac19b7f4f3cb0e7935a6868e1c1"
   },
   {
    "event_type": "evidence_verifier.progress",
    "source": "agent.evidence_verifier",
    "message": "Verification progress.",
-   "timestamp": "2026-10-01T11:53:01.868678+00:00",
+   "timestamp": "2026-10-02T17:23:12.655706+00:00",
    "metadata": {
     "total": 1,
     "checked": 1,
@@ -1476,13 +1529,13 @@
      }
     }
    },
-   "event_id": "b196ac2f85ef48ab83314e92c01db673"
+   "event_id": "9e014e1efd2b4f9a82979792f9294c69"
   },
   {
    "event_type": "evidence_verifier.verification.completed",
    "source": "agent.evidence_verifier",
    "message": "Verified 1 findings.",
-   "timestamp": "2026-10-01T11:53:01.883604+00:00",
+   "timestamp": "2026-10-02T17:23:12.659704+00:00",
    "metadata": {
     "verified": 1,
     "verified_corrected": 0,
@@ -1490,41 +1543,42 @@
     "dropped": 0,
     "context_unchecked": 0
    },
-   "event_id": "87a409985bc24931b3b077d7532769e4"
+   "event_id": "0860827c66704383bffeaade29289110"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.evidence_verifier",
    "message": "Node evidence_verifier completed.",
-   "timestamp": "2026-10-01T11:53:01.889404+00:00",
+   "timestamp": "2026-10-02T17:23:12.659704+00:00",
    "metadata": {
     "node": "evidence_verifier",
     "iteration": 1,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "173f5e8749784a0d93c9408ebe87bf51"
+   "event_id": "acc8e3bbf11e4748814f1608ff4b6206"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_writer",
    "message": "Node report_writer started.",
-   "timestamp": "2026-10-01T11:53:01.909690+00:00",
+   "timestamp": "2026-10-02T17:23:12.665509+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 1
    },
-   "event_id": "27cbb59717fc48a3bc662490e49c82ce"
+   "event_id": "4f91ee7ace80490dacb62e59d4b5333c"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.909838+00:00",
+   "timestamp": "2026-10-02T17:23:12.665509+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 0,
+    "parts_failed": 0,
     "sentences_drafted": 0,
     "sentences_checked": 0,
     "backed": 0,
@@ -1533,17 +1587,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "6b0a0fc4484d4be4bf55a3b82576d10d"
+   "event_id": "99a25e280df241acb3a08879b83392d8"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.919591+00:00",
+   "timestamp": "2026-10-02T17:23:12.668511+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 1,
+    "parts_failed": 0,
     "sentences_drafted": 1,
     "sentences_checked": 0,
     "backed": 0,
@@ -1552,17 +1607,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "a818a722e07c496e9b1b0236d4919b69"
+   "event_id": "603df7bda67f4b4d9dd22939163d04b2"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.919737+00:00",
+   "timestamp": "2026-10-02T17:23:12.668511+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 2,
+    "parts_failed": 0,
     "sentences_drafted": 3,
     "sentences_checked": 0,
     "backed": 0,
@@ -1571,17 +1627,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "7f00197860734641a90e5c9ea1d0f069"
+   "event_id": "730b9346312f40929e23e9a844fe39da"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.919794+00:00",
+   "timestamp": "2026-10-02T17:23:12.668511+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 5,
     "sentences_checked": 0,
     "backed": 0,
@@ -1590,17 +1647,18 @@
     "fraction": 0,
     "sample": null
    },
-   "event_id": "7a51290ec50c498eafb70266ddc39373"
+   "event_id": "6156faa5d0d144949ec2755ff982a901"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.922620+00:00",
+   "timestamp": "2026-10-02T17:23:12.669512+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 5,
     "sentences_checked": 1,
     "backed": 1,
@@ -1614,17 +1672,18 @@
      "section": "Adoption rate"
     }
    },
-   "event_id": "1928e704c28c49d8a5ffd57149bf9511"
+   "event_id": "fa0b935b12ca48309dcd0e71e104dea8"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.922753+00:00",
+   "timestamp": "2026-10-02T17:23:12.669512+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 5,
     "sentences_checked": 3,
     "backed": 3,
@@ -1638,17 +1697,18 @@
      "section": "Widget funding"
     }
    },
-   "event_id": "6f460ab710df48f5800aeeccd1446273"
+   "event_id": "b4bcaf3e2bb846649488d04ec250a60b"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.922827+00:00",
+   "timestamp": "2026-10-02T17:23:12.669512+00:00",
    "metadata": {
     "phase": "sections",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 5,
     "sentences_checked": 5,
     "backed": 5,
@@ -1662,17 +1722,18 @@
      "section": "Widget exports"
     }
    },
-   "event_id": "2ac244abbca644be86ccc4a602ccc9c0"
+   "event_id": "6f19349f43c6434390cab01dfabcdc2c"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.926343+00:00",
+   "timestamp": "2026-10-02T17:23:12.670511+00:00",
    "metadata": {
     "phase": "bottom_line",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 5,
     "sentences_checked": 5,
     "backed": 5,
@@ -1681,17 +1742,18 @@
     "fraction": 0.75,
     "sample": null
    },
-   "event_id": "7d2f99af32e84e7cbd192df82a2374ee"
+   "event_id": "fac5aea1ebcb4f8c9a00b3ff4929f9ed"
   },
   {
    "event_type": "report_writer.progress",
    "source": "agent.report_writer",
    "message": "Writing progress.",
-   "timestamp": "2026-10-01T11:53:01.927785+00:00",
+   "timestamp": "2026-10-02T17:23:12.670511+00:00",
    "metadata": {
     "phase": "bottom_line",
     "parts_total": 3,
     "parts_returned": 3,
+    "parts_failed": 0,
     "sentences_drafted": 9,
     "sentences_checked": 9,
     "backed": 9,
@@ -1705,13 +1767,13 @@
      "section": "Bottom line"
     }
    },
-   "event_id": "56a24c2581e34167b7007dab42766fa9"
+   "event_id": "1f05e7cbee76457e9a173908646c5491"
   },
   {
    "event_type": "report_writer.report.written",
    "source": "agent.report_writer",
    "message": "Wrote 9 statement(s) citing 5 source(s); 0 drafted point(s) refused.",
-   "timestamp": "2026-10-01T11:53:01.968851+00:00",
+   "timestamp": "2026-10-02T17:23:12.681025+00:00",
    "metadata": {
     "statements": 9,
     "citations": 5,
@@ -1722,26 +1784,26 @@
     "parts": 3,
     "failed_parts": []
    },
-   "event_id": "a5f732ef0a9c4fcd8ce99c3f28b66588"
+   "event_id": "061ca21a7c044e528c40686f4443490b"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_writer",
    "message": "Node report_writer completed.",
-   "timestamp": "2026-10-01T11:53:01.974541+00:00",
+   "timestamp": "2026-10-02T17:23:12.682025+00:00",
    "metadata": {
     "node": "report_writer",
     "iteration": 1,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "40ed6701af1e41c2878089f7b35d943d"
+   "event_id": "2d14e57e3a27453dbc221b58628542e2"
   },
   {
    "event_type": "graph.quality.assessed",
    "source": "graph",
    "message": "The report quality gates found no hard failure.",
-   "timestamp": "2026-10-01T11:53:01.974653+00:00",
+   "timestamp": "2026-10-02T17:23:12.682025+00:00",
    "metadata": {
     "iteration": 1,
     "hard_failures": [],
@@ -1758,31 +1820,31 @@
     "missing_required_target_ids": [],
     "uncited_settled_points": 0
    },
-   "event_id": "7affaa2e80cf4e919ca3f5dbaa9d4cba"
+   "event_id": "00eaa7392972449ca6a2c3b4743c9d33"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer started.",
-   "timestamp": "2026-10-01T11:53:01.997706+00:00",
+   "timestamp": "2026-10-02T17:23:12.690024+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 1
    },
-   "event_id": "6d10ee3d69e94e999a285622ecb5ac9b"
+   "event_id": "36219c3c83cf474aab3e24a9b43c7651"
   },
   {
    "event_type": "graph.report.reviewed",
    "source": "graph.report_reviewer",
    "message": "The report was reviewed and scored.",
-   "timestamp": "2026-10-01T11:53:01.997785+00:00",
+   "timestamp": "2026-10-02T17:23:12.690024+00:00",
    "metadata": {
     "iteration": 1,
     "review_status": "scored",
     "mean_score": 0.9,
     "material_defects": 0,
     "reviewed_statements": 9,
-    "input_fingerprint": "36a2684056f3",
+    "input_fingerprint": "541c2df93f4b",
     "reused": false,
     "criteria": [
      {
@@ -1813,13 +1875,13 @@
     ],
     "notes": []
    },
-   "event_id": "298bb9e8a5654a5f9922661fe0d8a069"
+   "event_id": "24c46808e82e4aaa9a59f9343a86eaea"
   },
   {
    "event_type": "graph.route.decided",
    "source": "graph",
    "message": "The Report Reviewer accepted the report and no gate failed; any required target with no verified finding is listed under Not found.",
-   "timestamp": "2026-10-01T11:53:02.004960+00:00",
+   "timestamp": "2026-10-02T17:23:12.693024+00:00",
    "metadata": {
     "destination": "finalize",
     "reason": "report_accepted",
@@ -1827,73 +1889,73 @@
     "max_extra_passes": 1,
     "missing_required_target_ids": []
    },
-   "event_id": "794e6fcc378c4f3ca62d2cf0d112acaa"
+   "event_id": "954efe92704c4aa88cb7c0275893b9e4"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.report_reviewer",
    "message": "Node report_reviewer completed.",
-   "timestamp": "2026-10-01T11:53:02.005056+00:00",
+   "timestamp": "2026-10-02T17:23:12.693024+00:00",
    "metadata": {
     "node": "report_reviewer",
     "iteration": 1,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "27a6c1ea29fc4fb486438c3c4ad84db7"
+   "event_id": "39bf648f7b8c4d33a9ad04b6190069ac"
   },
   {
    "event_type": "graph.node.started",
    "source": "graph.finalize_report",
    "message": "Node finalize_report started.",
-   "timestamp": "2026-10-01T11:53:02.046243+00:00",
+   "timestamp": "2026-10-02T17:23:12.716046+00:00",
    "metadata": {
     "node": "finalize_report",
     "iteration": 1
    },
-   "event_id": "aea2780e9c4043b9b5badd5a547ceca0"
+   "event_id": "9c057718a6f747739e4b18556fe8d1e7"
   },
   {
    "event_type": "graph.report.published",
    "source": "graph.finalize_report",
    "message": "The final report and its evidence ledger were published.",
-   "timestamp": "2026-10-01T11:53:02.046324+00:00",
+   "timestamp": "2026-10-02T17:23:12.716046+00:00",
    "metadata": {
     "quality_status": "accepted",
-    "report_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1.md",
-    "evidence_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1-evidence.md",
-    "quality_path": "report-d73685ebcd2042b0b6965f1e9e8b2bb8-1-quality.json",
+    "report_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1.md",
+    "evidence_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1-evidence.md",
+    "quality_path": "report-6c70aba5d8e44d6cbcac00f9f21b1339-1-quality.json",
     "document_writes": 3,
     "memory_writes": 5,
     "error_count": 0
    },
-   "event_id": "ba80e1b486f84a178429960b2ed04313"
+   "event_id": "a8993d30b3a343be9504ebe9a9c13540"
   },
   {
    "event_type": "graph.node.completed",
    "source": "graph.finalize_report",
    "message": "Node finalize_report completed.",
-   "timestamp": "2026-10-01T11:53:02.046397+00:00",
+   "timestamp": "2026-10-02T17:23:12.716046+00:00",
    "metadata": {
     "node": "finalize_report",
     "iteration": 1,
     "event_count": 1,
     "error_count": 0
    },
-   "event_id": "fa701291e48b4658be8371a84b7b6bc6"
+   "event_id": "ae3a4f35370b4af7b6a820d2e963d0dd"
   },
   {
    "event_type": "graph.session.completed",
    "source": "graph",
    "message": "Research session finished with status completed.",
-   "timestamp": "2026-10-01T11:53:02.052431+00:00",
+   "timestamp": "2026-10-02T17:23:12.718046+00:00",
    "metadata": {
     "status": "completed",
     "iteration": 1,
     "error_count": 7,
     "has_report": true
    },
-   "event_id": "81357a3ab8b341e280cfeeb1c8df3b1f"
+   "event_id": "aa53c936ecbb4169af06c60fc7e06ac1"
   }
  ]
 }
