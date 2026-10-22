@@ -11,7 +11,11 @@ console that shows the pipeline live. The default stack is DeepSeek for chat,
 local embeddings, Tavily for web search, ChromaDB for memory and optional
 LangSmith tracing.
 
-![The console's start page](docs/images/console-idle.png)
+[![A live run in the console, sped up](docs/images/deep-research-demo.gif)](docs/media/deep-research-demo.mp4)
+
+A live run of the question "What did the 2025 Nobel Prize in Physics
+recognize, and why does it matter?", sped up. The run took 13 minutes. For a
+sharper, two-minute version, see the [full video](docs/media/deep-research-demo.mp4).
 
 ## Features
 
@@ -57,33 +61,41 @@ LangSmith tracing.
 
 ## Screenshots
 
-These screenshots were taken in replay mode, so the question, sources and
-figures come from a scripted test case.
+All of these screenshots come from the same live run as the video.
+
+You type a question on the start page.
+
+![The console's start page](docs/images/console-idle.png)
 
 When a question leaves something important open, the session asks up to three
-clarifying questions before it starts. If nobody answers, it goes ahead with
-its best guesses.
+clarifying questions before it starts. Here it asked what the answer is for,
+so it could pitch the explanation at the right level. If nobody answers, the
+run goes ahead with its best guesses.
 
 ![Clarifying questions before a run](docs/images/console-clarify.png)
 
-While a run is in progress, the console shows each stage. Here the researcher
-has finished two of three sub-topics, and a reader note has been acknowledged.
+The planner split the question into five sub-topics. The researcher works on
+all of them at once, and each row shows how many findings that sub-topic has
+produced so far.
 
-![A run in progress with a reader note](docs/images/console-running.png)
+![Five sub-topics being researched in parallel](docs/images/console-researching.png)
 
-When the review finds a required target unanswered, the run goes back for an
-extra research pass.
+Each finished stage keeps a summary: pages read and findings extracted,
+sources rated, and findings verified, corrected or dropped. The writer then
+drafts one section per sub-topic.
 
-![The extra research pass](docs/images/console-extra-pass.png)
+![The pipeline while the report is being written](docs/images/console-writing.png)
 
-The finished report shows the bottom line, one section per sub-topic, a table
-of key figures and the cited sources. The review score, coverage and evidence
-counts appear beside the report.
+The finished report opens with the bottom line and a short answer for each
+sub-topic. Every sentence cites its sources by number. The review score,
+coverage and evidence counts appear beside the report. This report was
+accepted with a review score of 0.85, and all four required targets were
+answered.
 
-![A finished report](docs/images/console-report.png)
+![The finished report](docs/images/console-report.png)
 
-The Evidence tab lists every finding with its verification status, the
-snippet it quotes, the passage around it and its source scores.
+The Evidence tab lists every finding with its status, the snippet it quotes
+and the passage around it on the page.
 
 ![The evidence view](docs/images/console-evidence.png)
 
