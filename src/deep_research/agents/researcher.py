@@ -85,7 +85,7 @@ from deep_research.agents.steps import (
 )
 from deep_research.agents.validation import _invalid_fields
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker, call_label
+from deep_research.observability import Tracker, call_label, capture_page_extraction
 from deep_research.providers import (
     ChatMessage,
     ProviderError,
@@ -3103,6 +3103,28 @@ class _SubTopicOutcome:
     target_state: AcquisitionState | None
 
 
+def _known_reads_for(
+    policy: AcquisitionPolicy, read_id: str
+) -> dict[str, ReadRecord]:
+    """The reads a draft over ``read_id``'s page may cite, by read id.
+
+    Every read of the same URL as ``read_id``, not only the one it names: a
+    URL a prior pass already recorded, admitted again this pass, can resolve
+    to a second read id for the identical body (a cache-hit that adopted a
+    different id, or a run whose registry predates this one) -- a draft is
+    free to cite either, and both describe the one page the page's own packet
+    showed. Empty when ``read_id`` is no longer in the registry.
+    """
+    read = policy.reads.get(read_id)
+    if read is None:
+        return {}
+    return {
+        candidate_id: candidate
+        for candidate_id, candidate in policy.reads.items()
+        if candidate.resolved_url == read.resolved_url
+    }
+
+
 async def _cancel_and_gather_pages(
     page_extractions: Mapping[str, "asyncio.Task[_PageExtraction]"],
 ) -> None:
@@ -3554,24 +3576,31 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """
         started_at = perf_counter()
         async with gate:
+            messages = extraction_messages(
+                task,
+                run,
+                evidence_chars=self._evidence_chars,
+                acquisition_context=policy.context(
+                    limit=self._evidence_packet_chars,
+                    read_ids=[read_id],
+                ),
+                planned_targets=planned_targets,
+                question=question,
+                coverage_titles=coverage_titles,
+                reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
+            )
+            # An experiment's stage replay asks this page again; nothing is
+            # written unless one bound a capture.
+            capture_page_extraction(
+                messages,
+                sub_topic=task.sub_topic,
+                known_reads=_known_reads_for(policy, read_id),
+                valid_target_ids=valid_target_ids,
+            )
             try:
                 with call_label("page_extraction"):
                     draft = await self.provider.complete_structured(
-                        extraction_messages(
-                            task,
-                            run,
-                            evidence_chars=self._evidence_chars,
-                            acquisition_context=policy.context(
-                                limit=self._evidence_packet_chars,
-                                read_ids=[read_id],
-                            ),
-                            planned_targets=planned_targets,
-                            question=question,
-                            coverage_titles=coverage_titles,
-                            reader_notes=self._reader_notes_block(
-                                EXTRACTION_NOTES
-                            ),
-                        ),
+                        messages,
                         SubTopicFindingsDraft,
                         agent_name=self.name,
                         **effort_kwargs(
@@ -3592,21 +3621,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     elapsed_s=round(perf_counter() - started_at, 1),
                 )
         read = policy.reads.get(read_id)
-        # Every read of this same URL, not only the one ``read_id`` names:
-        # a URL a prior pass already recorded, admitted again this pass, can
-        # resolve to a second read id for the identical body (a cache-hit
-        # that adopted a different id, or a run whose registry predates this
-        # one) -- a draft is free to cite either, and both describe the one
-        # page this call's own packet showed.
-        known_reads = (
-            {}
-            if read is None
-            else {
-                candidate_id: candidate
-                for candidate_id, candidate in policy.reads.items()
-                if candidate.resolved_url == read.resolved_url
-            }
-        )
+        known_reads = _known_reads_for(policy, read_id)
         retrieved = () if read is None else (read.resolved_url,)
         admitted_keys: list[tuple[str, str]] = []
         unplanned_target_ids: list[str] = []

@@ -8,7 +8,9 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -60,9 +62,10 @@ from deep_research.agents.steps import (
     read_evidence_urls,
     summarize_text,
 )
+from deep_research.experiments.stage_replay import PAGE_EXTRACTION, replay_capture
 from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import TokenUsage, Tracker
+from deep_research.observability import TokenUsage, Tracker, bind_stage_capture
 from deep_research.providers import (
     ChatMessage,
     ProviderOutputLimitError,
@@ -8689,6 +8692,56 @@ async def test_each_extraction_call_is_named_for_the_call_records(
         "page_extraction",
         *["owed_extraction"] * MAX_OWED_BATCHES,
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_bound_capture_holds_the_page_extraction_request_as_it_was_sent(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The captured request is the very messages the provider received, with the
+    one read the page showed it, the plan's target ids and the sub-topic; a
+    run with no capture bound (every other test here) writes nothing."""
+    completer = ScriptedCompleter(decisions=_owed_decisions(), outputs=[_owed_reply])
+    with bind_stage_capture(tmp_path, nodes=()):
+        outcome = await _run_owed_topic(tracker, completer)
+
+    assert [path.name for path in tmp_path.iterdir()] == ["page_extraction-001.json"]
+    payload = json.loads((tmp_path / "page_extraction-001.json").read_text("utf-8"))
+    [(_, _, sent)] = [call for call in completer.calls if call[0] == "SubTopicFindingsDraft"]
+    assert [ChatMessage.model_validate(message) for message in payload["messages"]] == sent
+    read = next(iter(outcome.state_update["read_records"].values()))
+    assert {
+        read_id: ReadRecord.model_validate(record)
+        for read_id, record in payload["known_reads"].items()
+    } == {read.read_id: read}
+    assert payload["valid_target_ids"] == [PLANNED_TARGET_ID]
+    assert SubTopic.model_validate(payload["sub_topic"]).coverage_id == "topic-01"
+
+
+@pytest.mark.asyncio
+async def test_a_captured_page_extraction_replays_to_the_binding_the_run_made(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """What a run captures is enough to ask the same page again: the replay's
+    reply is admitted against the same read and binds the same target."""
+    completer = ScriptedCompleter(decisions=_owed_decisions(), outputs=[_owed_reply])
+    with bind_stage_capture(tmp_path, nodes=()):
+        outcome = await _run_owed_topic(tracker, completer)
+    (live,) = outcome.result.findings
+
+    [result] = await replay_capture(
+        tmp_path,
+        settings=SimpleNamespace(agents=AgentRuntimeConfig()),
+        provider=ScriptedCompleter(outputs=[_owed_reply]),
+        tracker=tracker,
+        build_agent=None,
+        stages=(PAGE_EXTRACTION,),
+    )
+
+    assert live.target_ids == [PLANNED_TARGET_ID]
+    assert result.verdicts == {f"page_extraction-001.json#{PLANNED_TARGET_ID}": True}
+    assert result.counts["findings_kept"] == 1
+    assert result.counts["findings_rejected"] == 0
 
 
 def _effort_config(**operation_efforts: Any) -> AgentRuntimeConfig:

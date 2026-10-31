@@ -28,6 +28,7 @@ from deep_research.observability.run_telemetry import (
 from deep_research.observability.stage_capture import (
     bind_stage_capture,
     capture_node_input,
+    capture_page_extraction,
     capture_statement_check,
 )
 from deep_research.observability.tracker import SpanHandle, TokenUsage, Tracker
@@ -52,6 +53,7 @@ __all__ = [
     "build_trace_metadata",
     "call_label",
     "capture_node_input",
+    "capture_page_extraction",
     "capture_statement_check",
     "current_call_label",
     "current_trace_context",
