@@ -451,9 +451,10 @@ def semantic_review_passes(review: ReportReview | None) -> bool:
 
     The mean is taken over ``REVIEW_DIMENSIONS`` rather than over a literal, so
     the divisor cannot drift from the dimension set, and it is compared with a
-    1e-9 allowance: seven scores that average exactly 0.80 can sum a float ULP
-    under it (0.7, 0.7, 0.7, 0.8, 0.9, 0.9, 0.9 gives 0.7999999999999999), and
-    a threshold met on paper must not fail on rounding. A perfect mean cannot
+    1e-9 allowance: seven scores that average exactly the threshold can sum a
+    float ULP under it (0.7, 0.7, 0.7, 0.8, 0.9, 0.9, 0.9 gives 0.7999999999999999
+    against an 0.80 bar), and a threshold met on paper must not fail on
+    rounding. A perfect mean cannot
     rescue a material defect, and no defect can lower a score that was never
     given: the two conditions are independent, which is what stops one strong
     dimension from averaging away one false claim.

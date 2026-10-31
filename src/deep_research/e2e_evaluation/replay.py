@@ -459,7 +459,7 @@ class ReplayScenario:
     review_failure: bool = False
     # The dimension score a made review records, and the statement ids it
     # disposes of as unsupported. 0.9 with none rejected is an accepting
-    # review (the floor is a mean of 0.80); a case that wants the
+    # review (the floor is a mean of 0.70); a case that wants the
     # terminal review to refuse a report lowers the score or names the
     # sentences the evidence does not carry.
     review_score: float = 0.9

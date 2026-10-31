@@ -268,8 +268,8 @@ the gate results, and carries no threshold. The reply scores seven dimensions (`
 `actionability`), gives a disposition for every statement it read (`supported`,
 `unsupported`, `not_reviewed`) and lists typed defects with a severity of
 `critical`, `major` or `minor`; `critical` and `major` are material and block
-acceptance. Acceptance is a mean of at least 0.80 (`SEMANTIC_REVIEW_MEAN`, compared
-with a `1e-9` allowance so float rounding cannot fail an exact 0.80) with
+acceptance. Acceptance is a mean of at least 0.70 (`SEMANTIC_REVIEW_MEAN`, compared
+with a `1e-9` allowance so float rounding cannot fail an exact 0.70) with
 no material defect. A truncated reply is asked once more at `high` effort; a
 provider failure gives `provider_failed` and missing dispositions give
 `incomplete`, and either way the report publishes as partial: an unscored review

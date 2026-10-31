@@ -43,7 +43,7 @@ sharper, two-minute version, see the [full video](docs/media/deep-research-demo.
 - **A seven-part report review.** The reviewer scores completeness,
   prioritization, evidence quality, attribution, uncertainty, readability and
   actionability. A report is accepted only when the mean score is at least
-  0.80, no critical or major defect is found, and nine structural checks pass.
+  0.70, no critical or major defect is found, and nine structural checks pass.
   A report that falls short is still published, marked as partial.
 - **Reader input during a run.** Before research starts, the session can ask up
   to three clarifying questions. While it runs, you can add up to ten notes to

@@ -1128,7 +1128,7 @@ REVIEW_DIMENSIONS: frozenset[str] = frozenset(
 )
 """Exactly the seven dimensions a semantic review scores, and no others."""
 
-SEMANTIC_REVIEW_MEAN: float = 0.80
+SEMANTIC_REVIEW_MEAN: float = 0.70
 """The mean over ``REVIEW_DIMENSIONS`` a review must reach to pass."""
 
 # Reader notes: what the reader adds while a run
