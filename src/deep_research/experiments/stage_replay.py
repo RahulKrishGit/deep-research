@@ -15,9 +15,10 @@ as the control agrees with itself, and drop no more.
     python -m deep_research.experiments.stage_replay summarize --out DIR
 
 ``--stages`` names the stages to ask (all three by default); the output file
-lists them, and ``summarize`` judges exactly the stages the control
-repetitions list. An output with no list was written before ``--stages``
-existed and is judged on the Context Check and the Statement Check.
+lists them, and ``summarize`` judges exactly the stages every repetition
+lists, refusing outputs whose repetitions list different ones. An output
+with no list was written before ``--stages`` existed and counts as listing
+the Context Check and the Statement Check.
 
 Only model calls are made: no search, no page read, no memory write.
 """
@@ -333,19 +334,39 @@ def _repetitions(out: Path, arm: str) -> list[dict[str, Any]]:
     return [json.loads(path.read_text("utf-8")) for path in paths]
 
 
-def _judged_stages(controls: Sequence[Mapping[str, Any]]) -> list[str]:
-    """The stages the control repetitions list, in report order.
+def _listed_stages(repetition: Mapping[str, Any]) -> tuple[str, ...]:
+    """The stages one repetition lists, in report order.
 
     An output with no ``stages`` key was written before ``--stages`` existed,
     when every replay asked the Context Check and the Statement Check, so it
     lists those two and never the page extraction.
     """
-    listed = {
-        stage
-        for repetition in controls
-        for stage in repetition.get("stages", LEGACY_STAGES)
+    listed = set(repetition.get("stages", LEGACY_STAGES))
+    return tuple(stage for stage in STAGES if stage in listed)
+
+
+def _one_stage_list(
+    out: Path, arms: Sequence[tuple[str, Sequence[Mapping[str, Any]]]]
+) -> list[str]:
+    """The stages every repetition of every arm lists, or a ``ValueError``.
+
+    A repetition that was not asked a stage has no verdicts for it. One such
+    control repetition pulls the control's agreement floor and every minimum
+    count for that stage down to 0, where a treatment that bound no target or
+    judged no statement passes, so repetitions that list different stages are
+    not summarized at all.
+    """
+    lists = {
+        (arm, _listed_stages(repetition))
+        for arm, repetitions in arms
+        for repetition in repetitions
     }
-    return [stage for stage in STAGES if stage in listed]
+    if len({stages for _, stages in lists}) > 1:
+        found = "; ".join(f"{arm}: {','.join(stages)}" for arm, stages in sorted(lists))
+        raise ValueError(
+            f"{out}: every repetition must list the same stages, found {found}"
+        )
+    return list(next(iter(lists))[1])
 
 
 def _reasoning_tokens(repetition: Mapping[str, Any]) -> int | None:
@@ -375,9 +396,11 @@ def summarize(out: Path, *, control: str = "control", treatment: str = "treatmen
     ``agreement_treatment`` the mean agreement of each treatment repetition
     with each control one. Every accuracy check must hold for every stage
     judged; the time check is the Context Check's. The stages judged are the
-    ones the control repetitions list (``_judged_stages``), and a listed stage
-    the control has no verdicts for fails ``<stage>.present``: a replay that
-    judged nothing for a stage it was asked about is no pass on the others.
+    ones every repetition lists (``_one_stage_list``): repetitions that list
+    different stages raise ``ValueError``, since one that skipped a stage
+    would lower the control's floor for it. A listed stage the control has no
+    verdicts for fails ``<stage>.present``: a replay that judged nothing for a
+    stage it was asked about is no pass on the others.
     ``control_reasoning_tokens`` and ``treatment_reasoning_tokens`` give each
     repetition's reasoning tokens, over every stage it asked, for reading
     beside the checks; no check depends on them.
@@ -388,7 +411,7 @@ def summarize(out: Path, *, control: str = "control", treatment: str = "treatmen
             f"{out}: need at least two {control} and one {treatment} repetitions, "
             f"found {len(controls)} and {len(treatments)}"
         )
-    stages = _judged_stages(controls)
+    stages = _one_stage_list(out, ((control, controls), (treatment, treatments)))
     summary: dict[str, Any] = {"control_repetitions": len(controls),
                                "treatment_repetitions": len(treatments),
                                "stages": stages}

@@ -677,6 +677,47 @@ def test_a_listed_stage_the_control_has_no_verdicts_for_fails_closed(tmp_path: P
     assert summary["passed"] is False
 
 
+def test_summarize_refuses_control_repetitions_that_list_different_stages(tmp_path: Path) -> None:
+    """A control that skipped a stage contributes no verdicts for it, which drops the
+    agreement floor and every minimum count to 0: a treatment that bound no target
+    would pass on that stage, so the mixed listing is refused instead."""
+    _write_extraction(tmp_path, "control", 1, bound=("t1", "t2"))
+    _write(tmp_path, "control", 2, kept=_verdicts(), dropped=0, seconds=200.0,
+           stages=("context_check", "statement_check", "page_extraction"))
+    _write_extraction(tmp_path, "treatment", 1, bound=())
+
+    with pytest.raises(ValueError, match="same stages") as caught:
+        summarize(tmp_path)
+
+    assert "control: page_extraction" in str(caught.value)
+    assert "control: context_check,statement_check,page_extraction" in str(caught.value)
+
+
+def test_summarize_refuses_a_treatment_that_lists_other_stages_than_the_control(
+    tmp_path: Path,
+) -> None:
+    for repetition in (1, 2):
+        _write_extraction(tmp_path, "control", repetition, bound=("t1",))
+    _write(tmp_path, "treatment", 1, kept=_verdicts(), dropped=0, seconds=100.0)
+
+    with pytest.raises(ValueError, match="same stages") as caught:
+        summarize(tmp_path)
+
+    assert "control: page_extraction" in str(caught.value)
+    assert "treatment: context_check,statement_check" in str(caught.value)
+
+
+def test_summarize_counts_an_output_with_no_stages_as_the_legacy_stages(tmp_path: Path) -> None:
+    """An output written before ``--stages`` existed lists the Context Check and the
+    Statement Check, so it sits beside one that lists exactly those two."""
+    for repetition in (1, 2):
+        _write(tmp_path, "control", repetition, kept=_verdicts(), dropped=0, seconds=200.0)
+    _write(tmp_path, "treatment", 1, kept=_verdicts(), dropped=0, seconds=100.0,
+           stages=("statement_check", "context_check"))
+
+    assert summarize(tmp_path)["passed"] is True
+
+
 def test_the_run_command_writes_the_stages_it_was_asked_for(
     tmp_path: Path, tracker: Tracker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
