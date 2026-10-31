@@ -187,6 +187,16 @@ and effort it supports, for example `LLM_MODEL=gpt-5.6`,
 `LLM_THINKING_MODE=enabled` and `LLM_REASONING_EFFORT=high`. An unsupported
 combination fails before any request is sent.
 
+`agents.operation_efforts` sets the reasoning effort of one call instead of a
+whole agent. It is keyed by call label (`context_check`, `statement_check`,
+`page_extraction`, `source_scoring`, `plan_draft`, `react_decision` and the
+rest listed in `config.yaml`), and the shipped map is empty, so every call runs
+at its agent's `llm.model_overrides` effort. An entry beats the agent's effort
+for that call only, and a truncated reply is still re-asked once at `high`.
+Each key has an `AGENTS_EFFORT_<KEY>` environment variable, for example
+`AGENTS_EFFORT_CONTEXT_CHECK=low`, and an effort the provider does not accept
+fails before any request is sent.
+
 If the run summary reports rate limits, lower `agents.verifier_concurrency`
 first and then `agents.sub_topic_concurrency`.
 

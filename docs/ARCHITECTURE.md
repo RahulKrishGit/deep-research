@@ -119,6 +119,17 @@ Each agent resolves its model, thinking mode, effort, timeout and retry count
 from `llm.model_overrides[<agent>]`, else the global `llm` values; provider
 selection fails fast and never falls back to the other provider.
 
+`agents.operation_efforts` refines that per call. It is keyed by call label (the
+`OPERATION_AGENTS` table in `utils/config.py`), and a call with an entry runs at
+that effort instead of its agent's profile effort; a call without one sends
+nothing extra, so the shipped empty map changes no request. The truncation retry
+above still uses `OUTPUT_LIMIT_RETRY_EFFORT`. Startup validates each entry
+against every agent that makes the call, through the same capability check as an
+agent's own effort (`validate_operation_efforts`), and an effort set for an
+agent whose thinking is disabled is accepted and sends nothing. Request-scoped
+`config_overrides` merge into the map key by key, and each key has an
+`AGENTS_EFFORT_<KEY>` environment variable.
+
 ## Agents
 
 The Planner, Researcher, Source Evaluator, Evidence Verifier and Report Writer

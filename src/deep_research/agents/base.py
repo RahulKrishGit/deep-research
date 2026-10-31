@@ -130,6 +130,19 @@ ways in two artifacts, and so a record whose outcome is not in
 """
 
 
+def effort_kwargs(effort: str | None) -> dict[str, str]:
+    """The per-call ``reasoning_effort`` keyword a request carries, if any.
+
+    ``None`` (an operation with no configured effort) yields ``{}`` so the
+    request is built exactly as it was before per-operation efforts existed:
+    the agent's profile decides, and no keyword, argument, or fingerprint
+    input changes. Spread it into a call (``**effort_kwargs(effort)``) rather
+    than passing ``reasoning_effort=effort``, which would send an explicit
+    ``None`` where the callee's default is the right thing.
+    """
+    return {} if effort is None else {"reasoning_effort": effort}
+
+
 class StructuredCompleter(Protocol):
     """The structured-output capability the agent runtime needs.
 

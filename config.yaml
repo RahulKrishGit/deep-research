@@ -162,6 +162,18 @@ agents:
     source_evaluator: 0
     evidence_verifier: 0
     report_writer: 0
+  # Per-call reasoning effort, keyed by call label, for the calls an agent's
+  # llm.model_overrides profile is too coarse for. Empty: every call runs at
+  # its agent's profile effort above. An entry replaces the profile effort for
+  # that one call only (a truncation retry still re-asks at high); DeepSeek
+  # accepts low, high and max. Keys: page_extraction, owed_extraction,
+  # cross_topic_extraction, dissent_extraction, extraction (researcher);
+  # context_check, statement_check (evidence_verifier); source_scoring
+  # (source_evaluator); plan_draft, plan_repair, plan_review,
+  # plan_review_repair, plan_confirming_review (planner); react_decision (every
+  # agent's loop turn). Each has an AGENTS_EFFORT_<KEY> override, e.g.
+  # AGENTS_EFFORT_CONTEXT_CHECK=low.
+  operation_efforts: {}
   # How many planned sub-topics one Researcher pass attempts
   # (AGENTS_MAX_SUB_TOPICS overrides this). Ten is the Planner's own
   # ceiling: a lower cap dropped the last parts of a six- or seven-part

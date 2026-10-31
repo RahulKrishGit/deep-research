@@ -17,6 +17,7 @@ from deep_research.observability.run_telemetry import RunTelemetryCollector
 from deep_research.providers.capabilities import (
     ResolvedRequestSettings,
     resolve_request_settings,
+    with_reasoning_effort,
 )
 from deep_research.providers.contracts import ProviderConfigurationError
 from deep_research.providers.deepseek_provider import (
@@ -31,7 +32,12 @@ from deep_research.providers.embeddings import (
 )
 from deep_research.providers.openai_provider import OpenAIChatProvider
 from deep_research.request_budget import RequestBudget
-from deep_research.utils.config import EmbeddingProviderName, LLMConfig
+from deep_research.utils.config import (
+    OPERATION_AGENTS,
+    AgentRuntimeConfig,
+    EmbeddingProviderName,
+    LLMConfig,
+)
 
 ChatAdapter: TypeAlias = OpenAIChatProvider | DeepSeekSchemaChatProvider
 JudgeAdapter: TypeAlias = OpenAIChatProvider | DeepSeekJudgeProvider
@@ -177,3 +183,29 @@ def validate_agent_model_configs(
                 f"agent {name!r}: {error}"
             ) from error
     return resolved
+
+
+def validate_operation_efforts(
+    llm: LLMConfig, agents: AgentRuntimeConfig
+) -> None:
+    """Check every configured per-operation effort against its owning agents.
+
+    Runs beside :func:`validate_agent_model_configs`, before any collaborator
+    exists, so an effort the provider would refuse fails the run at startup
+    instead of at the first request that carries it. Each operation is
+    resolved for every agent that makes the call
+    (``OPERATION_AGENTS``), through the same per-call override
+    the request path applies; an agent whose thinking is disabled resolves to
+    no effort at all, so a configured one is accepted there.
+    """
+    for operation, effort in agents.operation_efforts.items():
+        for agent in OPERATION_AGENTS[operation]:
+            try:
+                resolve_request_settings(
+                    llm.provider,
+                    with_reasoning_effort(llm.resolve_for(agent), effort),
+                )
+            except ProviderConfigurationError as error:
+                raise ProviderConfigurationError(
+                    f"operation {operation!r} (agent {agent!r}): {error}"
+                ) from error

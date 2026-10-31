@@ -596,6 +596,19 @@ def test_a_call_fingerprint_covers_every_configured_input(field: str) -> None:
     )
 
 
+def test_a_call_with_no_effort_sends_no_reasoning_effort_keyword() -> None:
+    """Unset means the agent profile decides: not even an explicit ``None``."""
+    from deep_research.agents.base import effort_kwargs
+
+    assert effort_kwargs(None) == {}
+
+
+def test_a_call_with_an_effort_sends_exactly_that_reasoning_effort() -> None:
+    from deep_research.agents.base import effort_kwargs
+
+    assert effort_kwargs("low") == {"reasoning_effort": "low"}
+
+
 def test_an_unresolved_model_profile_is_recorded_rather_than_invented(
     tracker: Tracker,
 ) -> None:

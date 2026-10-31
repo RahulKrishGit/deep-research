@@ -38,6 +38,7 @@ from deep_research.providers import (
     build_chat_provider,
     build_embedding_provider,
     validate_agent_model_configs,
+    validate_operation_efforts,
 )
 from deep_research.request_budget import RequestBudget
 from deep_research.runtime.errors import configuration_error
@@ -377,6 +378,7 @@ async def build_runtime(
         validate_agent_model_configs(
             settings.llm, (*AGENT_NAMES, *SERVICE_ROLE_NAMES)
         )
+        validate_operation_efforts(settings.llm, settings.agents)
     except ProviderConfigurationError as error:
         raise configuration_error(
             reason="provider_unconfigured",

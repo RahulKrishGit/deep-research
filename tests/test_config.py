@@ -10,8 +10,17 @@ from pydantic import ValidationError
 
 from deep_research.main import load_settings
 from deep_research.observability import Tracker
+from deep_research.providers import (
+    ProviderConfigurationError,
+    validate_operation_efforts,
+)
+from deep_research.providers.capabilities import (
+    resolve_request_settings,
+    with_reasoning_effort,
+)
 from deep_research.utils.config import (
     HITL_TIMING_MAX_S,
+    OPERATION_AGENTS,
     PRODUCTION_AGENT_NAMES,
     SERVICE_ROLE_NAMES,
     AgentRuntimeConfig,
@@ -1109,6 +1118,204 @@ def test_an_unsupported_agent_effort_fails_before_any_run() -> None:
 
     with pytest.raises(ProviderConfigurationError, match="planner"):
         validate_agent_model_configs(settings, PRODUCTION_AGENT_NAMES)
+
+
+def test_operation_efforts_default_to_the_agent_profile() -> None:
+    assert AgentRuntimeConfig().operation_efforts == {}
+    assert AgentRuntimeConfig().effort_for("page_extraction") is None
+
+
+def test_every_operation_names_the_agents_that_own_its_call() -> None:
+    """The table the validator and the call sites share is exact and read-only."""
+    assert dict(OPERATION_AGENTS) == {
+        "page_extraction": ("researcher",),
+        "owed_extraction": ("researcher",),
+        "cross_topic_extraction": ("researcher",),
+        "dissent_extraction": ("researcher",),
+        "extraction": ("researcher",),
+        "context_check": ("evidence_verifier",),
+        "statement_check": ("evidence_verifier",),
+        "source_scoring": ("source_evaluator",),
+        "plan_draft": ("planner",),
+        "plan_repair": ("planner",),
+        "plan_review": ("planner",),
+        "plan_review_repair": ("planner",),
+        "plan_confirming_review": ("planner",),
+        "react_decision": PRODUCTION_AGENT_NAMES,
+    }
+    with pytest.raises(TypeError):
+        OPERATION_AGENTS["chat"] = ("planner",)  # type: ignore[index]
+
+
+def test_unknown_operation_efforts_keys_are_rejected() -> None:
+    with pytest.raises(
+        ValidationError, match="unknown operation_efforts keys: page_extract"
+    ):
+        AgentRuntimeConfig(operation_efforts={"page_extract": "low"})
+
+
+def test_an_operation_effort_outside_the_effort_vocabulary_is_rejected() -> None:
+    with pytest.raises(
+        ValidationError, match=r"operation_efforts\.page_extraction"
+    ):
+        AgentRuntimeConfig(operation_efforts={"page_extraction": "turbo"})
+
+
+def test_effort_for_an_operation_no_call_site_names_is_a_programming_error() -> None:
+    with pytest.raises(ValueError, match="unknown operation: chat"):
+        AgentRuntimeConfig().effort_for("chat")
+
+
+def test_effort_for_returns_only_the_configured_operation() -> None:
+    agents = AgentRuntimeConfig(operation_efforts={"context_check": "low"})
+
+    assert agents.effort_for("context_check") == "low"
+    assert agents.effort_for("statement_check") is None
+
+
+def test_an_operation_effort_env_variable_sets_that_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTS_EFFORT_CONTEXT_CHECK", "low")
+
+    agents = load_config("config.yaml").agents
+
+    assert agents.effort_for("context_check") == "low"
+    assert agents.effort_for("statement_check") is None
+
+
+def test_every_operation_has_its_own_effort_env_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for operation in OPERATION_AGENTS:
+        monkeypatch.setenv(f"AGENTS_EFFORT_{operation.upper()}", "high")
+
+    agents = load_config("config.yaml").agents
+
+    assert agents.operation_efforts == dict.fromkeys(OPERATION_AGENTS, "high")
+
+
+def test_an_invalid_operation_effort_env_value_fails_at_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AGENTS_EFFORT_CONTEXT_CHECK", "turbo")
+
+    with pytest.raises(
+        ValidationError, match=r"operation_efforts\.context_check"
+    ):
+        load_config("config.yaml")
+
+
+def test_a_request_override_merges_into_the_configured_operation_efforts(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"agents": {"operation_efforts": {"page_extraction": "low"}}}),
+        encoding="utf-8",
+    )
+
+    agents = load_config(
+        str(path),
+        overrides={"agents": {"operation_efforts": {"context_check": "low"}}},
+    ).agents
+
+    assert agents.operation_efforts == {
+        "page_extraction": "low",
+        "context_check": "low",
+    }
+
+
+def test_a_request_override_sets_an_operation_effort_on_the_empty_shipped_map() -> None:
+    """The API validates a request's overrides against bare defaults, whose map
+    is empty: a key an empty map does not hold must not read as an unknown path."""
+    shipped = load_config("config.yaml")
+
+    for base in (ConfigSettings(), shipped):
+        overridden = apply_config_overrides(
+            base, {"agents": {"operation_efforts": {"context_check": "high"}}}
+        )
+
+        assert overridden.agents.effort_for("context_check") == "high"
+        assert base.agents.operation_efforts == {}
+
+
+def test_a_request_override_with_an_unknown_operation_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="unknown operation_efforts keys: chat"):
+        apply_config_overrides(
+            ConfigSettings(), {"agents": {"operation_efforts": {"chat": "low"}}}
+        )
+
+
+def test_the_shipped_config_file_leaves_every_operation_on_its_agent_profile() -> None:
+    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+
+    assert raw["agents"]["operation_efforts"] == {}
+
+
+def test_an_operation_effort_the_provider_rejects_fails_before_any_run() -> None:
+    with pytest.raises(
+        ProviderConfigurationError,
+        match=r"operation 'context_check' \(agent 'evidence_verifier'\)",
+    ):
+        validate_operation_efforts(
+            LLMConfig(),
+            AgentRuntimeConfig(operation_efforts={"context_check": "medium"}),
+        )
+
+
+def test_an_operation_effort_is_checked_against_every_agent_that_owns_it() -> None:
+    """``react_decision`` is every agent's loop turn, so one agent whose model
+    cannot take the effort fails the whole map even when the others can."""
+    llm = LLMConfig(
+        provider="openai",
+        model="gpt-5.4",
+        model_overrides={"report_writer": {"model": "gpt-5-pro"}},
+    )
+
+    with pytest.raises(
+        ProviderConfigurationError,
+        match=r"operation 'react_decision' \(agent 'report_writer'\)",
+    ):
+        validate_operation_efforts(
+            llm, AgentRuntimeConfig(operation_efforts={"react_decision": "low"})
+        )
+
+
+def test_an_operation_effort_is_not_checked_against_agents_that_do_not_make_the_call() -> None:
+    llm = LLMConfig(
+        provider="openai",
+        model="gpt-5.4",
+        model_overrides={"report_writer": {"model": "gpt-5-pro"}},
+    )
+
+    validate_operation_efforts(
+        llm, AgentRuntimeConfig(operation_efforts={"plan_draft": "low"})
+    )
+
+
+def test_a_supported_operation_effort_map_is_accepted() -> None:
+    validate_operation_efforts(
+        LLMConfig(),
+        AgentRuntimeConfig(
+            operation_efforts={"context_check": "low", "react_decision": "high"}
+        ),
+    )
+
+
+def test_an_operation_effort_under_disabled_thinking_is_accepted() -> None:
+    """The agent sends no effort at all, so a configured one is dormant, not
+    an error: switching thinking off must not invalidate the map."""
+    llm = LLMConfig(model_overrides={"researcher": {"thinking_mode": "disabled"}})
+
+    validate_operation_efforts(
+        llm, AgentRuntimeConfig(operation_efforts={"page_extraction": "low"})
+    )
+
+    sent = resolve_request_settings(
+        "deepseek", with_reasoning_effort(llm.resolve_for("researcher"), "low")
+    )
+    assert sent.reasoning_effort is None
 
 
 def test_graph_settings_default_to_a_bounded_uncheckpointed_run() -> None:

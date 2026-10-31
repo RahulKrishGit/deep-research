@@ -55,6 +55,7 @@ from deep_research.providers.factory import (
     build_embedding_provider,
     build_judge_provider,
     validate_agent_model_configs,
+    validate_operation_efforts,
 )
 from deep_research.providers.openai_provider import OpenAIChatProvider
 
@@ -103,5 +104,6 @@ __all__ = [
     "embedding_capability_for",
     "resolve_request_settings",
     "validate_agent_model_configs",
+    "validate_operation_efforts",
     "provider_failure_snapshot",
 ]

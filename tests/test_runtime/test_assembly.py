@@ -812,6 +812,38 @@ async def test_bad_verifier_override_fails_before_the_default_tracker(
 
 
 @pytest.mark.asyncio
+async def test_a_bad_operation_effort_fails_before_any_runtime_collaborator(
+    tracker, monkeypatch
+) -> None:
+    """A per-operation effort the provider rejects is refused like an agent's.
+
+    ``context_check`` belongs to the Evidence Verifier, and DeepSeek takes no
+    ``medium`` effort: the run must stop at the same ``provider_unconfigured``
+    error an unsupported agent effort gets, naming the operation and its
+    agent, before an embedding provider or any other collaborator exists.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        assembly,
+        "build_embedding_provider",
+        lambda *_args, **_kwargs: calls.append("embeddings"),
+    )
+    settings = ConfigSettings.model_validate(
+        {"agents": {"operation_efforts": {"context_check": "medium"}}}
+    )
+
+    with pytest.raises(ResearchConfigurationError) as caught:
+        await build_runtime(settings, session_id="session-1", tracker=tracker)
+
+    assert caught.value.reason == "provider_unconfigured"
+    assert "deepseek" in str(caught.value)
+    assert "operation 'context_check' (agent 'evidence_verifier')" in str(
+        caught.value
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_build_runtime_compiles_a_graph_from_injected_collaborators(
     tracker, tmp_path
 ) -> None:

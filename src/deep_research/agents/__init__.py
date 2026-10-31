@@ -30,6 +30,7 @@ from deep_research.agents.base import (
     BaseAgent,
     StructuredCompleter,
     call_configuration_fingerprint,
+    effort_kwargs,
 )
 from deep_research.agents.document_kind import (
     derivative_self_description,
@@ -579,6 +580,7 @@ __all__ = [
     "BaseAgent",
     "StructuredCompleter",
     "call_configuration_fingerprint",
+    "effort_kwargs",
     "derivative_self_description",
     "AgentConfigurationError",
     "AgentError",
