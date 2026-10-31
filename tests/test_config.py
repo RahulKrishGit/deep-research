@@ -1173,37 +1173,51 @@ def test_effort_for_returns_only_the_configured_operation() -> None:
     assert agents.effort_for("statement_check") is None
 
 
+def _empty_operation_efforts_config(tmp_path: Path) -> str:
+    """A config file whose operation map is empty, whatever ``config.yaml`` ships.
+
+    The env-variable and override tests below exercise how the map is built and
+    merged, not what the shipped file holds; the one test that reads that is
+    ``test_the_shipped_operation_efforts_map_is_empty``.
+    """
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump({"agents": {"operation_efforts": {}}}), encoding="utf-8"
+    )
+    return str(path)
+
+
 def test_an_operation_effort_env_variable_sets_that_operation(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("AGENTS_EFFORT_CONTEXT_CHECK", "low")
 
-    agents = load_config("config.yaml").agents
+    agents = load_config(_empty_operation_efforts_config(tmp_path)).agents
 
     assert agents.effort_for("context_check") == "low"
     assert agents.effort_for("statement_check") is None
 
 
 def test_every_operation_has_its_own_effort_env_variable(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     for operation in OPERATION_AGENTS:
         monkeypatch.setenv(f"AGENTS_EFFORT_{operation.upper()}", "high")
 
-    agents = load_config("config.yaml").agents
+    agents = load_config(_empty_operation_efforts_config(tmp_path)).agents
 
     assert agents.operation_efforts == dict.fromkeys(OPERATION_AGENTS, "high")
 
 
 def test_an_invalid_operation_effort_env_value_fails_at_load(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("AGENTS_EFFORT_CONTEXT_CHECK", "turbo")
 
     with pytest.raises(
         ValidationError, match=r"operation_efforts\.context_check"
     ):
-        load_config("config.yaml")
+        load_config(_empty_operation_efforts_config(tmp_path))
 
 
 def test_a_request_override_merges_into_the_configured_operation_efforts(
@@ -1226,12 +1240,14 @@ def test_a_request_override_merges_into_the_configured_operation_efforts(
     }
 
 
-def test_a_request_override_sets_an_operation_effort_on_the_empty_shipped_map() -> None:
+def test_a_request_override_sets_an_operation_effort_on_an_empty_map(
+    tmp_path: Path,
+) -> None:
     """The API validates a request's overrides against bare defaults, whose map
     is empty: a key an empty map does not hold must not read as an unknown path."""
-    shipped = load_config("config.yaml")
+    loaded = load_config(_empty_operation_efforts_config(tmp_path))
 
-    for base in (ConfigSettings(), shipped):
+    for base in (ConfigSettings(), loaded):
         overridden = apply_config_overrides(
             base, {"agents": {"operation_efforts": {"context_check": "high"}}}
         )
@@ -1247,7 +1263,14 @@ def test_a_request_override_with_an_unknown_operation_is_rejected() -> None:
         )
 
 
-def test_the_shipped_config_file_leaves_every_operation_on_its_agent_profile() -> None:
+def test_the_shipped_operation_efforts_map_is_empty() -> None:
+    """The one test that pins what ``config.yaml`` ships for the map.
+
+    An empty map leaves every call on its agent's ``llm.model_overrides``
+    effort, so no request or call digest differs from before per-operation
+    efforts existed. The change that ships a non-empty map changes this test,
+    and no other: the tests around it build their own config.
+    """
     raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
 
     assert raw["agents"]["operation_efforts"] == {}
