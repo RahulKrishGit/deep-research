@@ -560,6 +560,114 @@ async def test_every_provider_call_carries_its_own_configuration_fingerprint(
     assert cheaper.call_fingerprints != outcome.call_fingerprints
 
 
+@pytest.mark.asyncio
+async def test_decision_turns_run_at_the_react_decision_effort(
+    tracker: Tracker,
+) -> None:
+    """Every ReAct turn of the loop carries ``operation_efforts.react_decision``."""
+    completer = ScriptedCompleter(
+        [
+            use_tool("Check the echo.", "echo", '{"value": "hi"}'),
+            finish("Enough.", "Rayleigh."),
+        ]
+    )
+    agent = _agent(
+        tracker,
+        completer,
+        config=AgentRuntimeConfig(
+            max_iterations=3,
+            tool_budget=3,
+            operation_efforts={"react_decision": "low"},
+        ),
+    )
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        await agent.run(_state())
+
+    assert completer.react_efforts == ["low"] * 2
+
+
+class _PreEffortCompleter(ScriptedCompleter):
+    """A provider whose ``complete_react`` predates per-call efforts.
+
+    Its signature has no ``reasoning_effort`` at all, so any call that names
+    the keyword -- even as ``None`` -- raises ``TypeError`` here.
+    """
+
+    async def complete_react(
+        self, messages, tools, *, agent_name=None, max_tokens=None
+    ):
+        return await super().complete_react(
+            messages, tools, agent_name=agent_name, max_tokens=max_tokens
+        )
+
+
+@pytest.mark.asyncio
+async def test_decision_turns_send_no_effort_keyword_when_none_is_configured(
+    tracker: Tracker,
+) -> None:
+    """With no ``react_decision`` effort the request is made as it always was."""
+    completer = _PreEffortCompleter([finish("Nothing to look up.", "Rayleigh.")])
+    agent = _agent(tracker, completer)
+
+    async with tracker.session_span("session-1", "Why is the sky blue?"):
+        outcome = await agent.run(_state())
+
+    assert outcome.result == Summary(headline="Rayleigh.")
+    assert completer.react_efforts == [None]
+
+
+@pytest.mark.asyncio
+async def test_the_react_decision_fingerprint_names_the_effort_the_turn_sends(
+    tracker: Tracker,
+) -> None:
+    """The digest follows the effort on the wire, and is unchanged without one."""
+    profile = EffectiveModelConfig(
+        model="deepseek-v4-flash",
+        thinking_mode="enabled",
+        reasoning_effort="max",
+    )
+
+    async def decision_fingerprint(
+        config: AgentRuntimeConfig, effort: str
+    ) -> tuple[str, str]:
+        agent = SummaryAgent(
+            provider=ScriptedCompleter([finish("Nothing to look up.", "Rayleigh.")]),
+            tracker=tracker,
+            scratchpad=_pad(),
+            tools=[EchoTool(tracker)],
+            config=config,
+            model_profile=profile,
+        )
+        async with tracker.session_span("session-1", "Why is the sky blue?"):
+            outcome = await agent.run(_state())
+        expected = call_configuration_fingerprint(
+            agent_name=SummaryAgent.name,
+            model=profile.model,
+            thinking_mode=profile.thinking_mode,
+            reasoning_effort=effort,
+            output_limit=config.react_decision_max_tokens,
+            context_limit=config.prompt_context_entries,
+            schema_name="ReactDecision",
+            prompt_version=agent.prompt_version,
+        )
+        return outcome.call_fingerprints["ReactDecision"], expected
+
+    unset, unset_expected = await decision_fingerprint(
+        AgentRuntimeConfig(max_iterations=3), "max"
+    )
+    tiered, tiered_expected = await decision_fingerprint(
+        AgentRuntimeConfig(
+            max_iterations=3, operation_efforts={"react_decision": "low"}
+        ),
+        "low",
+    )
+
+    assert unset == unset_expected
+    assert tiered == tiered_expected
+    assert tiered != unset
+
+
 @pytest.mark.parametrize(
     "field",
     [

@@ -138,6 +138,7 @@ class ScriptedCompleter:
         self.efforts: list[str | None] = []
         self.react_calls: list[ReactCall] = []
         self.react_budgets: list[int | None] = []
+        self.react_efforts: list[str | None] = []
 
     async def complete_react(
         self,
@@ -146,6 +147,7 @@ class ScriptedCompleter:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
         self.react_calls.append(
             ReactCall(
@@ -156,6 +158,7 @@ class ScriptedCompleter:
             )
         )
         self.react_budgets.append(max_tokens)
+        self.react_efforts.append(reasoning_effort)
         if not self._decisions:
             raise AssertionError("no scripted decision left for a native ReAct turn")
         decision = self._decisions.pop(0)

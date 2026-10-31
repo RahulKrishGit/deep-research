@@ -850,8 +850,9 @@ class ReplayCompleter(AgentCompleter):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
-        del tools, max_tokens
+        del tools, max_tokens, reasoning_effort
         text = self._text(messages)
         self._record(agent_name, "react", text)
         if agent_name == "planner":
