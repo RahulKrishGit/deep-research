@@ -119,16 +119,20 @@ Each agent resolves its model, thinking mode, effort, timeout and retry count
 from `llm.model_overrides[<agent>]`, else the global `llm` values; provider
 selection fails fast and never falls back to the other provider.
 
-`agents.operation_efforts` refines that per call. It is keyed by call label (the
-`OPERATION_AGENTS` table in `utils/config.py`), and a call with an entry runs at
-that effort instead of its agent's profile effort; a call without one sends
-nothing extra, so the shipped empty map changes no request. The truncation retry
-above still uses `OUTPUT_LIMIT_RETRY_EFFORT`. Startup validates each entry
-against every agent that makes the call, through the same capability check as an
-agent's own effort (`validate_operation_efforts`), and an effort set for an
-agent whose thinking is disabled is accepted and sends nothing. Request-scoped
-`config_overrides` merge into the map key by key, and each key has an
-`AGENTS_EFFORT_<KEY>` environment variable.
+`agents.operation_efforts` refines that per call. It is keyed by operation (the
+`OPERATION_AGENTS` table in `utils/config.py`): the label each call's records
+carry, except `react_decision`, the agents' loop turns, whose records read
+`react_tool_turn`. A call with an entry runs at that effort instead of its
+agent's profile effort; a call without one sends nothing extra, so the shipped
+empty map changes no request. A truncated plan-side reply is still re-asked once
+at `OUTPUT_LIMIT_RETRY_EFFORT`, whatever its entry; a truncated Context or
+Statement Check batch is re-asked in two halves at the same effort as the whole,
+and any other truncated call is recorded as that call's failure. Startup
+validates each entry against every agent that makes the call, through the same
+capability check as an agent's own effort (`validate_operation_efforts`), and
+an effort set for an agent whose thinking is disabled is accepted and sends
+nothing. Request-scoped `config_overrides` merge into the map key by key, and
+each key has an `AGENTS_EFFORT_<KEY>` environment variable.
 
 ## Agents
 
