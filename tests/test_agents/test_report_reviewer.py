@@ -500,6 +500,18 @@ def test_the_mean_is_taken_over_the_declared_dimension_set() -> None:
     assert semantic_review_passes(_scored_review(dimensions=at_threshold))
 
 
+def test_a_review_whose_mean_is_exactly_the_threshold_passes() -> None:
+    scores = dict(zip(sorted(REVIEW_DIMENSIONS), (0.7, 0.7, 0.7, 0.8, 0.9, 0.9, 0.9)))
+    # The seven scores average to 0.80, but float summation lands a ULP under it.
+    assert sum(scores.values()) / len(REVIEW_DIMENSIONS) < SEMANTIC_REVIEW_MEAN
+    assert semantic_review_passes(_scored_review(dimensions=scores)) is True
+
+
+def test_a_review_below_the_threshold_still_fails() -> None:
+    scores = dict(zip(sorted(REVIEW_DIMENSIONS), (0.7, 0.7, 0.7, 0.8, 0.8, 0.9, 0.9)))
+    assert semantic_review_passes(_scored_review(dimensions=scores)) is False
+
+
 def test_an_unscored_review_never_passes_whatever_its_dimensions_say() -> None:
     perfect = _scored_review()
     for status in ("incomplete", "provider_failed"):

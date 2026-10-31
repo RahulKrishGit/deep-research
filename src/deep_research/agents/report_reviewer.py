@@ -450,7 +450,10 @@ def semantic_review_passes(review: ReportReview | None) -> bool:
     the answer must not depend on which caller asked.
 
     The mean is taken over ``REVIEW_DIMENSIONS`` rather than over a literal, so
-    the divisor cannot drift from the dimension set. A perfect mean cannot
+    the divisor cannot drift from the dimension set, and it is compared with a
+    1e-9 allowance: seven scores that average exactly 0.80 can sum a float ULP
+    under it (0.7, 0.7, 0.7, 0.8, 0.9, 0.9, 0.9 gives 0.7999999999999999), and
+    a threshold met on paper must not fail on rounding. A perfect mean cannot
     rescue a material defect, and no defect can lower a score that was never
     given: the two conditions are independent, which is what stops one strong
     dimension from averaging away one false claim.
@@ -463,7 +466,7 @@ def semantic_review_passes(review: ReportReview | None) -> bool:
         and set(scores) == REVIEW_DIMENSIONS
         and all(_usable_score(value) for value in scores.values())
         and sum(scores.values()) / len(REVIEW_DIMENSIONS)
-        >= SEMANTIC_REVIEW_MEAN
+        >= SEMANTIC_REVIEW_MEAN - 1e-9
         and not any(defect.material for defect in review.defects)
         and review.coverage_complete
         and _dispositions_complete(review)
