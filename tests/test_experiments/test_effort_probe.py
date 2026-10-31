@@ -1,0 +1,216 @@
+"""The effort probe asks one fixed question at each reasoning effort."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Callable
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from deep_research.experiments.effort_probe import (
+    ProbeAnswer,
+    _chat_provider_builder,
+    main,
+)
+from deep_research.observability import RunTelemetryCollector
+from deep_research.providers import ProviderConfigurationError, ProviderError
+from deep_research.providers.deepseek_provider import DeepSeekSchemaChatProvider
+from deep_research.utils.config import LLMConfig, load_config
+
+
+def _offpeak() -> datetime:
+    return datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
+
+
+def _never_called(llm: LLMConfig, telemetry: RunTelemetryCollector) -> Any:
+    raise AssertionError("no provider may be built inside the peak look-ahead")
+
+
+class _FakeProvider:
+    """Answers like a provider that reports reasoning tokens through telemetry."""
+
+    def __init__(
+        self,
+        llm: LLMConfig,
+        telemetry: RunTelemetryCollector,
+        *,
+        tokens: dict[str, int],
+        reject: dict[str, ProviderError],
+    ) -> None:
+        self.llm = llm
+        self.requests: list[dict[str, Any]] = []
+        self._telemetry = telemetry
+        self._tokens = tokens
+        self._reject = reject
+
+    async def complete_structured(
+        self,
+        messages: Any,
+        schema: type,
+        *,
+        agent_name: str | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> Any:
+        self.requests.append(
+            {"schema": schema, "agent_name": agent_name, "reasoning_effort": reasoning_effort}
+        )
+        if reasoning_effort in self._reject:
+            raise self._reject[reasoning_effort]
+        reasoning = self._tokens.get(reasoning_effort or "", 0)
+        self._telemetry.record_call(
+            agent=agent_name,
+            operation="structured_output",
+            seconds=0.2,
+            output_tokens=reasoning + 30,
+            configured_cap=393216,
+            truncated=False,
+            reasoning_tokens=reasoning,
+        )
+        return schema(value=510)
+
+
+def _fake(
+    *,
+    tokens: dict[str, int] | None = None,
+    reject: set[str] | None = None,
+    error: Callable[[str], ProviderError] = lambda effort: ProviderConfigurationError(
+        f"reasoning_effort '{effort}' is not supported"
+    ),
+    built: list[_FakeProvider] | None = None,
+) -> Callable[[LLMConfig, RunTelemetryCollector], _FakeProvider]:
+    def build(llm: LLMConfig, telemetry: RunTelemetryCollector) -> _FakeProvider:
+        provider = _FakeProvider(
+            llm,
+            telemetry,
+            tokens=tokens or {},
+            reject={effort: error(effort) for effort in reject or ()},
+        )
+        if built is not None:
+            built.append(provider)
+        return provider
+
+    return build
+
+
+def _only_json(directory: Path) -> dict[str, Any]:
+    (path,) = directory.glob("effort-probe-*.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_probe_refuses_inside_the_peak_lookahead_and_writes_nothing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(
+        ["--out", str(tmp_path / "p")],
+        now=lambda: datetime(2026, 11, 2, 0, 0, tzinfo=timezone.utc),
+        build_provider=_never_called,
+    )
+
+    assert code == 2 and not (tmp_path / "p").exists()
+    assert "90 minutes" in capsys.readouterr().out
+
+
+def test_the_probe_records_each_effort_and_repetition_with_its_reasoning_tokens(
+    tmp_path: Path,
+) -> None:
+    code = main(
+        ["--out", str(tmp_path), "--repetitions", "2"],
+        now=_offpeak,
+        build_provider=_fake(tokens={"high": 400, "low": 150}),
+    )
+
+    rows = _only_json(tmp_path)["rows"]
+    assert code == 0
+    assert [(r["effort"], r["repetition"], r["reasoning_tokens"]) for r in rows] == [
+        ("high", 1, 400), ("high", 2, 400), ("low", 1, 150), ("low", 2, 150)]
+    assert all(r["accepted"] is True and r["error"] is None for r in rows)
+    assert [r["output_tokens"] for r in rows] == [430, 430, 180, 180]
+    assert all(isinstance(r["seconds"], float) and r["seconds"] >= 0 for r in rows)
+
+
+def test_a_rejected_effort_is_recorded_not_raised(tmp_path: Path) -> None:
+    code = main(
+        ["--out", str(tmp_path), "--repetitions", "1"],
+        now=_offpeak,
+        build_provider=_fake(reject={"low"}),
+    )
+
+    low = [r for r in _only_json(tmp_path)["rows"] if r["effort"] == "low"]
+    assert code == 1 and low[0]["accepted"] is False and "low" in low[0]["error"]
+    assert low[0]["reasoning_tokens"] is None and low[0]["output_tokens"] is None
+
+
+def test_a_provider_failure_is_recorded_not_raised(tmp_path: Path) -> None:
+    code = main(
+        ["--out", str(tmp_path), "--repetitions", "1", "--efforts", "high"],
+        now=_offpeak,
+        build_provider=_fake(
+            reject={"high"}, error=lambda effort: ProviderError(f"{effort}: upstream timed out")
+        ),
+    )
+
+    (row,) = _only_json(tmp_path)["rows"]
+    assert code == 1 and row["accepted"] is False and row["error"] == "high: upstream timed out"
+
+
+def test_the_probe_asks_the_fixed_question_as_the_evidence_verifier_at_each_effort(
+    tmp_path: Path,
+) -> None:
+    built: list[_FakeProvider] = []
+
+    main(
+        ["--out", str(tmp_path), "--repetitions", "1", "--efforts", "max,high"],
+        now=_offpeak,
+        build_provider=_fake(built=built),
+    )
+
+    (provider,) = built
+    assert provider.requests == [
+        {"schema": ProbeAnswer, "agent_name": "evidence_verifier", "reasoning_effort": "max"},
+        {"schema": ProbeAnswer, "agent_name": "evidence_verifier", "reasoning_effort": "high"},
+    ]
+
+
+def test_the_probe_forces_thinking_on_whatever_the_config_says(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("llm:\n  model: deepseek-flash\n  thinking_mode: disabled\n", encoding="utf-8")
+    assert load_config(str(config)).llm.thinking_mode == "disabled"
+    built: list[_FakeProvider] = []
+
+    main(
+        ["--out", str(tmp_path / "out"), "--repetitions", "1", "--config", str(config)],
+        now=_offpeak,
+        build_provider=_fake(built=built),
+    )
+
+    assert built[0].llm.thinking_mode == "enabled"
+
+
+def test_the_result_is_stamped_with_the_start_time_and_names_the_model(tmp_path: Path) -> None:
+    main(
+        ["--out", str(tmp_path), "--repetitions", "1"],
+        now=_offpeak,
+        build_provider=_fake(),
+    )
+
+    (path,) = tmp_path.glob("effort-probe-*.json")
+    assert path.name == "effort-probe-20261102T120000Z.json"
+    assert json.loads(path.read_text(encoding="utf-8"))["model"] == load_config("config.yaml").llm.model
+
+
+def test_without_an_injected_provider_the_configured_chat_adapter_is_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-key")
+    settings = load_config("config.yaml")
+    settings = settings.model_copy(
+        update={"langsmith": settings.langsmith.model_copy(update={"tracing_enabled": False})}
+    )
+
+    provider = _chat_provider_builder(settings)(settings.llm, RunTelemetryCollector())
+
+    assert isinstance(provider, DeepSeekSchemaChatProvider)
