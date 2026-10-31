@@ -769,8 +769,8 @@ _LANGSMITH_ENVIRONMENT_VARIABLES = (
 
 # Mappings whose keys are not leaves of the base payload: an override merges
 # into them key by key instead of being checked against the keys the base
-# already holds. ``operation_efforts`` is empty in the shipped file, so a
-# request that sets one operation would otherwise read as an unknown path;
+# already holds. A request that sets an operation the shipped
+# ``operation_efforts`` does not list would otherwise read as an unknown path;
 # the model's own validator still rejects a key no call site names.
 _FREE_FORM_MAPPING_PATHS = frozenset(
     {("llm", "model_overrides"), ("agents", "operation_efforts")}

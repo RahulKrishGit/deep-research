@@ -191,8 +191,9 @@ combination fails before any request is sent.
 whole agent. It is keyed by call label (`context_check`, `statement_check`,
 `page_extraction`, `source_scoring`, `plan_draft` and the rest listed in
 `config.yaml`), except `react_decision`, the agents' loop turns, whose calls
-are recorded as `react_tool_turn`. The shipped map is empty, so every call
-runs at its agent's `llm.model_overrides` effort. An entry beats the agent's
+are recorded as `react_tool_turn`. The shipped map runs the Context and
+Statement Checks and source scoring at `low` and the plan reviews at `high`;
+every other call runs at its agent's `llm.model_overrides` effort. An entry beats the agent's
 effort for that call only. A truncated plan-side reply is still re-asked once
 at `high`; a truncated Context or Statement Check batch is re-asked in two
 halves at the same effort; any other truncated call is recorded as that

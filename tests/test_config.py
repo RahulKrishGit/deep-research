@@ -1263,17 +1263,25 @@ def test_a_request_override_with_an_unknown_operation_is_rejected() -> None:
         )
 
 
-def test_the_shipped_operation_efforts_map_is_empty() -> None:
+def test_the_shipped_operation_efforts_are_the_measured_set_and_supported() -> None:
     """The one test that pins what ``config.yaml`` ships for the map.
 
-    An empty map leaves every call on its agent's ``llm.model_overrides``
-    effort, so no request or call digest differs from before per-operation
-    efforts existed. The change that ships a non-empty map changes this test,
-    and no other: the tests around it build their own config.
+    Each entry was measured before it shipped (2026-10-31: both checks at
+    ``low`` by stage replay, the plan reviews at ``high`` by the planner suite,
+    source scoring by paired live runs). Page extraction stays on the agent
+    profile: at ``low`` it kept 10-25% fewer findings in replay.
     """
-    raw = yaml.safe_load(Path("config.yaml").read_text(encoding="utf-8"))
+    settings = load_config("config.yaml")
 
-    assert raw["agents"]["operation_efforts"] == {}
+    assert settings.agents.operation_efforts == {
+        "context_check": "low",
+        "statement_check": "low",
+        "source_scoring": "low",
+        "plan_review": "high",
+        "plan_review_repair": "high",
+        "plan_confirming_review": "high",
+    }
+    validate_operation_efforts(settings.llm, settings.agents)
 
 
 def test_an_operation_effort_the_provider_rejects_fails_before_any_run() -> None:

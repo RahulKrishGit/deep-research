@@ -163,9 +163,9 @@ agents:
     evidence_verifier: 0
     report_writer: 0
   # Per-call reasoning effort, keyed by call label, for the calls an agent's
-  # llm.model_overrides profile is too coarse for. Empty: every call runs at
-  # its agent's profile effort above. An entry replaces the profile effort for
-  # that one call only; DeepSeek accepts low, high and max. A truncated
+  # llm.model_overrides profile is too coarse for. Calls not listed run at
+  # their agent's profile effort above. An entry replaces the profile effort
+  # for that one call only; DeepSeek accepts low, high and max. A truncated
   # plan-side reply is still re-asked once at high; a truncated Context or
   # Statement Check batch is re-asked in two halves at the same effort; any
   # other truncated call is recorded as that call's failure. Keys:
@@ -175,8 +175,18 @@ agents:
   # plan_repair, plan_review, plan_review_repair, plan_confirming_review
   # (planner); react_decision (every agent's loop turn, recorded as
   # react_tool_turn in the call records). Each has an AGENTS_EFFORT_<KEY>
-  # override, e.g. AGENTS_EFFORT_CONTEXT_CHECK=low.
-  operation_efforts: {}
+  # override, e.g. AGENTS_EFFORT_CONTEXT_CHECK=high.
+  # Measured 2026-10-31: both checks at low use 40-60% fewer reasoning tokens
+  # in stage replay; the plan reviews at high keep the planner suite passing
+  # while the draft stays at max. Page extraction stays at the profile effort:
+  # at low it kept 10-25% fewer findings.
+  operation_efforts:
+    context_check: low
+    statement_check: low
+    source_scoring: low
+    plan_review: high
+    plan_review_repair: high
+    plan_confirming_review: high
   # How many planned sub-topics one Researcher pass attempts
   # (AGENTS_MAX_SUB_TOPICS overrides this). Ten is the Planner's own
   # ceiling: a lower cap dropped the last parts of a six- or seven-part
