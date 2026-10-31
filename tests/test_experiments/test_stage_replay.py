@@ -40,13 +40,19 @@ from tests.evidence_fakes import figure, make_finding, make_read
 
 class _ConfirmingCompleter(ScriptedCompleter):
     """Confirms every figure and every sentence it is asked about, and records
-    how many it was asked about per call."""
+    how many it was asked about per call and the effort each call asked for."""
 
     def __init__(self) -> None:
         super().__init__()
         self.asked: list[tuple[str, int]] = []
+        self.stage_efforts: list[tuple[str, str | None, bool]] = []
+        """Per call: the schema's name, the effort passed, and whether the
+        ``reasoning_effort`` keyword was passed at all."""
 
-    async def complete_structured(self, messages: Any, schema: type, **_: Any) -> Any:
+    async def complete_structured(self, messages: Any, schema: type, **kwargs: Any) -> Any:
+        self.stage_efforts.append(
+            (schema.__name__, kwargs.get("reasoning_effort"), "reasoning_effort" in kwargs)
+        )
         body = messages[1].content
         if schema is ContextCheckDraft:
             section = body.split("# Figures to check\n", 1)[1]
@@ -152,6 +158,59 @@ async def test_a_capture_is_asked_again_at_each_arms_batch_size(
         assert (statement.stage, statement.counts["consistent"]) == ("statement_check", 3)
     assert agreement(arms[2][0].verdicts, arms[5][0].verdicts) == 1.0
     assert agreement(arms[2][1].verdicts, arms[5][1].verdicts) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_statement_check_uses_the_arm_effort(
+    tmp_path: Path, tracker: Tracker
+) -> None:
+    """The arm's own ``statement_check`` effort reaches every replayed
+    Statement Check call, and its ``context_check`` effort the replayed
+    Context Check's: each stage runs at its own, not at the other's."""
+    _capture(tmp_path)
+    completer = _ConfirmingCompleter()
+    settings = SimpleNamespace(
+        agents=AgentRuntimeConfig(
+            verifier_batch_size=2,
+            verifier_concurrency=64,
+            operation_efforts={"statement_check": "low", "context_check": "high"},
+        )
+    )
+
+    await replay_capture(
+        tmp_path, settings=settings, provider=completer, tracker=tracker,
+        build_agent=_verifier,
+    )
+
+    assert sorted(completer.stage_efforts) == [
+        ("ContextCheckDraft", "high", True),
+        ("ContextCheckDraft", "high", True),
+        ("StatementCheckDraft", "low", True),
+        ("StatementCheckDraft", "low", True),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_replay_sends_no_effort_when_the_arm_sets_none(
+    tmp_path: Path, tracker: Tracker
+) -> None:
+    """The shipped empty map: no replayed call carries the keyword, so a replay
+    is the request it was before per-operation efforts existed."""
+    _capture(tmp_path)
+    completer = _ConfirmingCompleter()
+    settings = SimpleNamespace(
+        agents=AgentRuntimeConfig(verifier_batch_size=2, verifier_concurrency=64)
+    )
+
+    await replay_capture(
+        tmp_path, settings=settings, provider=completer, tracker=tracker,
+        build_agent=_verifier,
+    )
+
+    assert completer.stage_efforts
+    assert [(effort, sent) for _, effort, sent in completer.stage_efforts] == [
+        (None, False)
+    ] * len(completer.stage_efforts)
 
 
 def _write(out: Path, arm: str, repetition: int, *, kept: dict[str, Any], dropped: int,

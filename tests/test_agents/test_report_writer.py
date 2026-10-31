@@ -65,7 +65,7 @@ from deep_research.utils.types import (
     SubTopic,
     WriterPointDraft,
 )
-from tests.agent_fakes import ScriptedCompleter
+from tests.agent_fakes import _EFFORT_ABSENT, ScriptedCompleter
 from tests.evidence_fakes import figure, make_finding, make_read, make_target
 from tests.research_fakes import report_writer_tools
 
@@ -1155,6 +1155,72 @@ def checker(monkeypatch) -> _FakeChecker:
                         _FakeStatementCheckItem, raising=False)
     monkeypatch.setattr("deep_research.agents.evidence_verifier.check_statements", fake, raising=False)
     return fake
+
+
+class _EffortRecordingChecker(_FakeChecker):
+    """A ``_FakeChecker`` that also records, per call, the ``reasoning_effort``
+    keyword the writer passed and whether it passed the keyword at all."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.efforts: list[str | None] = []
+        self.effort_sent: list[bool] = []
+
+    async def __call__(self, provider, items, *, question, reasoning_effort=_EFFORT_ABSENT, **rest):
+        sent = reasoning_effort is not _EFFORT_ABSENT
+        self.efforts.append(reasoning_effort if sent else None)
+        self.effort_sent.append(sent)
+        return await super().__call__(provider, items, question=question, **rest)
+
+
+@pytest.fixture
+def effort_checker(monkeypatch) -> _EffortRecordingChecker:
+    fake = _EffortRecordingChecker()
+    monkeypatch.setattr("deep_research.agents.evidence_verifier.StatementCheckItem",
+                        _FakeStatementCheckItem, raising=False)
+    monkeypatch.setattr("deep_research.agents.evidence_verifier.check_statements", fake, raising=False)
+    return fake
+
+
+async def _write_one_part_report(
+    tracker: Tracker, tmp_path: Path, **operation_efforts: object
+) -> None:
+    """One section and a bottom line: two Statement Check calls."""
+    completer = ScriptedCompleter(outputs=[
+        SectionDraft(title="Capacity added",
+                    points=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+        BottomLineDraft(sentences=[WriterPointDraft(text="The EIA reported 10.4 GW in 2024.", finding_labels=["F01"])]),
+    ])
+    agent = _writer(
+        tracker, completer, report_writer_tools(tracker, output_root=tmp_path),
+        config=AgentRuntimeConfig(max_iterations=2, tool_budget=0, operation_efforts=operation_efforts),
+    )
+    state = _one_part_state()
+    async with tracker.session_span(state.session_id, state.original_question):
+        await agent.run(state)
+
+
+@pytest.mark.asyncio
+async def test_the_writer_checks_statements_at_the_configured_effort(
+    effort_checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """The section's check and the bottom line's both run at the writer's own
+    ``statement_check`` effort; the Context Check's entry is not the writer's."""
+    await _write_one_part_report(tracker, tmp_path, statement_check="low", context_check="high")
+
+    assert effort_checker.efforts == ["low", "low"]
+
+
+@pytest.mark.asyncio
+async def test_the_writer_passes_no_statement_check_effort_by_default(
+    effort_checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """With no ``statement_check`` entry the keyword is not passed at all, so a
+    substituted checker that predates it keeps working."""
+    await _write_one_part_report(tracker, tmp_path, context_check="high")
+
+    assert effort_checker.efforts == [None, None]
+    assert effort_checker.effort_sent == [False, False]
 
 
 @pytest.fixture

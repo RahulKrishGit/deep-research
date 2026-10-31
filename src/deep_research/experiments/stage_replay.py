@@ -31,6 +31,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any
 
+from deep_research.agents.base import effort_kwargs
 from deep_research.agents.evidence_verifier import (
     StatementCheckItem,
     StatementVerdictDraft,
@@ -184,6 +185,7 @@ async def replay_capture(
                 question=payload["question"],
                 batch_size=settings.agents.verifier_batch_size,
                 gate=gate,
+                **effort_kwargs(settings.agents.effort_for(STATEMENT_CHECK)),
             )
             return path.name, verdicts, errors
 
