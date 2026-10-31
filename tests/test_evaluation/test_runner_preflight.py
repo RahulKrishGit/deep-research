@@ -406,6 +406,51 @@ async def test_an_unsupported_effort_for_a_supported_model_fails_closed(
     assert "medium" in str(caught.value)
 
 
+def _settings_with_operation_efforts(settings, operation_efforts):
+    agents = settings.agents.model_copy(
+        update={"operation_efforts": operation_efforts}
+    )
+    return settings.model_copy(update={"agents": agents})
+
+
+@pytest.mark.asyncio
+async def test_an_unsupported_operation_effort_fails_before_any_request(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    """``AGENTS_EFFORT_PLAN_REVIEW=medium`` must not reach the paid plan draft.
+
+    The planner catches a review's configuration error as a planning failure
+    and keeps the unreviewed plan, so the only safe place to refuse it is
+    preflight, under the same reason as an unsupported agent effort.
+    """
+    broken = _settings_with_operation_efforts(settings, {"plan_review": "medium"})
+    client = FakeLangSmithClient()
+
+    with pytest.raises(PreflightError) as caught:
+        await run(
+            broken,
+            runtime_config_for("planner"),
+            tmp_path,
+            langsmith_client=client,
+        )
+
+    assert caught.value.reason == "model_unavailable"
+    assert "plan_review" in str(caught.value)
+    assert "medium" in str(caught.value)
+    assert client.created_datasets == []
+
+
+@pytest.mark.asyncio
+async def test_a_supported_operation_effort_passes_preflight(
+    settings, runtime_config_for, tmp_path
+) -> None:
+    tuned = _settings_with_operation_efforts(
+        settings, {"plan_review": "low", "context_check": "high"}
+    )
+
+    await run(tuned, runtime_config_for("planner"), tmp_path)
+
+
 @pytest.mark.asyncio
 async def test_an_unsupported_judge_model_fails_closed(
     settings, runtime_config_for, tmp_path

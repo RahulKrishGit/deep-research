@@ -99,6 +99,7 @@ from deep_research.providers import (
     build_judge_provider,
     embedding_capability_for,
     resolve_request_settings,
+    validate_operation_efforts,
 )
 from deep_research.runtime.assembly import build_agent
 from deep_research.utils.config import ConfigSettings, ReasoningEffort
@@ -159,20 +160,30 @@ def validate_model_capabilities(
     call, for either provider. There is no fallback -- a rejected
     combination fails preflight by name.
 
+    The target's per-operation efforts (``agents.operation_efforts``) are
+    checked here too, under the target's own model: a rejected one would
+    otherwise surface mid-run, where the planner treats a review's
+    configuration error as a planning failure and keeps the unreviewed plan.
+
     Chat capability validation lives here, unconditionally, for both
     tiers. The embedding selection is validated separately, live-tier only,
     by ``validate_embedding_model``: the controlled tier never constructs a
     real embedding provider, so its embedding model string is inert and
     nothing is checked for it.
     """
+    target = target_llm_config(runtime, settings.llm)
     for label, config in (
-        ("target", target_llm_config(runtime, settings.llm)),
+        ("target", target),
         ("judge", judge_llm_config(runtime, settings.llm)),
     ):
         try:
             resolve_request_settings(config.provider, config.resolve_for(None))
         except ProviderConfigurationError as error:
             raise PreflightError("model_unavailable", f"{label}: {error}") from error
+    try:
+        validate_operation_efforts(target, settings.agents)
+    except ProviderConfigurationError as error:
+        raise PreflightError("model_unavailable", f"target: {error}") from error
 
 
 def validate_embedding_model(runtime: EvaluationRuntimeConfig) -> None:
