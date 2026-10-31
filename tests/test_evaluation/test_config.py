@@ -60,8 +60,8 @@ from deep_research.utils.config import (
 # invalidating it.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "planner": "8f277236da6e",
-    "researcher": "51009ba36176",
-    "source_evaluator": "ea32fd463f65",
+    "researcher": "977d60d31b6f",
+    "source_evaluator": "c7b721b3d258",
     "evidence_verifier": "95abe2306b9f",
     "report_writer": "f76cccddf882",
 }

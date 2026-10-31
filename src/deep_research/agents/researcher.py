@@ -30,7 +30,12 @@ from deep_research.agents.acquisition import (
     ManifestSequence,
     build_acquisition_context,
 )
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+    effort_kwargs,
+)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -3569,6 +3574,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         ),
                         SubTopicFindingsDraft,
                         agent_name=self.name,
+                        **effort_kwargs(
+                            self.config.effort_for("page_extraction")
+                        ),
                     )
             except ProviderOutputLimitError as error:
                 return _PageExtraction(
@@ -3727,6 +3735,11 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     # cap at 32,768 and at 49,152 tokens, so a larger cap only
                     # lengthened the runaway.
                     max_tokens=self.config.re_extraction_max_tokens,
+                    # ``label`` is always an ``OPERATION_AGENTS`` key
+                    # (``owed_extraction``, ``cross_topic_extraction`` or
+                    # ``dissent_extraction``), so each kind of re-ask runs at
+                    # its own configured effort.
+                    **effort_kwargs(self.config.effort_for(label)),
                 )
 
             try:
@@ -4067,6 +4080,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         ),
                         SubTopicFindingsDraft,
                         agent_name=self.name,
+                        **effort_kwargs(self.config.effort_for("extraction")),
                     )
             except ProviderOutputLimitError as error:
                 # The provider answered and the answer was cut off at the

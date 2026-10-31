@@ -23,7 +23,12 @@ from typing import Literal, NamedTuple, Protocol, TypeAlias
 
 from pydantic import Field, JsonValue
 
-from deep_research.agents.base import AgentCompleter, AgentRun, BaseAgent
+from deep_research.agents.base import (
+    AgentCompleter,
+    AgentRun,
+    BaseAgent,
+    effort_kwargs,
+)
 from deep_research.agents.errors import (
     AgentConfigurationError,
     agent_error,
@@ -68,7 +73,7 @@ from deep_research.agents.sources import (
 from deep_research.agents.steps import ReActRun, summarize_text
 from deep_research.memory.entries import SourceReputation
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import Tracker
+from deep_research.observability import Tracker, call_label
 from deep_research.providers import ChatMessage, ProviderError
 from deep_research.tools.base import BaseTool
 from deep_research.utils.concurrency import gather_or_cancel
@@ -695,6 +700,7 @@ async def assess_new_sources(
     max_total_sources: int = DEFAULT_MAX_TOTAL_SOURCES,
     excerpt_chars: int = DEFAULT_EXCERPT_CHARS,
     known_reads: Iterable[ReadRecord] = (),
+    reasoning_effort: str | None = None,
 ) -> list[ScoredSource]:
     """Assess newly read sources and return the cumulative source snapshot.
 
@@ -714,6 +720,11 @@ async def assess_new_sources(
     sources keep the identity their read establishes, carry an explicit
     unscored status, and are returned so refinement can target the missing
     assessment.
+
+    ``reasoning_effort`` is the effort every scoring request runs at, taken
+    from ``AgentRuntimeConfig.effort_for("source_scoring")`` by the caller
+    (this service holds no agent config); ``None`` sends no effort, so the
+    agent's own profile decides, exactly as before per-operation efforts.
     """
     if batch_size < 1 or max_total_sources < 1 or excerpt_chars < 1:
         raise ValueError(
@@ -762,11 +773,13 @@ async def assess_new_sources(
             dossiers={dossier.url: dossier for dossier in batch},
         )
         try:
-            response = await provider.complete_structured(
-                scoring_messages(request, excerpt_chars=excerpt_chars),
-                SourceScoresDraft,
-                agent_name=SOURCE_EVALUATOR_NAME,
-            )
+            with call_label("source_scoring"):
+                response = await provider.complete_structured(
+                    scoring_messages(request, excerpt_chars=excerpt_chars),
+                    SourceScoresDraft,
+                    agent_name=SOURCE_EVALUATOR_NAME,
+                    **effort_kwargs(reasoning_effort),
+                )
         except ProviderError:
             for remaining in to_score[start:]:
                 assessed[remaining.url] = fallback_scored_source(
@@ -1333,13 +1346,17 @@ class SourceEvaluatorAgent(BaseAgent[EvaluatedSources]):
             request = task.model_copy(update={"groups": batch})
             try:
                 async with gate:
-                    response = await self.provider.complete_structured(
-                        scoring_messages(
-                            request, excerpt_chars=self._excerpt_chars
-                        ),
-                        SourceScoresDraft,
-                        agent_name=self.name,
-                    )
+                    with call_label("source_scoring"):
+                        response = await self.provider.complete_structured(
+                            scoring_messages(
+                                request, excerpt_chars=self._excerpt_chars
+                            ),
+                            SourceScoresDraft,
+                            agent_name=self.name,
+                            **effort_kwargs(
+                                self._config.effort_for("source_scoring")
+                            ),
+                        )
             except ProviderError as error:
                 provider_failed = True
                 batch_errors[position].append(
