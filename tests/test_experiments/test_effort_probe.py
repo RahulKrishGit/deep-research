@@ -6,19 +6,27 @@ import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from deep_research.experiments.effort_probe import (
-    ProbeAnswer,
-    _chat_provider_builder,
-    main,
-)
-from deep_research.observability import RunTelemetryCollector
+from deep_research.experiments.effort_probe import ProbeAnswer, main
+from deep_research.observability import RunTelemetryCollector, current_trace_context
 from deep_research.providers import ProviderConfigurationError, ProviderError
-from deep_research.providers.deepseek_provider import DeepSeekSchemaChatProvider
+from deep_research.providers import deepseek_provider as deepseek_module
 from deep_research.utils.config import LLMConfig, load_config
+from tests.test_deepseek_provider import (
+    FakeDeepSeekClient,
+    RecordingResponses,
+    responses_response,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_langsmith_tracing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe builds a tracker from the config; a test never traces."""
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
 
 
 def _offpeak() -> datetime:
@@ -55,6 +63,9 @@ class _FakeProvider:
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
     ) -> Any:
+        # The real provider opens an LLM span, which needs a session span around it.
+        if current_trace_context() is None:
+            raise RuntimeError("child spans require an active session span")
         self.requests.append(
             {"schema": schema, "agent_name": agent_name, "reasoning_effort": reasoning_effort}
         )
@@ -202,15 +213,25 @@ def test_the_result_is_stamped_with_the_start_time_and_names_the_model(tmp_path:
     assert json.loads(path.read_text(encoding="utf-8"))["model"] == load_config("config.yaml").llm.model
 
 
-def test_without_an_injected_provider_the_configured_chat_adapter_is_built(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_configured_provider_is_driven_inside_a_tracker_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The default path: the real DeepSeek adapter over a stubbed SDK client."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-key")
-    settings = load_config("config.yaml")
-    settings = settings.model_copy(
-        update={"langsmith": settings.langsmith.model_copy(update={"tracing_enabled": False})}
+    reply = responses_response(output_text=json.dumps({"value": 510}), output_tokens=430)
+    reply.usage.output_tokens_details = SimpleNamespace(reasoning_tokens=400)
+    responses = RecordingResponses(reply, reply)
+    monkeypatch.setattr(
+        deepseek_module,
+        "_build_client",
+        lambda config, *, api_key, client: FakeDeepSeekClient(responses=responses),
     )
 
-    provider = _chat_provider_builder(settings)(settings.llm, RunTelemetryCollector())
+    code = main(["--out", str(tmp_path), "--repetitions", "1"], now=_offpeak)
 
-    assert isinstance(provider, DeepSeekSchemaChatProvider)
+    rows = _only_json(tmp_path)["rows"]
+    assert code == 0
+    assert [(r["effort"], r["reasoning_tokens"], r["output_tokens"]) for r in rows] == [
+        ("high", 400, 430), ("low", 400, 430)]
+    assert [call["reasoning"] for call in responses.calls] == [
+        {"effort": "high"}, {"effort": "low"}]

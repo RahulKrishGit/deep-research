@@ -38,7 +38,7 @@ from deep_research.agents.prompts import STRUCTURED_REPLY_FORMAT
 from deep_research.experiments.live_runs import peak_ahead
 from deep_research.observability import RunTelemetryCollector, Tracker, call_label
 from deep_research.providers import ChatMessage, ProviderError, build_chat_provider
-from deep_research.utils.config import ConfigSettings, LLMConfig, load_config
+from deep_research.utils.config import LLMConfig, load_config
 from deep_research.utils.types import ContractModel
 
 #: A probe is a few dozen sequential calls, so it looks further ahead than a
@@ -47,6 +47,9 @@ PEAK_LOOKAHEAD_MINUTES = 90
 
 #: The agent whose model, timeout and retry settings the probe's calls resolve.
 PROBE_AGENT = "evidence_verifier"
+
+#: The trace session every probe request is made inside.
+PROBE_SESSION = "effort-probe"
 
 _PROBLEM = (
     "A warehouse receives 14 pallets on Monday, each holding 36 crates. On Tuesday "
@@ -77,9 +80,7 @@ class ProbeAnswer(ContractModel):
 BuildProvider = Callable[[LLMConfig, RunTelemetryCollector], StructuredCompleter]
 
 
-def _chat_provider_builder(settings: ConfigSettings) -> BuildProvider:
-    tracker = Tracker.from_config(settings.langsmith)
-
+def _chat_provider_builder(tracker: Tracker) -> BuildProvider:
     def build(llm: LLMConfig, telemetry: RunTelemetryCollector) -> StructuredCompleter:
         return build_chat_provider(llm, tracker, telemetry=telemetry)
 
@@ -105,40 +106,44 @@ def _reported_tokens(
 
 
 async def _probe(
+    tracker: Tracker,
     provider: StructuredCompleter,
     telemetry: RunTelemetryCollector,
     efforts: Sequence[str],
     repetitions: int,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for effort in efforts:
-        for repetition in range(1, repetitions + 1):
-            label = f"probe_{effort}_{repetition}"
-            error: str | None = None
-            started = perf_counter()
-            try:
-                with call_label(label):
-                    await provider.complete_structured(
-                        PROBE_MESSAGES,
-                        ProbeAnswer,
-                        agent_name=PROBE_AGENT,
-                        reasoning_effort=effort,
-                    )
-            except ProviderError as failure:
-                error = str(failure)
-            seconds = perf_counter() - started
-            tokens = _reported_tokens(telemetry, label)
-            rows.append(
-                {
-                    "effort": effort,
-                    "repetition": repetition,
-                    "accepted": error is None,
-                    "error": error,
-                    "reasoning_tokens": None if tokens is None else tokens[1],
-                    "output_tokens": None if tokens is None else tokens[0],
-                    "seconds": round(seconds, 3),
-                }
-            )
+    # The provider opens an LLM span per request, and the tracker refuses a
+    # child span with no session span around it.
+    async with tracker.session_span(PROBE_SESSION, "effort probe"):
+        for effort in efforts:
+            for repetition in range(1, repetitions + 1):
+                label = f"probe_{effort}_{repetition}"
+                error: str | None = None
+                started = perf_counter()
+                try:
+                    with call_label(label):
+                        await provider.complete_structured(
+                            PROBE_MESSAGES,
+                            ProbeAnswer,
+                            agent_name=PROBE_AGENT,
+                            reasoning_effort=effort,
+                        )
+                except ProviderError as failure:
+                    error = str(failure)
+                seconds = perf_counter() - started
+                tokens = _reported_tokens(telemetry, label)
+                rows.append(
+                    {
+                        "effort": effort,
+                        "repetition": repetition,
+                        "accepted": error is None,
+                        "error": error,
+                        "reasoning_tokens": None if tokens is None else tokens[1],
+                        "output_tokens": None if tokens is None else tokens[0],
+                        "seconds": round(seconds, 3),
+                    }
+                )
     return rows
 
 
@@ -167,10 +172,11 @@ def main(
     # the key it is missing when it is built.
     settings = load_config(arguments.config)
     llm = settings.llm.model_copy(update={"thinking_mode": "enabled"})
+    tracker = Tracker.from_config(settings.langsmith)
     telemetry = RunTelemetryCollector()
-    provider = (build_provider or _chat_provider_builder(settings))(llm, telemetry)
+    provider = (build_provider or _chat_provider_builder(tracker))(llm, telemetry)
     efforts = [effort.strip() for effort in arguments.efforts.split(",") if effort.strip()]
-    rows = asyncio.run(_probe(provider, telemetry, efforts, arguments.repetitions))
+    rows = asyncio.run(_probe(tracker, provider, telemetry, efforts, arguments.repetitions))
 
     out = Path(arguments.out)
     out.mkdir(parents=True, exist_ok=True)
