@@ -394,16 +394,16 @@ async def test_an_unsupported_target_model_fails_closed_with_no_network(
 async def test_an_unsupported_effort_for_a_supported_model_fails_closed(
     settings, runtime_config_for, tmp_path
 ) -> None:
-    """DeepSeek V4 Flash accepts only high and max with thinking enabled."""
+    """DeepSeek V4 Flash accepts only low, high and max with thinking enabled."""
     runtime = runtime_config_for("planner").model_copy(
-        update={"target_reasoning_effort": "low"}
+        update={"target_reasoning_effort": "medium"}
     )
 
     with pytest.raises(PreflightError) as caught:
         await run(settings, runtime, tmp_path)
 
     assert caught.value.reason == "model_unavailable"
-    assert "low" in str(caught.value)
+    assert "medium" in str(caught.value)
 
 
 @pytest.mark.asyncio

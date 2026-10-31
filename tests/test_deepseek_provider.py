@@ -2164,6 +2164,54 @@ async def test_deepseek_structured_applies_the_per_call_reasoning_effort_overrid
 
 
 @pytest.mark.asyncio
+async def test_a_per_call_low_effort_reaches_the_chat_completions_request() -> None:
+    """``low`` is a supported per-call effort on the Chat Completions transport."""
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="high"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort="low",
+        )
+
+    assert completions.calls[0]["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_per_call_low_effort_reaches_the_responses_request() -> None:
+    """``low`` is a supported per-call effort on the Responses transport."""
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(reasoning_effort="high"),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort="low",
+        )
+
+    assert responses.calls[0]["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_keeps_the_configured_effort_without_an_override() -> (
     None
 ):

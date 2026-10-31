@@ -465,7 +465,7 @@ class OutputConfig(BaseModel):
 
 EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 
-# The configured DeepSeek model supports exactly two enabled efforts: high and
+# The configured DeepSeek model accepts three enabled efforts: low, high and
 # max. The two cheapest agents run at high, everything else at max.
 # Production parity (on by default) resolves the target from
 # ``llm.model_overrides`` instead; this profile is what an experiment uses.

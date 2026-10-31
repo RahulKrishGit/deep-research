@@ -1104,7 +1104,7 @@ def test_an_unsupported_agent_effort_fails_before_any_run() -> None:
     from deep_research.utils.config import PRODUCTION_AGENT_NAMES
 
     settings = LLMConfig(
-        model_overrides={"planner": {"reasoning_effort": "low"}}
+        model_overrides={"planner": {"reasoning_effort": "medium"}}
     )
 
     with pytest.raises(ProviderConfigurationError, match="planner"):

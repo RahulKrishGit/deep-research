@@ -4,13 +4,15 @@ from deep_research.providers import (
     ProviderConfigurationError,
     resolve_request_settings,
 )
-from deep_research.utils.config import EffectiveModelConfig
+from deep_research.utils.config import EffectiveModelConfig, LLMConfig
 
 
 @pytest.mark.parametrize(
     "model", ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4-pro"]
 )
-def test_deepseek_capabilities_enable_high_or_max(model: str) -> None:
+def test_deepseek_capabilities_enable_max_effort_without_temperature(
+    model: str,
+) -> None:
     resolved = resolve_request_settings(
         "deepseek",
         EffectiveModelConfig(
@@ -20,6 +22,19 @@ def test_deepseek_capabilities_enable_high_or_max(model: str) -> None:
 
     assert resolved.reasoning_effort == "max"
     assert resolved.include_temperature is False
+
+
+def test_deepseek_flash_accepts_low_effort_with_thinking_enabled() -> None:
+    effective = LLMConfig(
+        provider="deepseek",
+        model="deepseek-flash",
+        thinking_mode="enabled",
+        reasoning_effort="low",
+    ).resolve_for("researcher")
+
+    resolved = resolve_request_settings("deepseek", effective)
+
+    assert resolved.reasoning_effort == "low"
 
 
 def test_deepseek_disabled_mode_dormants_effort_and_accepts_temperature() -> None:

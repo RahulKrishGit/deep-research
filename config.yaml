@@ -8,9 +8,10 @@ llm:
   embedding_provider: local
   embedding_model: text-embedding-3-small
   thinking_mode: enabled
-  # Finalized at `high` for every agent. DeepSeek Flash supports only `high`
-  # and `max`, and `high` is the cheaper of the two enabled levels while still
-  # being a genuine reasoning setting; the live canary re-runs at this value.
+  # Finalized at `high` for every agent. DeepSeek Flash accepts `low`, `high`
+  # and `max` with thinking enabled (`medium` is rejected before any request).
+  # `high` is the cheaper of the two heavier levels while still being a
+  # genuine reasoning setting; the live canary re-runs at this value.
   # This global value is the default for any agent ``model_overrides`` does not
   # name.
   reasoning_effort: high
