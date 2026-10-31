@@ -16,9 +16,14 @@ Reading the result: every row is one call, with the ``reasoning_tokens`` and
 Compare ``reasoning_tokens`` across efforts. When ``low`` reasons about as much
 as ``high``, asking for ``low`` saves nothing on this model and an
 ``agents.operation_efforts`` entry would only change the request. A row with
-``accepted: false`` is an effort the provider refused, with its message in
-``error``. The exit code is 0 when every effort was accepted, 1 when any was
-refused and 2 when the command declined to start.
+``accepted: false`` is a call that failed, with the provider's message in
+``error``; ``rejected: true`` marks the failures that say the request itself was
+refused (the effort or thinking mode is not supported, as a configuration error
+or an HTTP 400 or 422), which a retry would not change, and ``rejected: false``
+marks a transient failure (a timeout, a rate limit, a 5xx, a bad key). The exit
+code is 0 when every call was accepted, 1 when any effort was rejected, 3 when
+nothing was rejected but some call failed, and 2 when the command declined to
+start.
 """
 
 from __future__ import annotations
@@ -37,7 +42,13 @@ from deep_research.agents.base import StructuredCompleter
 from deep_research.agents.prompts import STRUCTURED_REPLY_FORMAT
 from deep_research.experiments.live_runs import peak_ahead
 from deep_research.observability import RunTelemetryCollector, Tracker, call_label
-from deep_research.providers import ChatMessage, ProviderError, build_chat_provider
+from deep_research.providers import (
+    ChatMessage,
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderResponseError,
+    build_chat_provider,
+)
 from deep_research.utils.config import LLMConfig, load_config
 from deep_research.utils.types import ContractModel
 
@@ -50,6 +61,11 @@ PROBE_AGENT = "evidence_verifier"
 
 #: The trace session every probe request is made inside.
 PROBE_SESSION = "effort-probe"
+
+#: The statuses that say the request itself was refused: a bad request, or one
+#: the server could not process. Other 4xx statuses (a bad key, a rate limit)
+#: say nothing about the effort.
+_REJECTION_STATUSES = frozenset({400, 422})
 
 _PROBLEM = (
     "A warehouse receives 14 pallets on Monday, each holding 36 crates. On Tuesday "
@@ -87,6 +103,16 @@ def _chat_provider_builder(tracker: Tracker) -> BuildProvider:
     return build
 
 
+def _is_rejection(failure: ProviderError) -> bool:
+    """Whether the provider refused the request itself, not just this attempt."""
+    if isinstance(failure, ProviderConfigurationError):
+        return True
+    return (
+        isinstance(failure, ProviderResponseError)
+        and failure.http_status_code in _REJECTION_STATUSES
+    )
+
+
 def _reported_tokens(
     telemetry: RunTelemetryCollector, label: str
 ) -> tuple[int, int] | None:
@@ -120,6 +146,7 @@ async def _probe(
             for repetition in range(1, repetitions + 1):
                 label = f"probe_{effort}_{repetition}"
                 error: str | None = None
+                rejected = False
                 started = perf_counter()
                 try:
                     with call_label(label):
@@ -131,6 +158,7 @@ async def _probe(
                         )
                 except ProviderError as failure:
                     error = str(failure)
+                    rejected = _is_rejection(failure)
                 seconds = perf_counter() - started
                 tokens = _reported_tokens(telemetry, label)
                 rows.append(
@@ -138,6 +166,7 @@ async def _probe(
                         "effort": effort,
                         "repetition": repetition,
                         "accepted": error is None,
+                        "rejected": rejected,
                         "error": error,
                         "reasoning_tokens": None if tokens is None else tokens[1],
                         "output_tokens": None if tokens is None else tokens[0],
@@ -186,7 +215,9 @@ def main(
         encoding="utf-8",
     )
     print(result)
-    return 0 if all(row["accepted"] for row in rows) else 1
+    if any(row["rejected"] for row in rows):
+        return 1
+    return 0 if all(row["accepted"] for row in rows) else 3
 
 
 if __name__ == "__main__":

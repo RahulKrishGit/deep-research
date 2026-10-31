@@ -13,7 +13,11 @@ import pytest
 
 from deep_research.experiments.effort_probe import ProbeAnswer, main
 from deep_research.observability import RunTelemetryCollector, current_trace_context
-from deep_research.providers import ProviderConfigurationError, ProviderError
+from deep_research.providers import (
+    ProviderConfigurationError,
+    ProviderError,
+    ProviderResponseError,
+)
 from deep_research.providers import deepseek_provider as deepseek_module
 from deep_research.utils.config import LLMConfig, load_config
 from tests.test_deepseek_provider import (
@@ -138,7 +142,7 @@ def test_the_probe_records_each_effort_and_repetition_with_its_reasoning_tokens(
     assert code == 0
     assert [(r["effort"], r["repetition"], r["reasoning_tokens"]) for r in rows] == [
         ("high", 1, 400), ("high", 2, 400), ("low", 1, 150), ("low", 2, 150)]
-    assert all(r["accepted"] is True and r["error"] is None for r in rows)
+    assert all(r["accepted"] is True and r["rejected"] is False and r["error"] is None for r in rows)
     assert [r["output_tokens"] for r in rows] == [430, 430, 180, 180]
     assert all(isinstance(r["seconds"], float) and r["seconds"] >= 0 for r in rows)
 
@@ -150,12 +154,17 @@ def test_a_rejected_effort_is_recorded_not_raised(tmp_path: Path) -> None:
         build_provider=_fake(reject={"low"}),
     )
 
-    low = [r for r in _only_json(tmp_path)["rows"] if r["effort"] == "low"]
-    assert code == 1 and low[0]["accepted"] is False and "low" in low[0]["error"]
-    assert low[0]["reasoning_tokens"] is None and low[0]["output_tokens"] is None
+    rows = {r["effort"]: r for r in _only_json(tmp_path)["rows"]}
+    low = rows["low"]
+    assert code == 1 and low["accepted"] is False and low["rejected"] is True
+    assert "low" in low["error"]
+    assert low["reasoning_tokens"] is None and low["output_tokens"] is None
+    assert rows["high"]["accepted"] is True and rows["high"]["rejected"] is False
 
 
-def test_a_provider_failure_is_recorded_not_raised(tmp_path: Path) -> None:
+def test_a_failure_that_is_not_a_rejection_is_recorded_and_exits_with_its_own_code(
+    tmp_path: Path,
+) -> None:
     code = main(
         ["--out", str(tmp_path), "--repetitions", "1", "--efforts", "high"],
         now=_offpeak,
@@ -165,7 +174,53 @@ def test_a_provider_failure_is_recorded_not_raised(tmp_path: Path) -> None:
     )
 
     (row,) = _only_json(tmp_path)["rows"]
-    assert code == 1 and row["accepted"] is False and row["error"] == "high: upstream timed out"
+    assert row["accepted"] is False and row["rejected"] is False
+    assert row["error"] == "high: upstream timed out"
+    assert code == 3
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable", "rejected", "code"),
+    [(400, False, True, 1), (422, False, True, 1), (503, True, False, 3), (401, False, False, 3)],
+)
+def test_an_http_status_rejects_the_effort_only_when_the_request_itself_was_refused(
+    tmp_path: Path, status: int, retryable: bool, rejected: bool, code: int
+) -> None:
+    def failure(effort: str) -> ProviderError:
+        return ProviderResponseError(
+            f"DeepSeek request failed with status {status}",
+            failure_origin="sdk",
+            retryable=retryable,
+            failure_category="http",
+            http_status_code=status,
+        )
+
+    exit_code = main(
+        ["--out", str(tmp_path), "--repetitions", "1", "--efforts", "low"],
+        now=_offpeak,
+        build_provider=_fake(reject={"low"}, error=failure),
+    )
+
+    (row,) = _only_json(tmp_path)["rows"]
+    assert row["accepted"] is False and row["rejected"] is rejected
+    assert exit_code == code
+
+
+def test_a_rejection_wins_over_another_failure_in_the_exit_code(tmp_path: Path) -> None:
+    def failure(effort: str) -> ProviderError:
+        if effort == "low":
+            return ProviderConfigurationError("reasoning_effort 'low' is not supported")
+        return ProviderError("upstream timed out")
+
+    code = main(
+        ["--out", str(tmp_path), "--repetitions", "1"],
+        now=_offpeak,
+        build_provider=_fake(reject={"high", "low"}, error=failure),
+    )
+
+    assert [(r["effort"], r["rejected"]) for r in _only_json(tmp_path)["rows"]] == [
+        ("high", False), ("low", True)]
+    assert code == 1
 
 
 def test_the_probe_asks_the_fixed_question_as_the_evidence_verifier_at_each_effort(
