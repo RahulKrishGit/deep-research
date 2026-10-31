@@ -85,7 +85,7 @@ GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
 
 def test_the_baseline_efforts_match_the_approved_profile() -> None:
     """Researcher and Source Evaluator at high; everyone else, and the
-    judge, at max — DeepSeek Flash supports only those two levels."""
+    judge, at max — the approved profile uses only high and max."""
     config = EvaluationConfig()
 
     assert resolve_target_effort(config, "planner", override=None) == "max"
