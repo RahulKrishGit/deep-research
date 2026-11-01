@@ -692,7 +692,7 @@ async def _publish(
     if document_writes != len(written):
         report_path = evidence_path = quality_path = None
 
-    memory_writes = 0
+    saved_ids: set[str] = set()
     if status == QUALITY_STATUS_ACCEPTED:
         payloads = [
             finding_memory_payload(finding, session_id=state.session_id)
@@ -702,14 +702,14 @@ async def _publish(
         if payloads and isinstance(publisher, BatchReportPublisher):
             batch = await publisher.publish_findings(findings=payloads)
             if batch.success:
-                memory_writes = len(payloads)
+                saved_ids.update(_saved_entry_ids(batch))
                 batched = True
         for content, metadata in [] if batched else payloads:
             result = await publisher.publish_finding(
                 content=content, metadata=metadata
             )
             if result.success:
-                memory_writes += 1
+                saved_ids.update(_saved_entry_ids(result))
                 continue
             errors.append(
                 publication_write_error(
@@ -719,6 +719,7 @@ async def _publish(
                     failure_type=_failure_type(result),
                 )
             )
+    memory_writes = len(saved_ids)
     return _Publication(
         report_path,
         evidence_path,
@@ -732,6 +733,23 @@ async def _publish(
 def _failure_type(result: ToolResult) -> str:
     """The failed tool result's own error class name, never its message."""
     return result.error.type if result.error is not None else "unknown"
+
+
+def _saved_entry_ids(result: ToolResult) -> list[str]:
+    """The memory entry ids a successful write names.
+
+    A batch result carries ``entry_ids`` and a single save ``entry_id``. Two
+    findings that are one sentence of one page share an id, so a caller counts
+    the distinct ids, not the findings it handed over.
+    """
+    data = result.data
+    if not isinstance(data, dict):
+        return []
+    ids = data.get("entry_ids")
+    if isinstance(ids, list):
+        return [entry_id for entry_id in ids if isinstance(entry_id, str)]
+    entry_id = data.get("entry_id")
+    return [entry_id] if isinstance(entry_id, str) else []
 
 
 async def _write_document(

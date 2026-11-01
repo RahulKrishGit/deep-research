@@ -79,6 +79,27 @@ def source_reputation_entry_id(url: str) -> str:
     return f"source_reputation:{digest}"
 
 
+# ASCII "unit separator". ``str.split`` treats it as whitespace, so the
+# normalised text can never contain it, and no two field splits share a hash.
+_ENTRY_ID_FIELD_SEPARATOR = "\x1f"
+
+
+def finding_entry_id(*, entry_type: str, source_url: str | None, content: str) -> str:
+    """Return the deterministic storage id of one remembered finding.
+
+    The id is the entry type, a colon and the SHA-256 of the type, the
+    stripped source URL and the stored text with its whitespace collapsed. One
+    sentence of one page is therefore one entry, however it was re-rendered or
+    which session wrote it, and a later write replaces the earlier one. The
+    type is part of both the prefix and the hash, so two entry types never share
+    an id.
+    """
+    material = _ENTRY_ID_FIELD_SEPARATOR.join(
+        (entry_type, (source_url or "").strip(), " ".join(content.split()))
+    )
+    return f"{entry_type}:{sha256(material.encode('utf-8')).hexdigest()}"
+
+
 class MemoryEntry(ContractModel):
     """One durable record stored in long-term semantic memory."""
 

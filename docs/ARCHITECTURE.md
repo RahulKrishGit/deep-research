@@ -79,7 +79,10 @@ planner's `MemorySnapshot` from procedural guidance only, so remembered prose
 never becomes a settled premise of the plan: the Researcher discovers prior leads
 under its own tool budget and must re-admit anything it uses as evidence of this
 run. Cited findings are written to long-term memory once, at publication, and
-only for an accepted report.
+only for an accepted report. An entry's id is its type, a colon and the SHA-256
+of its type, source URL and stored text (`finding_entry_id`), so one sentence
+from one page is one entry: a later run's write replaces the earlier one, and a
+batch that names one id twice writes it once.
 
 ## Agent runtime
 

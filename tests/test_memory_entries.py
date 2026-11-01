@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from hashlib import sha256
+
 import pytest
 from pydantic import ValidationError
 
@@ -11,6 +14,7 @@ from deep_research.memory.entries import (
     ScratchpadEntry,
     SourceReputation,
     StrategyRecord,
+    finding_entry_id,
     source_reputation_entry_id,
 )
 from deep_research.memory.errors import (
@@ -41,6 +45,36 @@ def test_memory_entry_generates_a_unique_default_id() -> None:
 
     assert first.entry_id != second.entry_id
     assert len(first.entry_id) > 0
+
+
+def test_finding_entry_id_is_a_type_prefixed_sha256() -> None:
+    entry_id = finding_entry_id(
+        entry_type="finding",
+        source_url="https://a.test/1",
+        content="10.4 GW in 2024.",
+    )
+
+    assert re.fullmatch(r"finding:[0-9a-f]{64}", entry_id)
+    assert entry_id == finding_entry_id(
+        entry_type="finding",
+        source_url="  https://a.test/1 ",
+        content="10.4  GW\nin 2024.",
+    )
+
+
+def test_finding_entry_id_hashes_type_url_and_text_joined_by_a_unit_separator() -> None:
+    expected = sha256(
+        "\x1f".join(("finding", "https://a.test/1", "10.4 GW in 2024.")).encode("utf-8")
+    ).hexdigest()
+
+    assert finding_entry_id(
+        entry_type="finding", source_url="https://a.test/1", content="10.4 GW in 2024."
+    ) == f"finding:{expected}"
+    assert finding_entry_id(
+        entry_type="finding", source_url=None, content="10.4 GW in 2024."
+    ) == finding_entry_id(
+        entry_type="finding", source_url="  ", content="10.4 GW in 2024."
+    )
 
 
 def test_memory_entry_round_trips_through_flat_storage_metadata() -> None:

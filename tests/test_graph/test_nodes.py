@@ -22,6 +22,7 @@ from deep_research.graph.errors import GRAPH_ERROR_REASONS, GraphConfigurationEr
 from deep_research.graph.events import extra_pass_started_event, redraft_requested_event
 from deep_research.graph.nodes import (
     GraphNode,
+    _saved_entry_ids,
     agent_node,
     extra_pass_node,
     finalize_report_node,
@@ -43,6 +44,7 @@ from deep_research.graph.state import (
     is_halted,
     load_state,
 )
+from deep_research.memory.entries import finding_entry_id
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import (
     LangSmithRuntimeConfig,
@@ -118,13 +120,12 @@ def _pass_state(**overrides: object) -> ResearchState:
     return fake_research_state(**payload)
 
 
-def _writer_state(**overrides: object) -> ResearchState:
-    """A pass whose report has a typed composition behind it.
+def _writer_state_from(base: ResearchState, **overrides: object) -> ResearchState:
+    """``base`` with a typed composition behind its report.
 
     The Report Writer's own output shape, so the writer and reviewer nodes are
     exercised against the artifacts their producers actually emit.
     """
-    base = _pass_state()
     composition = fake_writer_composition(base)
     payload: dict[str, object] = {
         "composition": composition,
@@ -140,6 +141,11 @@ def _writer_state(**overrides: object) -> ResearchState:
             update={"quality": compute_report_quality(state, composition)}
         )
     return state
+
+
+def _writer_state(**overrides: object) -> ResearchState:
+    """A pass whose report has a typed composition behind it."""
+    return _writer_state_from(_pass_state(), **overrides)
 
 
 @pytest.mark.asyncio
@@ -1844,6 +1850,103 @@ async def test_an_accepted_report_saves_its_cited_findings_in_one_batch() -> Non
     assert publisher.batches == [[SNIPPET]]
     assert publisher.memory_writes == 0  # no one-by-one write was needed
     assert load_state(result).events[-2].metadata["memory_writes"] == 1
+
+
+class _EntryIdPublisher(_BatchPublisher):
+    """A batching publisher whose store names each finding by its real entry id."""
+
+    async def publish_findings(self, *, findings) -> ToolResult:
+        await super().publish_findings(findings=findings)
+        return ToolResult(
+            tool_name="save_to_memory",
+            success=True,
+            data={
+                "entry_ids": [
+                    finding_entry_id(
+                        entry_type="finding",
+                        source_url=metadata["source_url"],
+                        content=content,
+                    )
+                    for content, metadata in findings
+                ]
+            },
+            latency_ms=0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_published_memory_writes_count_distinct_entry_ids() -> None:
+    """One page sentence cited under two sub-topics is two findings but one
+    memory entry, so the published event counts the entry once."""
+    one = verified_pass().finding
+    twin = one.model_copy(update={"related_sub_topic": "Another topic"})
+    state = _writer_state_from(
+        _pass_state(raw_findings=[one, twin], verified_findings=[one, twin]),
+        report_review=fake_report_review(),
+    )
+    publisher = _EntryIdPublisher()
+
+    result = await finalize_report_node(publisher)(dump_state(state))
+
+    published = load_state(result).events[-2].metadata
+    assert published["quality_status"] == QUALITY_STATUS_ACCEPTED
+    assert len(publisher.batches[0]) == 2 and published["memory_writes"] == 1
+
+
+class _OneByOneEntryIdPublisher(FakePublisher):
+    """A publisher without a batch write, whose store names each finding by its entry id."""
+
+    async def publish_finding(self, *, content, metadata) -> ToolResult:
+        await super().publish_finding(content=content, metadata=metadata)
+        return ToolResult(
+            tool_name="save_to_memory",
+            success=True,
+            data={
+                "entry_id": finding_entry_id(
+                    entry_type="finding",
+                    source_url=metadata["source_url"],
+                    content=content,
+                )
+            },
+            latency_ms=0.0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_one_by_one_memory_writes_count_distinct_entry_ids() -> None:
+    one = verified_pass().finding
+    twin = one.model_copy(update={"related_sub_topic": "Another topic"})
+    state = _writer_state_from(
+        _pass_state(raw_findings=[one, twin], verified_findings=[one, twin]),
+        report_review=fake_report_review(),
+    )
+    publisher = _OneByOneEntryIdPublisher()
+
+    result = await finalize_report_node(publisher)(dump_state(state))
+
+    published = load_state(result).events[-2].metadata
+    assert len(publisher.findings) == 2 and published["memory_writes"] == 1
+
+
+def test_saved_entry_ids_reads_the_ids_one_memory_write_names() -> None:
+    def succeeded(data: object) -> ToolResult:
+        return ToolResult(
+            tool_name="save_to_memory", success=True, data=data, latency_ms=0.0
+        )
+
+    failed = ToolResult(
+        tool_name="save_to_memory",
+        success=False,
+        error=ToolError(type="RuntimeError", message="The write failed."),
+        latency_ms=0.0,
+    )
+
+    assert _saved_entry_ids(succeeded({"entry_ids": ["a", "b", 3]})) == ["a", "b"]
+    assert _saved_entry_ids(succeeded({"entry_id": "a"})) == ["a"]
+    assert _saved_entry_ids(succeeded({"saved": True})) == []
+    assert _saved_entry_ids(succeeded(["a"])) == []
+    assert _saved_entry_ids(succeeded(None)) == []
+    assert _saved_entry_ids(failed) == []
 
 
 @pytest.mark.asyncio
