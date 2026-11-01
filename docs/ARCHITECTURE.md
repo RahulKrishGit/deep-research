@@ -46,7 +46,7 @@ re-raised so the run stops instead of spending past a declared limit.
 
 | Tool | Purpose |
 | --- | --- |
-| `web_search` | Tavily search (`tavily.search_depth`, `tavily.max_results`). |
+| `web_search` | Tavily search (`tavily.search_depth`, `tavily.max_results`); timeouts, 429 and 5xx are retried with backoff, including the Tavily SDK's own `TimeoutError` and `UsageLimitExceededError`. |
 | `web_scraper` | Fetch a web page (bounded attempts and retries). |
 | `document_reader` | Extract the text of a PDF, spreadsheet or data file at a URL, in chunks. |
 | `query_memory` | Semantic recall from long-term memory. |

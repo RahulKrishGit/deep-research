@@ -20,7 +20,7 @@ dependencies = [
     "pydantic>=2",
     "python-dotenv>=1",
     "pyyaml",
-    "tavily-python>=0.7",
+    "tavily-python>=0.7.27",
     "tldextract>=5,<6",
     "uvicorn>=0.30",
 ]
