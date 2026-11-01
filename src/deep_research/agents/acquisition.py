@@ -2312,6 +2312,7 @@ class AcquisitionPolicy:
         limit: int,
         for_decision: bool = False,
         read_ids: Sequence[str] | None = None,
+        omitted_row_ids: list[str] | None = None,
     ) -> str:
         omitted: list[str] = []
         text = build_acquisition_context(
@@ -2327,6 +2328,7 @@ class AcquisitionPolicy:
             omitted_evidence_ids=omitted,
             read_ids=read_ids,
             robots_disallows=self.robots_disallows,
+            omitted_row_ids=omitted_row_ids,
         )
         if for_decision:
             # A decision turn's own packet never determines extraction
@@ -2437,6 +2439,7 @@ def build_acquisition_context(
     omitted_evidence_ids: list[str] | None = None,
     read_ids: Sequence[str] | None = None,
     robots_disallows: Callable[[str], bool] | None = None,
+    omitted_row_ids: list[str] | None = None,
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2499,11 +2502,32 @@ def build_acquisition_context(
     (see :func:`candidate_robots_disallowed`). The extraction packet never
     carries the mark, and with no oracle every row is byte-identical to the
     one rendered without it.
+
+    ``omitted_row_ids`` is a second out-parameter, wider than
+    ``omitted_evidence_ids``: every row the packer left out has its row
+    identifier appended to it, in packing order, whichever row plan built the
+    packet. The identifiers are ``state``, ``read:<read_id>``,
+    ``evidence:<evidence_id>``, ``recorded:<read_id>/<locator>``,
+    ``candidate:<candidate_id>`` and ``passage:<read_id>/<locator>``; a limit
+    too small to render any row appends ``packet``. It only reports: the
+    rendered text is the same with or without it, and a caller that must know
+    whether the model saw a whole page reads it here, because the
+    continuation line names a bounded number of ids and may collapse to a
+    count.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
     if limit < len(_CONTEXT_OVERFLOW):
+        if omitted_row_ids is not None:
+            omitted_row_ids.append("packet")
         return _CONTEXT_OVERFLOW[:limit]
+
+    def pack(packed: Sequence[tuple[str, str]]) -> tuple[str, list[str]]:
+        text, omitted = _packed_rows(packed, limit)
+        if omitted_row_ids is not None:
+            omitted_row_ids.extend(omitted)
+        return text, omitted
+
     selected_evidence = {
         evidence_id: unit
         for evidence_id, unit in evidence.items()
@@ -2610,7 +2634,7 @@ def build_acquisition_context(
         # Owed re-extraction: focus rows are the whole packet. The rest of
         # this function's rows would resend the full read set an earlier,
         # unbounded extraction call already saw.
-        return _packed_rows(rows, limit)[0]
+        return pack(rows)[0]
     if for_decision:
         # A ReAct decision turn's own row plan: candidates and recorded
         # findings ahead of reads, and units as one-line stubs with no
@@ -2657,7 +2681,7 @@ def build_acquisition_context(
                     f"locator={unit.locator} targets={targets}",
                 )
             )
-        return _packed_rows(rows, limit)[0]
+        return pack(rows)[0]
     # The reads the selected evidence came from are rendered immediately
     # ahead of that evidence, because ``build_findings`` requires every
     # finding to copy its read's own resolved_url and title verbatim: a
@@ -2732,7 +2756,7 @@ def build_acquisition_context(
                     f"passage read_id={read_id} locator={locator} text={text}",
                 )
             )
-    text, omitted = _packed_rows(rows, limit)
+    text, omitted = pack(rows)
     if omitted_evidence_ids is not None:
         for identifier in omitted:
             if identifier.startswith("evidence:"):

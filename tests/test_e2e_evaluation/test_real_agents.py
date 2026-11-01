@@ -755,6 +755,8 @@ def _manifest_from_the_public_summary(real):
         for_decision=False,
         omitted_evidence_ids=None,
         read_ids=None,
+        robots_disallows=None,
+        omitted_row_ids=None,
     ):
         text = real(
             state,
@@ -769,6 +771,8 @@ def _manifest_from_the_public_summary(real):
             for_decision=for_decision,
             omitted_evidence_ids=omitted_evidence_ids,
             read_ids=read_ids,
+            robots_disallows=robots_disallows,
+            omitted_row_ids=omitted_row_ids,
         )
         carried = summarize_text(
             json.dumps(
