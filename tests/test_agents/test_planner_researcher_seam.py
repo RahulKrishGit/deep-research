@@ -150,7 +150,9 @@ def _state() -> ResearchState:
     )
 
 
-def _search_and_scrape_decisions(query: str) -> list[object]:
+def _search_and_scrape_decisions(
+    query: str, url: str = QEC_SOURCE_URL
+) -> list[object]:
     return [
         use_tool("Find sources.", "web_search", f'{{"query": "{query}"}}'),
         # The read follows the URL the search actually returned. A same-host
@@ -160,19 +162,21 @@ def _search_and_scrape_decisions(query: str) -> list[object]:
         use_tool(
             "Read the best source.",
             "web_scraper",
-            f'{{"url": "{QEC_SOURCE_URL}"}}',
+            f'{{"url": "{url}"}}',
         ),
         finish("I have a source-backed answer.", "Evidence found."),
     ]
 
 
-def _findings_draft(title: str, *, target_id: str) -> SubTopicFindingsDraft:
-    read = qec_read_record()
+def _findings_draft(
+    title: str, *, target_id: str, url: str = QEC_SOURCE_URL
+) -> SubTopicFindingsDraft:
+    read = qec_read_record(url=url)
     return SubTopicFindingsDraft(
         findings=[
             FindingDraft(
                 content=f"{title} finding.",
-                source_url=QEC_SOURCE_URL,
+                source_url=url,
                 source_title=read.title,
                 confidence=0.8,
                 read_id=read.read_id,
@@ -219,7 +223,14 @@ def _researcher_for(
     tracker: Tracker,
     decisions: list[object],
     outputs: list[object],
+    *,
+    urls: list[str] | None = None,
 ) -> ResearcherAgent:
+    """The researcher over scripted decisions.
+
+    ``urls`` are the pages its searches return, one per search in order;
+    without them every search returns the one QEC page.
+    """
     return ResearcherAgent(
         provider=ScriptedCompleter(decisions=decisions, outputs=outputs),
         tracker=tracker,
@@ -228,7 +239,11 @@ def _researcher_for(
         ),
         tools=research_tools(
             tracker,
-            search=FakeSearchClient([search_response() for _ in decisions]),
+            search=FakeSearchClient(
+                [search_response(url=url) for url in urls]
+                if urls is not None
+                else [search_response() for _ in decisions]
+            ),
         ),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=4),
         # Order-pinned: both tests below script one loop's decisions in plan
@@ -270,17 +285,28 @@ async def test_a_full_planner_output_composes_into_the_researcher(
         ), sub_topic.coverage_id
 
     researched_titles = [sub_topic.title for sub_topic in state.sub_topics]
+    # Each topic reads a page of its own: two topics that admit one page share
+    # its one extraction call, and this test is about five.
+    page_urls = [
+        f"https://example.test/qec-{position}"
+        for position in range(1, len(researched_titles) + 1)
+    ]
     researcher = _researcher_for(
         tracker,
         decisions=[
             decision
-            for title in researched_titles
-            for decision in _search_and_scrape_decisions(title)
+            for title, url in zip(researched_titles, page_urls, strict=True)
+            for decision in _search_and_scrape_decisions(title, url)
         ],
         outputs=[
-            _findings_draft(title, target_id=f"topic-{position:02d}-target-01")
-            for position, title in enumerate(researched_titles, start=1)
+            _findings_draft(
+                title, target_id=f"topic-{position:02d}-target-01", url=url
+            )
+            for position, (title, url) in enumerate(
+                zip(researched_titles, page_urls, strict=True), start=1
+            )
         ],
+        urls=page_urls,
     )
 
     async with tracker.session_span("session-1", state.original_question):

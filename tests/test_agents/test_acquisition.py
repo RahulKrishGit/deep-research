@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import MutableMapping, Sequence
 from pathlib import Path
 
@@ -1096,6 +1097,144 @@ def test_a_decision_packet_keeps_every_candidate_row_when_units_overflow_it() ->
     assert "candidate_id=candidate-1" in packet
 
 
+def _row(packet: str, candidate_id: str) -> str:
+    """The one packet line that renders ``candidate_id``."""
+    rows = [line for line in packet.splitlines() if f"candidate_id={candidate_id} " in line]
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def _robots_state(*records: CandidateRecord) -> AcquisitionState:
+    return AcquisitionState(
+        target_id="topic-01",
+        remaining_calls=3,
+        candidate_urls=[record.url for record in records if record.status == "queued"],
+        candidate_records={record.url: record for record in records},
+    )
+
+
+def _robots_candidate(
+    candidate_id: str, url: str, *, status: str = "queued", read_id: str | None = None
+) -> CandidateRecord:
+    return CandidateRecord(
+        candidate_id=candidate_id,
+        url=url,
+        title=f"Title {candidate_id}",
+        discovered_via="search",
+        target_ids=["topic-01"],
+        status=status,
+        read_id=read_id,
+    )
+
+
+def _refuses_private(url: str) -> bool:
+    return "/private/" in url
+
+
+def test_a_queued_candidate_the_hosts_robots_refuses_is_marked_in_the_decision_packet() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert _row(packet, "c-private").endswith(" robots=disallowed")
+    assert not _row(packet, "c-public").endswith(" robots=disallowed")
+    assert _row(packet, "c-private") == _row(
+        build_acquisition_context(state, {}, {}, limit=24_000, for_decision=True),
+        "c-private",
+    ) + " robots=disallowed"
+
+
+def test_the_extraction_packet_never_carries_the_robots_marker() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=False,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-private " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_document_candidate_is_never_marked() -> None:
+    state = _robots_state(
+        _robots_candidate("c-document", "https://example.test/private/report.pdf"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-document " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_read_or_denied_candidate_is_never_marked() -> None:
+    state = _robots_state(
+        _robots_candidate(
+            "c-read", "https://example.test/private/read", status="read", read_id="read-1"
+        ),
+        _robots_candidate("c-denied", "https://example.test/private/denied", status="denied"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-read " in packet and "candidate_id=c-denied " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_packet_without_an_oracle_is_byte_identical() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    bare = build_acquisition_context(state, {}, {}, limit=24_000, for_decision=True)
+    none = build_acquisition_context(
+        state, {}, {}, limit=24_000, for_decision=True, robots_disallows=None
+    )
+    never = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=lambda url: False,
+    )
+
+    assert bare == none == never
+    assert "robots=disallowed" not in bare
+
+
 def _chunked_document_result(*chunks: str) -> ToolResult:
     """One document read laid out as the given page-1 chunks, in order."""
     url = "https://example.test/storage-monitor.pdf"
@@ -1304,6 +1443,163 @@ def test_acquisition_context_keeps_ids_when_a_complete_record_overflows() -> Non
     # The packet carries no heading of its own: the decision prompt's renderer
     # adds "## Acquisition context" exactly once.
     assert "## Acquisition context" not in context
+
+
+def test_the_page_packet_reports_every_row_it_left_out() -> None:
+    """The packet's omitted rows come back as ids, apart from its own text.
+
+    The continuation line names at most twenty ids and collapses to a bare
+    overflow marker when even that does not fit, so a caller that must know
+    whether the model saw a whole page cannot read it back from the text. The
+    out-list never changes what is rendered.
+    """
+    tail = "ZZZCONTINUATIONPROBE"
+    result = _read_result(
+        text="queue delay commissioning " + "x" * 1400 + tail
+    )
+    read = build_read_record_from_tool_result(result, session_id="session-1")
+    assert read is not None
+    state = AcquisitionState(
+        target_id="target-1",
+        candidate_urls=["https://example.test/report.pdf"],
+        pending_passage_ids=[f"{read.read_id}/page-80-chunk-0"],
+        remaining_calls=2,
+        remaining_model_turns=1,
+    )
+
+    omitted: list[str] = []
+    text = build_acquisition_context(
+        state, {read.read_id: read}, {}, limit=900, omitted_row_ids=omitted
+    )
+    assert text == build_acquisition_context(
+        state, {read.read_id: read}, {}, limit=900
+    )
+    assert any(row.startswith(f"passage:{read.read_id}/") for row in omitted)
+    named = re.search(r"continuation_ids=(\S+)", text).group(1)
+    if named != "packet_overflow":
+        assert set(named.split(",")) <= set(omitted)
+
+    tiny: list[str] = []
+    assert (
+        build_acquisition_context(
+            state, {read.read_id: read}, {}, limit=12, omitted_row_ids=tiny
+        )
+        == "continuation"
+    )
+    assert tiny == ["packet"]
+
+    via_policy: list[str] = []
+    AcquisitionPolicy(
+        state=state, session_id="s1", reads={read.read_id: read}
+    ).context(limit=900, read_ids=[read.read_id], omitted_row_ids=via_policy)
+    assert via_policy
+
+
+def test_a_decision_packet_reports_the_rows_it_left_out() -> None:
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url="https://example.test/long-page",
+        resolved_url="https://example.test/long-page",
+        title="Long page",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="x" * 60000,
+        passages={f"chunk-{i}": "x" * 600 for i in range(100)},
+        extraction_complete=True,
+    )
+    units = {
+        f"ev-{i}": EvidenceUnit(
+            evidence_id=f"ev-{i}",
+            read_id=read.read_id,
+            source_url=read.resolved_url,
+            source_title=read.title,
+            locator=f"chunk-{i}",
+            excerpt="x" * 600,
+            target_ids=["topic-01"],
+            origin="researcher",
+        )
+        for i in range(100)
+    }
+    candidate = CandidateRecord(
+        candidate_id="candidate-1",
+        url="https://example.test/other-source",
+        title="Another source",
+        discovered_via="search",
+        target_ids=["topic-01"],
+    )
+    state = AcquisitionState(
+        target_id="topic-01",
+        remaining_calls=3,
+        candidate_urls=["https://example.test/other-source"],
+        candidate_records={"https://example.test/other-source": candidate},
+    )
+
+    omitted: list[str] = []
+    text = build_acquisition_context(
+        state,
+        {read.read_id: read},
+        units,
+        limit=3000,
+        for_decision=True,
+        omitted_row_ids=omitted,
+    )
+
+    assert text == build_acquisition_context(
+        state, {read.read_id: read}, units, limit=3000, for_decision=True
+    )
+    assert "candidate:candidate-1" not in omitted
+    assert "evidence:ev-99" in omitted
+    assert "evidence:ev-0" not in omitted
+
+
+def test_a_focused_packet_reports_the_rows_it_left_out() -> None:
+    figure = "The U.S. deployed 37,143 megawatt hours of storage in 2024."
+    page = "https://example.test/us-energy-storage-monitor"
+    body = {"chunk-0": figure + " Filler sentence. " * 400}
+    read = build_read_record(
+        session_id="session-1",
+        reader="web_scraper",
+        requested_url=page,
+        resolved_url=page,
+        title="U.S. Energy Storage Monitor",
+        retrieved_at="2026-08-01T12:00:00+00:00",
+        text="".join(body.values()),
+        passages=body,
+        extraction_complete=True,
+        target_ids=["topic-01"],
+    )
+    unit = EvidenceUnit(
+        evidence_id="ev-mwh",
+        read_id=read.read_id,
+        source_url=page,
+        source_title=read.title,
+        locator="chunk-0",
+        excerpt=figure,
+        target_ids=["topic-01"],
+        origin="researcher",
+    )
+    state = AcquisitionState(target_id="topic-01", remaining_calls=3)
+
+    omitted: list[str] = []
+    text = build_acquisition_context(
+        state,
+        {read.read_id: read},
+        {unit.evidence_id: unit},
+        limit=4000,
+        target_id="topic-01",
+        focus_ids=[unit.evidence_id],
+        omitted_row_ids=omitted,
+    )
+
+    assert text == build_acquisition_context(
+        state,
+        {read.read_id: read},
+        {unit.evidence_id: unit},
+        limit=4000,
+        target_id="topic-01",
+        focus_ids=[unit.evidence_id],
+    )
+    assert omitted == [f"passage:{read.read_id}/chunk-0"]
 
 
 def test_the_context_lists_the_findings_the_run_already_recorded() -> None:

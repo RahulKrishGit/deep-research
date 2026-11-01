@@ -9,6 +9,14 @@ from typing import Any
 import httpx
 import pytest
 from tavily import AsyncTavilyClient
+from tavily.errors import (
+    BadRequestError,
+    ForbiddenError,
+    InvalidAPIKeyError,
+    TavilyKeylessLimitError,
+    UsageLimitExceededError,
+)
+from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from deep_research.observability import ToolMetric
 from deep_research.request_budget import (
@@ -802,3 +810,178 @@ async def test_search_5xx_retried(tracker) -> None:
     assert client.calls == 3
     assert budget.snapshot("tavily").attempts == 3
     assert delays == [0.5, 1.0]
+
+
+# The Tavily SDK raises its own exception classes instead of ``httpx`` ones, so
+# each is classified like the ``httpx`` failure it stands for: the same retry
+# rule and the same bounded static details. The SDK exposes no ``Retry-After``,
+# so a retried usage limit backs off on the default schedule.
+@pytest.mark.asyncio
+async def test_a_tavily_usage_limit_error_is_retried_with_backoff(tracker) -> None:
+    client = FakeSearchClient(
+        [
+            UsageLimitExceededError("limit"),
+            UsageLimitExceededError("limit"),
+            _search_response(),
+        ]
+    )
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    metric = next(
+        metric for metric in tracker.metrics if isinstance(metric, ToolMetric)
+    )
+    assert result.success
+    assert len(client.calls) == 3
+    assert delays == [0.5, 1.0]
+    assert metric.retry_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_keyless_limit_error_is_retried_like_a_usage_limit(
+    tracker,
+) -> None:
+    client = FakeSearchClient([TavilyKeylessLimitError("limit"), _search_response()])
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success
+    assert len(client.calls) == 2
+    assert delays == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_timeout_error_is_retried(tracker) -> None:
+    client = FakeSearchClient([TavilyTimeoutError(10.0), _search_response()])
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success
+    assert len(client.calls) == 2
+    assert delays == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_invalid_api_key_error_fails_at_once_with_status_401(
+    tracker,
+) -> None:
+    client = FakeSearchClient([InvalidAPIKeyError(_HOSTILE_SENTINEL)])
+    tool = WebSearchTool(tracker, client=client)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    assert len(client.calls) == 1
+    assert result.error.type == "InvalidAPIKeyError"
+    assert result.error.message == _STATIC_HTTP_MESSAGE
+    assert result.error.details == {
+        "attempts": 1,
+        "retries": 0,
+        "status_code": 401,
+        "content_type": "unknown",
+    }
+    assert _HOSTILE_SENTINEL not in _serialized(result)
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_bad_request_error_is_not_retried(tracker) -> None:
+    client = FakeSearchClient([BadRequestError(_HOSTILE_SENTINEL)])
+    tool = WebSearchTool(tracker, client=client)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    assert len(client.calls) == 1
+    assert result.error.type == "BadRequestError"
+    assert result.error.message == _STATIC_HTTP_MESSAGE
+    assert result.error.details["status_code"] == 400
+    assert _HOSTILE_SENTINEL not in _serialized(result)
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_forbidden_error_publishes_no_status_code(tracker) -> None:
+    # The SDK folds 403, 432 and 433 into one class, so no single code is true.
+    client = FakeSearchClient([ForbiddenError(_HOSTILE_SENTINEL)])
+    tool = WebSearchTool(tracker, client=client)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    assert len(client.calls) == 1
+    assert result.error.type == "ForbiddenError"
+    assert result.error.message == _STATIC_UNCLASSIFIED_MESSAGE
+    assert result.error.details == {
+        "attempts": 1,
+        "retries": 0,
+        "content_type": "unknown",
+    }
+    assert _HOSTILE_SENTINEL not in _serialized(result)
+
+
+@pytest.mark.asyncio
+async def test_an_exhausted_usage_limit_reports_three_attempts(tracker) -> None:
+    client = FakeSearchClient([UsageLimitExceededError(_HOSTILE_SENTINEL)] * 3)
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    assert len(client.calls) == 3
+    assert result.error.type == "UsageLimitExceededError"
+    assert result.error.message == _STATIC_HTTP_MESSAGE
+    assert result.error.details == {
+        "attempts": 3,
+        "retries": 2,
+        "status_code": 429,
+        "content_type": "unknown",
+    }
+    assert delays == [0.5, 1.0]
+    assert _HOSTILE_SENTINEL not in _serialized(result)
+
+
+@pytest.mark.asyncio
+async def test_a_tavily_timeout_error_that_exhausts_retries_reports_attempts_only(
+    tracker,
+) -> None:
+    client = FakeSearchClient([TavilyTimeoutError(10.0)] * 3)
+
+    async def sleep(delay: float) -> None:
+        return None
+
+    tool = WebSearchTool(tracker, client=client, sleep=sleep)
+    async with tracker.session_span("session-1", "question"):
+        result = await tool.execute(query="topic")
+
+    assert result.success is False
+    assert result.error is not None
+    assert len(client.calls) == 3
+    assert result.error.type == "TimeoutError"
+    assert result.error.message == _STATIC_TIMEOUT_MESSAGE
+    assert result.error.details == {"attempts": 3, "retries": 2}

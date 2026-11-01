@@ -1235,6 +1235,27 @@ def test_the_quality_record_carries_the_telemetry_block() -> None:
     assert record["telemetry"] == telemetry.model_dump(mode="json")
 
 
+def test_the_quality_record_carries_the_models_returned() -> None:
+    """The models the provider answered with are published beside the other
+    telemetry figures, so a reader of ``quality.json`` alone can see which
+    model versions served the run."""
+    collector = RunTelemetryCollector()
+    collector.record_call(
+        agent="report_writer",
+        operation="structured_output",
+        seconds=2.0,
+        output_tokens=10,
+        configured_cap=100,
+        truncated=False,
+        model_returned="deepseek-v4-flash-0731",
+    )
+    state = written_state().model_copy(update={"run_telemetry": collector.snapshot()})
+
+    record = render_quality_record(state, state.composition, None)
+
+    assert record["telemetry"]["models_returned"] == {"deepseek-v4-flash-0731": 1}
+
+
 def test_a_run_without_a_collector_publishes_no_telemetry_figures() -> None:
     """``None``, never a row of zeroes.
 

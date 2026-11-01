@@ -19,6 +19,7 @@ import re
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -219,6 +220,127 @@ def test_every_checker_is_asserted_by_a_case() -> None:
     # that happens to be spelled the same in two places.
     for name, checker in _REPLAY_INVARIANTS.items():
         assert callable(checker), name
+
+
+def _page(read_id: str) -> str:
+    """The head of a page-extraction packet that names one read."""
+    return (
+        "# Retrieved evidence\n"
+        f"- read_id={read_id} requested_url=https://a.test "
+        "resolved_url=https://a.test title=T reader=web_scraper"
+    )
+
+
+def _packets(sequence: list[tuple[str, str]]) -> SimpleNamespace:
+    """The slice of a replay run the page-extraction checker reads."""
+    return SimpleNamespace(
+        replay=SimpleNamespace(
+            completer=SimpleNamespace(packet_sequence=sequence)
+        )
+    )
+
+
+def test_a_read_sent_to_two_page_extractions_in_one_pass_breaks_shared_page_extracted_once() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    page = ("researcher:SubTopicFindingsDraft", _page("r1"))
+
+    assert "r1" in (_invariant_shared_page_extracted_once(_packets([page, page])) or "")
+
+
+def test_one_page_extraction_per_pass_keeps_shared_page_extracted_once() -> None:
+    """A review ends a research pass, so an extra pass may ask the page again."""
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    page = ("researcher:SubTopicFindingsDraft", _page("r1"))
+    review = ("report_reviewer:ReportReviewDraft", "x")
+
+    assert _invariant_shared_page_extracted_once(_packets([page, review, page])) is None
+
+
+def test_owed_and_dissent_re_asks_are_not_page_extractions() -> None:
+    """Both re-asks carry the page's retrieved evidence and ask about it again."""
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    key = "researcher:SubTopicFindingsDraft"
+    sequence = [
+        (key, _page("r1")),
+        (key, "# Passages owed a finding\n" + _page("r1")),
+        (key, "# Statements these passages may dispute\n" + _page("r1")),
+    ]
+
+    assert _invariant_shared_page_extracted_once(_packets(sequence)) is None
+
+
+def _extra_pass_run(
+    part_statuses: dict[str, str], calls: list[str]
+) -> SimpleNamespace:
+    """The slice of a replay run the extra-pass carry checker reads.
+
+    Three topics, one required target each. The extra pass was bought for
+    ``topic-01-target-01``, so ``topic-01`` is the one part that gains evidence.
+    """
+    topics = [
+        SimpleNamespace(
+            coverage_id=f"topic-0{n}",
+            evidence_targets=[SimpleNamespace(target_id=f"topic-0{n}-target-01")],
+        )
+        for n in (1, 2, 3)
+    ]
+    return SimpleNamespace(
+        replay=SimpleNamespace(completer=SimpleNamespace(calls=calls)),
+        state=SimpleNamespace(
+            sub_topics=topics,
+            extra_pass_target_ids=["topic-01-target-01"],
+            composition=SimpleNamespace(
+                parts=[
+                    SimpleNamespace(coverage_id=coverage_id, status=status)
+                    for coverage_id, status in part_statuses.items()
+                ]
+            ),
+        ),
+    )
+
+
+_EXTRA_PASS_CALLS = [
+    "report_writer:SectionDraft",
+    "report_writer:SectionDraft",
+    "report_reviewer:ReportReviewDraft",
+    "report_writer:SectionDraft",
+    "report_reviewer:ScopedReportReviewDraft",
+]
+
+
+def test_extra_pass_carries_unchanged_parts_accepts_the_scoped_shape() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_extra_pass_carries_unchanged_parts,
+    )
+
+    run = _extra_pass_run(
+        {"topic-01": "written", "topic-02": "carried_over", "topic-03": "carried_over"},
+        _EXTRA_PASS_CALLS,
+    )
+
+    assert _invariant_extra_pass_carries_unchanged_parts(run) is None
+
+
+def test_a_part_redrafted_without_cause_breaks_extra_pass_carries_unchanged_parts() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_extra_pass_carries_unchanged_parts,
+    )
+
+    run = _extra_pass_run(
+        {"topic-01": "written", "topic-02": "written", "topic-03": "carried_over"},
+        _EXTRA_PASS_CALLS,
+    )
+
+    assert "topic-02" in (_invariant_extra_pass_carries_unchanged_parts(run) or "")
 
 
 def test_mirror_checker_reads_the_fact_rows_its_composition_recorded() -> None:
@@ -755,6 +877,8 @@ def _manifest_from_the_public_summary(real):
         for_decision=False,
         omitted_evidence_ids=None,
         read_ids=None,
+        robots_disallows=None,
+        omitted_row_ids=None,
     ):
         text = real(
             state,
@@ -769,6 +893,8 @@ def _manifest_from_the_public_summary(real):
             for_decision=for_decision,
             omitted_evidence_ids=omitted_evidence_ids,
             read_ids=read_ids,
+            robots_disallows=robots_disallows,
+            omitted_row_ids=omitted_row_ids,
         )
         carried = summarize_text(
             json.dumps(

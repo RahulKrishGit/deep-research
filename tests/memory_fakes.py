@@ -75,6 +75,14 @@ class FakeCollection:
     ) -> None:
         if "upsert" in self.fail_on:
             raise RuntimeError("vector store unavailable")
+        if len(set(ids)) != len(ids):
+            # chromadb 1.5.9 ``Collection.upsert`` -> ``validate_ids`` raises
+            # ``DuplicateIDError`` before it writes anything.
+            duplicated = sorted({i for i in ids if list(ids).count(i) > 1})
+            raise ValueError(
+                "Expected IDs to be unique, found duplicates of: "
+                + ", ".join(duplicated)
+            )
         for entry_id, document, embedding, metadata in zip(
             ids, documents, embeddings, metadatas, strict=True
         ):

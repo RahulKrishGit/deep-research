@@ -20,6 +20,7 @@ from deep_research.agents.acquisition import (
     UNMINED_QUANTITY_REASON,
     UNMINED_TARGET_REASON,
     WEB_PASSAGE_CHARS,
+    AcquisitionPolicy,
 )
 from deep_research.agents.base import AgentRun
 from deep_research.agents.errors import AgentConfigurationError
@@ -40,6 +41,11 @@ from deep_research.agents.researcher import (
     _admitted_attribution,
     _admitted_figures,
     _bare_pronoun_judgement,
+    _ExtractionScope,
+    _PageExtraction,
+    _reused_unbound_keys,
+    _SharedPageExtraction,
+    _unbound_required_figure_targets,
     bound_sub_topic_findings,
     build_findings,
     existing_sources_for,
@@ -74,6 +80,7 @@ from deep_research.providers import (
     StructuredOutputError,
 )
 from deep_research.request_budget import RequestAttemptLimitError, RequestBudget
+from deep_research.runtime.notes import NoteBoard, bind_note_board
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.utils.config import AgentRuntimeConfig, RequestBudgetConfig
 from deep_research.utils.types import (
@@ -93,14 +100,17 @@ from deep_research.utils.types import (
 )
 from tests.agent_fakes import (
     HoldingCompleter,
+    KeyedCall,
     LabelRecordingCompleter,
     ScriptedCompleter,
     TargetKeyedCompleter,
     finish,
     native_turn_from_decision,
+    request_sub_topic,
     use_tool,
 )
 from tests.evidence_fakes import make_read, make_target
+from tests.graph_fakes import fake_reader_note
 from tests.research_fakes import (
     QEC_PASSAGE,
     QEC_SOURCE_URL,
@@ -3563,16 +3573,23 @@ def test_the_state_update_carries_findings_and_errors(tracker: Tracker) -> None:
 
 def _findings_draft(
     content: str = "Logical error rates fell below break-even.",
+    *,
+    url: str = QEC_SOURCE_URL,
 ) -> SubTopicFindingsDraft:
-    """One finding in the registry shape the acquisition path now requires."""
+    """One finding in the registry shape the acquisition path now requires.
+
+    ``url`` names the page's read when a test's loops each read a page of
+    their own (see ``qec_read_record``).
+    """
+    read = qec_read_record(url=url)
     return SubTopicFindingsDraft(
         findings=[
             FindingDraft(
                 content=content,
-                source_url="https://example.test/qec",
-                source_title=QEC_READ.title,
+                source_url=url,
+                source_title=read.title,
                 confidence=0.8,
-                read_id=QEC_READ.read_id,
+                read_id=read.read_id,
                 locator="chunk-0",
                 snippet=QEC_PASSAGE,
                 target_ids=["topic-01"],
@@ -3581,13 +3598,13 @@ def _findings_draft(
     )
 
 
-def _search_and_scrape_decisions() -> list[object]:
+def _search_and_scrape_decisions(url: str = QEC_SOURCE_URL) -> list[object]:
     return [
         use_tool("Find sources.", "web_search", '{"query": "qec 2025"}'),
         use_tool(
             "Read the best source.",
             "web_scraper",
-            '{"url": "https://example.test/qec"}',
+            json.dumps({"url": url}),
         ),
         finish("I have a source-backed answer.", "Error rates fell."),
     ]
@@ -4134,21 +4151,25 @@ async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
     before Beta's second tool call and force ``tool_budget_exhausted``
     instead of ``finished``).
     """
+    # Each loop reads a page of its own: two loops that admit one page share
+    # its one extraction call, and this test is about two extractions.
     completer = ScriptedCompleter(
         decisions=[
             *_search_and_scrape_decisions(),
-            *_search_and_scrape_decisions(),
+            *_search_and_scrape_decisions(_BETA_URL),
         ],
         outputs=[
             _findings_draft("Alpha finding."),
-            _findings_draft("Beta finding."),
+            _findings_draft("Beta finding.", url=_BETA_URL),
         ],
     )
     # Order-pinned: the order-based ScriptedCompleter needs one loop at a time.
     agent = _researcher(
         tracker,
         completer,
-        search=FakeSearchClient([search_response(), search_response()]),
+        search=FakeSearchClient(
+            [search_response(), search_response(url=_BETA_URL)]
+        ),
         config=AgentRuntimeConfig(max_iterations=4, tool_budget=2),
         sub_topic_concurrency=1,
     )
@@ -4160,12 +4181,10 @@ async def test_two_sub_topics_each_produce_findings_with_a_fresh_tool_budget(
         outcome = await agent.run(state)
 
     assert outcome.react.stop_reason == "finished"
-    # Four completed read/search actions, three external calls: Beta's read of
-    # the same URL is served from the run's successful-read cache, which is a
-    # local reuse rather than a second acquisition. The external count is what
-    # the per-loop budget bounds, so it is the count that must stay split.
-    assert outcome.react.tool_calls == 3
-    assert outcome.react.cache_hits == 1
+    # Four completed read/search actions, each an external call: the per-loop
+    # budget bounds that count, so it is the count that must stay split.
+    assert outcome.react.tool_calls == 4
+    assert outcome.react.cache_hits == 0
     assert [
         finding.related_sub_topic for finding in outcome.result.findings
     ] == ["Alpha", "Beta"]
@@ -4392,13 +4411,15 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     stop the queued sub-topics rather than spend their turns on a dead
     transport.
     """
+    # Beta reads a page of its own: a topic that admits Alpha's page would
+    # import Alpha's extraction and never reach the provider.
     completer = ScriptedCompleter(
         decisions=[
             use_tool("Search Alpha.", "web_search", '{"query": "alpha 2025"}'),
             use_tool("Read Alpha.", "web_scraper", '{"url": "https://example.test/qec"}'),
             finish("Done with Alpha.", "Alpha answer."),
             use_tool("Search Beta.", "web_search", '{"query": "beta 2025"}'),
-            use_tool("Read Beta.", "web_scraper", '{"url": "https://example.test/qec"}'),
+            use_tool("Read Beta.", "web_scraper", json.dumps({"url": _BETA_URL})),
             finish("Done with Beta.", "Beta answer."),
         ],
         outputs=[_findings_draft(), ProviderTimeoutError("timed out")],
@@ -4407,7 +4428,9 @@ async def test_a_provider_failure_during_extraction_keeps_prior_findings(
     agent = _researcher(
         tracker,
         completer,
-        search=FakeSearchClient([search_response(), search_response()]),
+        search=FakeSearchClient(
+            [search_response(), search_response(url=_BETA_URL)]
+        ),
         sub_topic_concurrency=1,
     )
     state = _state(
@@ -6079,19 +6102,22 @@ class _WebTools:
     downloads: list[str]
 
 
-@pytest.fixture
-def web_tools(tracker: Tracker) -> _WebTools:
-    """The researcher's tools over a page whose fetch really suspends.
+def _page_html(passage: str) -> str:
+    return (
+        f"<html><head><title>{QEC_READ.title}</title></head>"
+        f"<body><p>{passage}</p></body></html>"
+    )
+
+
+def _web_tools(tracker: Tracker, body: str) -> _WebTools:
+    """The researcher's tools over one page whose fetch really suspends.
 
     ``httpx.MockTransport`` awaits an async handler, which is what creates the
     interleaving the tool lock exists for: without the lock both loops pass
     their cache check before either fetch has been admitted to the cache.
+    ``body`` is the whole HTML document every URL but ``/robots.txt`` serves.
     """
     downloads: list[str] = []
-    body = (
-        f"<html><head><title>{QEC_READ.title}</title></head>"
-        f"<body><p>{QEC_PASSAGE}</p></body></html>"
-    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/robots.txt":
@@ -6116,6 +6142,12 @@ def web_tools(tracker: Tracker) -> _WebTools:
         ),
         downloads=downloads,
     )
+
+
+@pytest.fixture
+def web_tools(tracker: Tracker) -> _WebTools:
+    """The researcher's tools over the QEC page."""
+    return _web_tools(tracker, _page_html(QEC_PASSAGE))
 
 
 def _two_topic_state() -> ResearchState:
@@ -6196,15 +6228,16 @@ async def test_findings_and_events_fold_in_plan_order_not_completion_order(
     tracker: Tracker,
 ) -> None:
     """`runs`, `findings` and the sub-topic events come out in plan order even when
-    the last plan topic finishes first."""
+    the last plan topic finishes first. Each loop reads a page of its own, so each
+    has a finding of its own to place."""
     completer = TargetKeyedCompleter(
         decisions={
-            "topic-01": _loop_decisions("topic-01", "Alpha"),
-            "topic-02": _loop_decisions("topic-02", "Beta"),
+            "topic-01": _loop_decisions("topic-01", "Alpha", _ALPHA_URL),
+            "topic-02": _loop_decisions("topic-02", "Beta", _BETA_URL),
         },
         outputs={
-            "Alpha": [_findings_draft("Alpha finding.")],
-            "Beta": [_findings_draft("Beta finding.")],
+            "Alpha": [_findings_draft("Alpha finding.", url=_ALPHA_URL)],
+            "Beta": [_findings_draft("Beta finding.", url=_BETA_URL)],
         },
         # Alpha is the first plan topic and finishes last.
         delays={"topic-01": 0.1},
@@ -6212,7 +6245,12 @@ async def test_findings_and_events_fold_in_plan_order_not_completion_order(
     agent = _researcher(
         tracker,
         completer,
-        search=FakeSearchClient([search_response(), search_response()]),
+        search=_QuerySearchClient(
+            {
+                "Alpha 2025": search_response(url=_ALPHA_URL),
+                "Beta 2025": search_response(url=_BETA_URL),
+            }
+        ),
         config=AgentRuntimeConfig(
             max_iterations=4, tool_budget=4, sub_topic_concurrency=2
         ),
@@ -6248,7 +6286,8 @@ async def test_a_page_two_loops_request_at_once_is_downloaded_once_and_admitted_
 ) -> None:
     """The tool lock makes the second loop's fetch of the same URL a cache hit from
     the first loop's admission, so the run downloads the page once
-    (`_invariant_read_downloaded_once`)."""
+    (`_invariant_read_downloaded_once`). Both loops admit the read, and the page
+    is extracted once: one loop's call, imported by the other."""
     completer = TargetKeyedCompleter(
         decisions={
             "topic-01": _loop_decisions("topic-01", "Alpha"),
@@ -6276,7 +6315,833 @@ async def test_a_page_two_loops_request_at_once_is_downloaded_once_and_admitted_
     # Two searches and the one download reached a tool; the second loop's
     # read was served from the run's cache instead of the network.
     assert outcome.react.tool_calls == 3
+    assert len(_page_requests(completer)) == 1
+    assert sorted(
+        _completed(outcome, coverage_id).metadata["pages_reused"]
+        for coverage_id in ("topic-01", "topic-02")
+    ) == [0, 1]
 
+
+def _completed(outcome: AgentRun[ResearchFindings], coverage_id: str) -> ResearchEvent:
+    """The ``researcher.sub_topic.completed`` event of one sub-topic."""
+    (event,) = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+        and event.metadata["coverage_id"] == coverage_id
+    ]
+    return event
+
+
+def _text(call: KeyedCall) -> str:
+    return "\n".join(message.content for message in call.messages)
+
+
+def _page_requests(completer: TargetKeyedCompleter) -> list[KeyedCall]:
+    """The page-extraction requests a completer served.
+
+    A page request carries a retrieved-evidence packet and neither the owed
+    passages' section nor the disputed statements' one: those mark the owed,
+    cross-topic and dissent re-asks.
+    """
+    return [
+        call
+        for call in completer.calls
+        if call.schema == "SubTopicFindingsDraft"
+        and "# Retrieved evidence" in _text(call)
+        and "# Passages owed a finding" not in _text(call)
+        and "# Statements these passages may dispute" not in _text(call)
+    ]
+
+
+def _owed_requests(completer: TargetKeyedCompleter, key: str) -> list[KeyedCall]:
+    """The owed-passage re-asks ``key`` received."""
+    return [
+        call
+        for call in completer.calls
+        if call.schema == "SubTopicFindingsDraft"
+        and call.key == key
+        and "# Passages owed a finding" in _text(call)
+    ]
+
+
+async def _until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not predicate():
+            await asyncio.sleep(0.005)
+
+
+def _owed_for(
+    completer: TargetKeyedCompleter, key: str, target_id: str
+) -> list[KeyedCall]:
+    """The owed re-asks ``key`` received that list ``target_id`` as an
+    unanswered required question.
+
+    A cross-topic re-ask carries the owed section too, so counting every owed
+    request cannot tell a topic's own-words re-ask from it.
+    """
+    return [
+        call
+        for call in _owed_requests(completer, key)
+        if f"\n- {target_id} ["
+        in _text(call)
+        .split("# Passages owed a finding", 1)[1]
+        .split("Return an empty list", 1)[0]
+    ]
+
+
+def _targeted_two_topic_state(
+    alpha_target: EvidenceTarget, beta_target: EvidenceTarget
+) -> ResearchState:
+    alpha, beta = _two_topic_state().sub_topics
+    return _state(
+        sub_topics=[
+            alpha.model_copy(update={"evidence_targets": [alpha_target]}),
+            beta.model_copy(update={"evidence_targets": [beta_target]}),
+        ]
+    )
+
+
+def _alpha_qualitative() -> EvidenceTarget:
+    return make_target(
+        "topic-01-target-01",
+        unit_dimension=None,
+        question="What happened to quantum error correction in 2025?",
+    )
+
+
+def _beta_qualitative() -> EvidenceTarget:
+    """A required target whose words ``QEC_PASSAGE`` states."""
+    return make_target(
+        "topic-02-target-01",
+        unit_dimension=None,
+        question="Did logical error rates fall below break-even?",
+    )
+
+
+def _draft_binding(
+    *bindings: Sequence[str],
+) -> Callable[[list[ChatMessage], type], SubTopicFindingsDraft]:
+    """A reply with one finding per binding, quoting the packet's own passage.
+
+    The read id, url, title, locator and snippet come straight off the packet
+    the reply answers, so ``build_findings`` admits every finding. The content
+    names the sub-topic asking, so two requests about one passage never return
+    the same statement: the per-topic fold would merge those into one record.
+    """
+
+    def reply(messages: list[ChatMessage], schema: type) -> SubTopicFindingsDraft:
+        del schema
+        text = "\n".join(message.content for message in messages)
+        read = _PACKET_READ_ID.search(text)
+        passage = _PACKET_PASSAGE.search(text)
+        assert read is not None and passage is not None
+        read_id, url, title = read.groups()
+        asking = request_sub_topic(messages)
+        return SubTopicFindingsDraft(
+            findings=[
+                FindingDraft(
+                    content=f"Finding {number} for {read_id} by {asking}.",
+                    source_url=url,
+                    source_title=title,
+                    confidence=0.8,
+                    read_id=read_id,
+                    locator=passage.group(2),
+                    snippet=passage.group(3),
+                    target_ids=list(binding),
+                )
+                for number, binding in enumerate(bindings, start=1)
+            ]
+        )
+
+    return reply
+
+
+def _shared_page_completer(
+    outputs: Mapping[str, Sequence[Any]],
+    *,
+    delays: Mapping[str, float] | None = None,
+) -> TargetKeyedCompleter:
+    """Two loops that each search and read the one QEC page.
+
+    Topic-02 decides slowly, so topic-01 reads first and owns the page's
+    extraction unless ``delays`` says otherwise.
+    """
+    return TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": _loop_decisions("topic-02", "Beta"),
+        },
+        outputs=outputs,
+        delays={"topic-02": 0.05} if delays is None else delays,
+    )
+
+
+async def _run_two_topics(
+    tracker: Tracker,
+    web_tools: _WebTools,
+    completer: TargetKeyedCompleter,
+    state: ResearchState,
+    *,
+    config: AgentRuntimeConfig | None = None,
+) -> AgentRun[ResearchFindings]:
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=web_tools.tools,
+        config=config
+        or AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+    async with tracker.session_span("session-1", "q"):
+        return await agent.run(state)
+
+
+_NO_FINDINGS = SubTopicFindingsDraft(findings=[])
+# Small enough that the QEC page's packet leaves its passage row out (and says
+# so with ``continuation_ids=``), large enough to render the rows before it.
+OVERFLOW_PACKET_CHARS = 800
+
+
+@pytest.mark.asyncio
+async def test_a_page_two_topics_admit_is_extracted_once_and_both_keep_its_findings(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The owner's call binds one finding to topic-02's target and leaves one
+    unbound. Topic-02 imports both: the bound copy carries its own title, the
+    unbound one keeps the owner's, and the page is asked about once."""
+    completer = _shared_page_completer(
+        {"Alpha": [_draft_binding(["topic-02-target-01"], [])], "Beta": []}
+    )
+
+    outcome = await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    findings = outcome.result.findings
+    beta = [finding for finding in findings if finding.related_sub_topic == "Beta"]
+    owner_copy = next(
+        finding
+        for finding in findings
+        if finding.related_sub_topic == "Alpha"
+        and finding.target_ids == ["topic-02-target-01"]
+    )
+    assert [finding.target_ids for finding in beta] == [["topic-02-target-01"]]
+    assert (beta[0].snippet, beta[0].read_id, beta[0].locator) == (
+        owner_copy.snippet,
+        owner_copy.read_id,
+        owner_copy.locator,
+    )
+    assert (
+        sum(
+            1
+            for finding in findings
+            if not finding.target_ids and finding.related_sub_topic == "Alpha"
+        )
+        == 2
+    )
+    assert len(_page_requests(completer)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_page_admitted_while_its_extraction_is_in_flight_waits_for_it(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """Topic-02 has read the page and finished its loop while the owner's call
+    is still unanswered. It waits for that call instead of asking again."""
+    release = asyncio.Event()
+    owner_binding = _draft_binding(["topic-02-target-01"])
+
+    async def owner_reply(
+        messages: list[ChatMessage], schema: type
+    ) -> SubTopicFindingsDraft:
+        await release.wait()
+        return owner_binding(messages, schema)
+
+    completer = _shared_page_completer(
+        {
+            "Alpha": [owner_reply],
+            "Beta": [_draft_binding(["topic-02-target-01"])],
+        }
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=web_tools.tools,
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        running = asyncio.create_task(
+            agent.run(
+                _targeted_two_topic_state(
+                    _alpha_qualitative(), _beta_qualitative()
+                )
+            )
+        )
+        await _until(
+            lambda: sum(call.key == "topic-02" for call in completer.react_calls)
+            >= 3
+        )
+        release.set()
+        outcome = await asyncio.wait_for(running, timeout=5)
+
+    assert len(_page_requests(completer)) == 1
+    assert _completed(outcome, "topic-02").metadata["pages_reused"] == 1
+    assert any(
+        finding.related_sub_topic == "Beta" for finding in outcome.result.findings
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure",
+    [ProviderTimeoutError("timed out"), _output_limit_error()],
+    ids=["provider_failure", "output_limit"],
+)
+async def test_a_failed_page_extraction_is_extracted_again_by_the_next_topic(
+    tracker: Tracker, web_tools: _WebTools, failure: BaseException
+) -> None:
+    """A failed or cut-off first call is not reused: topic-02 asks for the page
+    itself, and its own findings are the ones it keeps."""
+    completer = _shared_page_completer(
+        {
+            "Alpha": [failure],
+            "Beta": [_draft_binding(["topic-02-target-01"])],
+        }
+    )
+
+    outcome = await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    assert len(_page_requests(completer)) == 2
+    assert _completed(outcome, "topic-02").metadata["reuse_fallbacks"] == 1
+    assert any(
+        finding.related_sub_topic == "Beta" for finding in outcome.result.findings
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_overflowing_page_packet_is_not_reused(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The owner's model never saw the passage the packet left out, so the
+    second topic asks about the page itself."""
+    completer = _shared_page_completer(
+        {"Alpha": [_NO_FINDINGS], "Beta": [_NO_FINDINGS]}
+    )
+
+    outcome = await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _two_topic_state(),
+        config=AgentRuntimeConfig(
+            max_iterations=4,
+            tool_budget=4,
+            sub_topic_concurrency=2,
+            evidence_packet_chars=OVERFLOW_PACKET_CHARS,
+        ),
+    )
+
+    assert all(
+        "continuation_ids=" in _text(call) for call in _page_requests(completer)
+    )
+    assert len(_page_requests(completer)) == 2
+    assert _completed(outcome, "topic-02").metadata["reuse_fallbacks"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_topic_with_a_different_target_inventory_extracts_the_page_itself(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """A reader-note thread started after topic-01's loop began adds its own
+    target to the list topic-02's page packet offers, so the two loops' packets
+    differ and topic-02 extracts the page itself."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": _loop_decisions("topic-02", "Beta"),
+            "note-n1": [finish("note-n1 is covered.", "note-n1 answer.")],
+        },
+        outputs={"Alpha": [_NO_FINDINGS], "Beta": [_NO_FINDINGS]},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=web_tools.tools,
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=1
+        ),
+    )
+    board = NoteBoard()
+    published: list[ResearchEvent] = []
+
+    with bind_note_board(board), bind_live_sink(published.append):
+        async with tracker.session_span("session-1", "q"):
+            running = asyncio.create_task(agent.run(_two_topic_state()))
+            await _until(
+                lambda: any(
+                    event.event_type == "researcher.sub_topic.started"
+                    and event.metadata["coverage_id"] == "topic-01"
+                    for event in published
+                )
+            )
+            board.receive(
+                "a note",
+                received_at="2026-09-30T10:00:00.000+00:00",
+                received_during="researcher",
+            )
+            board.add(fake_reader_note("n1", kinds=["new_angle"]))
+            outcome = await asyncio.wait_for(running, timeout=5)
+
+    assert len(_page_requests(completer)) == 2
+    beta = _completed(outcome, "topic-02").metadata
+    assert (beta["pages_reused"], beta["reuse_fallbacks"]) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_the_owed_sweep_asks_a_reused_passage_for_the_importers_unbound_required_target(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The owner binds the passage to its own target only, so topic-02's
+    required target is still unanswered. The imported passage counts as unmined
+    for it: one owed request carries that passage and that target."""
+    completer = _shared_page_completer(
+        {
+            "Alpha": [_draft_binding(["topic-01-target-01"])],
+            "Beta": [_draft_binding(["topic-02-target-01"])],
+        }
+    )
+
+    outcome = await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    (owed,) = _owed_requests(completer, "Beta")
+    assert "topic-02-target-01" in _text(owed) and QEC_PASSAGE in _text(owed)
+    assert any(
+        finding.related_sub_topic == "Beta"
+        and "topic-02-target-01" in finding.target_ids
+        for finding in outcome.result.findings
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_owner_binding_the_importers_target_leaves_nothing_owed(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """Control for the owed sweep: the owner's call already binds topic-02's
+    target, so the import answers it and no owed request follows."""
+    completer = _shared_page_completer(
+        {
+            "Alpha": [_draft_binding(["topic-01-target-01", "topic-02-target-01"])],
+            "Beta": [],
+        }
+    )
+
+    await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    assert _owed_requests(completer, "Beta") == []
+
+
+@pytest.mark.asyncio
+async def test_an_owner_page_with_no_findings_still_owes_the_importers_required_target(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The owner's call returned nothing and is still reusable. The importer's
+    required target must not go unasked: its own owed request covers the page."""
+    completer = _shared_page_completer(
+        {
+            # The page, then each owed re-ask: its own required target, and
+            # the other topic's target left unbound by the empty owner reply.
+            "Alpha": [_NO_FINDINGS, _NO_FINDINGS, _NO_FINDINGS],
+            "Beta": [_draft_binding(["topic-02-target-01"]), _NO_FINDINGS],
+        }
+    )
+
+    await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    # The page's own re-ask. Topic-02 also asks about topic-01's target, which
+    # the owner's empty reply left unbound too, in a second owed request.
+    assert len(_owed_for(completer, "Beta", "topic-02-target-01")) == 1
+    assert len(_page_requests(completer)) == 1
+
+
+_FIGURE_PASSAGE = (
+    "In 2024 the United States added 10.4 GW of battery storage power capacity."
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("required", "owed_requests"), [(True, 1), (False, 0)], ids=["required", "optional"]
+)
+async def test_a_reused_figure_passage_is_owed_only_for_an_unbound_required_figure_target(
+    tracker: Tracker, required: bool, owed_requests: int
+) -> None:
+    """Topic-02 asks for a figure the owner's findings never bound. The page
+    states one in topic-02's unit, so the imported passage is owed a re-ask
+    when that target is required, and not when it is optional."""
+    web_tools = _web_tools(tracker, _page_html(_FIGURE_PASSAGE))
+    alpha = make_target(
+        "topic-01-target-01",
+        unit_dimension=None,
+        question="Did the United States add battery storage in 2024?",
+    )
+    beta = make_target("topic-02-target-01", required=required)
+    completer = _shared_page_completer(
+        {
+            "Alpha": [_draft_binding(["topic-01-target-01"])],
+            "Beta": [_draft_binding(["topic-02-target-01"])],
+        }
+    )
+
+    await _run_two_topics(
+        tracker, web_tools, completer, _targeted_two_topic_state(alpha, beta)
+    )
+
+    assert len(_owed_requests(completer, "Beta")) == owed_requests
+
+
+@pytest.mark.asyncio
+async def test_each_research_pass_starts_with_an_empty_page_extraction_registry(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """The registry is per pass: a later pass offers a different target list,
+    so it must never import what an earlier pass extracted."""
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": [
+                *_loop_decisions("topic-01", "Alpha"),
+                finish("Alpha is covered.", "Alpha answer."),
+            ]
+        },
+        outputs={"Alpha": [_NO_FINDINGS]},
+    )
+    agent = _researcher(tracker, completer, tools=web_tools.tools)
+    state = _state(sub_topics=[_sub_topic("Alpha", 1)])
+
+    async with tracker.session_span("session-1", "q"):
+        await agent.run(state)
+        first_registry = dict(agent._run_page_extractions)
+        await agent.run(state)
+
+    assert first_registry
+    assert agent._run_page_extractions == {}
+
+
+class _ExtractStub:
+    """Stands in for ``_extract_one_page``, recording each call it is given."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    async def __call__(self, *args: Any, **kwargs: Any) -> _PageExtraction:
+        self.calls.append((args, kwargs))
+        return _PageExtraction(read_id="read-1")
+
+
+def _owner_finding(
+    sub_topic: str, locator: str, target_ids: Sequence[str] = ()
+) -> Finding:
+    return _finding(sub_topic, QEC_SOURCE_URL).model_copy(
+        update={
+            "read_id": "read-1",
+            "locator": locator,
+            "target_ids": list(target_ids),
+        }
+    )
+
+
+def _reuse_setup(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> tuple[ResearcherAgent, _ExtractStub, SubTopicTask, AcquisitionPolicy]:
+    """Topic-02's agent, task and policy, with its own page call stubbed out."""
+    agent = _researcher(tracker, TargetKeyedCompleter())
+    stub = _ExtractStub()
+    monkeypatch.setattr(agent, "_extract_one_page", stub)
+    beta = _sub_topic("Beta", 2, "topic-02").model_copy(
+        update={"evidence_targets": [_beta_qualitative()]}
+    )
+    task = SubTopicTask(instruction="Gather evidence for Beta.", sub_topic=beta)
+    policy = AcquisitionPolicy(
+        state=AcquisitionState(target_id="topic-02", remaining_calls=1),
+        session_id="s1",
+        target_id="topic-02",
+    )
+    return agent, stub, task, policy
+
+
+async def _reuse(
+    agent: ResearcherAgent,
+    task: SubTopicTask,
+    policy: AcquisitionPolicy,
+    owner: "asyncio.Task[_PageExtraction]",
+) -> _PageExtraction:
+    shared = _SharedPageExtraction(
+        task=owner,
+        scope=_ExtractionScope(
+            target_ids=("topic-02-target-01",),
+            coverage_titles=(("topic-01", "Alpha"), ("topic-02", "Beta")),
+        ),
+        owner_coverage_id="topic-01",
+    )
+    return await agent._reuse_page_extraction(
+        task,
+        ReActRun(agent_name="researcher", stop_reason="finished"),
+        policy,
+        "read-1",
+        shared,
+        gate=asyncio.Semaphore(1),
+        valid_target_ids=["topic-02-target-01"],
+        planned_targets=[_beta_qualitative()],
+        question=None,
+        coverage_titles={"topic-01": "Alpha", "topic-02": "Beta"},
+    )
+
+
+async def _returning(result: _PageExtraction) -> _PageExtraction:
+    return result
+
+
+@pytest.mark.asyncio
+async def test_a_reusable_owner_result_is_imported_without_a_call(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, stub, task, policy = _reuse_setup(tracker, monkeypatch)
+    owner = _PageExtraction(
+        read_id="read-1",
+        findings=[
+            _owner_finding("Alpha", "chunk-0", ["topic-02-target-01"]),
+            _owner_finding("Alpha", "chunk-1"),
+        ],
+        admitted_keys=[("read-1", "chunk-0"), ("read-1", "chunk-1")],
+        packet_complete=True,
+        reader_notes="",
+    )
+
+    result = await _reuse(
+        agent, task, policy, asyncio.create_task(_returning(owner))
+    )
+
+    assert stub.calls == [] and result.reused_from == "topic-01"
+    assert [finding.related_sub_topic for finding in result.findings] == [
+        "Beta",
+        "Alpha",
+    ]
+    assert list(policy.findings)[-2:] == result.findings
+    assert result.admitted_keys == owner.admitted_keys
+
+
+@pytest.mark.asyncio
+async def test_changed_reader_notes_force_the_second_topic_to_extract_again(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, stub, task, policy = _reuse_setup(tracker, monkeypatch)
+    owner = _PageExtraction(
+        read_id="read-1",
+        findings=[_owner_finding("Alpha", "chunk-0", ["topic-02-target-01"])],
+        packet_complete=True,
+        reader_notes="# Reader notes\nstale",
+    )
+
+    result = await _reuse(
+        agent, task, policy, asyncio.create_task(_returning(owner))
+    )
+
+    assert result.reuse_fallback is True and len(stub.calls) == 1
+    assert result.reused_from is None
+    assert list(policy.findings) == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_reusing_topic_never_cancels_the_owner(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _, task, policy = _reuse_setup(tracker, monkeypatch)
+    never = asyncio.Event()
+
+    async def owner_call() -> _PageExtraction:
+        await never.wait()
+        return _PageExtraction(read_id="read-1")
+
+    owner = asyncio.create_task(owner_call())
+    reuse = asyncio.create_task(_reuse(agent, task, policy, owner))
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+    reuse.cancel()
+    await asyncio.gather(reuse, return_exceptions=True)
+
+    assert reuse.cancelled()
+    assert not owner.done()
+    owner.cancel()
+    await asyncio.gather(owner, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_owner_extraction_falls_back(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, stub, task, policy = _reuse_setup(tracker, monkeypatch)
+    never = asyncio.Event()
+
+    async def owner_call() -> _PageExtraction:
+        await never.wait()
+        return _PageExtraction(read_id="read-1")
+
+    owner = asyncio.create_task(owner_call())
+    await asyncio.sleep(0)
+    owner.cancel()
+    await asyncio.gather(owner, return_exceptions=True)
+
+    result = await _reuse(agent, task, policy, owner)
+
+    assert result.reuse_fallback is True and len(stub.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_owner_extraction_that_raised_is_not_reused_and_does_not_fail_the_importer(
+    tracker: Tracker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bug in the owner's task (not a provider error) leaves the importer to
+    extract the page itself instead of raising the owner's exception."""
+    agent, stub, task, policy = _reuse_setup(tracker, monkeypatch)
+
+    async def owner_call() -> _PageExtraction:
+        raise RuntimeError("bug")
+
+    owner = asyncio.create_task(owner_call())
+    await asyncio.gather(owner, return_exceptions=True)
+
+    result = await _reuse(agent, task, policy, owner)
+
+    assert result.reuse_fallback is True and len(stub.calls) == 1
+
+
+def test_reused_unbound_keys_are_the_imported_passages_binding_no_own_target() -> None:
+    own = {"topic-02-target-01"}
+    reused = [
+        _owner_finding("Alpha", "chunk-0", ["topic-02-target-01"]),
+        _owner_finding("Alpha", "chunk-1", ["topic-01-target-01"]),
+        _owner_finding("Alpha", "chunk-2"),
+        # A passage that also has a finding bound to an own target is answered.
+        _owner_finding("Alpha", "chunk-0"),
+        # Without a read id and locator there is no passage to name.
+        _finding("Alpha", QEC_SOURCE_URL),
+    ]
+
+    assert _reused_unbound_keys(reused, own) == {
+        ("read-1", "chunk-1"),
+        ("read-1", "chunk-2"),
+    }
+
+
+def test_unbound_required_figure_targets_are_the_required_quantities_no_finding_answers() -> None:
+    figure = make_target("topic-02-target-01")
+    answered = make_target("topic-02-target-02")
+    optional = make_target("topic-02-target-03", required=False)
+    qualitative = make_target("topic-02-target-04", unit_dimension=None)
+    findings = [_owner_finding("Beta", "chunk-0", ["topic-02-target-02"])]
+
+    assert _unbound_required_figure_targets(
+        [figure, answered, optional, qualitative], findings
+    ) == [figure]
+
+
+@pytest.mark.asyncio
+async def test_a_loop_sees_a_robots_refusal_another_loop_learned(
+    tracker: Tracker,
+) -> None:
+    """Loop A's read fetches the host's robots.txt, which refuses ``/private/``;
+    loop B, still deciding, then sees its own queued private candidate marked,
+    and its completed event counts it. Loop A has no such candidate."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/", request=request
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=(
+                f"<html><head><title>{QEC_READ.title}</title></head>"
+                f"<body><p>{QEC_PASSAGE}</p></body></html>"
+            ),
+            request=request,
+        )
+
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": [
+                use_tool(
+                    "Search for Beta.",
+                    "web_search",
+                    json.dumps({"query": "Beta 2025"}),
+                ),
+                finish("Beta is covered.", "Beta answer."),
+            ],
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+        # Alpha's read has fetched the host's robots.txt before Beta's first turn.
+        delays={"topic-02": 0.1},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=research_tools(
+            tracker,
+            search=_QuerySearchClient(
+                {
+                    "Alpha 2025": search_response(),
+                    "Beta 2025": search_response(
+                        url="https://example.test/private/report",
+                        title="Private report",
+                    ),
+                }
+            ),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    assert " robots=disallowed" in completer.packets("topic-02")[-1]
+    assert _completed(outcome, "topic-02").metadata["robots_disallowed_candidates"] == 1
+    assert _completed(outcome, "topic-01").metadata["robots_disallowed_candidates"] == 0
 
 @pytest.mark.asyncio
 async def test_a_provider_failure_lets_running_loops_finish_and_skips_unstarted_ones(

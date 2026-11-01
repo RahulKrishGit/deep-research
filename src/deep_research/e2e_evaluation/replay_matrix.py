@@ -458,7 +458,8 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
     )
     return ReplayScenario(
         case_id="extra-pass-recovers-missing-target",
-        version=REPLAY_CASE_VERSION,
+        # 3: unchanged parts carry over and the extra pass is reviewed scoped.
+        version=3,
         question="What is the corroborated Acme widget adoption rate for 2024?",
         topics=(
             _topic(
@@ -515,7 +516,10 @@ def _extra_pass_recovers_missing_target() -> ReplayScenario:
                 "error:agent_tool_failed",
                 "error:researcher_sub_topic_without_findings",
             ),
-            required_invariants=("extra_pass_recovers_missing_target",),
+            required_invariants=(
+                "extra_pass_recovers_missing_target",
+                "extra_pass_carries_unchanged_parts",
+            ),
         ),
     )
 
@@ -1408,7 +1412,8 @@ def _validated_cache_reuse() -> ReplayScenario:
     )
     return ReplayScenario(
         case_id="validated-cache-reuse",
-        version=REPLAY_CASE_VERSION,
+        # 3: a page both topics admit is extracted once.
+        version=3,
         question="What did the Acme widget adoption survey measure in 2024?",
         topics=(
             _topic(
@@ -1440,6 +1445,7 @@ def _validated_cache_reuse() -> ReplayScenario:
             required_invariants=(
                 "read_downloaded_once",
                 "cache_provenance_is_validated",
+                "shared_page_extracted_once",
             ),
             allowed_failure_classes=(
                 "error:researcher_sub_topic_skipped",
@@ -3145,12 +3151,13 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ),
     ReplayCaseEntry(
         case_id="extra-pass-recovers-missing-target",
-        version=REPLAY_CASE_VERSION,
+        version=3,
         title="The missing account is acquired in the repair round",
         expected_product_result="accepted / 0",
         decisive_assertion=(
             "Only missing target is acquired/rechecked; new support changes "
-            "fingerprint; no repeated stable checks"
+            "fingerprint; no repeated stable checks; unchanged parts carry "
+            "over and the extra pass is reviewed scoped"
         ),
         build=_extra_pass_recovers_missing_target,
     ),
@@ -3269,13 +3276,13 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ),
     ReplayCaseEntry(
         case_id="validated-cache-reuse",
-        version=REPLAY_CASE_VERSION,
+        version=3,
         title="One download, two answers, validated provenance",
         expected_product_result="accepted / 0",
         decisive_assertion=(
             "Validated original evidence is reused without repeated body "
             "downloads; stale/changed/forged cache provenance cannot silently "
-            "pass"
+            "pass; a page both topics admit is extracted once"
         ),
         build=_validated_cache_reuse,
     ),

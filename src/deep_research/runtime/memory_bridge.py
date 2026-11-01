@@ -16,11 +16,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
-from uuid import uuid4
 
 from pydantic import JsonValue, ValidationError
 
-from deep_research.memory.entries import MemoryEntry
+from deep_research.memory.entries import MemoryEntry, finding_entry_id
 from deep_research.memory.long_term import LongTermMemory
 
 # What a tool-driven save means when the model did not say. A tool call
@@ -105,9 +104,12 @@ class LongTermMemoryBridge:
         content: str,
         metadata: Mapping[str, JsonValue],
     ) -> MemoryEntry:
-        """The one ``MemoryEntry`` a tool-supplied finding becomes."""
+        """The one ``MemoryEntry`` a tool-supplied finding becomes.
+
+        Its id is derived from the validated entry, so one sentence of one page
+        is one entry whichever session or call saves it.
+        """
         payload: dict[str, Any] = {
-            "entry_id": uuid4().hex,
             "content": content,
             "entry_type": metadata.get("entry_type", DEFAULT_BRIDGE_ENTRY_TYPE),
             "session_id": metadata.get("session_id", self._session_id),
@@ -120,12 +122,21 @@ class LongTermMemoryBridge:
                 payload[key] = value
 
         try:
-            return MemoryEntry.model_validate(payload)
+            entry = MemoryEntry.model_validate(payload)
         except ValidationError as error:
             raise ValueError(
                 "the finding could not be stored in long-term memory "
                 "because its metadata was rejected"
             ) from error
+        return entry.model_copy(
+            update={
+                "entry_id": finding_entry_id(
+                    entry_type=entry.entry_type,
+                    source_url=entry.source_url,
+                    content=entry.content,
+                )
+            }
+        )
 
     async def query(
         self,

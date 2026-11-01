@@ -10,6 +10,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 from tavily import AsyncTavilyClient
+from tavily.errors import (
+    BadRequestError,
+    ForbiddenError,
+    InvalidAPIKeyError,
+    UsageLimitExceededError,
+)
+from tavily.errors import TimeoutError as TavilyTimeoutError
 
 from deep_research.observability import Tracker
 from deep_research.tools.base import (
@@ -32,6 +39,16 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard for type checkers onl
 _MAX_ATTEMPTS = 3
 _MEDIA_TYPE_MAX_LENGTH = 64
 _UNKNOWN_CONTENT_TYPE = "unknown"
+# The SDK raises its own classes for a failing status instead of an
+# ``httpx.HTTPStatusError``, so a failure is classified here by class and
+# published like the ``httpx`` failure with that status. ``ForbiddenError`` is
+# absent on purpose: the SDK folds 403, 432 and 433 into it, so no single code
+# is true and none is published.
+_SDK_STATUS: tuple[tuple[type[Exception], int], ...] = (
+    (UsageLimitExceededError, 429),
+    (InvalidAPIKeyError, 401),
+    (BadRequestError, 400),
+)
 _MEDIA_TYPE_PATTERN = re.compile(r"[a-z0-9!#$%&'*+.^_`|~-]+/[a-z0-9!#$%&'*+.^_`|~-]+")
 
 
@@ -207,6 +224,11 @@ class WebSearchTool(BaseTool):
                 asyncio.TimeoutError,
                 httpx.TimeoutException,
                 httpx.HTTPStatusError,
+                TavilyTimeoutError,
+                UsageLimitExceededError,
+                InvalidAPIKeyError,
+                BadRequestError,
+                ForbiddenError,
             ) as error:
                 is_last_attempt = attempt == attempts - 1
                 if is_last_attempt or not _is_retryable(error):
@@ -231,7 +253,15 @@ def _validate_requested_max_results(value: Any, default: int) -> int:
 
 
 def _is_retryable(error: BaseException) -> bool:
-    if isinstance(error, (asyncio.TimeoutError, httpx.TimeoutException)):
+    if isinstance(
+        error,
+        (
+            asyncio.TimeoutError,
+            httpx.TimeoutException,
+            TavilyTimeoutError,
+            UsageLimitExceededError,
+        ),
+    ):
         return True
     if isinstance(error, httpx.HTTPStatusError):
         return (
@@ -319,6 +349,13 @@ def _tool_execution_error(error: BaseException, attempts: Any) -> ToolExecutionE
     never nulled, otherwise. The content type of the failing response is
     published as a bounded media type, or the static marker when it carries
     none.
+
+    A Tavily SDK error is classified like the ``httpx`` failure it stands for.
+    It carries no response, so a class that names one status
+    (``_SDK_STATUS``) publishes that status and an unknown content type,
+    ``ForbiddenError`` publishes the unclassified sentence and an unknown
+    content type with no status, and the SDK's timeout keeps the timeout
+    sentence with attempts only.
     """
     details: dict[str, Any] = {}
     bounded_attempts = _bounded_attempts(attempts)
@@ -335,6 +372,17 @@ def _tool_execution_error(error: BaseException, attempts: Any) -> ToolExecutionE
             message = "the search request failed with an HTTP error status"
             details["status_code"] = status_code
         details["content_type"] = _bounded_content_type(_content_type(response))
+    elif isinstance(error, ForbiddenError):
+        message = "the search request failed"
+        details["content_type"] = _UNKNOWN_CONTENT_TYPE
+    else:
+        sdk_status = next(
+            (status for cls, status in _SDK_STATUS if isinstance(error, cls)), None
+        )
+        if sdk_status is not None:
+            message = "the search request failed with an HTTP error status"
+            details["status_code"] = sdk_status
+            details["content_type"] = _UNKNOWN_CONTENT_TYPE
     return ToolExecutionError(
         message,
         error_type=type(error).__name__,

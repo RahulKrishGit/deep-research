@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-import deep_research.runtime.memory_bridge as memory_bridge_module
-from deep_research.memory.entries import MemoryEntry
+from deep_research.memory.entries import MemoryEntry, finding_entry_id
 from deep_research.memory.long_term import LongTermMemory
 from deep_research.runtime.memory_bridge import (
     DEFAULT_BRIDGE_AGENT_ID,
@@ -90,6 +88,71 @@ async def test_save_raises_when_the_backend_rejects_the_write() -> None:
 
     with pytest.raises(RuntimeError, match="long-term memory"):
         await bridge.save("A finding.", {})
+
+
+@pytest.mark.asyncio
+async def test_one_page_and_sentence_is_one_memory_entry_across_sessions() -> None:
+    memory, collection = build_memory()
+    meta = {"source_url": "https://example.org/a"}
+
+    first = await LongTermMemoryBridge(memory, session_id="session-1").save(
+        "Break-even was reached in 2025.", meta
+    )
+    second = await LongTermMemoryBridge(memory, session_id="session-2").save(
+        "Break-even was reached in 2025.", meta
+    )
+
+    assert first == second
+    assert list(collection.records) == [first]
+    assert collection.records[first]["metadata"]["session_id"] == "session-2"
+
+
+@pytest.mark.asyncio
+async def test_different_sentences_of_one_page_are_different_entries() -> None:
+    memory, collection = build_memory()
+    bridge = LongTermMemoryBridge(memory, session_id="session-1")
+    meta = {"source_url": "https://example.org/a"}
+
+    first = await bridge.save("Break-even was reached in 2025.", meta)
+    second = await bridge.save("Break-even was reached in 2026.", meta)
+
+    assert first != second
+    assert sorted(collection.records) == sorted([first, second])
+
+
+@pytest.mark.asyncio
+async def test_entry_types_never_share_an_id() -> None:
+    memory, collection = build_memory()
+    bridge = LongTermMemoryBridge(memory, session_id="session-1")
+    url = "https://example.org/a"
+
+    finding = await bridge.save(
+        "Break-even was reached in 2025.",
+        {"entry_type": "finding", "source_url": url},
+    )
+    summary = await bridge.save(
+        "Break-even was reached in 2025.",
+        {"entry_type": "report_summary", "source_url": url},
+    )
+
+    assert finding != summary
+    assert finding.startswith("finding:")
+    assert summary.startswith("report_summary:")
+    assert sorted(collection.records) == sorted([finding, summary])
+
+
+@pytest.mark.asyncio
+async def test_a_tool_saved_note_without_a_url_has_a_stable_id() -> None:
+    memory, collection = build_memory()
+    bridge = LongTermMemoryBridge(memory, session_id="session-1")
+
+    first = await bridge.save("A bare finding.", {})
+    second = await bridge.save("A bare finding.", {})
+
+    assert first == second == finding_entry_id(
+        entry_type="finding", source_url=None, content="A bare finding."
+    )
+    assert list(collection.records) == [first]
 
 
 @pytest.mark.asyncio
@@ -214,25 +277,27 @@ _BATCH = [
 
 
 @pytest.mark.asyncio
-async def test_a_batch_stores_exactly_what_one_save_per_finding_stores(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_a_batch_stores_exactly_what_one_save_per_finding_stores() -> None:
     """One ``save_many`` of three findings stores the same
     ids, documents, metadata and vectors as three single saves, and reaches
     the store in one upsert instead of three."""
+    expected_ids = [
+        finding_entry_id(
+            entry_type="finding",
+            source_url=f"https://example.org/{index}",
+            content=f"Finding {index} was reached in 2025.",
+        )
+        for index in range(3)
+    ]
 
     async def stored(batch: bool) -> _CountingCollection:
-        ids = iter(f"entry-{index}" for index in range(3))
-        monkeypatch.setattr(
-            memory_bridge_module, "uuid4", lambda: SimpleNamespace(hex=next(ids))
-        )
         collection = _CountingCollection()
         bridge = LongTermMemoryBridge(
             LongTermMemory(collection=collection, embeddings=FakeEmbeddings()),
             session_id="session-1",
         )
         if batch:
-            assert await bridge.save_many(_BATCH) == ["entry-0", "entry-1", "entry-2"]
+            assert await bridge.save_many(_BATCH) == expected_ids
         else:
             for content, metadata in _BATCH:
                 await bridge.save(content, metadata)
@@ -241,8 +306,26 @@ async def test_a_batch_stores_exactly_what_one_save_per_finding_stores(
     one_by_one = await stored(batch=False)
     batched = await stored(batch=True)
 
+    assert list(batched.records) == expected_ids
     assert batched.records == one_by_one.records
     assert (one_by_one.upserts, batched.upserts) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_batch_naming_one_sentence_of_one_page_twice_writes_it_once() -> None:
+    memory, collection = build_memory()
+    bridge = LongTermMemoryBridge(memory, session_id="session-1")
+    meta = {"source_url": "https://example.org/a"}
+
+    ids = await bridge.save_many(
+        [
+            ("Break-even was reached in 2025.", meta),
+            ("Break-even  was reached\nin 2025.", meta),
+        ]
+    )
+
+    assert ids[0] == ids[1]
+    assert list(collection.records) == [ids[0]]
 
 
 @pytest.mark.asyncio

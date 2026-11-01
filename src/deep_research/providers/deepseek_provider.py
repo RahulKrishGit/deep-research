@@ -1152,6 +1152,7 @@ class DeepSeekChatProvider:
         configured_cap: int,
         truncated: bool,
         attempts: Sequence[CallAttemptTelemetry] = (),
+        model_returned: str | None = None,
     ) -> None:
         """Record reported usage, and only for a response that arrived.
 
@@ -1166,6 +1167,11 @@ class DeepSeekChatProvider:
         ``attempts`` and ``usage.reasoning_tokens`` are this call's own
         contributions: the collector keeps the attempts of whichever call is
         currently its stage's slowest, and sums reasoning tokens across the run.
+
+        ``model_returned`` is the model id the response itself named, ``None``
+        when it named none: never the requested-model fallback that
+        ``last_model_returned`` uses, so the run's count holds only what the
+        API answered with.
         """
         budget = self._request_budget
         if budget is not None:
@@ -1185,6 +1191,7 @@ class DeepSeekChatProvider:
             cached_input_tokens=cached_input_tokens,
             reasoning_tokens=usage.reasoning_tokens,
             attempts=attempts,
+            model_returned=model_returned,
         )
 
     @property
@@ -1385,6 +1392,7 @@ class DeepSeekChatProvider:
                     configured_cap=self._config.max_tokens,
                     truncated=telemetry.finish_reason_category == "length",
                     attempts=attempts,
+                    model_returned=getattr(response, "model", None),
                 )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
@@ -1536,6 +1544,7 @@ class DeepSeekChatProvider:
                 configured_cap=configured_max_tokens,
                 truncated=telemetry.finish_reason_category == "length",
                 attempts=attempts,
+                model_returned=getattr(response, "model", None),
             )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":
@@ -1832,6 +1841,7 @@ class DeepSeekChatProvider:
                     configured_cap=resolved_max_tokens,
                     truncated=telemetry.finish_reason_category == "length",
                     attempts=attempts,
+                    model_returned=getattr(response, "model", None),
                 )
                 _set_span_result(span, telemetry)
                 if telemetry.finish_reason_category == "length":
@@ -2070,6 +2080,7 @@ class _DeepSeekSchemaStructuredProvider(DeepSeekChatProvider):
                 configured_cap=configured_max_tokens,
                 truncated=finish_reason_category == "length",
                 attempts=attempts,
+                model_returned=getattr(response, "model", None),
             )
             _set_span_result(span, telemetry)
             if telemetry.finish_reason_category == "length":

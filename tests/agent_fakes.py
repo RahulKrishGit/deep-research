@@ -6,6 +6,7 @@ Not collected by pytest: the filename does not match ``test_*.py``.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
@@ -475,7 +476,8 @@ class TargetKeyedCompleter:
         if isinstance(reply, BaseException):
             raise reply
         if callable(reply):
-            return reply(list(messages), schema)
+            result = reply(list(messages), schema)
+            return await result if inspect.isawaitable(result) else result
         return reply
 
 

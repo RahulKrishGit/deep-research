@@ -46,7 +46,7 @@ re-raised so the run stops instead of spending past a declared limit.
 
 | Tool | Purpose |
 | --- | --- |
-| `web_search` | Tavily search (`tavily.search_depth`, `tavily.max_results`). |
+| `web_search` | Tavily search (`tavily.search_depth`, `tavily.max_results`); timeouts, 429 and 5xx are retried with backoff, including the Tavily SDK's own `TimeoutError` and `UsageLimitExceededError`. |
 | `web_scraper` | Fetch a web page (bounded attempts and retries). |
 | `document_reader` | Extract the text of a PDF, spreadsheet or data file at a URL, in chunks. |
 | `query_memory` | Semantic recall from long-term memory. |
@@ -79,7 +79,10 @@ planner's `MemorySnapshot` from procedural guidance only, so remembered prose
 never becomes a settled premise of the plan: the Researcher discovers prior leads
 under its own tool budget and must re-admit anything it uses as evidence of this
 run. Cited findings are written to long-term memory once, at publication, and
-only for an accepted report.
+only for an accepted report. An entry's id is its type, a colon and the SHA-256
+of its type, source URL and stored text (`finding_entry_id`), so one sentence
+from one page is one entry: a later run's write replaces the earlier one, and a
+batch that names one id twice writes it once.
 
 ## Agent runtime
 
@@ -168,16 +171,24 @@ Pages are not read whole into a prompt. A read is admitted as exact,
 paragraph-bounded passages (`agents.read_admission_chars`), selected and ranked
 by relevance into an extraction packet (`agents.evidence_packet_chars`), and
 every ReAct decision sees only a small context packet
-(`agents.decision_context_chars`). Extraction is per page: a structured call
-starts as soon as a read is admitted, bounded by
-`agents.extraction_concurrency`, and passages a required target is still owed
-get a bounded re-ask. A read that yields nothing produces no `Finding`, so a
-source is never invented. Each finding carries the snippet it was extracted from,
-which the Evidence Verifier later checks against the page. The per-sub-topic
-caps (`MAX_FINDINGS_PER_SUB_TOPIC` 120, `MAX_UNIQUE_SOURCES_PER_SUB_TOPIC` 48)
-are runaway guards; up to `MAX_EXEMPT_PER_REQUIRED_TARGET` (2) findings per
-required target sit outside them, so a cap cannot delete the answer a run was
-sent to get.
+(`agents.decision_context_chars`). A queued candidate whose host's robots.txt,
+already fetched this run, refuses it is marked `robots=disallowed` in the
+decision packet; the mark is advisory, never set for a document URL
+(`document_reader` checks no robots), and the scraper still decides. Extraction
+is per page: a structured call starts as soon as a read is admitted, bounded by
+`agents.extraction_concurrency`. A page two sub-topics admit in one research pass
+with the same target list is extracted once: the second loop waits for the first
+loop's call and imports its findings, re-stamping only the copies bound to its own
+targets, and extracts the page itself when that call failed, was cut off at the
+output cap or overflowed its packet, or the reader notes changed meanwhile.
+Passages a required target is still owed get a bounded re-ask, including imported
+passages that bind none of the importing loop's own targets. A read that yields
+nothing produces no `Finding`, so a source is never invented. Each finding carries
+the snippet it was extracted from, which the Evidence Verifier later checks
+against the page. The per-sub-topic caps (`MAX_FINDINGS_PER_SUB_TOPIC` 120,
+`MAX_UNIQUE_SOURCES_PER_SUB_TOPIC` 48) are runaway guards; up to
+`MAX_EXEMPT_PER_REQUIRED_TARGET` (2) findings per required target sit outside
+them, so a cap cannot delete the answer a run was sent to get.
 
 A provider failure stops the remaining sub-topics with the findings so far kept.
 A high-priority sub-topic (`HIGH_PRIORITY_THRESHOLD` 2) that produced no findings
@@ -254,6 +265,11 @@ points per part are at most the larger of the required targets answered, the
 share at about 45 words per point, and 3. The budget is an instruction, not a
 code filter. `agents.writer_authority_floor` (0.4) applies only to the bottom
 line. A redraft re-asks only the parts a defect names and carries the rest over.
+An extra pass drafts only the parts that own one of its targets, that a material
+defect of the previous review names, that gained, lost or re-judged evidence (or
+gained a finding or fact row bound to their targets), or that have no previous
+section, and carries every other part over unchanged, with no call and no
+Statement Check.
 The writer computes the quality snapshot (`compute_report_quality`) the router and
 the terminal gates read.
 
@@ -274,10 +290,12 @@ with a `1e-9` allowance so float rounding cannot fail an exact 0.70) with
 no material defect. A truncated reply is asked once more at `high` effort; a
 provider failure gives `provider_failed` and missing dispositions give
 `incomplete`, and either way the report publishes as partial: an unscored review
-never fails the run. After a redraft the next review is scoped to the changed
-statements when at least one part is byte-identical to what the previous review
-judged, and an unusable scoped reply falls back to one fresh full review. Code,
-not the model, stamps `missing_required_target_ids` from the quality snapshot.
+never fails the run. After a redraft, or an extra pass that carried at least one
+part, the next review is scoped to the changed statements when at least one part
+is byte-identical to what the previous review judged, and an unusable scoped
+reply falls back to one fresh full review. A note pass is still reviewed in full.
+Code, not the model, stamps `missing_required_target_ids` from the quality
+snapshot.
 
 ## Orchestration
 
@@ -424,7 +442,9 @@ iteration, LLM, tool and memory, and completed spans append typed metrics
 transport failure becomes a recoverable error and work continues locally. A
 per-run `RunTelemetryCollector` reports rate-limit (429) errors and how many a
 retry recovered, the peak provider calls in flight, each stage's calls and
-seconds, and each operation's output tokens against its cap.
+seconds, each call's input, cached-input, output and reasoning tokens, each
+operation's output tokens against its cap, and how many calls each model id the
+provider returned answered (`models_returned`).
 
 `RequestBudget` (`request_budget.py`) reserves one unit per transport attempt
 before the call is made, shared by the provider transports and the search tool. A
@@ -458,10 +478,11 @@ plan the planner is scripted to write, and the expected product result; every
 scripted completion asserts the packet it was asked, so a reply can never populate
 state the run did not produce.
 
-The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2) holds
-35 rows. The suite runs each row three times under `offline_credentials()` and
-`network_denied()`, requires one identical outcome per row (exit code, terminal
-quality, answered targets, published report) that matches its declared result, and
-fails a suite whose runs attempted a connection. The API's replay mode
-(`api/replay.py`) serves the same harness behind the HTTP interface with the same
-two guards held for the whole process.
+The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2, with
+`validated-cache-reuse` and `extra-pass-recovers-missing-target` at 3) holds 35
+rows. The suite runs each row three times under `offline_credentials()` and
+`network_denied()`, requires one identical
+outcome per row (exit code, terminal quality, answered targets, published report)
+that matches its declared result, and fails a suite whose runs attempted a
+connection. The API's replay mode (`api/replay.py`) serves the same harness behind
+the HTTP interface with the same two guards held for the whole process.

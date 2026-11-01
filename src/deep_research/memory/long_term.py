@@ -222,10 +222,17 @@ class LongTermMemory:
         return await self.save_many([entry]) == 1
 
     async def save_many(self, entries: Sequence[MemoryEntry]) -> int:
-        """Store many entries. Returns how many were written (0 on failure)."""
+        """Store many entries. Returns how many were stored (0 on failure).
+
+        An id repeated within the batch is written once, the last occurrence
+        winning, because a vector store rejects a repeated id within one
+        upsert. The count is still ``len(entries)``: every entry asked for is
+        stored, however many of them name one id.
+        """
         batch = tuple(entries)
         if not batch:
             return 0
+        unique = list({entry.entry_id: entry for entry in batch}.values())
         entry_types = {entry.entry_type for entry in batch}
         entry_type = next(iter(entry_types)) if len(entry_types) == 1 else None
         try:
@@ -235,22 +242,22 @@ class LongTermMemory:
                 memory_layer="long_term",
                 entry_type=entry_type,
             ) as span:
-                documents = [entry.content for entry in batch]
+                documents = [entry.content for entry in unique]
                 vectors = await asyncio.to_thread(
                     self._embeddings.embed_documents, documents
                 )
-                if len(vectors) != len(batch):
+                if len(vectors) != len(unique):
                     raise ValueError(
                         "embedding provider returned the wrong number of vectors"
                     )
                 await asyncio.to_thread(
                     self._collection.upsert,
-                    ids=[entry.entry_id for entry in batch],
+                    ids=[entry.entry_id for entry in unique],
                     documents=documents,
                     embeddings=[list(vector) for vector in vectors],
-                    metadatas=[entry.to_metadata() for entry in batch],
+                    metadatas=[entry.to_metadata() for entry in unique],
                 )
-                span.set_result_count(len(batch))
+                span.set_result_count(len(unique))
         except Exception as error:
             self._record_unavailable(
                 error, operation="save", details={"entry_count": len(batch)}

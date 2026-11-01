@@ -490,7 +490,7 @@ class FakePublisher:
         return ToolResult(
             tool_name="save_to_memory",
             success=True,
-            data={"saved": True},
+            data={"entry_id": f"entry-{len(self.findings)}"},
             latency_ms=0.0,
         )
 

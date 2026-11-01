@@ -361,16 +361,19 @@ def report_writer_node(
     (``merge_research_state``), which is right for a genuinely new report but
     would throw away exactly what a scoped re-review needs. When this pass
     ran with a scored ``report_review`` already in hand *and* arrived here
-    through the writer-redraft hop specifically (not an extra research pass
-    that merely still has an old material defect on hand --
-    :func:`_arrived_via_redraft_hop` reads the event log to tell the two
-    apart), :func:`remap_review_for_redraft` is asked -- with both the
-    composition that review judged and the one this pass just produced still
-    local Python objects -- to carry it onto the new statement ids. It comes
-    back ``None`` unless every part the new composition marks carried over is
-    byte-identical to what the review judged, so a part that changed without
-    a redraft request simply leaves the review dropped, and the reviewer node
-    falls back to a full review.
+    through the writer-redraft hop or through an extra research pass
+    (:func:`_arrived_via_redraft_hop` and :func:`_arrived_via_extra_pass` read
+    the event log to tell them from a note pass, whose draft is over evidence
+    the review never saw), :func:`remap_review_for_redraft` is asked -- with
+    both the composition that review judged and the one this pass just
+    produced still local Python objects -- to carry it onto the new statement
+    ids. On an extra pass the parts the writer carried have unchanged
+    evidence by construction, so what the review judged of them still holds.
+    It comes back ``None`` unless every part the new composition marks carried
+    over is byte-identical to what the review judged (and unless at least one
+    part carried), so a part that changed without a redraft request simply
+    leaves the review dropped, and the reviewer node falls back to a full
+    review.
     """
     inner = agent_node(agent, node_name=node_name)
 
@@ -394,7 +397,10 @@ def report_writer_node(
             previous_review is not None
             and previous_review.status == "scored"
             and pre_state.composition is not None
-            and _arrived_via_redraft_hop(pre_state.events)
+            and (
+                _arrived_via_redraft_hop(pre_state.events)
+                or _arrived_via_extra_pass(pre_state.events)
+            )
         ):
             remapped = remap_review_for_redraft(
                 previous_review,
@@ -409,31 +415,53 @@ def report_writer_node(
 
 
 def _arrived_via_redraft_hop(events: Sequence[ResearchEvent]) -> bool:
-    """Whether the writer-redraft hop, not an extra research pass, is what
-    most recently ran before this writer call.
+    """Whether the writer-redraft hop is what most recently ran before this
+    writer call.
 
     ``state.report_review`` surviving with material defects on hand does not
-    by itself say *why* the writer is running again: an extra pass bought by
-    a missing required target loops back through the whole research chain
-    with the same review (and its defects) still in place, and that pass's
-    carried-over parts may now have new evidence and new fact rows behind
-    them that a scoped re-review would never be asked to re-judge. The two
-    hops are told apart by their own marker events: ``writer_redraft_node``
-    always runs immediately before this node with nothing in between
-    (``graph.report.redraft_requested``), while an extra pass re-enters
-    through the researcher, the source evaluator and the evidence verifier
-    first (``graph.extra_pass.started``). Scanning from the most recent event
-    for whichever marker comes first settles it without a new state field.
+    by itself say *why* the writer is running again, and that decides whether
+    a carried-over part still matches what the review judged. After the hop
+    a part is carried only because the writer chose to leave it alone. After
+    an extra research pass (:func:`_arrived_via_extra_pass`) a part is
+    carried only when the evidence its draft reads is unchanged, and a part
+    whose evidence moved is drafted afresh. The hops are told apart by their
+    own marker events: ``writer_redraft_node`` always runs immediately before
+    this node with nothing in between (``graph.report.redraft_requested``),
+    while an extra pass re-enters through the researcher, the source
+    evaluator and the evidence verifier first (``graph.extra_pass.started``).
+    Scanning from the most recent event for whichever marker comes first
+    settles it without a new state field.
 
-    A reader note's own loops read like the extra
-    pass: after ``graph.note_pass.started`` the writer drafts over new
-    evidence, and after ``graph.note_redraft.requested`` it drafts afresh with
-    the notes, so neither judgement may be carried over as a scoped one.
+    A reader note's own loops are neither: after ``graph.note_pass.started``
+    the writer drafts over new evidence, and after
+    ``graph.note_redraft.requested`` it drafts afresh with the notes, so
+    neither judgement may be carried over as a scoped one.
     """
     for event in reversed(events):
         if event.event_type == "graph.report.redraft_requested":
             return True
         if event.event_type in _FRESH_DRAFT_MARKERS:
+            return False
+    return False
+
+
+def _arrived_via_extra_pass(events: Sequence[ResearchEvent]) -> bool:
+    """Whether the reviewer's extra pass, not the redraft hop or a note loop,
+    is what most recently ran before this writer call.
+
+    The same scan as :func:`_arrived_via_redraft_hop`, answering for the other
+    marker: the most recent of ``graph.report.redraft_requested`` and the
+    fresh-draft markers settles it. Only ``graph.extra_pass.started`` is
+    true, so a note pass or a note redraft that came after the extra pass
+    makes this draft a fresh one again.
+    """
+    for event in reversed(events):
+        if event.event_type == "graph.extra_pass.started":
+            return True
+        if (
+            event.event_type == "graph.report.redraft_requested"
+            or event.event_type in _FRESH_DRAFT_MARKERS
+        ):
             return False
     return False
 
@@ -692,7 +720,7 @@ async def _publish(
     if document_writes != len(written):
         report_path = evidence_path = quality_path = None
 
-    memory_writes = 0
+    saved_ids: set[str] = set()
     if status == QUALITY_STATUS_ACCEPTED:
         payloads = [
             finding_memory_payload(finding, session_id=state.session_id)
@@ -702,14 +730,14 @@ async def _publish(
         if payloads and isinstance(publisher, BatchReportPublisher):
             batch = await publisher.publish_findings(findings=payloads)
             if batch.success:
-                memory_writes = len(payloads)
+                saved_ids.update(_saved_entry_ids(batch))
                 batched = True
         for content, metadata in [] if batched else payloads:
             result = await publisher.publish_finding(
                 content=content, metadata=metadata
             )
             if result.success:
-                memory_writes += 1
+                saved_ids.update(_saved_entry_ids(result))
                 continue
             errors.append(
                 publication_write_error(
@@ -719,6 +747,7 @@ async def _publish(
                     failure_type=_failure_type(result),
                 )
             )
+    memory_writes = len(saved_ids)
     return _Publication(
         report_path,
         evidence_path,
@@ -732,6 +761,23 @@ async def _publish(
 def _failure_type(result: ToolResult) -> str:
     """The failed tool result's own error class name, never its message."""
     return result.error.type if result.error is not None else "unknown"
+
+
+def _saved_entry_ids(result: ToolResult) -> list[str]:
+    """The memory entry ids a successful write names.
+
+    A batch result carries ``entry_ids`` and a single save ``entry_id``. Two
+    findings that are one sentence of one page share an id, so a caller counts
+    the distinct ids, not the findings it handed over.
+    """
+    data = result.data
+    if not isinstance(data, dict):
+        return []
+    ids = data.get("entry_ids")
+    if isinstance(ids, list):
+        return [entry_id for entry_id in ids if isinstance(entry_id, str)]
+    entry_id = data.get("entry_id")
+    return [entry_id] if isinstance(entry_id, str) else []
 
 
 async def _write_document(
@@ -1063,7 +1109,8 @@ async def _review_report(
     # ``previous`` here is either the ordinary stored review (the
     # reuse check above already handled the identical-fingerprint case) or a
     # remapped carried-over review ``report_writer_node`` restored after a
-    # redraft (:func:`remap_review_for_redraft`). Only the latter yields a
+    # redraft or an extra pass that carried a part
+    # (:func:`remap_review_for_redraft`). Only the latter yields a
     # scoped packet, since only it carries a disposition for at least one
     # unchanged statement; a stale unrelated review yields ``None`` from
     # ``build_scoped_report_review_input`` just as safely, falling back to a

@@ -36,27 +36,27 @@ PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "broad-constraints": ("a111a2648e94cca4", "33624bd297ab2166", "83527eb9236455ae", 59),
     "comparative-conflict": ("7555bdbc114239a7", "ee04298f16d6b28b", "7dccd31e5b040067", 33),
     "comparison-target-names-both-products": ("8cbb60c01660add5", "d7ed8bcb74b01e48", "9fa96fa5dd76de44", 16),
-    "count-unit-period": ("8dac99777a633d9a", "15197a4b59f8f19a", "ed1efe647b4a8f92", 39),
+    "count-unit-period": ("c72f57a11295c498", "02094d813a353885", "6c0496792f29aded", 35),
     "decision-context-late-candidate": ("230314c195310eb5", "802e7eb80ba650c8", "ee83579ed3b734e1", 37),
     "empty-but-clean": ("d02228cc8855fe88", "aef6caa41fa79668", "29fd24cea08b7d2f", 40),
     "evidence-words-not-on-page-rejected": ("a3ba22adc19a91a7", "8512bffb0b583ab8", "ce02b1541e0533e5", 33),
-    "extra-pass-finds-nothing": ("e30dc98c33aff5e3", "05722cd095cfc654", "07765d9b14cebcd3", 37),
+    "extra-pass-finds-nothing": ("34bff548a1d5db90", "2d5c83fa9273b366", "5ffd9edb479ab23c", 33),
     # This row's script calls a tool on its forced last turn, which a
     # sub-topic loop never asks; a model that answers as told loses only that
     # turn's own requests (see the obeying-model test below).
-    "extra-pass-recovers-missing-target": ("f52091c37449783b", "0326f95dbec579bf", "3d329de1d1d19c72", 48),
+    "extra-pass-recovers-missing-target": ("e26d034cf7e639d8", "5444fb32d9ff6191", "1ab12ce129c96ea1", 44),
     # This row's script calls a tool on its forced last turn, which a
     # sub-topic loop never asks; a model that answers as told loses only that
     # turn's own requests (see the obeying-model test below).
     "extra-pass-redrafts-the-gaining-part": ("405bc78441fbdcac", "bc0a68ee8bf6a8b1", "38b615bc05fd169a", 41),
     "figure-not-on-page-dropped": ("3c7dc8ce949021fc", "3bfac55074629d62", "e04709adc1e21392", 33),
-    "forecast-versus-actual-kept-apart": ("f632bdf6f4ab7125", "4ad3ee88d833f1fa", "8e1cb9a396e4dca9", 41),
+    "forecast-versus-actual-kept-apart": ("9f7915b7177a5e82", "f4cb55b7ccee84b8", "116795727d2ffbdc", 37),
     "maker-notes-vs-relay": ("e8ac145c1910a2d2", "454e28d55e0eb077", "8c9479eef7a31dd6", 20),
-    "memory-is-not-read": ("ff79f833c218bedc", "a2bc3bdebb97bf24", "b0ee9daa3f3c06bb", 34),
+    "memory-is-not-read": ("5d7b81201abf3e30", "5439c1bed9409d73", "e2721c7b442df3ad", 30),
     # This row's script calls a tool on its forced last turn, which a
     # sub-topic loop never asks; a model that answers as told loses only that
     # turn's own requests (see the obeying-model test below).
-    "missing-target-triggers-one-extra-pass": ("d75c5a90c152a830", "b80c35c7c2af39a4", "388fdb5b29b26938", 46),
+    "missing-target-triggers-one-extra-pass": ("0b969120412f4a60", "92ebdbbd0ec5d7c9", "d26faf3d337f327a", 42),
     "non-constraint-answer": ("10c6a71ce1bc6fa0", "07d53e7979077394", "8b3e1975ab5195c4", 33),
     "one-part-question": ("907557702b4faf46", "b942154e38eb83ef", "1ed4931a212c59db", 16),
     "prose-only-question": ("946def9068481038", "fc5944591ff1764a", "feceb235e3dd446a", 25),
@@ -75,7 +75,7 @@ PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "two-versions-one-target": ("290c9cb58f2d7619", "9b469dabcb7b7df6", "249a41ee3e685a00", 16),
     "unattributed-relay-prose": ("5962091717fdfd90", "5f1119c7995c420f", "3d9f3d2435df6a6f", 16),
     "unsupported-mechanism": ("6ee2f13de7243f61", "e11f85e4649ce755", "3db97d2e6100f225", 33),
-    "validated-cache-reuse": ("b3e4d61078ef9e41", "a000bdf6623b0641", "aa22ef8759903050", 28),
+    "validated-cache-reuse": ("7b697622002e2211", "d4ecc718e3683c34", "efff4ec334358cf7", 28),
 }
 
 PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {

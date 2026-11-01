@@ -2623,6 +2623,11 @@ class CallRecordTelemetry(ContractModel):
     start_offset_s: float = Field(ge=0.0)
     seconds: float = Field(ge=0.0)
     output_tokens: int = Field(default=0, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    """Input tokens the call reported: zero for a record written before they
+    were kept, and for a provider that reports none."""
+    cached_input_tokens: int = Field(default=0, ge=0)
+    """The part of ``input_tokens`` DeepSeek served from its context cache."""
     reasoning_tokens: int = Field(default=0, ge=0)
 
 
@@ -2674,3 +2679,7 @@ class RunTelemetry(ContractModel):
     """The largest event-loop wake-up delay the run's lag monitor saw."""
     loop_lag_blocks: tuple[float, ...] = ()
     """Each wake-up delay at or beyond the monitor's block threshold."""
+    models_returned: dict[str, int] = Field(default_factory=dict)
+    """How many calls each model id the provider returned answered, sorted by
+    model id. A call whose response named no model is not counted, and a record
+    written before this field existed loads as empty."""

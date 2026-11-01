@@ -79,6 +79,18 @@ async def test_saving_the_same_id_twice_updates_in_place(
 
 
 @pytest.mark.asyncio
+async def test_a_batch_that_repeats_one_id_is_written_once(
+    memory: LongTermMemory, collection: FakeCollection
+) -> None:
+    old = _finding("Old text.", entry_id="finding:x")
+    new = _finding("New text.", entry_id="finding:x")
+
+    assert await memory.save_many([old, new]) == 2
+    assert collection.records["finding:x"]["document"] == "New text."
+    assert memory.drain_errors() == []
+
+
+@pytest.mark.asyncio
 async def test_query_filters_by_entry_type(
     memory: LongTermMemory, collection: FakeCollection
 ) -> None:

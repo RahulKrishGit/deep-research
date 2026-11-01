@@ -3420,6 +3420,94 @@ def _invariant_extra_pass_redrafts_the_gaining_part(run: ReplayRun) -> str | Non
     return None
 
 
+def _invariant_shared_page_extracted_once(run: ReplayRun) -> str | None:
+    """A page goes to one page extraction per research pass.
+
+    Two loops that admit one read share a single call: the second waits for
+    it and imports its findings, so a read named by two page-extraction
+    packets of one pass is the defect, however slowly the second loop got
+    there. A page-extraction packet is a researcher request that carries
+    retrieved evidence and is neither an owed re-ask nor a dissent re-ask:
+    those ask about a page again on purpose. A review ends a pass, and the
+    extra pass that follows asks about a page under its own target list, so
+    the reads seen are forgotten at every review.
+    """
+    seen: set[str] = set()
+    for key, text in run.replay.completer.packet_sequence:
+        if key.startswith("report_reviewer:"):
+            seen.clear()
+            continue
+        if (
+            key != "researcher:SubTopicFindingsDraft"
+            or "# Retrieved evidence" not in text
+            or "# Passages owed a finding" in text
+            or "# Statements these passages may dispute" in text
+        ):
+            continue
+        for read_id in re.findall(
+            r"^- read_id=(\S+) requested_url=", text, re.M
+        ):
+            if read_id in seen:
+                return (
+                    f"read {read_id} was sent to two page extractions in one "
+                    "research pass"
+                )
+            seen.add(read_id)
+    return None
+
+
+def _invariant_extra_pass_carries_unchanged_parts(run: ReplayRun) -> str | None:
+    """An extra pass drafts only the part that gained evidence, then the review is scoped.
+
+    In this row the only part that gains evidence is the one owning the
+    extra-pass target. It is ``written``, every other part with a section is
+    ``carried_over``, and the writer was asked once per written part after the
+    first review: a part redrafted without cause costs a ``SectionDraft`` and
+    a Statement Check the pass was not bought for. The review of the carried
+    parts is one ``ScopedReportReviewDraft``, because the first
+    ``ReportReviewDraft`` already judged them. ``_invariant_scoped_review_used``
+    is specific to a redraft hop (it counts redrafts and demands a resolved
+    defect), so it cannot say this.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if full_reviews != 1:
+        return f"expected exactly one full review, saw {full_reviews}"
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped review after the extra pass, saw {scoped_reviews}"
+    target_ids = set(run.state.extra_pass_target_ids)
+    owning = {
+        topic.coverage_id
+        for topic in run.state.sub_topics
+        for target in topic.evidence_targets
+        if target.target_id in target_ids
+    }
+    if not owning:
+        return "the run took no extra pass"
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    written = 0
+    for part in composition.parts:
+        if part.status == "empty":
+            continue
+        expected_status = "written" if part.coverage_id in owning else "carried_over"
+        if part.status != expected_status:
+            return (
+                f"part {part.coverage_id!r} has status {part.status!r}, expected "
+                f"{expected_status!r}"
+            )
+        written += part.status == "written"
+    redrafted = calls[calls.index("report_reviewer:ReportReviewDraft"):].count(
+        "report_writer:SectionDraft"
+    )
+    if redrafted != written:
+        return (
+            f"expected {written} SectionDraft calls after the first review (one "
+            f"per written part), saw {redrafted}"
+        )
+    return None
 
 
 _REPLAY_INVARIANTS: dict[str, Any] = {
@@ -3471,6 +3559,10 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "scoped_review_fallback_used": _invariant_scoped_review_fallback_used,
     "extra_pass_redrafts_the_gaining_part": (
         _invariant_extra_pass_redrafts_the_gaining_part
+    ),
+    "shared_page_extracted_once": _invariant_shared_page_extracted_once,
+    "extra_pass_carries_unchanged_parts": (
+        _invariant_extra_pass_carries_unchanged_parts
     ),
 }
 

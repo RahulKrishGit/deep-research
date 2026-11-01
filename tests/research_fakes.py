@@ -146,17 +146,21 @@ QEC_PASSAGE = (
 )
 
 
-def qec_read_record(*, session_id: str = "session-1") -> ReadRecord:
+def qec_read_record(
+    *, session_id: str = "session-1", url: str = QEC_SOURCE_URL
+) -> ReadRecord:
     """The read record the fake tools produce for that page.
 
     Derived through the shared builder rather than copied as constants, so the
-    fixture cannot drift away from the contract it stands in for.
+    fixture cannot drift away from the contract it stands in for. ``url`` is
+    for a test whose loops must each read a page of their own: the fake client
+    serves the same body at any path, and the read id follows the url.
     """
     return build_read_record(
         session_id=session_id,
         reader="web_scraper",
-        requested_url=QEC_SOURCE_URL,
-        resolved_url=QEC_SOURCE_URL,
+        requested_url=url,
+        resolved_url=url,
         title=QEC_TITLE,
         retrieved_at="2026-08-01T12:00:00+00:00",
         text=QEC_PASSAGE,
