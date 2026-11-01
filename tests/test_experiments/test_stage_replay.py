@@ -200,7 +200,7 @@ async def test_a_replayed_statement_check_uses_the_arm_effort(
 async def test_a_replay_sends_no_effort_when_the_arm_sets_none(
     tmp_path: Path, tracker: Tracker
 ) -> None:
-    """The shipped empty map: no replayed call carries the keyword, so a replay
+    """An arm that sets no effort: no replayed call carries the keyword, so a replay
     is the request it was before per-operation efforts existed."""
     _capture(tmp_path)
     completer = _ConfirmingCompleter()

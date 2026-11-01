@@ -123,8 +123,9 @@ selection fails fast and never falls back to the other provider.
 `OPERATION_AGENTS` table in `utils/config.py`): the label each call's records
 carry, except `react_decision`, the agents' loop turns, whose records read
 `react_tool_turn`. A call with an entry runs at that effort instead of its
-agent's profile effort; a call without one sends nothing extra, so the shipped
-empty map changes no request. A truncated plan-side reply is still re-asked once
+agent's profile effort; a call without one sends nothing extra. The shipped map
+runs the Context and Statement Checks and source scoring at `low` and the plan
+reviews at `high`. A truncated plan-side reply is still re-asked once
 at `OUTPUT_LIMIT_RETRY_EFFORT`, whatever its entry; a truncated Context or
 Statement Check batch is re-asked in two halves at the same effort as the whole,
 and any other truncated call is recorded as that call's failure. Startup

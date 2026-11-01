@@ -1069,9 +1069,9 @@ details.disc .disc-body{padding-bottom:var(--space-4)}
 .tbl-frame .tbl td .cite{color:var(--fg)}
 .prose .sources{margin:0 0 var(--space-4);padding-left:var(--space-5)}
 .prose .sources li{margin-bottom:var(--space-2);overflow-wrap:anywhere}
-/* The 0.80 acceptance line on the review meter (types.py:1131). */
+/* The 0.70 acceptance line on the review meter (SEMANTIC_REVIEW_MEAN, types.py:1131). */
 .bar-row .bar{position:relative}
-.bar-row .bar.bar-gate::after{content:"";position:absolute;left:80%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
+.bar-row .bar.bar-gate::after{content:"";position:absolute;left:70%;top:0;bottom:0;width:1px;background:var(--fg);opacity:.75}
 /* 2026-09-27 fix: at 390px the status chip's note (statusNote(), now longer since the
    not-found clause) overflowed the topbar and pushed the whole page into horizontal scroll —
    `.chip{white-space:nowrap}` plus no shrink budget anywhere in the topbar's flex chain. The

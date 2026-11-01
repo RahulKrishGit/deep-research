@@ -1178,7 +1178,7 @@ def _empty_operation_efforts_config(tmp_path: Path) -> str:
 
     The env-variable and override tests below exercise how the map is built and
     merged, not what the shipped file holds; the one test that reads that is
-    ``test_the_shipped_operation_efforts_map_is_empty``.
+    ``test_the_shipped_operation_efforts_are_the_measured_set_and_supported``.
     """
     path = tmp_path / "config.yaml"
     path.write_text(

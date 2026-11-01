@@ -301,8 +301,8 @@ class AgentRuntimeConfig(BaseModel):
     call, instead of the whole agent: the keys are ``OPERATION_AGENTS``, one
     per provider call a call site names, and each has an
     ``AGENTS_EFFORT_<KEY>`` environment override. A call whose key is absent
-    inherits its agent's ``llm.model_overrides`` profile, so the empty shipped
-    map changes nothing. A per-call effort is sent in place of the agent's. A
+    inherits its agent's ``llm.model_overrides`` profile. A per-call effort is
+    sent in place of the agent's. A
     truncated plan-side reply is still re-asked once at
     ``OUTPUT_LIMIT_RETRY_EFFORT``; a truncated Context or Statement Check batch
     is re-asked in two halves at the same effort; any other truncated call is
