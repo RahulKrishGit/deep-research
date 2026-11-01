@@ -63,7 +63,7 @@ PINNED_TARGET_PROMPT_FINGERPRINTS = {
     "researcher": "a4e8fb411802",
     "source_evaluator": "c7b721b3d258",
     "evidence_verifier": "ff0b42d99578",
-    "report_writer": "f4808b83bba7",
+    "report_writer": "599e4e2d05b5",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent

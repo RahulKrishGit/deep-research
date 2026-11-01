@@ -34,7 +34,7 @@ from tests.test_api.replay_support import EXTRA_PASS_CASE, REDRAFT_CASE, guarded
 # run sent, and how many requests that was. Every notes section is added only
 # when there are notes, so a run without notes keeps its digest.
 PINNED_RUN_DIGESTS = {
-    EXTRA_PASS_CASE: ("238ecc7b6e499434", 46),
+    EXTRA_PASS_CASE: ("29a7c811a2740533", 42),
     REDRAFT_CASE: ("46213021a769e933", 29),
 }
 AT = "2026-09-29T10:00:00.000+00:00"

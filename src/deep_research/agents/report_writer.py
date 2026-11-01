@@ -507,6 +507,18 @@ _BOTTOM_LINE_REPLY_EXAMPLES = (
 )
 
 
+class ExtraPassScope(ContractModel):
+    """What an extra pass's writer must draft afresh; every other part with an unchanged record is carried."""
+
+    target_ids: list[str]
+    """``state.extra_pass_target_ids`` at writer time: the targets the pass was
+    bought for, so the parts that own them are drafted again."""
+    defect_coverage_ids: list[str]
+    """The parts, sorted, that the previous review's material defects route to.
+    A scoped review would re-raise a defect on a carried part and buy a redraft
+    hop, so a part a defect names is drafted now instead."""
+
+
 class ReportWriterTask(AgentTask):
     session_id: str
     iteration: int = 0
@@ -549,13 +561,19 @@ class ReportWriterTask(AgentTask):
     """
     previous: ReportComposition | None = None
     """The prior pass's composition, read only on a redraft — a part with no
-    routed defect is carried over from here unchanged — and after
-    a note pass, when every part but the notes' own is."""
+    routed defect is carried over from here unchanged — after a note pass,
+    when every part but the notes' own is, and on an extra pass, when every
+    part whose evidence did not change is (see ``extra_pass_scope``)."""
     note_pass_coverage_ids: list[str] = Field(default_factory=list)
     """The reader notes' own parts a note pass researched: after a note pass
     only these parts — and a part with no previous section — and the bottom
     line are drafted, and every other part is carried over from ``previous``
     unchanged; ``[]`` otherwise."""
+    extra_pass_scope: ExtraPassScope | None = None
+    """What an extra pass must draft afresh, or ``None`` when this draft does
+    not follow an extra pass. When set, ``previous`` is the composition the
+    pass follows, and every part whose evidence did not change is carried over
+    from it with no call and no Statement Check."""
     acquisition_state_by_target: dict[str, AcquisitionState] = Field(default_factory=dict)
     """Keyed by ``coverage_id`` (the field name is the type's own historical
     name; every caller in this codebase keys it by sub-topic). The
@@ -1258,7 +1276,11 @@ def _is_redraft_hop(state: ResearchState) -> bool:
     against the composition the pass is about to replace with fresh
     evidence, not against this iteration's own draft, so carrying it here
     would silently apply "minimal edits" to a part that instead needs its
-    new finding written from scratch.
+    new finding written from scratch. That is still so for every part whose
+    evidence changed: an extra pass drafts it afresh, with no defect. A part
+    whose evidence did not change is carried over instead
+    (``_extra_pass_redrafts``), which reads the previous composition but
+    feeds no request a defect.
 
     A reader note's loops keep the iteration and read
     as a fresh draft too: after a note pass the draft is over new evidence,
@@ -1311,6 +1333,31 @@ def _note_pass_coverage_ids(state: ResearchState) -> list[str]:
         for note_id in note_ids
         if isinstance(note_id, str)
     ]
+
+
+def _extra_pass_scope(state: ResearchState, targets: Sequence[EvidenceTarget]) -> ExtraPassScope | None:
+    """What this draft must write afresh, when an extra pass is what it follows.
+
+    Read from the latest loop marker, as ``_note_pass_coverage_ids`` reads it.
+    Only when it is ``graph.extra_pass.started`` and the composition on hand is
+    an earlier iteration's does this draft carry any part over; after any other
+    loop, or with no composition to carry, ``None``. The defects are routed
+    against the composition as its parts wrote it
+    (``_with_moved_points_restored``), the restoration compose routes against.
+    """
+    if state.composition is None or state.composition.iteration == state.iteration:
+        return None
+    marker = next(
+        (event for event in reversed(state.events) if event.event_type in _LOOP_MARKERS),
+        None,
+    )
+    if marker is None or marker.event_type != "graph.extra_pass.started":
+        return None
+    restored = _with_moved_points_restored(
+        state.composition, {topic.coverage_id: topic.title for topic in state.sub_topics},
+    )
+    routed, _, _ = _route_defects(material_defects(state.report_review), restored, targets)
+    return ExtraPassScope(target_ids=list(state.extra_pass_target_ids), defect_coverage_ids=sorted(routed))
 
 
 def _defect_lines(defects: Sequence[ReviewDefect]) -> str:
@@ -1585,6 +1632,60 @@ def _route_defects(
         if goes_to_bottom_line:
             bottom_line.append(defect)
     return routed, by_coverage, bottom_line
+
+
+def _extra_pass_redrafts(
+    placement: PartPlacement, regular: Sequence[Finding], context: Sequence[Finding], *,
+    previous: ReportComposition, scope: ExtraPassScope, targets: Sequence[EvidenceTarget],
+    findings: Sequence[Finding], facts: Sequence[FactRow],
+) -> bool:
+    """Whether an extra pass drafts this part afresh (``True``), or carries
+    ``previous``'s section over unchanged (``False``).
+
+    A part is carried only when nothing its draft reads has changed:
+
+    - (a) ``previous`` wrote it (a ``written`` or ``carried_over`` part with a
+      section), so there is a section to carry;
+    - (b) it owns no target this pass was bought for;
+    - (c) no material defect of the previous review names it;
+    - (d) the findings placed here, and the context-only subset of them, are
+      the ones its section was drafted from;
+    - (e) each placed finding is, field for field, the record ``previous`` held
+      (a re-judged finding keeps its fingerprint);
+    - (f) no citable finding new or changed since ``previous`` binds a target
+      this part owns, though plan order placed it in another part;
+    - (g) the fact rows bound to this part's targets are the rows ``previous``
+      held (compared without ``row_id``, which is a position).
+    """
+    coverage_id = placement.coverage_id
+    part = next((p for p in previous.parts if p.coverage_id == coverage_id), None)
+    if (
+        part is None or part.status not in ("written", "carried_over")
+        or all(section.coverage_id != coverage_id for section in previous.sections)
+    ):
+        return True
+    own = {t.target_id for t in targets if t.coverage_id == coverage_id}
+    if own & set(scope.target_ids) or coverage_id in scope.defect_coverage_ids:
+        return True
+    placed = [*regular, *context]
+    if (
+        {finding_fingerprint(f) for f in placed} != set(part.finding_ids)
+        or {finding_fingerprint(f) for f in context} != set(part.context_finding_ids)
+    ):
+        return True
+    held = {finding_fingerprint(f): f for f in previous.findings}
+    if any(held.get(finding_fingerprint(f)) != f for f in placed):
+        return True
+    if any(
+        held.get(finding_fingerprint(f)) != f and own & set(f.target_ids)
+        for f in citable_findings(findings)
+    ):
+        return True
+
+    def bound_rows(rows: Sequence[FactRow]) -> list[dict[str, object]]:
+        return [row.model_dump(exclude={"row_id"}) for row in rows if own & set(row.target_ids)]
+
+    return bound_rows(facts) != bound_rows(previous.fact_rows)
 
 
 # --- mechanical rules; the Statement Check judges everything else -----------
@@ -3475,8 +3576,9 @@ async def compose_written_report(
     """Partition, draft every part in parallel, pipeline each part's
     Statement Check off its own draft, then write the bottom line last from
     the checked section statements. A redraft re-asks only the
-    parts a material defect names, and a draft after a note pass only
-    the notes' own parts; every other part
+    parts a material defect names, a draft after a note pass only
+    the notes' own parts, and a draft after an extra pass only the parts whose
+    evidence changed (``_extra_pass_redrafts``); every other part
     is carried over unchanged. ``batch_size``/``concurrency`` are the Statement Check's
     bounds (``None`` uses this module's defaults); ``section_concurrency``
     bounds how many section drafts run at once. ``statement_check_effort`` is
@@ -3546,6 +3648,15 @@ async def compose_written_report(
             # unchanged, and one with no previous section is still drafted
             # (see ``_run_part``).
             redraft_this = placement.coverage_id in task.note_pass_coverage_ids
+            defects_here = []
+        elif task.extra_pass_scope is not None and previous is not None:
+            # An extra pass drafts a part afresh, with no defect, when its
+            # evidence changed or it owns a target the pass was bought for;
+            # every other part is carried over, as after a note pass.
+            redraft_this = _extra_pass_redrafts(
+                placement, regular, context, previous=previous, scope=task.extra_pass_scope,
+                targets=task.targets, findings=task.findings, facts=task.facts,
+            )
             defects_here = []
         elif not is_redraft:
             redraft_this, defects_here = True, []
@@ -3802,8 +3913,10 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             else self.config.report_target_words
         )
         # After a note pass only the notes' own parts and the bottom line
-        # are drafted; the rest is carried.
+        # are drafted; the rest is carried. After an extra pass, so is every
+        # part whose evidence did not change.
         note_pass_coverage_ids = _note_pass_coverage_ids(state)
+        extra_pass_scope = _extra_pass_scope(state, targets)
         return ReportWriterTask(
             instruction=state.original_question,
             session_id=state.session_id,
@@ -3828,10 +3941,11 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             defects=material_defects(state.report_review) if _is_redraft_hop(state) else [],
             previous=(
                 state.composition
-                if _is_redraft_hop(state) or note_pass_coverage_ids
+                if _is_redraft_hop(state) or note_pass_coverage_ids or extra_pass_scope is not None
                 else None
             ),
             note_pass_coverage_ids=note_pass_coverage_ids,
+            extra_pass_scope=extra_pass_scope,
             acquisition_state_by_target=dict(state.acquisition_state_by_target),
             target_words=budget_words,
             reader_answers=list(state.reader_answers),

@@ -153,8 +153,10 @@ PINNED_PACKETS = {
     "planner:PlanReviewDraft": "918178396a7380e5",
     # The last review reads the report the writer drafted over the evidence a run
     # that never asks its forced last research turn leaves (see
-    # tests/test_graph/test_reader_notes_replay.py); no answer is involved.
-    "report_reviewer:ReportReviewDraft": "79717e2e3e6a9ae0",
+    # tests/test_graph/test_reader_notes_replay.py); no answer is involved. Its
+    # packet fingerprint covers the composition, so it moved when the extra pass
+    # began carrying the parts whose evidence did not change.
+    "report_reviewer:ReportReviewDraft": "b5cdae65b2fecd52",
 }
 
 

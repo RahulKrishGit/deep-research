@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from deep_research.agents.identity import finding_fingerprint
+from deep_research.agents.quality import compute_report_quality
 from deep_research.agents.report import render_finding_log, render_written_report
 from deep_research.agents.report_writer import (
     BOTTOM_LINE_INSTRUCTION,
@@ -23,9 +24,11 @@ from deep_research.agents.report_writer import (
     REPORT_WRITER_NAME,
     SECTION_INSTRUCTION,
     SECTION_SYSTEM_PROMPT,
+    ExtraPassScope,
     PartJob,
     ReportWriterAgent,
     ReportWriterTask,
+    _extra_pass_redrafts,
     bottom_line_messages,
     compose_written_report,
     finding_registry,
@@ -36,6 +39,7 @@ from deep_research.agents.report_writer import (
     sources_by_url,
 )
 from deep_research.agents.sources import normalize_source_url
+from deep_research.graph.events import extra_pass_started_event
 from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
 from deep_research.observability import TokenUsage, Tracker
@@ -51,9 +55,11 @@ from deep_research.utils.types import (
     AnswerContract,
     BottomLineDraft,
     CandidateRecord,
+    Finding,
     FindingVerification,
     ItemMark,
     ItemMarkDraft,
+    ReportComposition,
     ReportSection,
     ReportStatement,
     ResearchEvent,
@@ -1530,7 +1536,9 @@ async def test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft(
     defect on file. Carrying that review's defects/previous section into a
     new iteration would silently carry a part over unchanged and drop the
     pass's own new evidence -- only a true redraft hop (the same iteration
-    re-run after review) carries them."""
+    re-run after review) carries them. This covers a new iteration with no
+    extra-pass marker among its events; with the marker, the extra-pass
+    tests below decide which parts are carried."""
     t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
     t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
     f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
@@ -1592,6 +1600,384 @@ async def test_a_new_iteration_drafts_every_part_fresh_not_as_a_redraft(
     assert statuses["topic-01"] == "written"
     assert statuses["topic-02"] == "written"
 
+
+# --- an extra pass carries the parts whose evidence did not change ------------
+
+_PART_OF_TITLE = {"First": "topic-01", "Second": "topic-02"}
+_BOTTOM_LINE_TEXT = "According to the source, both parts are answered."
+
+
+def _listed_findings(body: str) -> list[tuple[str, str]]:
+    """The (label, content) of every finding a part request lists as its own."""
+    listed = body.split("# Verified findings for this part\n", 1)[1].split("# Context only", 1)[0]
+    return [
+        (chunk.split(":", 1)[0],
+         next(line.removeprefix("content: ") for line in chunk.splitlines() if line.startswith("content: ")))
+        for chunk in listed.split("## ")[1:]
+    ]
+
+
+class _TwoPartDrafts:
+    """A scripted writer for a report of two parts, "First" and "Second".
+
+    A part request is answered with one point per finding the request lists as
+    its own, citing that finding; the bottom line is one sentence citing the
+    first checked statement's label, or, with ``fallback_bottom_line``, an empty
+    draft, so the fallback moves one point of every topic out of its section.
+    ``parts`` lists the parts drafted and ``bottom_lines`` counts the
+    bottom-line calls since the last compose, and ``requests`` holds each
+    drafted part's messages.
+    """
+
+    def __init__(self, checker, tracker: Tracker, tmp_path: Path, *, fallback_bottom_line: bool = False) -> None:
+        self.checker = checker
+        self.fallback_bottom_line = fallback_bottom_line
+        self.parts: list[str] = []
+        self.bottom_lines = 0
+        self.requests: dict[str, list[tuple[str, str]]] = {}
+        self.completer = ScriptedCompleter(outputs=[self._reply] * 16)
+        self.agent = _writer(tracker, self.completer, report_writer_tools(tracker, output_root=tmp_path))
+
+    def _reply(self, messages, schema):
+        body = messages[-1].content
+        if schema is BottomLineDraft:
+            self.bottom_lines += 1
+            if self.fallback_bottom_line:
+                return BottomLineDraft(sentences=[])
+            label = body.split("(cites ", 1)[1][:3]
+            return BottomLineDraft(sentences=[WriterPointDraft(text=_BOTTOM_LINE_TEXT, finding_labels=[label])])
+        title = body.split("# This part of the question\n", 1)[1].splitlines()[0]
+        part = _PART_OF_TITLE[title]
+        self.parts.append(part)
+        self.requests[part] = [(message.role, message.content) for message in messages]
+        return SectionDraft(title=title, points=[
+            WriterPointDraft(text=f"According to the source, {content}", finding_labels=[label])
+            for label, content in _listed_findings(body)
+        ])
+
+    async def compose_task(self, task: ReportWriterTask) -> ReportComposition:
+        self.parts.clear()
+        self.bottom_lines = 0
+        self.requests = {}
+        self.checker.calls.clear()
+        return await compose_written_report(task, provider=self.completer, section_concurrency=7)
+
+    async def compose(self, state: ResearchState) -> ReportComposition:
+        return await self.compose_task(self.agent.build_task(state))
+
+
+@dataclass
+class _PassZero:
+    """A first pass's composition, and the state an extra pass starts from."""
+
+    writer: _TwoPartDrafts
+    state: ResearchState
+    composition: ReportComposition
+
+    def extra_pass_state(self, findings, extra_targets=(), defects=()) -> ResearchState:
+        """The state at the writer after the graph opened an extra pass."""
+        return self.state.model_copy(update={
+            "iteration": 1, "composition": self.composition, "verified_findings": list(findings),
+            "extra_pass_target_ids": list(extra_targets), "report_review": _scored_review(list(defects)),
+            "events": [extra_pass_started_event(iteration=1, max_extra_passes=1, targets=list(extra_targets))],
+        })
+
+
+def _first_and_second() -> tuple[list[SubTopic], Finding, Finding]:
+    """Two required targets in two parts ("First", "Second"), a verified finding for each."""
+    t1 = make_target("topic-01-target-01", coverage_id="topic-01", required=True)
+    t2 = make_target("topic-02-target-01", coverage_id="topic-02", required=True)
+    f1 = _checked("https://a.test/1", "10.4 GW in 2024.", "10.4", "GW", organisation=EIA,
+                 target_ids=["topic-01-target-01"])
+    f2 = _checked("https://a.test/2", "5 GW in 2025.", "5", "GW", organisation=EIA,
+                 target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    return [_topic("topic-01", "First", [t1]), _topic("topic-02", "Second", [t2])], f1, f2
+
+
+async def _pass_zero(checker, tracker: Tracker, tmp_path: Path, topics: list[SubTopic],
+                     findings: list[Finding], *, fallback_bottom_line: bool = False) -> _PassZero:
+    writer = _TwoPartDrafts(checker, tracker, tmp_path, fallback_bottom_line=fallback_bottom_line)
+    state = ResearchState(session_id="s1", original_question="Q?", sub_topics=topics,
+                          verified_findings=list(findings))
+    return _PassZero(writer, state, await writer.compose(state))
+
+
+def _statuses(composition: ReportComposition) -> dict[str, str]:
+    return {part.coverage_id: part.status for part in composition.parts}
+
+
+def _a_defect_on(target_id: str) -> ReviewDefect:
+    return ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
+                        target_ids=[target_id], problem="Needs the release date.")
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_carries_a_part_whose_evidence_did_not_change(checker, tracker: Tracker, tmp_path: Path) -> None:
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+    assert _statuses(zero.composition) == {"topic-01": "written", "topic-02": "written"}
+
+    composition1 = await zero.writer.compose(zero.extra_pass_state([f1, f2], ["topic-02-target-01"]))
+
+    assert _statuses(composition1) == {"topic-01": "carried_over", "topic-02": "written"}
+    assert zero.writer.parts == ["topic-02"] and zero.writer.bottom_lines == 1
+    section0 = next(s for s in zero.composition.sections if s.coverage_id == "topic-01")
+    carried = next(s for s in composition1.sections if s.coverage_id == "topic-01")
+    assert carried.points and [p.text for p in carried.points] == [p.text for p in section0.points]
+    # No Statement Check for it: no checked statement is its text.
+    assert not any(item.text == carried.points[0].text for batch in zero.writer.checker.calls for item in batch)
+    # Its verdicts are copied from the pass that checked it.
+    assert all(composition1.statement_verdicts[p.statement.statement_id] == "consistent" for p in carried.points)
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_the_part_owning_an_extra_pass_target(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(b) The pass was bought for this target, so its part is drafted though its finding is unchanged."""
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+
+    composition1 = await zero.writer.compose(zero.extra_pass_state([f1, f2], ["topic-01-target-01"]))
+
+    assert _statuses(composition1) == {"topic-01": "written", "topic-02": "carried_over"}
+    assert zero.writer.parts == ["topic-01"]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_that_gained_a_finding(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(d) A finding the pass verified for this part's target, with no extra-pass target at all."""
+    topics, f1, f2 = _first_and_second()
+    f1b = _checked("https://a.test/1b", "10.9 GW in 2024, revised.", "10.9", "GW", organisation=EIA,
+                   target_ids=["topic-01-target-01"])
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+
+    composition1 = await zero.writer.compose(zero.extra_pass_state([f1, f1b, f2]))
+
+    assert _statuses(composition1) == {"topic-01": "written", "topic-02": "carried_over"}
+    assert zero.writer.parts == ["topic-01"]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_that_lost_a_finding(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(d) A part the pass left with fewer findings is drafted again, so none of its
+    carried sentences can cite a finding the snapshot no longer holds."""
+    topics, f1, f2 = _first_and_second()
+    f2b = _checked("https://a.test/2b", "6 GW in 2025, upper case.", "6", "GW", organisation=EIA,
+                   target_ids=["topic-02-target-01"], kind="forecast", period="2025")
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2, f2b])
+    state1 = zero.extra_pass_state([f1, f2])
+
+    composition1 = await zero.writer.compose(state1)
+
+    statuses = _statuses(composition1)
+    assert statuses["topic-02"] == "written" and statuses["topic-01"] == "carried_over"
+    assert "unresolved_citations" not in compute_report_quality(state1, composition1).hard_failures
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_drafts_the_part_a_material_defect_names_fresh(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(c) The previous review's defect on a part buys that part a draft with no
+    previous section and no defect text, as every extra-pass draft has today."""
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+
+    composition1 = await zero.writer.compose(
+        zero.extra_pass_state([f1, f2], defects=[_a_defect_on("topic-01-target-01")]))
+
+    assert _statuses(composition1) == {"topic-01": "written", "topic-02": "carried_over"}
+    request = "\n".join(content for _, content in zero.writer.requests["topic-01"])
+    assert "# Your previous section" not in request and "# Defects to fix" not in request
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_drafts_a_part_with_no_previous_section(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(a) f2 is verified only on the extra pass, so pass 0 wrote nothing for its part."""
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1])
+    assert _statuses(zero.composition) == {"topic-01": "written", "topic-02": "empty"}
+
+    composition1 = await zero.writer.compose(zero.extra_pass_state([f1, f2]))
+
+    assert _statuses(composition1) == {"topic-01": "carried_over", "topic-02": "written"}
+    assert zero.writer.parts == ["topic-02"]
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_routes_a_defect_on_a_point_the_bottom_line_fallback_moved(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """The fallback moves a topic's only point into the bottom line, so a defect naming
+    that point reaches its part only through the previous sections as the part wrote them."""
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2], fallback_bottom_line=True)
+    layout = zero.composition.bottom_line
+    assert layout is not None and layout.assembled
+    moved = next(line.statement_id for line in layout.topic_lines if line.coverage_id == "topic-01")
+    defect = ReviewDefect(defect_id="review-01", kind="missing_support", severity="major",
+                          statement_ids=[moved], problem="Needs the release date.")
+    task = zero.writer.agent.build_task(zero.extra_pass_state([f1, f2], defects=[defect]))
+
+    assert task.extra_pass_scope == ExtraPassScope(target_ids=[], defect_coverage_ids=["topic-01"])
+
+    composition1 = await zero.writer.compose_task(task)
+
+    assert _statuses(composition1) == {"topic-01": "written", "topic-02": "carried_over"}
+
+
+@pytest.mark.asyncio
+async def test_a_drafted_part_request_is_unchanged_by_the_extra_pass_scope(checker, tracker: Tracker, tmp_path: Path) -> None:
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+    task = zero.writer.agent.build_task(zero.extra_pass_state([f1, f2], ["topic-02-target-01"]))
+    assert task.extra_pass_scope is not None and task.previous is not None
+
+    await zero.writer.compose_task(task)
+    scoped = zero.writer.requests["topic-02"]
+    assert zero.writer.parts == ["topic-02"]
+    await zero.writer.compose_task(task.model_copy(update={"extra_pass_scope": None, "previous": None}))
+
+    assert sorted(zero.writer.parts) == ["topic-01", "topic-02"]
+    assert zero.writer.requests["topic-02"] == scoped
+
+
+def _extra_pass_marker_state(topics: list[SubTopic], findings: list[Finding], *events: ResearchEvent,
+                             composition: ReportComposition | None = None, iteration: int = 1) -> ResearchState:
+    composition = composition or ReportComposition(
+        question="Q?", session_id="s1", sections=[], summary=[], sub_topics=topics, iteration=0)
+    return ResearchState(
+        session_id="s1", original_question="Q?", sub_topics=topics, iteration=iteration,
+        verified_findings=findings, composition=composition, events=list(events),
+        extra_pass_target_ids=["topic-02-target-01"],
+        report_review=_scored_review([_a_defect_on("topic-01-target-01")]),
+    )
+
+
+def _opened_an_extra_pass() -> ResearchEvent:
+    return extra_pass_started_event(iteration=1, max_extra_passes=1, targets=["topic-02-target-01"])
+
+
+def test_build_task_hands_an_extra_pass_its_previous_composition_and_scope(writer: ReportWriterAgent) -> None:
+    topics, f1, f2 = _first_and_second()
+    state = _extra_pass_marker_state(topics, [f1, f2], _opened_an_extra_pass())
+
+    task = writer.build_task(state)
+
+    assert task.previous == state.composition and task.defects == []
+    assert task.extra_pass_scope == ExtraPassScope(target_ids=["topic-02-target-01"], defect_coverage_ids=["topic-01"])
+
+
+@pytest.mark.parametrize("marker", [
+    None,
+    ("graph.report.redraft_requested", {}),
+    ("graph.note_pass.started", {"note_ids": ["n1"]}),
+    ("graph.note_redraft.requested", {"note_ids": ["n1"]}),
+], ids=["no marker", "redraft", "note pass", "note redraft"])
+def test_build_task_scopes_no_pass_after_any_other_loop_marker(writer: ReportWriterAgent, marker) -> None:
+    topics, f1, f2 = _first_and_second()
+    later = [] if marker is None else [
+        ResearchEvent(event_type=marker[0], source="graph", message="A loop marker.", metadata=marker[1])]
+    state = _extra_pass_marker_state(topics, [f1, f2], *([_opened_an_extra_pass()] if later else []), *later)
+
+    task = writer.build_task(state)
+
+    assert task.extra_pass_scope is None and task.previous is None
+
+
+def test_build_task_scopes_no_extra_pass_without_an_earlier_composition(writer: ReportWriterAgent) -> None:
+    topics, f1, f2 = _first_and_second()
+    opened = _opened_an_extra_pass()
+    same_iteration = _extra_pass_marker_state(topics, [f1, f2], opened, iteration=0)
+    no_composition = _extra_pass_marker_state(topics, [f1, f2], opened).model_copy(update={"composition": None})
+
+    assert writer.build_task(same_iteration).extra_pass_scope is None
+    assert writer.build_task(no_composition).extra_pass_scope is None
+    assert writer.build_task(no_composition).previous is None
+
+
+# Direct predicate tests: the baseline is pass 0's own part and inputs, which
+# are not redrafted; each test then changes one input.
+
+
+async def _predicate_baseline(checker, tracker: Tracker, tmp_path: Path):
+    """``(redrafts, zero, f1, f2)``: ``redrafts(**changes)`` asks whether the extra pass redrafts "First"."""
+    topics, f1, f2 = _first_and_second()
+    zero = await _pass_zero(checker, tracker, tmp_path, topics, [f1, f2])
+    task = zero.writer.agent.build_task(zero.state)
+    placement = report_parts([f1, f2], task.targets, topics)[0][0]
+    inputs = {"regular": [f1], "context": [], "previous": zero.composition,
+              "scope": ExtraPassScope(target_ids=[], defect_coverage_ids=[]),
+              "targets": task.targets, "findings": [f1, f2], "facts": zero.composition.fact_rows}
+
+    def redrafts(**changes) -> bool:
+        arguments = {**inputs, **changes}
+        return _extra_pass_redrafts(placement, arguments.pop("regular"), arguments.pop("context"), **arguments)
+
+    return redrafts, zero, f1, f2
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_part_is_not_redrafted_on_an_extra_pass(checker, tracker: Tracker, tmp_path: Path) -> None:
+    redrafts, _, _, _ = await _predicate_baseline(checker, tracker, tmp_path)
+
+    assert redrafts() is False
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_whose_finding_was_rejudged(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(e) The same finding (same fingerprint) with a different record."""
+    redrafts, _, f1, _ = await _predicate_baseline(checker, tracker, tmp_path)
+    rejudged = f1.model_copy(update={"verification": FindingVerification(status="verified", figure_results=[])})
+    assert finding_fingerprint(rejudged) == finding_fingerprint(f1) and rejudged != f1
+
+    assert redrafts(regular=[rejudged]) is True
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_whose_finding_became_context_only(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(d) The same finding, placed in the part, but listed as context now rather than as its own."""
+    redrafts, _, f1, _ = await _predicate_baseline(checker, tracker, tmp_path)
+
+    assert redrafts(regular=[], context=[f1]) is True
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_pass_zero_did_not_write(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(a) A part that failed, or whose section is not on file, has nothing to carry."""
+    redrafts, zero, _, _ = await _predicate_baseline(checker, tracker, tmp_path)
+    failed = [part.model_copy(update={"status": "failed"}) if part.coverage_id == "topic-01" else part
+              for part in zero.composition.parts]
+    unwritten = [section for section in zero.composition.sections if section.coverage_id != "topic-01"]
+
+    assert redrafts(previous=zero.composition.model_copy(update={"parts": failed})) is True
+    assert redrafts(previous=zero.composition.model_copy(update={"sections": unwritten})) is True
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_a_new_finding_binds_though_it_is_placed_elsewhere(
+    checker, tracker: Tracker, tmp_path: Path,
+) -> None:
+    """(f) A new citable finding bound to this part's target, in the snapshot but not among
+    the part's own placed findings; a new finding that cannot be cited does not count."""
+    redrafts, _, f1, f2 = await _predicate_baseline(checker, tracker, tmp_path)
+    new = _checked("https://a.test/9", "11 GW in 2024, elsewhere.", "11", "GW", organisation=EIA,
+                   target_ids=["topic-01-target-01"])
+    dropped = new.model_copy(update={"verification": FindingVerification(
+        status="dropped", dropped_reason="snippet_not_on_page")})
+
+    assert redrafts(findings=[f1, f2, new]) is True
+    assert redrafts(findings=[f1, f2, dropped]) is False
+
+
+@pytest.mark.asyncio
+async def test_an_extra_pass_redrafts_a_part_whose_targets_gained_a_fact_row(checker, tracker: Tracker, tmp_path: Path) -> None:
+    """(g) A fact row bound to this part's target that pass 0 did not hold; a row for
+    another part's target does not count."""
+    redrafts, zero, _, _ = await _predicate_baseline(checker, tracker, tmp_path)
+    rows = zero.composition.fact_rows
+    own = next(row for row in rows if "topic-01-target-01" in row.target_ids)
+    elsewhere = own.model_copy(update={"row_id": "K099", "target_ids": ["topic-02-target-01"]})
+
+    assert redrafts(facts=[*rows, own.model_copy(update={"row_id": "K099"})]) is True
+    assert redrafts(facts=[*rows, elsewhere]) is False
 
 
 @pytest.mark.asyncio

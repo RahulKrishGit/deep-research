@@ -265,6 +265,11 @@ points per part are at most the larger of the required targets answered, the
 share at about 45 words per point, and 3. The budget is an instruction, not a
 code filter. `agents.writer_authority_floor` (0.4) applies only to the bottom
 line. A redraft re-asks only the parts a defect names and carries the rest over.
+An extra pass drafts only the parts that own one of its targets, that a material
+defect of the previous review names, that gained, lost or re-judged evidence (or
+gained a finding or fact row bound to their targets), or that have no previous
+section, and carries every other part over unchanged, with no call and no
+Statement Check.
 The writer computes the quality snapshot (`compute_report_quality`) the router and
 the terminal gates read.
 
