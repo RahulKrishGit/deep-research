@@ -19,6 +19,7 @@ import re
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -219,6 +220,62 @@ def test_every_checker_is_asserted_by_a_case() -> None:
     # that happens to be spelled the same in two places.
     for name, checker in _REPLAY_INVARIANTS.items():
         assert callable(checker), name
+
+
+def _page(read_id: str) -> str:
+    """The head of a page-extraction packet that names one read."""
+    return (
+        "# Retrieved evidence\n"
+        f"- read_id={read_id} requested_url=https://a.test "
+        "resolved_url=https://a.test title=T reader=web_scraper"
+    )
+
+
+def _packets(sequence: list[tuple[str, str]]) -> SimpleNamespace:
+    """The slice of a replay run the page-extraction checker reads."""
+    return SimpleNamespace(
+        replay=SimpleNamespace(
+            completer=SimpleNamespace(packet_sequence=sequence)
+        )
+    )
+
+
+def test_a_read_sent_to_two_page_extractions_in_one_pass_breaks_shared_page_extracted_once() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    page = ("researcher:SubTopicFindingsDraft", _page("r1"))
+
+    assert "r1" in (_invariant_shared_page_extracted_once(_packets([page, page])) or "")
+
+
+def test_one_page_extraction_per_pass_keeps_shared_page_extracted_once() -> None:
+    """A review ends a research pass, so an extra pass may ask the page again."""
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    page = ("researcher:SubTopicFindingsDraft", _page("r1"))
+    review = ("report_reviewer:ReportReviewDraft", "x")
+
+    assert _invariant_shared_page_extracted_once(_packets([page, review, page])) is None
+
+
+def test_owed_and_dissent_re_asks_are_not_page_extractions() -> None:
+    """Both re-asks carry the page's retrieved evidence and ask about it again."""
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_shared_page_extracted_once,
+    )
+
+    key = "researcher:SubTopicFindingsDraft"
+    sequence = [
+        (key, _page("r1")),
+        (key, "# Passages owed a finding\n" + _page("r1")),
+        (key, "# Statements these passages may dispute\n" + _page("r1")),
+    ]
+
+    assert _invariant_shared_page_extracted_once(_packets(sequence)) is None
 
 
 def test_mirror_checker_reads_the_fact_rows_its_composition_recorded() -> None:

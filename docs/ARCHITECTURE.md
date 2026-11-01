@@ -176,14 +176,19 @@ already fetched this run, refuses it is marked `robots=disallowed` in the
 decision packet; the mark is advisory, never set for a document URL
 (`document_reader` checks no robots), and the scraper still decides. Extraction
 is per page: a structured call starts as soon as a read is admitted, bounded by
-`agents.extraction_concurrency`, and passages a required target is still owed
-get a bounded re-ask. A read that yields nothing produces no `Finding`, so a
-source is never invented. Each finding carries the snippet it was extracted from,
-which the Evidence Verifier later checks against the page. The per-sub-topic
-caps (`MAX_FINDINGS_PER_SUB_TOPIC` 120, `MAX_UNIQUE_SOURCES_PER_SUB_TOPIC` 48)
-are runaway guards; up to `MAX_EXEMPT_PER_REQUIRED_TARGET` (2) findings per
-required target sit outside them, so a cap cannot delete the answer a run was
-sent to get.
+`agents.extraction_concurrency`. A page two sub-topics admit in one research pass
+with the same target list is extracted once: the second loop waits for the first
+loop's call and imports its findings, re-stamping only the copies bound to its own
+targets, and extracts the page itself when that call failed, was cut off at the
+output cap or overflowed its packet, or the reader notes changed meanwhile.
+Passages a required target is still owed get a bounded re-ask, including imported
+passages that bind none of the importing loop's own targets. A read that yields
+nothing produces no `Finding`, so a source is never invented. Each finding carries
+the snippet it was extracted from, which the Evidence Verifier later checks
+against the page. The per-sub-topic caps (`MAX_FINDINGS_PER_SUB_TOPIC` 120,
+`MAX_UNIQUE_SOURCES_PER_SUB_TOPIC` 48) are runaway guards; up to
+`MAX_EXEMPT_PER_REQUIRED_TARGET` (2) findings per required target sit outside
+them, so a cap cannot delete the answer a run was sent to get.
 
 A provider failure stops the remaining sub-topics with the findings so far kept.
 A high-priority sub-topic (`HIGH_PRIORITY_THRESHOLD` 2) that produced no findings
@@ -466,10 +471,10 @@ plan the planner is scripted to write, and the expected product result; every
 scripted completion asserts the packet it was asked, so a reply can never populate
 state the run did not produce.
 
-The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2) holds
-35 rows. The suite runs each row three times under `offline_credentials()` and
-`network_denied()`, requires one identical outcome per row (exit code, terminal
-quality, answered targets, published report) that matches its declared result, and
-fails a suite whose runs attempted a connection. The API's replay mode
-(`api/replay.py`) serves the same harness behind the HTTP interface with the same
-two guards held for the whole process.
+The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2, with
+`validated-cache-reuse` at 3) holds 35 rows. The suite runs each row three times
+under `offline_credentials()` and `network_denied()`, requires one identical
+outcome per row (exit code, terminal quality, answered targets, published report)
+that matches its declared result, and fails a suite whose runs attempted a
+connection. The API's replay mode (`api/replay.py`) serves the same harness behind
+the HTTP interface with the same two guards held for the whole process.

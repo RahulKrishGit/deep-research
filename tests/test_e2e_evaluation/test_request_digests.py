@@ -75,7 +75,7 @@ PINNED_REQUEST_DIGESTS: dict[str, tuple[str, str, str, int]] = {
     "two-versions-one-target": ("290c9cb58f2d7619", "9b469dabcb7b7df6", "249a41ee3e685a00", 16),
     "unattributed-relay-prose": ("5962091717fdfd90", "5f1119c7995c420f", "3d9f3d2435df6a6f", 16),
     "unsupported-mechanism": ("6ee2f13de7243f61", "e11f85e4649ce755", "3db97d2e6100f225", 33),
-    "validated-cache-reuse": ("b3e4d61078ef9e41", "a000bdf6623b0641", "aa22ef8759903050", 28),
+    "validated-cache-reuse": ("7b697622002e2211", "d4ecc718e3683c34", "efff4ec334358cf7", 28),
 }
 
 PINNED_EVENT_DIGESTS: dict[str, tuple[str, int]] = {

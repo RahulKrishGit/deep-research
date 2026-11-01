@@ -1408,7 +1408,8 @@ def _validated_cache_reuse() -> ReplayScenario:
     )
     return ReplayScenario(
         case_id="validated-cache-reuse",
-        version=REPLAY_CASE_VERSION,
+        # 3: a page both topics admit is extracted once.
+        version=3,
         question="What did the Acme widget adoption survey measure in 2024?",
         topics=(
             _topic(
@@ -1440,6 +1441,7 @@ def _validated_cache_reuse() -> ReplayScenario:
             required_invariants=(
                 "read_downloaded_once",
                 "cache_provenance_is_validated",
+                "shared_page_extracted_once",
             ),
             allowed_failure_classes=(
                 "error:researcher_sub_topic_skipped",
@@ -3269,13 +3271,13 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
     ),
     ReplayCaseEntry(
         case_id="validated-cache-reuse",
-        version=REPLAY_CASE_VERSION,
+        version=3,
         title="One download, two answers, validated provenance",
         expected_product_result="accepted / 0",
         decisive_assertion=(
             "Validated original evidence is reused without repeated body "
             "downloads; stale/changed/forged cache provenance cannot silently "
-            "pass"
+            "pass; a page both topics admit is extracted once"
         ),
         build=_validated_cache_reuse,
     ),

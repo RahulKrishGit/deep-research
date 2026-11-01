@@ -18,7 +18,7 @@ import json
 import logging
 import re
 from collections.abc import Callable, Collection, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Literal, NamedTuple, TypeAlias
@@ -955,6 +955,50 @@ def _unbound_required_targets(
         and target.unit_dimension is None
         and target.target_id not in bound
     ]
+
+
+def _unbound_required_figure_targets(
+    targets: Sequence[EvidenceTarget], findings: Sequence[Finding]
+) -> list[EvidenceTarget]:
+    """This topic's required quantities no admitted finding answers yet.
+
+    The sibling of ``_unbound_required_targets`` for the targets that name a
+    unit of measure: whether a passage owes one a figure is still the unit
+    test's decision, so this only says whether the topic has any such target
+    left to ask for.
+    """
+    bound = {
+        target_id for finding in findings for target_id in finding.target_ids
+    }
+    return [
+        target
+        for target in targets
+        if target.required
+        and target.unit_dimension is not None
+        and target.target_id not in bound
+    ]
+
+
+def _reused_unbound_keys(
+    reused: Sequence[Finding], own_target_ids: Collection[str]
+) -> set[tuple[str, str]]:
+    """The passages a loop imported as mined that bind none of its own targets.
+
+    Another loop's page call answered those passages for its own targets, so
+    they are mined for that loop and not yet for this one. A passage any
+    imported finding binds to one of ``own_target_ids`` is answered. A finding
+    with no read id or locator names no passage.
+    """
+    own = set(own_target_ids)
+    keyed = [
+        ((finding.read_id, finding.locator), finding)
+        for finding in reused
+        if finding.read_id and finding.locator
+    ]
+    answered = {
+        key for key, finding in keyed if own.intersection(finding.target_ids)
+    }
+    return {key for key, _ in keyed} - answered
 
 
 def _required_targets_unbound_by_read(
@@ -2760,8 +2804,9 @@ def sub_topic_completed_event(
     ones the decision packet marked ``robots=disallowed``. Always reported.
 
     ``timings`` is where the tail after the loop went:
-    ``extraction_wait_s``, ``owed_round_s``, ``owed_calls`` and
-    ``slowest_page_s``, added only when it is given.
+    ``extraction_wait_s``, ``owed_round_s``, ``owed_calls``,
+    ``slowest_page_s``, ``pages_reused`` and ``reuse_fallbacks``, added only
+    when it is given.
     """
     metadata: dict[str, JsonValue] = {
         "sub_topic": summarize_text(sub_topic.title),
@@ -2793,6 +2838,8 @@ def sub_topic_completed_event(
                 "owed_round_s": timings.owed_round_s,
                 "owed_calls": timings.owed_calls,
                 "slowest_page_s": timings.slowest_page_s,
+                "pages_reused": timings.pages_reused,
+                "reuse_fallbacks": timings.reuse_fallbacks,
             }
         )
     return agent_event(
@@ -3013,14 +3060,19 @@ class ExtractionTimings:
     waiting for the page extractions the loop started (``extraction_wait_s``),
     the one round of owed, cross-topic and dissent re-asks after them
     (``owed_round_s``) and how many calls that round asked (``owed_calls``),
-    and the slowest single page extraction (``slowest_page_s``). A field a
-    pass never reached stays at zero.
+    and the slowest single page extraction (``slowest_page_s``). Another
+    loop's call imported instead of making one counts in ``pages_reused``;
+    a page this loop extracted itself because that call could not be reused
+    counts in ``reuse_fallbacks``. A field a pass never reached stays at
+    zero.
     """
 
     extraction_wait_s: float = 0.0
     owed_round_s: float = 0.0
     owed_calls: int = 0
     slowest_page_s: float = 0.0
+    pages_reused: int = 0
+    reuse_fallbacks: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -3035,6 +3087,13 @@ class _PageExtraction:
     truncation (the provider replied, cut off at its own cap); both keep the
     other pages' findings, and neither invents a finding this page's call
     never made.
+
+    ``packet_complete`` and ``reader_notes`` say what the call's request held,
+    so another loop can tell whether it may import this result: the packet
+    carried every read, evidence and passage row of the page, and the notes
+    block it rendered. ``reused_from`` names the loop whose call this result
+    was imported from, and ``reuse_fallback`` marks a result this loop made
+    itself after that call could not be used.
     """
 
     read_id: str
@@ -3046,6 +3105,29 @@ class _PageExtraction:
     error: ResearchError | None = None
     failed_provider: bool = False
     elapsed_s: float = 0.0
+    packet_complete: bool = False
+    reader_notes: str = ""
+    reused_from: str | None = None
+    reuse_fallback: bool = False
+
+
+class _ExtractionScope(NamedTuple):
+    """The inputs of a page's request that can differ between the loops of
+    one research pass: the target ids offered and the topic titles. Reader-note
+    threads add both mid-pass. The question and the extraction contract are
+    constants of the run."""
+
+    target_ids: tuple[str, ...]
+    coverage_titles: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SharedPageExtraction:
+    """The one loop's call for a page, which later loops of the pass may import."""
+
+    task: "asyncio.Task[_PageExtraction]"
+    scope: _ExtractionScope
+    owner_coverage_id: str
 
 
 class _LoopWithExtraction(NamedTuple):
@@ -3304,6 +3386,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         # sub-topic loop. A body read for one target can therefore be selected
         # locally for another target without another network acquisition.
         self._run_reads: dict[str, ReadRecord] = {}
+        # The page extractions this research pass started, by read id: the
+        # first loop to admit a read owns its call and a later loop with the
+        # same scope waits for it. Reset by every ``run()``.
+        self._run_page_extractions: dict[str, _SharedPageExtraction] = {}
         self._run_evidence = {}
         self._run_dispositions = []
         self._run_boundary_audits = {}
@@ -3588,9 +3674,20 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         A failure here is this page's alone: the caller merges every page's
         own result, in read order, and one page's provider failure never
         costs the pages that already succeeded.
+
+        The result also records what another loop needs to decide whether it
+        may import this call instead of making its own:
+        ``reader_notes``, the notes block the request carried, and
+        ``packet_complete``, whether the packet held every read, evidence and
+        passage row of the page. Only a successful call is ever complete.
         """
         started_at = perf_counter()
         async with gate:
+            # Rendered once: the request carries this string and the result
+            # records it, so a loop that would reuse this call can tell
+            # whether the notes changed since.
+            reader_notes = self._reader_notes_block(EXTRACTION_NOTES)
+            omitted: list[str] = []
             messages = extraction_messages(
                 task,
                 run,
@@ -3598,11 +3695,19 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 acquisition_context=policy.context(
                     limit=self._evidence_packet_chars,
                     read_ids=[read_id],
+                    omitted_row_ids=omitted,
                 ),
                 planned_targets=planned_targets,
                 question=question,
                 coverage_titles=coverage_titles,
-                reader_notes=self._reader_notes_block(EXTRACTION_NOTES),
+                reader_notes=reader_notes,
+            )
+            # A row packed out is a row the model never saw. The state and
+            # candidate rows say nothing about this page's passages, so only
+            # the page's own rows (or a packet too small for any row) count.
+            packet_complete = not any(
+                row == "packet" or row.startswith(("read:", "evidence:", "passage:"))
+                for row in omitted
             )
             # An experiment's stage replay asks this page again; nothing is
             # written unless one bound a capture.
@@ -3626,6 +3731,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 return _PageExtraction(
                     read_id=read_id,
                     error=extraction_output_limit_error(run, error),
+                    reader_notes=reader_notes,
                     elapsed_s=round(perf_counter() - started_at, 1),
                 )
             except ProviderError as error:
@@ -3633,6 +3739,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     read_id=read_id,
                     error=extraction_provider_error(run, error),
                     failed_provider=True,
+                    reader_notes=reader_notes,
                     elapsed_s=round(perf_counter() - started_at, 1),
                 )
         read = policy.reads.get(read_id)
@@ -3668,6 +3775,98 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             rejected=rejected,
             unplanned_target_ids=unplanned_target_ids,
             dropped_figures=dropped_figures,
+            packet_complete=packet_complete,
+            reader_notes=reader_notes,
+            elapsed_s=round(perf_counter() - started_at, 1),
+        )
+
+    async def _reuse_page_extraction(
+        self,
+        task: SubTopicTask,
+        run: ReActRun,
+        policy: AcquisitionPolicy,
+        read_id: str,
+        shared: _SharedPageExtraction,
+        *,
+        gate: asyncio.Semaphore,
+        valid_target_ids: Sequence[str] | None,
+        planned_targets: Sequence[EvidenceTarget],
+        question: str | None,
+        coverage_titles: Mapping[str, str],
+    ) -> _PageExtraction:
+        """One page's extraction for a loop whose scope equals the owner's:
+        wait for the owner's call and import its findings, or make this
+        loop's own call when that result cannot be used.
+
+        The wait never awaits the owner's task: ``asyncio.wait`` returns when
+        it is done however it ended and neither cancels it nor re-raises
+        its exception, so cancelling this loop leaves the owner running and an
+        owner that raised is only a reason to extract the page here. No gate
+        slot is held while waiting.
+
+        The owner's result is imported when its call succeeded, its packet
+        held every row of the page (otherwise its model never saw the
+        passages this loop's units point at) and the notes block it carried
+        is the one a request built now would carry. Every finding is one
+        ``build_findings`` already admitted against this read. Only the copies
+        bound to one of this loop's own targets are re-stamped with its
+        title: re-stamping any other finding would let the owner's judgement of
+        relevance answer this loop's targets through the sub-topic fallback,
+        a binding no model made. The imported findings join ``policy.findings``
+        synchronously, as an own call's do.
+
+        Anything else falls back to ``_extract_one_page`` for this loop.
+        A fallback never takes over the registry entry.
+        """
+        started_at = perf_counter()
+        await asyncio.wait((shared.task,))
+        # A cancelled task has no exception to read: ``exception()`` raises.
+        if not shared.task.cancelled() and shared.task.exception() is None:
+            owner = shared.task.result()
+            if (
+                owner.error is None
+                and owner.packet_complete
+                and owner.reader_notes == self._reader_notes_block(EXTRACTION_NOTES)
+            ):
+                own_target_ids = {
+                    target.target_id
+                    for target in counted_evidence_targets(
+                        task.sub_topic.evidence_targets
+                    )
+                }
+                imported = [
+                    finding.model_copy(
+                        update={"related_sub_topic": task.sub_topic.title}
+                    )
+                    if own_target_ids.intersection(finding.target_ids)
+                    else finding
+                    for finding in owner.findings
+                ]
+                if imported:
+                    policy.findings = [*policy.findings, *imported]
+                return _PageExtraction(
+                    read_id=read_id,
+                    findings=imported,
+                    admitted_keys=list(owner.admitted_keys),
+                    packet_complete=True,
+                    reader_notes=owner.reader_notes,
+                    reused_from=shared.owner_coverage_id,
+                    elapsed_s=round(perf_counter() - started_at, 1),
+                )
+        own = await self._extract_one_page(
+            task,
+            run,
+            policy,
+            read_id,
+            gate=gate,
+            valid_target_ids=valid_target_ids,
+            planned_targets=planned_targets,
+            question=question,
+            coverage_titles=coverage_titles,
+        )
+        return replace(
+            own,
+            reuse_fallback=True,
             elapsed_s=round(perf_counter() - started_at, 1),
         )
 
@@ -3998,6 +4197,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         unplanned_target_ids: list[str] = []
         dropped_figures: list[str] = []
         errors: list[ResearchError] = []
+        # The findings another loop's page call produced and this loop
+        # imported, in page order.
+        reused: list[Finding] = []
         sub_topic_extraction_failure: ExtractionFailure = ""
 
         if policy is not None and page_extractions is not None and admitted_read_order:
@@ -4019,6 +4221,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         timings.slowest_page_s = max(
                             timings.slowest_page_s, page.elapsed_s
                         )
+                        if page.reused_from is not None:
+                            timings.pages_reused += 1
+                        if page.reuse_fallback:
+                            timings.reuse_fallbacks += 1
                     if page.error is not None:
                         errors.append(page.error)
                         page_failures.append(
@@ -4027,6 +4233,8 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                         failed_read_ids.add(read_id)
                         continue
                     findings.extend(page.findings)
+                    if page.reused_from is not None:
+                        reused.extend(page.findings)
                     admitted_keys.extend(page.admitted_keys)
                     # Prefixed with this page's own read id: each page
                     # numbers its own rejections from
@@ -4148,6 +4356,24 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         unanswered: list[EvidenceTarget] = []
         if policy is not None:
             own_targets = counted_evidence_targets(task.sub_topic.evidence_targets)
+            # The obligation this pass completed is the ACTIVE topic's, and a
+            # finding bound to another topic's target does not complete it.
+            # Mining a read for every planned target would otherwise let one
+            # topic's binding stand in for another's. Only findings that
+            # carry a binding are asked: an unbound finding (a legacy one, or
+            # an extraction that named an id outside the plan) is attributed
+            # through this very topic later, which is what the old reading —
+            # "some passage of this topic was used" — already said. Hoisted
+            # here, before the sweeps below, which need this topic's own
+            # target ids: the cross-topic sweep to leave them to the own-topic
+            # one instead of asking about them twice, and the passages another
+            # loop's call mined to tell which of them bind none of them.
+            own_target_ids = {target.target_id for target in own_targets}
+            # The passages imported from another loop's page call that bind
+            # none of this topic's own targets. That call was asked for its
+            # own loop's targets, so these passages are not yet mined for
+            # this topic.
+            reused_unbound = _reused_unbound_keys(reused, own_target_ids)
             # A page whose own extraction call failed this pass is excluded
             # from the owed-unit sets entirely: the
             # provider never actually saw or walked past that page's own
@@ -4180,11 +4406,42 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                 # without that binding must stay eligible for it.
                 used=[*mined_earlier, *admitted_keys],
             )
+            # The figure re-ask above skips every passage an admitted finding
+            # used, and an imported finding used its passage for the other
+            # loop's targets. While this topic still has a required figure
+            # target no finding answers, those passages are owed the figure
+            # ask too, checked against earlier passes' keys alone: this
+            # pass's keys hold them.
+            figure_targets = _unbound_required_figure_targets(own_targets, findings)
+            if reused_unbound and figure_targets:
+                already_owed = {unit.evidence_id for unit in owed_figures}
+                owed_figures = [
+                    *owed_figures,
+                    *(
+                        unit
+                        for unit in _units_owing_a_figure(
+                            {
+                                evidence_id: unit
+                                for evidence_id, unit in owed_eligible_evidence.items()
+                                if (unit.read_id, unit.locator) in reused_unbound
+                            },
+                            target_ids=(
+                                ()
+                                if policy.target_id is None
+                                else (policy.target_id,)
+                            ),
+                            bases=_measure_bases(figure_targets),
+                            used=mined_earlier,
+                        )
+                        if unit.evidence_id not in already_owed
+                    ),
+                ]
             # The same bounded re-ask for a required obligation this pass left
             # unanswered: a target with no unit of measure has no figure to
             # look for, so the passages that state its own words are what can
             # bind it, and an extraction that walked past them is the run
-            # answering half a question.
+            # answering half a question. ``used`` leaves out the imported
+            # passages that bind none of this topic's own targets.
             unanswered = _unbound_required_targets(own_targets, findings)
             owed_own_words = _units_owing_own_words(
                 owed_eligible_evidence,
@@ -4192,7 +4449,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     () if policy.target_id is None else (policy.target_id,)
                 ),
                 targets=unanswered,
-                used=admitted_keys,
+                used=[key for key in admitted_keys if key not in reused_unbound],
             )
             # The passages that owe the most are the ones asked about first
             # within each page's own queue, and each page's own packets are
@@ -4208,23 +4465,6 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     },
                 )
             )
-            # The obligation this pass completed is the ACTIVE topic's, and a
-            # finding bound to another topic's target does not complete it.
-            # Mining a read for every planned target would otherwise let one
-            # topic's binding stand in for another's. Only findings that
-            # carry a binding are asked: an unbound finding (a legacy one, or
-            # an extraction that named an id outside the plan) is attributed
-            # through this very topic later, which is what the old reading —
-            # "some passage of this topic was used" — already said. Hoisted
-            # here, before the cross-topic sweep below, which needs this
-            # topic's own target ids to leave them to the sweep above instead
-            # of asking about them twice.
-            own_target_ids = {
-                target.target_id
-                for target in counted_evidence_targets(
-                    task.sub_topic.evidence_targets
-                )
-            }
             # Every admitted read is also asked about the plan's
             # required, qualitative targets no finding from THAT read binds,
             # whichever sub-topic owns them -- the sweep above only ever asks
@@ -4639,13 +4879,34 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             if planned_targets
             else None
         )
+        # The two inputs of a page's request that differ between the loops of
+        # one pass: a reader-note thread started meanwhile adds targets and a
+        # title. Equal scopes ask the model the same thing about a page.
+        scope = _ExtractionScope(
+            tuple(valid_target_ids or ()),
+            tuple(sorted(coverage_titles.items())),
+        )
 
         def on_read_admitted(read_id: str) -> None:
             if read_id in extraction_tasks:
                 return
             admitted_read_order.append(read_id)
-            extraction_tasks[read_id] = asyncio.create_task(
-                self._extract_one_page(
+            shared = self._run_page_extractions.get(read_id)
+            page = (
+                self._reuse_page_extraction(
+                    task,
+                    placeholder_run,
+                    policy,
+                    read_id,
+                    shared,
+                    gate=extraction_gate,
+                    valid_target_ids=valid_target_ids,
+                    planned_targets=planned_targets,
+                    question=question,
+                    coverage_titles=coverage_titles,
+                )
+                if shared is not None and shared.scope == scope
+                else self._extract_one_page(
                     task,
                     placeholder_run,
                     policy,
@@ -4657,6 +4918,15 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
                     coverage_titles=coverage_titles,
                 )
             )
+            page_task = asyncio.create_task(page)
+            extraction_tasks[read_id] = page_task
+            if shared is None:
+                # The first loop to admit a read owns its extraction. A loop
+                # that extracts the page itself, whether its scope differs or
+                # the owner's result could not be reused, never takes over.
+                self._run_page_extractions[read_id] = _SharedPageExtraction(
+                    page_task, scope, task.sub_topic.coverage_id
+                )
 
         policy.on_read_admitted = on_read_admitted
 
@@ -4928,6 +5198,9 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
         """
         self._run_source_state = state
         self._run_note_topics = []
+        # A page extracted in an earlier pass was asked about under that pass's
+        # target list, and this pass offers its own.
+        self._run_page_extractions = {}
         self._run_reads = dict(state.read_records)
         self._run_evidence = dict(state.evidence_units)
         self._run_dispositions = list(state.evidence_dispositions)

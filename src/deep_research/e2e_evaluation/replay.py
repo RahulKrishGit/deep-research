@@ -3420,6 +3420,40 @@ def _invariant_extra_pass_redrafts_the_gaining_part(run: ReplayRun) -> str | Non
     return None
 
 
+def _invariant_shared_page_extracted_once(run: ReplayRun) -> str | None:
+    """A page goes to one page extraction per research pass.
+
+    Two loops that admit one read share a single call: the second waits for
+    it and imports its findings, so a read named by two page-extraction
+    packets of one pass is the defect, however slowly the second loop got
+    there. A page-extraction packet is a researcher request that carries
+    retrieved evidence and is neither an owed re-ask nor a dissent re-ask:
+    those ask about a page again on purpose. A review ends a pass, and the
+    extra pass that follows asks about a page under its own target list, so
+    the reads seen are forgotten at every review.
+    """
+    seen: set[str] = set()
+    for key, text in run.replay.completer.packet_sequence:
+        if key.startswith("report_reviewer:"):
+            seen.clear()
+            continue
+        if (
+            key != "researcher:SubTopicFindingsDraft"
+            or "# Retrieved evidence" not in text
+            or "# Passages owed a finding" in text
+            or "# Statements these passages may dispute" in text
+        ):
+            continue
+        for read_id in re.findall(
+            r"^- read_id=(\S+) requested_url=", text, re.M
+        ):
+            if read_id in seen:
+                return (
+                    f"read {read_id} was sent to two page extractions in one "
+                    "research pass"
+                )
+            seen.add(read_id)
+    return None
 
 
 _REPLAY_INVARIANTS: dict[str, Any] = {
@@ -3472,6 +3506,7 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
     "extra_pass_redrafts_the_gaining_part": (
         _invariant_extra_pass_redrafts_the_gaining_part
     ),
+    "shared_page_extracted_once": _invariant_shared_page_extracted_once,
 }
 
 
