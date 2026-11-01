@@ -26,6 +26,7 @@ from deep_research.agents.base import (
     AgentCompleter,
     AgentRun,
     BaseAgent,
+    effort_kwargs,
 )
 from deep_research.agents.errors import (
     AgentConfigurationError,
@@ -3566,10 +3567,12 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         repair: str | None = None,
         plan_under_repair: Sequence[SubTopic] = (),
     ) -> _PlanAttempt:
+        # ``plan`` is draft, repair or review_repair: the call record's
+        # name for this request, and with ``plan_`` in front the key of its
+        # ``agents.operation_efforts`` entry.
+        label = f"plan_{plan}"
         try:
-            # ``plan`` is draft, repair or review_repair: the call record's
-            # name for this request.
-            with call_label(f"plan_{plan}"):
+            with call_label(label):
                 draft = await self._complete_plan_request(
                     plan_messages(
                         task,
@@ -3583,6 +3586,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     ResearchPlanDraft,
                     operation="plan_draft",
                     run=run,
+                    reasoning_effort=self.config.effort_for(label),
                 )
         except StructuredOutputError as error:
             raise planning_provider_error(
@@ -3658,14 +3662,16 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                 ],
             )
         self._review_calls += 1
+        # The call record's name for this request, and the key of its
+        # ``agents.operation_efforts`` entry: the review a plan gets on every
+        # pass, or the one after its repair.
+        label = (
+            "plan_review"
+            if already_requested is None
+            else "plan_confirming_review"
+        )
         try:
-            # The call record's name for this request: the
-            # review a plan gets on every pass, or the one after its repair.
-            with call_label(
-                "plan_review"
-                if already_requested is None
-                else "plan_confirming_review"
-            ):
+            with call_label(label):
                 return await self._complete_plan_request(
                     plan_review_messages(
                         contract,
@@ -3677,6 +3683,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
                     PlanReviewDraft,
                     operation="plan_review",
                     run=run,
+                    reasoning_effort=self.config.effort_for(label),
                 )
         except StructuredOutputError as error:
             raise planning_provider_error(
@@ -3692,6 +3699,7 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         *,
         operation: str,
         run: ReActRun,
+        reasoning_effort: str | None = None,
     ) -> Any:
         """One plan-side structured request, re-asked once if it is truncated.
 
@@ -3705,16 +3713,27 @@ class PlannerAgent(BaseAgent[ResearchPlan]):
         which leaves more of that budget for the answer — the reviewer's and
         the writer's rule (``OUTPUT_LIMIT_RETRY_EFFORT``), not a larger cap.
 
+        ``reasoning_effort`` is the call's own ``agents.operation_efforts``
+        entry: the first attempt sends it (``None`` sends nothing, so the
+        agent's profile decides) and its digest names it. The retry is at the
+        shared retry effort whatever that was.
+
         The retry is recorded on the run whatever it returns. A second
         truncation propagates as a redacted copy through the caller's own
         failure path, exactly as a first truncation did before; any other
         failure of the retry propagates through that path too.
         """
         budget = self.config.planner_final_max_tokens
-        self.fingerprint_call(schema.__name__, output_limit=budget)
+        self.fingerprint_call(
+            schema.__name__, output_limit=budget, reasoning_effort=reasoning_effort
+        )
         try:
             return await self.provider.complete_structured(
-                messages, schema, agent_name=self.name, max_tokens=budget
+                messages,
+                schema,
+                agent_name=self.name,
+                max_tokens=budget,
+                **effort_kwargs(reasoning_effort),
             )
         except ProviderOutputLimitError as error:
             truncation = error

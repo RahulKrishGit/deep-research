@@ -644,6 +644,95 @@ async def test_a_truncated_batch_is_asked_again_once_in_halves(tracker: Tracker)
     assert outcome.state_update["errors"] == []
 
 
+def _effort_verifier(
+    tracker: Tracker, completer: ScriptedCompleter, **operation_efforts: object
+) -> EvidenceVerifierAgent:
+    return _evidence_verifier(
+        tracker, completer,
+        config=AgentRuntimeConfig(operation_efforts=operation_efforts),
+    )
+
+
+async def _run_split_context_check(
+    tracker: Tracker, agent: EvidenceVerifierAgent
+) -> None:
+    """Four findings in one batch: the first call is cut off, so the batch is
+    asked again as two halves."""
+    read = make_read(_metrics_page(4), url="https://example.test/halves", title="Halves")
+    findings = [_metric_finding(read, i) for i in range(4)]
+    state = _state(raw_findings=findings, read_records={read.read_id: read})
+
+    async with tracker.session_span("session-1", "question"):
+        await agent.run(state)
+
+
+@pytest.mark.asyncio
+async def test_the_context_check_and_its_split_halves_run_at_the_configured_effort(
+    tracker: Tracker,
+) -> None:
+    completer = LabelRecordingCompleter(
+        outputs=[_output_limit_error(), _confirm_reply, _confirm_reply]
+    )
+
+    await _run_split_context_check(
+        tracker, _effort_verifier(tracker, completer, context_check="low")
+    )
+
+    assert completer.label_efforts == [("context_check", "low")] * 3
+
+
+@pytest.mark.asyncio
+async def test_the_context_check_sends_no_effort_when_none_is_configured(
+    tracker: Tracker,
+) -> None:
+    """Only the Statement Check is configured, so the Context Check's request,
+    split halves included, is the one it was before per-operation efforts."""
+    completer = LabelRecordingCompleter(
+        outputs=[_output_limit_error(), _confirm_reply, _confirm_reply]
+    )
+
+    await _run_split_context_check(
+        tracker, _effort_verifier(tracker, completer, statement_check="low")
+    )
+
+    assert completer.label_efforts == [("context_check", None)] * 3
+    assert completer.effort_kwarg_sent == [False] * 3
+
+
+@pytest.mark.asyncio
+async def test_the_context_check_digest_follows_the_configured_effort_only(
+    tracker: Tracker,
+) -> None:
+    """With no effort configured the recorded digest is the profile-effort one
+    every ordinary call records; a configured effort stands in for the
+    profile's, so the digest names the effort the request actually ran at."""
+    read = make_read()
+    finding = make_finding(read, SNIPPET, figures=[figure("10.4", "GW", "2024", "actual")])
+    state = _state(raw_findings=[finding], read_records={read.read_id: read})
+
+    async def digest(**operation_efforts: object) -> str:
+        agent = _effort_verifier(
+            tracker, ScriptedCompleter(outputs=[_confirm_reply]), **operation_efforts
+        )
+        async with tracker.session_span("session-1", "question"):
+            outcome = await agent.run(state)
+        return outcome.call_fingerprints["ContextCheckDraft"]
+
+    default_digest = await digest()
+
+    unchanged = _effort_verifier(tracker, ScriptedCompleter())
+    assert default_digest == unchanged.fingerprint_call("ContextCheckDraft")
+    assert default_digest == unchanged.fingerprint_call(
+        "ContextCheckDraft", reasoning_effort=None
+    )
+    assert await digest(statement_check="low") == default_digest
+    low_digest = await digest(context_check="low")
+    assert low_digest != default_digest
+    assert low_digest == unchanged.fingerprint_call(
+        "ContextCheckDraft", reasoning_effort="low"
+    )
+
+
 @pytest.mark.asyncio
 async def test_only_new_findings_are_verified(tracker: Tracker) -> None:
     f1 = _bare_finding("A prior finding with no figures.")
@@ -1290,6 +1379,43 @@ async def test_a_missing_label_in_the_reply_gives_none_and_records_an_error() ->
 # ---------------------------------------------------------------------------
 # Configuration: batch size and concurrency parameters
 # ---------------------------------------------------------------------------
+
+
+def _four_statement_items() -> list[StatementCheckItem]:
+    finding = _statement_finding("18.9", "GW")
+    return [
+        _statement_item(f"S{i:02d}", f"Wood Mackenzie states {i} GW.", finding)
+        for i in range(4)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_statement_check_split_halves_keep_the_effort() -> None:
+    """The first call is cut off, so the batch is asked again in two halves:
+    all three requests run at the operation's effort."""
+    truncating_once = LabelRecordingCompleter(
+        outputs=[_output_limit_error(), _confirm_statement_reply, _confirm_statement_reply]
+    )
+
+    verdicts, errors = await check_statements(
+        truncating_once, _four_statement_items(), question="q", reasoning_effort="low"
+    )
+
+    assert truncating_once.label_efforts == [("statement_check", "low")] * 3
+    assert errors == []
+    assert len(verdicts) == 4
+
+
+@pytest.mark.asyncio
+async def test_statement_check_sends_no_effort_by_default() -> None:
+    truncating_once = LabelRecordingCompleter(
+        outputs=[_output_limit_error(), _confirm_statement_reply, _confirm_statement_reply]
+    )
+
+    await check_statements(truncating_once, _four_statement_items(), question="q")
+
+    assert truncating_once.label_efforts == [("statement_check", None)] * 3
+    assert truncating_once.effort_kwarg_sent == [False] * 3
 
 
 @pytest.mark.asyncio

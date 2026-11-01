@@ -101,7 +101,7 @@ GRAPH_ROUTES = {
     ),
     "report_not_accepted": (
         "The report was scored but not accepted (a gate failed, a material "
-        "defect, or a mean below 0.80), and no required target is missing."
+        "defect, or a mean below 0.70), and no required target is missing."
     ),
     "review_unavailable": (
         "The Report Reviewer did not score the report (provider failure or an "

@@ -32,6 +32,7 @@ from deep_research.agents.base import (
     AgentCompleter,
     AgentRun,
     BaseAgent,
+    effort_kwargs,
 )
 from deep_research.agents.errors import AgentConfigurationError, agent_error
 from deep_research.agents.events import agent_event, publish_live
@@ -2388,6 +2389,7 @@ async def _check(
     provider: AgentCompleter, candidates: Sequence[_Candidate], *, question: str,
     gate: asyncio.Semaphore, batch_size: int, fingerprint: Callable[[str], object] | None,
     passages: Mapping[str, str], source_lines: Mapping[str, str],
+    statement_check_effort: str | None,
     part: tuple[str, str] | None = None,
 ) -> tuple[Mapping[str, _Verdict | None], list[ResearchError]]:
     """Run the Statement Check over one part's (or the bottom line's)
@@ -2421,10 +2423,14 @@ async def _check(
         for c in candidates
     ]
     try:
+        # ``**effort_kwargs``, not ``reasoning_effort=...``: with no effort
+        # configured the checker is called exactly as before, which is also
+        # what a substituted checker (the tests') accepts.
         verdicts, errors = await check_statements(
             provider, items, question=question, fingerprint=fingerprint,
             batch_size=batch_size, gate=gate,
             on_batch=None if progress is None else progress.reporter(section),
+            **effort_kwargs(statement_check_effort),
         )
     except ProviderConfigurationError:
         raise
@@ -2562,7 +2568,8 @@ class _PartOutcome:
 async def _run_part(
     job: PartJob, task: ReportWriterTask, *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, section_gate: asyncio.Semaphore,
-    check_gate: asyncio.Semaphore, batch_size: int, label_urls: Mapping[str, str],
+    check_gate: asyncio.Semaphore, batch_size: int, statement_check_effort: str | None,
+    label_urls: Mapping[str, str],
     label_finding_ids: Mapping[str, str],
 ) -> _PartOutcome:
     if not job.findings and not job.context_findings:
@@ -2618,6 +2625,7 @@ async def _run_part(
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
         batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
+        statement_check_effort=statement_check_effort,
         source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
         part=(job.coverage_id, _section_title(draft.title, job.sub_topic_title)),
     )
@@ -2783,7 +2791,8 @@ def _statement_meets_authority_floor(
 async def _check_and_finalize_bottom_line(
     task: ReportWriterTask, draft: BottomLineDraft, *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
-    batch_size: int, cited_by_sections: Mapping[str, Finding], label_urls: Mapping[str, str],
+    batch_size: int, statement_check_effort: str | None, cited_by_sections: Mapping[str, Finding],
+    label_urls: Mapping[str, str],
     label_finding_ids: Mapping[str, str], key_prefix: str, disputed_labels: frozenset[str] = frozenset(),
     listed_topics: Mapping[str, frozenset[str]] = _NO_TOPICS,
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
@@ -2844,6 +2853,7 @@ async def _check_and_finalize_bottom_line(
     verdicts, check_errors = await _check(
         provider, candidates, question=task.question, gate=check_gate,
         batch_size=batch_size, fingerprint=fingerprint, passages=task.passages,
+        statement_check_effort=statement_check_effort,
         source_lines=finding_source_lines(task.findings, sources_by_url(task.sources)),
     )
 
@@ -2937,7 +2947,8 @@ def _bottom_line_disputed_labels(
 async def _run_bottom_line(
     task: ReportWriterTask, outcomes: Sequence[_PartOutcome], *, provider: AgentCompleter,
     fingerprint: Callable[[str], object] | None, check_gate: asyncio.Semaphore,
-    batch_size: int, label_urls: Mapping[str, str], label_finding_ids: Mapping[str, str],
+    batch_size: int, statement_check_effort: str | None, label_urls: Mapping[str, str],
+    label_finding_ids: Mapping[str, str],
 ) -> tuple[list[ReportPoint], dict[str, str], list[ResearchError], list[RejectedDraftPoint],
           list[tuple[str, str]], set[str], _LineLayout | None]:
     """The bottom-line call, started once every part task has
@@ -3109,7 +3120,8 @@ async def _run_bottom_line(
     points, verdict_map, check_errors, rejected, dropped_marks, refusals, _, topic_of = (
         await _check_and_finalize_bottom_line(
             task, draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
-            batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
+            batch_size=batch_size, statement_check_effort=statement_check_effort,
+            cited_by_sections=cited_by_sections, label_urls=label_urls,
             label_finding_ids=label_finding_ids, key_prefix="B", disputed_labels=disputed_labels,
             listed_topics=listed_topics,
         )
@@ -3192,7 +3204,8 @@ async def _run_bottom_line(
             (reask_points, reask_verdict_map, reask_check_errors, reask_rejected,
              reask_dropped_marks, _, reask_fully_checked, reask_topic_of) = await _check_and_finalize_bottom_line(
                 task, reask_draft, provider=provider, fingerprint=fingerprint, check_gate=check_gate,
-                batch_size=batch_size, cited_by_sections=cited_by_sections, label_urls=label_urls,
+                batch_size=batch_size, statement_check_effort=statement_check_effort,
+                cited_by_sections=cited_by_sections, label_urls=label_urls,
                 label_finding_ids=label_finding_ids, key_prefix="R", disputed_labels=disputed_labels,
                 listed_topics=listed_topics,
             )
@@ -3457,6 +3470,7 @@ async def compose_written_report(
     batch_size: int | None = None,
     concurrency: int | None = None,
     section_concurrency: int = DEFAULT_WRITER_SECTION_CONCURRENCY,
+    statement_check_effort: str | None = None,
 ) -> ReportComposition:
     """Partition, draft every part in parallel, pipeline each part's
     Statement Check off its own draft, then write the bottom line last from
@@ -3465,7 +3479,8 @@ async def compose_written_report(
     the notes' own parts; every other part
     is carried over unchanged. ``batch_size``/``concurrency`` are the Statement Check's
     bounds (``None`` uses this module's defaults); ``section_concurrency``
-    bounds how many section drafts run at once.
+    bounds how many section drafts run at once. ``statement_check_effort`` is
+    the effort every Statement Check request runs at (``None`` sends none).
     """
     resolved_batch_size = batch_size if batch_size is not None else _CHECK_BATCH_SIZE_DEFAULT
     resolved_concurrency = concurrency if concurrency is not None else _CHECK_CONCURRENCY_DEFAULT
@@ -3558,7 +3573,8 @@ async def compose_written_report(
     async def run_and_store(index: int, job: PartJob) -> None:
         outcomes[index] = await _run_part(
             job, task, provider=provider, fingerprint=fingerprint, section_gate=section_gate,
-            check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
+            check_gate=check_gate, batch_size=resolved_batch_size,
+            statement_check_effort=statement_check_effort, label_urls=label_urls,
             label_finding_ids=label_finding_ids,
         )
 
@@ -3574,7 +3590,8 @@ async def compose_written_report(
     (bottom_line_points, bottom_line_verdicts, bottom_line_errors, bottom_line_rejected,
      bottom_line_dropped_marks, bottom_line_moved_ids, line_layout) = await _run_bottom_line(
         task, resolved_outcomes, provider=provider, fingerprint=fingerprint,
-        check_gate=check_gate, batch_size=resolved_batch_size, label_urls=label_urls,
+        check_gate=check_gate, batch_size=resolved_batch_size,
+        statement_check_effort=statement_check_effort, label_urls=label_urls,
         label_finding_ids=label_finding_ids,
     )
 
@@ -3837,6 +3854,7 @@ class ReportWriterAgent(BaseAgent[WrittenReport]):
             batch_size=self.config.verifier_batch_size,
             concurrency=self.config.verifier_concurrency,
             section_concurrency=self.config.writer_section_concurrency,
+            statement_check_effort=self.config.effort_for("statement_check"),
         )
         return WrittenReport(
             markdown=render_written_report(composition),

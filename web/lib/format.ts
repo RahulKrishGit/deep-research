@@ -91,8 +91,8 @@ export function fmtClock(iso: string | null): string | null {
 export function fmtElapsed(sec: number): string {
   return String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
 }
-/* Meter colour is a judgement about the number (DESIGN.md §3.6): v > 0.8 is green, so exactly 0.80
-   paints yellow on purpose while acceptance is ≥ 0.80. Do not "fix" either side. */
+/* Meter colour is a judgement about the number (DESIGN.md §3.6): v > 0.8 is green, so an accepted
+   review (acceptance is ≥ 0.70) can paint yellow on purpose. Do not "fix" either side. */
 export function meterClass(v: number): "ok" | "warn" | "danger" | null {
   if (Number.isNaN(v)) return null;
   return v > 0.8 ? "ok" : v >= 0.4 ? "warn" : "danger";

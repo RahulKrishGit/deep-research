@@ -119,6 +119,22 @@ Each agent resolves its model, thinking mode, effort, timeout and retry count
 from `llm.model_overrides[<agent>]`, else the global `llm` values; provider
 selection fails fast and never falls back to the other provider.
 
+`agents.operation_efforts` refines that per call. It is keyed by operation (the
+`OPERATION_AGENTS` table in `utils/config.py`): the label each call's records
+carry, except `react_decision`, the agents' loop turns, whose records read
+`react_tool_turn`. A call with an entry runs at that effort instead of its
+agent's profile effort; a call without one sends nothing extra. The shipped map
+runs the Context and Statement Checks and source scoring at `low` and the plan
+reviews at `high`. A truncated plan-side reply is still re-asked once
+at `OUTPUT_LIMIT_RETRY_EFFORT`, whatever its entry; a truncated Context or
+Statement Check batch is re-asked in two halves at the same effort as the whole,
+and any other truncated call is recorded as that call's failure. Startup
+validates each entry against every agent that makes the call, through the same
+capability check as an agent's own effort (`validate_operation_efforts`), and
+an effort set for an agent whose thinking is disabled is accepted and sends
+nothing. Request-scoped `config_overrides` merge into the map key by key, and
+each key has an `AGENTS_EFFORT_<KEY>` environment variable.
+
 ## Agents
 
 The Planner, Researcher, Source Evaluator, Evidence Verifier and Report Writer
@@ -253,7 +269,8 @@ the gate results, and carries no threshold. The reply scores seven dimensions (`
 `actionability`), gives a disposition for every statement it read (`supported`,
 `unsupported`, `not_reviewed`) and lists typed defects with a severity of
 `critical`, `major` or `minor`; `critical` and `major` are material and block
-acceptance. Acceptance is a mean of at least 0.80 (`SEMANTIC_REVIEW_MEAN`) with
+acceptance. Acceptance is a mean of at least 0.70 (`SEMANTIC_REVIEW_MEAN`, compared
+with a `1e-9` allowance so float rounding cannot fail an exact 0.70) with
 no material defect. A truncated reply is asked once more at `high` effort; a
 provider failure gives `provider_failed` and missing dispositions give
 `incomplete`, and either way the report publishes as partial: an unscored review

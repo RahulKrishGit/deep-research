@@ -1112,9 +1112,9 @@ rendered as absent, never as a zero and never as a verdict it did not earn.
 The three fills use the product's existing status roles rather than new colours, so the meters
 cannot drift away from the rest of the status language.
 
-**`0.80` paints yellow, and that is recorded on purpose.** Review acceptance is `≥ 0.80`
-(`SEMANTIC_REVIEW_MEAN` in `utils/types.py`) while the green band starts *above* `0.80`, so a review score or a
-cited-sources ratio of exactly `0.80` sits in the middle band. Two fixtures show it: session
+**An accepted score can paint yellow, and that is recorded on purpose.** Review acceptance is `≥ 0.70`
+(`SEMANTIC_REVIEW_MEAN` in `utils/types.py`) while the green band starts *above* `0.80`, so an
+accepted review score from `0.70` to `0.80`, or a cited-sources ratio of exactly `0.80`, sits in the middle band. Two fixtures show it: session
 `9ea4c220`'s `Scored sources cited` is 4 of 5 = 0.80, and Evidence finding `F03`'s source scores 0.80
 overall. Neither side is to be "fixed": the meter states the operator's bands, the reviewer states its
 own threshold, and the status text beside the meter says which outcome the run had.
@@ -1160,7 +1160,7 @@ Rules that follow from the table:
    (`max_iterations` can end with an empty list when only the review's own
    coverage defect remained, `extra_pass_target_ids` in `graph/state.py`). `not accepted · {score}` covers
    a passed review too: acceptance needs a scored review with a mean of at least
-   0.80 and no material defect, complete coverage, and no quality-gate hard
+   0.70 and no material defect, complete coverage, and no quality-gate hard
    failure (`agents/report_reviewer.py`, `graph/state.py`), so a gate
    can block acceptance while the review itself passed, and the clause says the
    report was not accepted rather than that the review failed. The report is

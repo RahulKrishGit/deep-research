@@ -59,11 +59,11 @@ from deep_research.utils.config import (
 # deliberately, from the value the pin test reports, rather than silently
 # invalidating it.
 PINNED_TARGET_PROMPT_FINGERPRINTS = {
-    "planner": "8f277236da6e",
-    "researcher": "51009ba36176",
-    "source_evaluator": "ea32fd463f65",
-    "evidence_verifier": "95abe2306b9f",
-    "report_writer": "f76cccddf882",
+    "planner": "4f62ccf7e026",
+    "researcher": "a4e8fb411802",
+    "source_evaluator": "c7b721b3d258",
+    "evidence_verifier": "ff0b42d99578",
+    "report_writer": "f4808b83bba7",
 }
 
 # The reviewer is a service role (``SERVICE_ROLE_NAMES``), not an agent
@@ -85,7 +85,7 @@ GIT = GitMetadata(commit="abc1234def", short_sha="abc1234", dirty=False)
 
 def test_the_baseline_efforts_match_the_approved_profile() -> None:
     """Researcher and Source Evaluator at high; everyone else, and the
-    judge, at max — DeepSeek Flash supports only those two levels."""
+    judge, at max — the approved profile uses only high and max."""
     config = EvaluationConfig()
 
     assert resolve_target_effort(config, "planner", override=None) == "max"

@@ -6,11 +6,12 @@ import json
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from deep_research.agents.base import AgentRun
+from deep_research.agents.base import OUTPUT_LIMIT_RETRY_EFFORT, AgentRun
 from deep_research.agents.errors import AgentConfigurationError, PlanningError
 from deep_research.agents.planner import (
     _PLAN_REPLY_EXAMPLES,
@@ -5382,3 +5383,218 @@ async def test_every_plan_side_call_is_named_for_the_call_records(
         "plan_review_repair",
         "plan_confirming_review",
     ]
+
+
+def _effort_config(**operation_efforts: Any) -> AgentRuntimeConfig:
+    """The planner tests' usual bounds, with these operations' efforts set."""
+    return AgentRuntimeConfig(
+        max_iterations=3, tool_budget=3, operation_efforts=operation_efforts
+    )
+
+
+def _review_repair_outputs() -> list[Any]:
+    """A draft, a review that wants a repair, the repair and its confirming review."""
+    return [
+        _sorting_plan(),
+        _review(
+            sound=False,
+            missing_dimensions=["siting and permitting"],
+            repair_instruction="Add a sub-topic for siting and permitting.",
+        ),
+        _sorting_plan(),
+        _review(),
+    ]
+
+
+async def _run_planner(
+    tracker: Tracker, completer: ScriptedCompleter, config: AgentRuntimeConfig
+) -> AgentRun:
+    async with tracker.session_span("session-1", "q"):
+        return await _planner(tracker, completer, config=config).run(
+            _state("What limits grid-scale battery storage deployment?")
+        )
+
+
+@pytest.mark.asyncio
+async def test_plan_reviews_run_at_their_configured_effort_while_the_draft_keeps_the_profile(
+    tracker: Tracker,
+) -> None:
+    """The three review-side calls read their own entries of
+    ``agents.operation_efforts``; the draft has none, so it sends none."""
+    completer = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=_review_repair_outputs(),
+    )
+
+    await _run_planner(
+        tracker,
+        completer,
+        _effort_config(
+            plan_review="high",
+            plan_review_repair="high",
+            plan_confirming_review="high",
+        ),
+    )
+
+    assert completer.label_efforts == [
+        ("plan_draft", None),
+        ("plan_review", "high"),
+        ("plan_review_repair", "high"),
+        ("plan_confirming_review", "high"),
+    ]
+    assert completer.effort_kwarg_sent == [False, True, True, True]
+
+
+@pytest.mark.asyncio
+async def test_each_plan_side_call_reads_its_own_effort_entry(
+    tracker: Tracker,
+) -> None:
+    """Five labels, five entries: a call that read a neighbour's entry, or the
+    draft's, would show here, because no two calls of one run share a value."""
+    lint_repair = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_stale_draft(), _sorting_plan(), _review()],
+    )
+    async with tracker.session_span("session-1", "q"):
+        await _planner(
+            tracker,
+            lint_repair,
+            config=_effort_config(
+                plan_draft="low", plan_repair="max", plan_review="high"
+            ),
+        ).run(_state("What are the current interconnection constraints?"))
+
+    review_repair = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=_review_repair_outputs(),
+    )
+    await _run_planner(
+        tracker,
+        review_repair,
+        _effort_config(
+            plan_review="low",
+            plan_review_repair="high",
+            plan_confirming_review="max",
+        ),
+    )
+
+    assert lint_repair.label_efforts == [
+        ("plan_draft", "low"),
+        ("plan_repair", "max"),
+        ("plan_review", "high"),
+    ]
+    assert review_repair.label_efforts == [
+        ("plan_draft", None),
+        ("plan_review", "low"),
+        ("plan_review_repair", "high"),
+        ("plan_confirming_review", "max"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_default_config_sends_no_plan_side_effort(tracker: Tracker) -> None:
+    """With ``agents.operation_efforts`` empty no plan-side call carries the
+    keyword at all -- not even ``reasoning_effort=None`` -- so a request is
+    the one it was before per-operation efforts existed."""
+    completer = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=_review_repair_outputs(),
+    )
+
+    await _run_planner(tracker, completer, _effort_config())
+
+    assert [label for label, _ in completer.label_efforts] == [
+        "plan_draft",
+        "plan_review",
+        "plan_review_repair",
+        "plan_confirming_review",
+    ]
+    assert all(effort is None for _, effort in completer.label_efforts)
+    assert not any(completer.effort_kwarg_sent)
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_review_at_a_configured_effort_retries_at_the_retry_effort(
+    tracker: Tracker,
+) -> None:
+    """The truncation retry is the shared one whatever the call was
+    configured at: ``plan_review`` at ``low`` is re-asked at
+    ``OUTPUT_LIMIT_RETRY_EFFORT``, not at ``low`` again."""
+    completer = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_sorting_plan(), _output_limit_error(), _review()],
+    )
+
+    outcome = await _run_planner(
+        tracker, completer, _effort_config(plan_review="low")
+    )
+
+    assert outcome.result is not None
+    review_efforts = [
+        effort for label, effort in completer.label_efforts if label == "plan_review"
+    ]
+    assert review_efforts == ["low", OUTPUT_LIMIT_RETRY_EFFORT]
+    assert completer.effort_kwarg_sent == [False, True, True]
+
+
+@pytest.mark.asyncio
+async def test_a_truncated_draft_at_a_configured_effort_retries_at_the_retry_effort(
+    tracker: Tracker,
+) -> None:
+    completer = LabelRecordingCompleter(
+        decisions=[finish("No lookup needed.", "Three angles matter.")],
+        outputs=[_output_limit_error(), _sorting_plan(), _review()],
+    )
+
+    outcome = await _run_planner(
+        tracker, completer, _effort_config(plan_draft="max")
+    )
+
+    assert outcome.result is not None
+    assert completer.label_efforts[:2] == [
+        ("plan_draft", "max"),
+        ("plan_draft", OUTPUT_LIMIT_RETRY_EFFORT),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_plan_digests_follow_the_configured_effort_only(
+    tracker: Tracker,
+) -> None:
+    """With no effort configured the recorded digests are the profile-effort
+    ones every ordinary call records; a configured effort stands in for the
+    profile's, so a digest names the effort its request actually ran at."""
+
+    async def digests(**operation_efforts: Any) -> dict[str, str]:
+        completer = ScriptedCompleter(
+            decisions=[finish("No lookup needed.", "Three angles matter.")],
+            outputs=[_sorting_plan(), _review()],
+        )
+        outcome = await _run_planner(
+            tracker, completer, _effort_config(**operation_efforts)
+        )
+        return outcome.call_fingerprints
+
+    budget = AgentRuntimeConfig().planner_final_max_tokens
+    reference = _planner(tracker, ScriptedCompleter(), config=_effort_config())
+    default = await digests()
+
+    assert default["ResearchPlanDraft"] == reference.fingerprint_call(
+        "ResearchPlanDraft", output_limit=budget
+    )
+    assert default["ResearchPlanDraft"] == reference.fingerprint_call(
+        "ResearchPlanDraft", output_limit=budget, reasoning_effort=None
+    )
+    assert default["PlanReviewDraft"] == reference.fingerprint_call(
+        "PlanReviewDraft", output_limit=budget
+    )
+    assert await digests(plan_repair="low") == default
+
+    configured = await digests(plan_draft="low", plan_review="max")
+    assert configured["ResearchPlanDraft"] != default["ResearchPlanDraft"]
+    assert configured["ResearchPlanDraft"] == reference.fingerprint_call(
+        "ResearchPlanDraft", output_limit=budget, reasoning_effort="low"
+    )
+    assert configured["PlanReviewDraft"] == reference.fingerprint_call(
+        "PlanReviewDraft", output_limit=budget, reasoning_effort="max"
+    )

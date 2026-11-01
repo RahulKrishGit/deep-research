@@ -41,6 +41,7 @@ from deep_research.agents.base import (
     AgentTask,
     BaseAgent,
     StructuredCompleter,
+    effort_kwargs,
 )
 from deep_research.agents.errors import agent_error
 from deep_research.agents.events import agent_event, publish_live
@@ -1229,12 +1230,15 @@ class EvidenceVerifierAgent(BaseAgent[VerifiedFindings]):
         so the run's records read in a deterministic order.
         """
         labelled = [replace(item, label=f"F{number:02d}") for number, item in enumerate(batch, 1)]
+        # Read here, not passed down: the halves of a split re-ask are this
+        # method again, so they run at the same configured effort as the whole.
+        effort = self.config.effort_for("context_check")
         try:
-            self.fingerprint_call(ContextCheckDraft.__name__)
+            self.fingerprint_call(ContextCheckDraft.__name__, reasoning_effort=effort)
             with call_label("context_check"):
                 reply = await self.provider.complete_structured(
                     context_check_messages(labelled), ContextCheckDraft,
-                    agent_name=self.name,
+                    agent_name=self.name, **effort_kwargs(effort),
                 )
             reply = ContextCheckDraft.model_validate(
                 reply.model_dump() if isinstance(reply, ContextCheckDraft) else reply
@@ -1614,6 +1618,7 @@ async def _check_statement_batch(
     fingerprint: Callable[[str], None] | None,
     *,
     split: bool,
+    reasoning_effort: str | None = None,
 ) -> dict[str, StatementVerdictDraft | None]:
     """One call; on truncation or an invalid reply, one re-ask in two halves.
 
@@ -1628,6 +1633,7 @@ async def _check_statement_batch(
                 statement_check_messages(batch, question=question),
                 StatementCheckDraft,
                 agent_name=EVIDENCE_VERIFIER_NAME,
+                **effort_kwargs(reasoning_effort),
             )
         reply = StatementCheckDraft.model_validate(
             reply.model_dump() if isinstance(reply, StatementCheckDraft) else reply
@@ -1640,11 +1646,11 @@ async def _check_statement_batch(
             first, second = await gather_or_cancel(
                 _check_statement_batch(
                     provider, batch[:half], question, first_errors, fingerprint,
-                    split=False,
+                    split=False, reasoning_effort=reasoning_effort,
                 ),
                 _check_statement_batch(
                     provider, batch[half:], question, second_errors, fingerprint,
-                    split=False,
+                    split=False, reasoning_effort=reasoning_effort,
                 ),
             )
             errors.extend([*first_errors, *second_errors])
@@ -1684,6 +1690,7 @@ async def check_statements(
     on_batch: Callable[
         [Sequence[StatementCheckItem], Mapping[str, StatementVerdictDraft | None]], None
     ] | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict[str, StatementVerdictDraft | None], list[ResearchError]]:
     """The Statement Check: does a drafted sentence state only
     what the verified findings it cites actually carry?
@@ -1710,6 +1717,12 @@ async def check_statements(
     ``on_batch`` is called once each batch
     settles -- its re-asked halves included -- with that batch's items and
     verdicts, so the Report Writer can count its sentences as they are judged.
+
+    ``reasoning_effort`` is the effort every request of this check runs at, the
+    re-asked halves of a split batch included. The caller reads it from
+    ``AgentRuntimeConfig.effort_for("statement_check")`` (this function holds
+    no agent config); ``None`` sends no effort, so the agent's own profile
+    decides.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
@@ -1730,7 +1743,8 @@ async def check_statements(
     async def one(batch: Sequence[StatementCheckItem]) -> dict[str, StatementVerdictDraft | None]:
         async with gate:
             verdicts = await _check_statement_batch(
-                provider, batch, question, errors, fingerprint, split=True
+                provider, batch, question, errors, fingerprint, split=True,
+                reasoning_effort=reasoning_effort,
             )
         if on_batch is not None:
             on_batch(batch, verdicts)

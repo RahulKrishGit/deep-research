@@ -2164,6 +2164,54 @@ async def test_deepseek_structured_applies_the_per_call_reasoning_effort_overrid
 
 
 @pytest.mark.asyncio
+async def test_a_per_call_low_effort_reaches_the_chat_completions_request() -> None:
+    """``low`` is a supported per-call effort on the Chat Completions transport."""
+    completions = RecordingCompletions(
+        chat_response(text='{"answer":"yes","confidence":9}')
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="high"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort="low",
+        )
+
+    assert completions.calls[0]["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_per_call_low_effort_reaches_the_responses_request() -> None:
+    """``low`` is a supported per-call effort on the Responses transport."""
+    responses = RecordingResponses(
+        responses_response(
+            output_text=json.dumps({"answer": "yes", "confidence": 9})
+        )
+    )
+    tracker = local_tracker()
+    provider = deepseek_module.DeepSeekSchemaChatProvider(
+        deepseek_config(reasoning_effort="high"),
+        tracker,
+        client=FakeDeepSeekClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete_structured(
+            [ChatMessage(role="user", content="decide")],
+            TinyAnswer,
+            reasoning_effort="low",
+        )
+
+    assert responses.calls[0]["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_keeps_the_configured_effort_without_an_override() -> (
     None
 ):
@@ -3767,6 +3815,62 @@ async def test_deepseek_native_react_uses_the_global_budget_without_an_override(
         )
 
     assert completions.calls[0]["max_tokens"] == deepseek_config().max_tokens
+
+
+@pytest.mark.asyncio
+async def test_a_react_turn_sends_the_per_call_effort() -> None:
+    """One decision turn reasons at its own effort, not the configured one.
+
+    The configured effort is ``max`` and the turn asks for ``low``, so the
+    request can only carry ``low`` if the override reached the wire.
+    """
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop")
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            agent_name="researcher",
+            reasoning_effort="low",
+        )
+
+    assert completions.calls[0]["reasoning_effort"] == "low"
+
+
+@pytest.mark.asyncio
+async def test_a_react_turn_keeps_the_configured_effort_without_an_override() -> None:
+    """``None`` is today's request: the agent's own configured effort."""
+    completions = RecordingCompletions(
+        chat_response(text="done", finish_reason="stop"),
+        chat_response(text="done", finish_reason="stop"),
+    )
+    tracker = local_tracker()
+    provider = DeepSeekChatProvider(
+        deepseek_config(reasoning_effort="max"),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            reasoning_effort=None,
+        )
+
+    assert [call["reasoning_effort"] for call in completions.calls] == ["max", "max"]
 
 
 @pytest.mark.asyncio

@@ -1933,6 +1933,45 @@ async def test_openai_native_react_sends_the_per_call_output_budget() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_openai_react_turn_sends_the_per_call_effort() -> None:
+    """One decision turn reasons at its own effort, not the configured one.
+
+    ``None`` has to keep resolving to the configured effort, so the second
+    turn is the request as it was before per-call efforts existed.
+    """
+    responses = RecordingResponses(
+        response(text="done", status="completed", output=[]),
+        response(text="done", status="completed", output=[]),
+    )
+    tracker = local_tracker()
+    provider = OpenAIChatProvider(
+        openai_config(
+            model="gpt-5.6-luna",
+            thinking_mode="enabled",
+            reasoning_effort="max",
+        ),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+    )
+
+    async with tracker.session_span("session-1", "review"):
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+            reasoning_effort="high",
+        )
+        await provider.complete_react(
+            [ChatMessage(role="user", content="review")],
+            [WEB_SEARCH_DEFINITION],
+        )
+
+    assert [call["reasoning"] for call in responses.create_calls] == [
+        {"effort": "high"},
+        {"effort": "max"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_openai_native_react_retries_one_transient_error(
     monkeypatch,
 ) -> None:

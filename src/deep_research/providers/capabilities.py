@@ -73,7 +73,7 @@ _CAPABILITIES: dict[ProviderName, tuple[ModelCapability, ...]] = {
         _capability(
             r"^deepseek-(flash|v4-flash|v4-pro)$",
             modes="enabled,disabled",
-            efforts="high,max",
+            efforts="low,high,max",
             disabled_effort=None,
             temperature="disabled",
         ),

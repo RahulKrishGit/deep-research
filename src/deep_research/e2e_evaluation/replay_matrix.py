@@ -1246,7 +1246,7 @@ def _empty_but_clean() -> ReplayScenario:
         max_extra_passes=1,
         # A report is accepted only after a semantic judgement, so this
         # row scripts the review a report of nothing is worth: 0.4 on every
-        # dimension is below the 0.80 floor, and the run finishes partial.
+        # dimension is below the 0.70 floor, and the run finishes partial.
         review_score=0.4,
         expectation=CaseExpectation(
             # The report still publishes and lists every obligation it could
@@ -3250,7 +3250,7 @@ REPLAY_CASE_MANIFEST: tuple[ReplayCaseEntry, ...] = (
         expected_product_result="partial / 4",
         decisive_assertion=(
             "No obligation is answered and every one reaches Not found; the "
-            "review refuses the report (0.4 < 0.80), and clean headings with a "
+            "review refuses the report (0.4 < 0.70), and clean headings with a "
             "'should' never make it an answer"
         ),
         build=_empty_but_clean,

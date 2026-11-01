@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal, TypeAlias
 
 import yaml
@@ -215,6 +216,37 @@ tool budget it cannot spend and counted by every consumer that means "the
 agents that research".
 """
 
+OPERATION_AGENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "page_extraction": ("researcher",),
+        "owed_extraction": ("researcher",),
+        "cross_topic_extraction": ("researcher",),
+        "dissent_extraction": ("researcher",),
+        "extraction": ("researcher",),
+        "context_check": ("evidence_verifier",),
+        "statement_check": ("evidence_verifier",),
+        "source_scoring": ("source_evaluator",),
+        "plan_draft": ("planner",),
+        "plan_repair": ("planner",),
+        "plan_review": ("planner",),
+        "plan_review_repair": ("planner",),
+        "plan_confirming_review": ("planner",),
+        "react_decision": PRODUCTION_AGENT_NAMES,
+    }
+)
+"""Every provider call that may carry its own reasoning effort, mapped to the
+agents whose requests make it.
+
+The keys are the operation labels the call sites pass to
+``AgentRuntimeConfig.effort_for``, so a key is the one name a call, its
+``agents.operation_efforts`` entry, and its ``AGENTS_EFFORT_<KEY>``
+environment variable share. The values are what startup validates an effort
+against: ``react_decision`` is every agent's loop turn, so an effort set for
+it must be one every production agent's model accepts. The table is read-only
+(``MappingProxyType``): it is the contract between the config, its validator
+and the call sites, so nothing may add or drop an operation at runtime.
+"""
+
 
 class AgentRuntimeConfig(BaseModel):
     """Bounds every ReAct agent runs under.
@@ -265,6 +297,19 @@ class AgentRuntimeConfig(BaseModel):
     on the global budget while the configuration read as bound, so an
     unknown key is rejected rather than ignored.
 
+    ``operation_efforts`` lowers (or raises) the reasoning effort of one named
+    call, instead of the whole agent: the keys are ``OPERATION_AGENTS``, one
+    per provider call a call site names, and each has an
+    ``AGENTS_EFFORT_<KEY>`` environment override. A call whose key is absent
+    inherits its agent's ``llm.model_overrides`` profile. A per-call effort is
+    sent in place of the agent's. A
+    truncated plan-side reply is still re-asked once at
+    ``OUTPUT_LIMIT_RETRY_EFFORT``; a truncated Context or Statement Check batch
+    is re-asked in two halves at the same effort; any other truncated call is
+    recorded as that call's failure. An effort set for an agent whose thinking
+    is disabled is accepted and sends nothing. Request-scoped overrides merge
+    into the map key by key.
+
     ``sub_topic_concurrency``, ``source_scoring_concurrency``,
     ``verifier_batch_size``, ``verifier_concurrency`` and
     ``extraction_concurrency`` are the concurrency bounds: the researcher's
@@ -294,6 +339,7 @@ class AgentRuntimeConfig(BaseModel):
     max_iterations: int = Field(default=5, ge=1)
     tool_budget: int = Field(default=10, ge=0)
     tool_budget_overrides: dict[str, int] = Field(default_factory=dict)
+    operation_efforts: dict[str, ReasoningEffort] = Field(default_factory=dict)
     max_sub_topics: int = Field(default=10, ge=1)
     read_admission_chars: int = Field(default=200000, ge=1)
     """Per-read admission cap, in characters.
@@ -367,6 +413,17 @@ class AgentRuntimeConfig(BaseModel):
     """
 
     @model_validator(mode="after")
+    def validate_operation_effort_keys(self) -> "AgentRuntimeConfig":
+        unknown = sorted(set(self.operation_efforts) - set(OPERATION_AGENTS))
+        if unknown:
+            valid = ", ".join(OPERATION_AGENTS)
+            raise ValueError(
+                "unknown operation_efforts keys: "
+                f"{', '.join(unknown)}; expected any of: {valid}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_tool_budget_overrides(self) -> "AgentRuntimeConfig":
         unknown = sorted(
             set(self.tool_budget_overrides) - set(PRODUCTION_AGENT_NAMES)
@@ -398,6 +455,19 @@ class AgentRuntimeConfig(BaseModel):
         configurations.
         """
         return self.tool_budget_overrides.get(agent_name, self.tool_budget)
+
+    def effort_for(self, operation: str) -> ReasoningEffort | None:
+        """The reasoning effort one named call runs at, or ``None`` for the
+        agent's own profile.
+
+        ``None`` is the common answer and means *send nothing*: the call
+        inherits whatever ``llm.model_overrides`` resolves for its agent. An
+        operation no call site names is a programming error, not a
+        configuration one, so it raises rather than reading as unset.
+        """
+        if operation not in OPERATION_AGENTS:
+            raise ValueError(f"unknown operation: {operation}")
+        return self.operation_efforts.get(operation)
 
 
 class GraphConfig(BaseModel):
@@ -465,7 +535,7 @@ class OutputConfig(BaseModel):
 
 EVALUATION_AGENT_KEYS = PRODUCTION_AGENT_NAMES
 
-# The configured DeepSeek model supports exactly two enabled efforts: high and
+# The configured DeepSeek model accepts three enabled efforts: low, high and
 # max. The two cheapest agents run at high, everything else at max.
 # Production parity (on by default) resolves the target from
 # ``llm.model_overrides`` instead; this profile is what an experiment uses.
@@ -656,6 +726,16 @@ _ENVIRONMENT_OVERRIDES = {
         "agents",
         "re_extraction_max_tokens",
     ),
+    # One per operation in ``OPERATION_AGENTS``: AGENTS_EFFORT_CONTEXT_CHECK
+    # sets ``agents.operation_efforts.context_check``.
+    **{
+        f"AGENTS_EFFORT_{operation.upper()}": (
+            "agents",
+            "operation_efforts",
+            operation,
+        )
+        for operation in OPERATION_AGENTS
+    },
     "GRAPH_MAX_EXTRA_PASSES": ("graph", "max_extra_passes"),
     "GRAPH_CHECKPOINTING_ENABLED": ("graph", "checkpointing_enabled"),
     "OUTPUT_DIRECTORY": ("output", "directory"),
@@ -687,7 +767,14 @@ _LANGSMITH_ENVIRONMENT_VARIABLES = (
 )
 
 
-_FREE_FORM_MAPPING_PATHS = frozenset({("llm", "model_overrides")})
+# Mappings whose keys are not leaves of the base payload: an override merges
+# into them key by key instead of being checked against the keys the base
+# already holds. A request that sets an operation the shipped
+# ``operation_efforts`` does not list would otherwise read as an unknown path;
+# the model's own validator still rejects a key no call site names.
+_FREE_FORM_MAPPING_PATHS = frozenset(
+    {("llm", "model_overrides"), ("agents", "operation_efforts")}
+)
 
 
 def _merge_override_payload(

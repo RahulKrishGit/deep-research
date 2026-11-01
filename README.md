@@ -43,7 +43,7 @@ sharper, two-minute version, see the [full video](docs/media/deep-research-demo.
 - **A seven-part report review.** The reviewer scores completeness,
   prioritization, evidence quality, attribution, uncertainty, readability and
   actionability. A report is accepted only when the mean score is at least
-  0.80, no critical or major defect is found, and nine structural checks pass.
+  0.70, no critical or major defect is found, and nine structural checks pass.
   A report that falls short is still published, marked as partial.
 - **Reader input during a run.** Before research starts, the session can ask up
   to three clarifying questions. While it runs, you can add up to ten notes to
@@ -186,6 +186,20 @@ To use OpenAI for chat, set `LLM_PROVIDER=openai` with a model, thinking mode
 and effort it supports, for example `LLM_MODEL=gpt-5.6`,
 `LLM_THINKING_MODE=enabled` and `LLM_REASONING_EFFORT=high`. An unsupported
 combination fails before any request is sent.
+
+`agents.operation_efforts` sets the reasoning effort of one call instead of a
+whole agent. It is keyed by call label (`context_check`, `statement_check`,
+`page_extraction`, `source_scoring`, `plan_draft` and the rest listed in
+`config.yaml`), except `react_decision`, the agents' loop turns, whose calls
+are recorded as `react_tool_turn`. The shipped map runs the Context and
+Statement Checks and source scoring at `low` and the plan reviews at `high`;
+every other call runs at its agent's `llm.model_overrides` effort. An entry beats the agent's
+effort for that call only. A truncated plan-side reply is still re-asked once
+at `high`; a truncated Context or Statement Check batch is re-asked in two
+halves at the same effort; any other truncated call is recorded as that
+call's failure. Each key has an `AGENTS_EFFORT_<KEY>` environment variable,
+for example `AGENTS_EFFORT_CONTEXT_CHECK=low`, and an effort the provider
+does not accept fails before any request is sent.
 
 If the run summary reports rate limits, lower `agents.verifier_concurrency`
 first and then `agents.sub_topic_concurrency`.

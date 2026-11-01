@@ -130,6 +130,19 @@ ways in two artifacts, and so a record whose outcome is not in
 """
 
 
+def effort_kwargs(effort: str | None) -> dict[str, str]:
+    """The per-call ``reasoning_effort`` keyword a request carries, if any.
+
+    ``None`` (an operation with no configured effort) yields ``{}`` so the
+    request is built exactly as it was before per-operation efforts existed:
+    the agent's profile decides, and no keyword, argument, or fingerprint
+    input changes. Spread it into a call (``**effort_kwargs(effort)``) rather
+    than passing ``reasoning_effort=effort``, which would send an explicit
+    ``None`` where the callee's default is the right thing.
+    """
+    return {} if effort is None else {"reasoning_effort": effort}
+
+
 class StructuredCompleter(Protocol):
     """The structured-output capability the agent runtime needs.
 
@@ -180,8 +193,14 @@ class AgentCompleter(StructuredCompleter, Protocol):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
-        """Return one native tool call or one final answer."""
+        """Return one native tool call or one final answer.
+
+        ``reasoning_effort`` is the per-call effort override, with the same
+        meaning as on ``complete_structured``: ``None`` keeps the effort the
+        agent's own profile resolves to.
+        """
         raise NotImplementedError
 
 
@@ -437,11 +456,17 @@ class BaseAgent(ABC, Generic[ResultT]):
         prompt renders this loop's observations and no sibling's. ``None``
         keeps the agent's single shared pad, which is what every
         single-loop caller wants.
+
+        Every turn reasons at ``agents.operation_efforts.react_decision`` when
+        one is set, and its fingerprint names that effort; unset, the agent's
+        own profile decides and nothing about the request changes.
         """
         pad = self._scratchpad if scratchpad is None else scratchpad
+        effort = self._config.effort_for("react_decision")
         self.fingerprint_call(
             "ReactDecision",
             output_limit=self._config.react_decision_max_tokens,
+            reasoning_effort=effort,
         )
         context = (
             self.build_decision_context(
@@ -466,6 +491,10 @@ class BaseAgent(ABC, Generic[ResultT]):
             self.toolset.provider_definitions(),
             agent_name=self._name,
             max_tokens=self._config.react_decision_max_tokens,
+            # Spread, not ``reasoning_effort=effort``: with no effort
+            # configured the provider is called exactly as before, which is
+            # also what a provider without the keyword accepts.
+            **effort_kwargs(effort),
         )
         return react_decision_from_native_turn(turn)
     async def run(self, state: ResearchState) -> AgentRun[ResultT]:

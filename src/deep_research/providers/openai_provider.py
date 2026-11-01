@@ -677,6 +677,7 @@ class OpenAIChatProvider:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
         """One native ReAct turn: a provider tool call or a final answer.
 
@@ -684,6 +685,9 @@ class OpenAIChatProvider:
         function-tool representation. Reasoning output items are ignored and
         never retained; only a typed ``function_call`` item can select a tool.
         There is no structured output and no repair here.
+
+        ``reasoning_effort`` is a per-call override for this request only;
+        ``None`` keeps the effort ``agent_name``'s own profile resolves to.
         """
         if not messages:
             raise ValueError("messages must contain at least one item")
@@ -692,7 +696,9 @@ class OpenAIChatProvider:
         resolved_max_tokens = _resolve_max_tokens(
             self._config.max_tokens, max_tokens
         )
-        effective, request, metadata = self._request_options(agent_name)
+        effective, request, metadata = self._request_options(
+            agent_name, reasoning_effort=reasoning_effort
+        )
         request = {**request, "max_output_tokens": resolved_max_tokens}
         payload = [message.model_dump(mode="json") for message in messages]
         allowed = {definition.name for definition in tools}

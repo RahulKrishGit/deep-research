@@ -132,6 +132,7 @@ def test_provider_public_api_imports() -> None:
         capability_for,
         resolve_request_settings,
         validate_agent_model_configs,
+        validate_operation_efforts,
     )
 
     assert OpenAIChatProvider.__name__ == "OpenAIChatProvider"
@@ -149,6 +150,7 @@ def test_provider_public_api_imports() -> None:
     assert capability_for.__name__ == "capability_for"
     assert resolve_request_settings.__name__ == "resolve_request_settings"
     assert validate_agent_model_configs.__name__ == "validate_agent_model_configs"
+    assert validate_operation_efforts.__name__ == "validate_operation_efforts"
     assert OpenAIProviderError is ProviderError
     assert issubclass(ProviderConfigurationError, OpenAIProviderError)
     assert issubclass(ProviderRateLimitError, OpenAIProviderError)

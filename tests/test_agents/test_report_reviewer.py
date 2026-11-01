@@ -448,7 +448,7 @@ async def test_the_review_opens_an_agent_span_when_one_is_wired() -> None:
 def test_review_dimensions_are_exactly_the_seven_named_dimensions() -> None:
     assert REVIEW_DIMENSIONS == frozenset(DIMENSION_NAMES)
     assert len(REVIEW_DIMENSIONS) == 7
-    assert SEMANTIC_REVIEW_MEAN == 0.80
+    assert SEMANTIC_REVIEW_MEAN == 0.70
 
 
 def test_review_cannot_average_away_a_major_false_claim() -> None:
@@ -494,10 +494,26 @@ def test_a_non_finite_or_out_of_range_score_never_passes() -> None:
 
 
 def test_the_mean_is_taken_over_the_declared_dimension_set() -> None:
-    below = {name: 0.79 for name in DIMENSION_NAMES}
+    below = {name: SEMANTIC_REVIEW_MEAN - 0.01 for name in DIMENSION_NAMES}
     assert not semantic_review_passes(_scored_review(dimensions=below))
     at_threshold = {name: SEMANTIC_REVIEW_MEAN for name in DIMENSION_NAMES}
     assert semantic_review_passes(_scored_review(dimensions=at_threshold))
+
+
+def test_a_review_whose_mean_is_exactly_the_threshold_passes() -> None:
+    scores = dict(zip(sorted(REVIEW_DIMENSIONS), (0.5, 0.5, 0.5, 0.7, 0.9, 0.9, 0.9)))
+    assert semantic_review_passes(_scored_review(dimensions=scores)) is True
+
+
+def test_a_mean_a_float_ulp_under_the_threshold_still_passes() -> None:
+    scores = {name: math.nextafter(SEMANTIC_REVIEW_MEAN, 0.0) for name in DIMENSION_NAMES}
+    assert sum(scores.values()) / len(REVIEW_DIMENSIONS) < SEMANTIC_REVIEW_MEAN
+    assert semantic_review_passes(_scored_review(dimensions=scores)) is True
+
+
+def test_a_review_below_the_threshold_still_fails() -> None:
+    scores = dict(zip(sorted(REVIEW_DIMENSIONS), (0.5, 0.5, 0.5, 0.6, 0.9, 0.9, 0.9)))
+    assert semantic_review_passes(_scored_review(dimensions=scores)) is False
 
 
 def test_an_unscored_review_never_passes_whatever_its_dimensions_say() -> None:

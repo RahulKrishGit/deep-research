@@ -61,7 +61,7 @@ from deep_research.utils.types import (
     ScoredSource,
     merge_research_state,
 )
-from tests.agent_fakes import ScriptedCompleter
+from tests.agent_fakes import LabelRecordingCompleter, ScriptedCompleter
 from tests.research_fakes import FakeReputationSource
 
 EVAL_EXTRACTED_AT = "2026-08-01T12:00:00+00:00"
@@ -358,6 +358,63 @@ async def test_scoring_batches_unique_sources_and_stops_at_the_total_cap(
     ]
     assert sources[-1].overall_score is None
     assert len(completer.calls) == 2
+
+
+async def _score_two_batches(
+    tracker: Tracker, config: AgentRuntimeConfig
+) -> LabelRecordingCompleter:
+    """Score five sources in batches of two under a four-source cap: two calls."""
+    findings = [
+        _eval_finding(f"https://source-{index}.test/page") for index in range(5)
+    ]
+    completer = LabelRecordingCompleter(
+        outputs=[
+            SourceScoresDraft(
+                sources=[
+                    _draft(url=f"https://source-{index}.test/page")
+                    for index in indexes
+                ]
+            )
+            for indexes in ((0, 1), (2, 3))
+        ]
+    )
+    agent = _evaluator(
+        tracker, completer, batch_size=2, max_total_sources=4, config=config
+    )
+    task, _, _ = await agent.lookup_reputations(
+        agent.build_task(_eval_state(findings))
+    )
+    await agent.score_sources(task)
+    return completer
+
+
+@pytest.mark.asyncio
+async def test_source_scoring_runs_under_its_label_at_the_configured_effort(
+    tracker: Tracker,
+) -> None:
+    completer = await _score_two_batches(
+        tracker,
+        AgentRuntimeConfig(
+            max_iterations=2,
+            tool_budget=0,
+            operation_efforts={"source_scoring": "low"},
+        ),
+    )
+
+    assert completer.label_efforts == [("source_scoring", "low")] * 2
+
+
+@pytest.mark.asyncio
+async def test_source_scoring_sends_no_effort_when_none_is_configured(
+    tracker: Tracker,
+) -> None:
+    """The keyword is absent from the call, not passed as ``None``."""
+    completer = await _score_two_batches(
+        tracker, AgentRuntimeConfig(max_iterations=2, tool_budget=0)
+    )
+
+    assert completer.label_efforts == [("source_scoring", None)] * 2
+    assert not any(completer.effort_kwarg_sent)
 
 
 @pytest.mark.asyncio
@@ -1923,6 +1980,26 @@ async def test_changed_dates_at_one_url_are_reassessed() -> None:
     )
 
     assert second[0].authority_score == pytest.approx(0.2)
+
+
+@pytest.mark.asyncio
+async def test_the_assessment_service_scores_under_its_label_at_the_given_effort() -> None:
+    completer = LabelRecordingCompleter(outputs=[_scores(_lab_draft())])
+
+    await assess_new_sources(completer, [_read()], [], reasoning_effort="low")
+
+    assert completer.label_efforts == [("source_scoring", "low")]
+
+
+@pytest.mark.asyncio
+async def test_the_assessment_service_sends_no_effort_unless_one_is_given() -> None:
+    """The keyword is absent from the call, not passed as ``None``."""
+    completer = LabelRecordingCompleter(outputs=[_scores(_lab_draft())])
+
+    await assess_new_sources(completer, [_read()], [])
+
+    assert completer.label_efforts == [("source_scoring", None)]
+    assert not any(completer.effort_kwarg_sent)
 
 
 @pytest.mark.asyncio

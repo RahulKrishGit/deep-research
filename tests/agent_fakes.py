@@ -138,6 +138,7 @@ class ScriptedCompleter:
         self.efforts: list[str | None] = []
         self.react_calls: list[ReactCall] = []
         self.react_budgets: list[int | None] = []
+        self.react_efforts: list[str | None] = []
 
     async def complete_react(
         self,
@@ -146,6 +147,7 @@ class ScriptedCompleter:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
         self.react_calls.append(
             ReactCall(
@@ -156,6 +158,7 @@ class ScriptedCompleter:
             )
         )
         self.react_budgets.append(max_tokens)
+        self.react_efforts.append(reasoning_effort)
         if not self._decisions:
             raise AssertionError("no scripted decision left for a native ReAct turn")
         decision = self._decisions.pop(0)
@@ -237,9 +240,24 @@ class HoldingCompleter(ScriptedCompleter):
             self.windows[index] = (started, perf_counter())
 
 
+_EFFORT_ABSENT: Any = object()
+"""``reasoning_effort`` default that tells a call which never passed the
+keyword from one that passed ``None`` explicitly: both read as ``None`` to a
+real provider, but only the first leaves a request exactly as it was before
+per-operation efforts existed."""
+
+
 class LabelRecordingCompleter(ScriptedCompleter):
     """A ``ScriptedCompleter`` that also records, for each structured request,
-    the call label its caller bound around it."""
+    the call label its caller bound around it and the reasoning effort it
+    asked for.
+
+    ``label_efforts`` is one ``(label, effort)`` pair per structured call,
+    with ``None`` for a call that did not pass ``reasoning_effort``;
+    ``effort_kwarg_sent`` says, per call, whether the keyword was passed at
+    all, so a site that sends an explicit ``None`` is told apart from one that
+    sends nothing.
+    """
 
     def __init__(
         self,
@@ -248,6 +266,8 @@ class LabelRecordingCompleter(ScriptedCompleter):
     ) -> None:
         super().__init__(decisions=decisions, outputs=outputs)
         self.labels: list[str | None] = []
+        self.label_efforts: list[tuple[str | None, str | None]] = []
+        self.effort_kwarg_sent: list[bool] = []
 
     async def complete_structured(
         self,
@@ -256,15 +276,20 @@ class LabelRecordingCompleter(ScriptedCompleter):
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str | None = _EFFORT_ABSENT,
     ) -> Any:
-        self.labels.append(current_call_label())
+        sent = reasoning_effort is not _EFFORT_ABSENT
+        effort = reasoning_effort if sent else None
+        label = current_call_label()
+        self.labels.append(label)
+        self.label_efforts.append((label, effort))
+        self.effort_kwarg_sent.append(sent)
         return await super().complete_structured(
             messages,
             schema,
             agent_name=agent_name,
             max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=effort,
         )
 
 

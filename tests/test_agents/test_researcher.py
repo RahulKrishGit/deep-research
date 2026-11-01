@@ -8,7 +8,9 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from time import perf_counter
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -60,9 +62,10 @@ from deep_research.agents.steps import (
     read_evidence_urls,
     summarize_text,
 )
+from deep_research.experiments.stage_replay import PAGE_EXTRACTION, replay_capture
 from deep_research.graph.live import bind_live_sink
 from deep_research.memory.scratchpad import ScratchpadMemory
-from deep_research.observability import TokenUsage, Tracker
+from deep_research.observability import TokenUsage, Tracker, bind_stage_capture
 from deep_research.providers import (
     ChatMessage,
     ProviderOutputLimitError,
@@ -5160,6 +5163,7 @@ def _owed_agent(
     *,
     body: str | None = None,
     selected: int | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> ResearcherAgent:
     return _researcher(
         tracker,
@@ -5171,6 +5175,7 @@ def _owed_agent(
         read_admission_chars=(
             None if selected is None else selected * WEB_PASSAGE_CHARS
         ),
+        config=config,
     )
 
 
@@ -5181,9 +5186,12 @@ async def _run_owed_topic(
     unit_dimension: str | None = None,
     body: str | None = None,
     selected: int | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> AgentRun[ResearchFindings]:
     """Run one required-target topic to its end and return the whole outcome."""
-    agent = _owed_agent(tracker, completer, body=body, selected=selected)
+    agent = _owed_agent(
+        tracker, completer, body=body, selected=selected, config=config
+    )
     async with tracker.session_span("session-1", "q"):
         return await agent.run(
             _state(sub_topics=[_owed_topic(unit_dimension=unit_dimension)])
@@ -7432,7 +7440,11 @@ def _cross_topic_sweep_reply(
 
 
 def _cross_topic_agent(
-    tracker: Tracker, completer: ScriptedCompleter, *, body: str = _CROSS_TOPIC_BODY
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    body: str = _CROSS_TOPIC_BODY,
+    config: AgentRuntimeConfig | None = None,
 ) -> ResearcherAgent:
     return _researcher(
         tracker,
@@ -7442,6 +7454,7 @@ def _cross_topic_agent(
         ),
         http=page_client(title=_CROSS_TOPIC_TITLE, body=body),
         max_sub_topics=1,
+        config=config,
     )
 
 
@@ -7451,8 +7464,9 @@ async def _run_cross_topic_state(
     *,
     sub_topics: list[SubTopic],
     body: str = _CROSS_TOPIC_BODY,
+    config: AgentRuntimeConfig | None = None,
 ) -> AgentRun[ResearchFindings]:
-    agent = _cross_topic_agent(tracker, completer, body=body)
+    agent = _cross_topic_agent(tracker, completer, body=body, config=config)
     async with tracker.session_span("session-1", "q"):
         return await agent.run(_state(sub_topics=sub_topics))
 
@@ -8164,7 +8178,11 @@ def _dissent_reask_reply(
 
 
 def _dissent_agent(
-    tracker: Tracker, completer: ScriptedCompleter, *, body: str = _DISSENT_BODY
+    tracker: Tracker,
+    completer: ScriptedCompleter,
+    *,
+    body: str = _DISSENT_BODY,
+    config: AgentRuntimeConfig | None = None,
 ) -> ResearcherAgent:
     return _researcher(
         tracker,
@@ -8174,6 +8192,7 @@ def _dissent_agent(
         ),
         http=page_client(title=_DISSENT_TITLE, body=body),
         max_sub_topics=1,
+        config=config,
     )
 
 
@@ -8183,8 +8202,9 @@ async def _run_dissent_state(
     *,
     body: str = _DISSENT_BODY,
     sub_topic: SubTopic | None = None,
+    config: AgentRuntimeConfig | None = None,
 ) -> AgentRun[ResearchFindings]:
-    agent = _dissent_agent(tracker, completer, body=body)
+    agent = _dissent_agent(tracker, completer, body=body, config=config)
     async with tracker.session_span("session-1", "q"):
         return await agent.run(
             _state(sub_topics=[sub_topic or _dissent_sub_topic()])
@@ -8672,6 +8692,247 @@ async def test_each_extraction_call_is_named_for_the_call_records(
         "page_extraction",
         *["owed_extraction"] * MAX_OWED_BATCHES,
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_bound_capture_holds_the_page_extraction_request_as_it_was_sent(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """The captured request is the very messages the provider received, with the
+    one read the page showed it, the plan's target ids and the sub-topic; a
+    run with no capture bound (every other test here) writes nothing."""
+    completer = ScriptedCompleter(decisions=_owed_decisions(), outputs=[_owed_reply])
+    with bind_stage_capture(tmp_path, nodes=()):
+        outcome = await _run_owed_topic(tracker, completer)
+
+    assert [path.name for path in tmp_path.iterdir()] == ["page_extraction-001.json"]
+    payload = json.loads((tmp_path / "page_extraction-001.json").read_text("utf-8"))
+    [(_, _, sent)] = [call for call in completer.calls if call[0] == "SubTopicFindingsDraft"]
+    assert [ChatMessage.model_validate(message) for message in payload["messages"]] == sent
+    read = next(iter(outcome.state_update["read_records"].values()))
+    assert {
+        read_id: ReadRecord.model_validate(record)
+        for read_id, record in payload["known_reads"].items()
+    } == {read.read_id: read}
+    assert payload["valid_target_ids"] == [PLANNED_TARGET_ID]
+    assert SubTopic.model_validate(payload["sub_topic"]).coverage_id == "topic-01"
+
+
+@pytest.mark.asyncio
+async def test_a_captured_page_extraction_replays_to_the_binding_the_run_made(
+    tracker: Tracker, tmp_path: Path
+) -> None:
+    """What a run captures is enough to ask the same page again: the replay's
+    reply is admitted against the same read and binds the same target."""
+    completer = ScriptedCompleter(decisions=_owed_decisions(), outputs=[_owed_reply])
+    with bind_stage_capture(tmp_path, nodes=()):
+        outcome = await _run_owed_topic(tracker, completer)
+    (live,) = outcome.result.findings
+
+    [result] = await replay_capture(
+        tmp_path,
+        settings=SimpleNamespace(agents=AgentRuntimeConfig()),
+        provider=ScriptedCompleter(outputs=[_owed_reply]),
+        tracker=tracker,
+        build_agent=None,
+        stages=(PAGE_EXTRACTION,),
+    )
+
+    assert live.target_ids == [PLANNED_TARGET_ID]
+    assert result.verdicts == {f"page_extraction-001.json#{PLANNED_TARGET_ID}": True}
+    assert result.counts["findings_kept"] == 1
+    assert result.counts["findings_rejected"] == 0
+
+
+def _effort_config(**operation_efforts: Any) -> AgentRuntimeConfig:
+    """The researcher tests' usual bounds, with these operations' efforts set."""
+    return AgentRuntimeConfig(
+        max_iterations=4, tool_budget=4, operation_efforts=operation_efforts
+    )
+
+
+async def _drive_owed_extractions(
+    tracker: Tracker, config: AgentRuntimeConfig
+) -> LabelRecordingCompleter:
+    """One topic whose page extraction owes a re-ask: a page call, then owed packets."""
+    completer = LabelRecordingCompleter(
+        decisions=_owed_decisions(),
+        outputs=[
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+            SubTopicFindingsDraft(findings=[]),
+        ],
+    )
+    await _run_owed_topic(
+        tracker,
+        completer,
+        body=_owed_bulk_body(),
+        selected=MAX_OWED_PASSAGES_PER_BATCH + 2,
+        config=config,
+    )
+    return completer
+
+
+async def _drive_cross_topic_extractions(
+    tracker: Tracker, config: AgentRuntimeConfig
+) -> LabelRecordingCompleter:
+    """A page read for one topic and swept for another topic's required target."""
+    completer = LabelRecordingCompleter(
+        decisions=_cross_topic_decisions(),
+        outputs=[_cross_topic_main_reply, _cross_topic_sweep_reply],
+    )
+    await _run_cross_topic_state(
+        tracker,
+        completer,
+        sub_topics=[
+            _cross_topic_reading_sub_topic(),
+            _cross_topic_required_sub_topic(),
+        ],
+        config=config,
+    )
+    return completer
+
+
+async def _drive_dissent_extractions(
+    tracker: Tracker, config: AgentRuntimeConfig
+) -> LabelRecordingCompleter:
+    """A page whose text disputes a statement it also makes, so a dissent re-ask follows."""
+    completer = LabelRecordingCompleter(
+        decisions=_dissent_decisions(),
+        outputs=[_dissent_main_reply, _dissent_reask_reply],
+    )
+    await _run_dissent_state(tracker, completer, config=config)
+    return completer
+
+
+async def _drive_single_call_extraction(
+    tracker: Tracker, config: AgentRuntimeConfig
+) -> LabelRecordingCompleter:
+    """The legacy one-call extraction: no acquisition policy, one scraped page."""
+    completer = LabelRecordingCompleter(
+        outputs=[SubTopicFindingsDraft(findings=[])]
+    )
+    agent = _researcher(tracker, completer, config=config)
+    task = SubTopicTask(
+        instruction="Gather evidence for Alpha.", sub_topic=_sub_topic("Alpha")
+    )
+    run = ReActRun(
+        agent_name="researcher",
+        stop_reason="finished",
+        steps=[_tool_step(1, "web_scraper", QEC_SCRAPE)],
+        iterations=1,
+        tool_calls=1,
+    )
+    await agent.extract_findings(task, run)
+    return completer
+
+
+@pytest.mark.asyncio
+async def test_each_extraction_operation_runs_at_its_own_configured_effort(
+    tracker: Tracker,
+) -> None:
+    """A page's extraction and its owed re-asks read their own entries of
+    ``agents.operation_efforts``; an operation with no entry sends none."""
+    completer = await _drive_owed_extractions(
+        tracker,
+        _effort_config(page_extraction="low", owed_extraction="high"),
+    )
+
+    assert completer.label_efforts == [
+        ("page_extraction", "low"),
+        *[("owed_extraction", "high")] * MAX_OWED_BATCHES,
+    ]
+
+    unset = await _drive_owed_extractions(
+        tracker, _effort_config(page_extraction="low")
+    )
+
+    assert unset.label_efforts == [
+        ("page_extraction", "low"),
+        *[("owed_extraction", None)] * MAX_OWED_BATCHES,
+    ]
+    assert unset.effort_kwarg_sent == [True, *[False] * MAX_OWED_BATCHES]
+
+
+@pytest.mark.asyncio
+async def test_the_cross_topic_sweep_runs_at_its_own_configured_effort(
+    tracker: Tracker,
+) -> None:
+    completer = await _drive_cross_topic_extractions(
+        tracker,
+        _effort_config(
+            page_extraction="high",
+            owed_extraction="low",
+            cross_topic_extraction="max",
+        ),
+    )
+
+    assert completer.label_efforts == [
+        ("page_extraction", "high"),
+        ("cross_topic_extraction", "max"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_dissent_re_ask_runs_at_its_own_configured_effort(
+    tracker: Tracker,
+) -> None:
+    completer = await _drive_dissent_extractions(
+        tracker,
+        _effort_config(
+            page_extraction="high",
+            cross_topic_extraction="low",
+            dissent_extraction="max",
+        ),
+    )
+
+    assert completer.label_efforts == [
+        ("page_extraction", "high"),
+        ("dissent_extraction", "max"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_single_call_extraction_runs_at_its_own_configured_effort(
+    tracker: Tracker,
+) -> None:
+    completer = await _drive_single_call_extraction(
+        tracker,
+        _effort_config(page_extraction="high", extraction="low"),
+    )
+
+    assert completer.label_efforts == [("extraction", "low")]
+
+
+@pytest.mark.asyncio
+async def test_default_config_sends_no_operation_effort(tracker: Tracker) -> None:
+    """With ``agents.operation_efforts`` empty no extraction call carries the
+    keyword at all -- not even ``reasoning_effort=None`` -- so a request is the
+    one it was before per-operation efforts existed."""
+    seen: set[str | None] = set()
+    for drive in (
+        _drive_owed_extractions,
+        _drive_cross_topic_extractions,
+        _drive_dissent_extractions,
+        _drive_single_call_extraction,
+    ):
+        completer = await drive(
+            tracker, AgentRuntimeConfig(max_iterations=4, tool_budget=4)
+        )
+
+        assert completer.label_efforts
+        assert all(effort is None for _, effort in completer.label_efforts)
+        assert not any(completer.effort_kwarg_sent)
+        seen.update(label for label, _ in completer.label_efforts)
+
+    # The scenarios between them reach every extraction label.
+    assert seen == {
+        "page_extraction",
+        "owed_extraction",
+        "cross_topic_extraction",
+        "dissent_extraction",
+        "extraction",
+    }
 
 
 def _owed_batch_reply(

@@ -1664,6 +1664,7 @@ class DeepSeekChatProvider:
         *,
         agent_name: str | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> NativeToolTurn:
         """One native ReAct turn: a provider tool call or a final answer.
 
@@ -1675,6 +1676,9 @@ class DeepSeekChatProvider:
         There is no ``response_format`` and no structured repair. The native
         tool-call envelope is the contract, and a malformed one fails closed
         rather than being retried into a possibly different shape.
+
+        ``reasoning_effort`` is a per-call override for this request only;
+        ``None`` keeps the effort ``agent_name``'s own profile resolves to.
         """
         if not messages:
             raise ValueError("messages must contain at least one item")
@@ -1683,7 +1687,9 @@ class DeepSeekChatProvider:
         resolved_max_tokens = _resolve_max_tokens(
             self._config.max_tokens, max_tokens
         )
-        effective, request, metadata = self._request_options(agent_name)
+        effective, request, metadata = self._request_options(
+            agent_name, reasoning_effort=reasoning_effort
+        )
         request = {**request, "max_tokens": resolved_max_tokens}
         payload = _translated_messages(messages)
         allowed = {definition.name for definition in tools}
