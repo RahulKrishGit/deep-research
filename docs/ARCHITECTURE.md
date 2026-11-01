@@ -424,7 +424,9 @@ iteration, LLM, tool and memory, and completed spans append typed metrics
 transport failure becomes a recoverable error and work continues locally. A
 per-run `RunTelemetryCollector` reports rate-limit (429) errors and how many a
 retry recovered, the peak provider calls in flight, each stage's calls and
-seconds, and each operation's output tokens against its cap.
+seconds, each call's input, cached-input, output and reasoning tokens, each
+operation's output tokens against its cap, and how many calls each model id the
+provider returned answered (`models_returned`).
 
 `RequestBudget` (`request_budget.py`) reserves one unit per transport attempt
 before the call is made, shared by the provider transports and the search tool. A

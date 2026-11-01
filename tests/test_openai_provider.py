@@ -21,6 +21,7 @@ from pydantic import BaseModel, ValidationError
 import deep_research.providers.openai_provider as openai_provider_module
 from deep_research.observability import (
     LangSmithRuntimeConfig,
+    RunTelemetryCollector,
     TokenUsageMetric,
     Tracker,
 )
@@ -693,6 +694,28 @@ async def test_the_provider_records_the_model_the_response_reported() -> None:
         await provider.complete([ChatMessage(role="user", content="hi")])
 
     assert provider.last_model_returned == "gpt-5.6-luna-2026-08-01"
+
+
+@pytest.mark.asyncio
+async def test_the_openai_provider_counts_the_model_the_response_reported() -> None:
+    responses = RecordingResponses(
+        response(text="hello", model="gpt-5.6-luna-2026-08-01"),
+        response(text="again"),
+    )
+    tracker = local_tracker()
+    collector = RunTelemetryCollector()
+    provider = OpenAIChatProvider(
+        LLMConfig(model="gpt-5.6-luna"),
+        tracker,
+        client=FakeOpenAIClient(responses=responses),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("s1", "q"):
+        await provider.complete([ChatMessage(role="user", content="hi")])
+        await provider.complete([ChatMessage(role="user", content="hi again")])
+
+    assert collector.snapshot().models_returned == {"gpt-5.6-luna-2026-08-01": 1}
 
 
 def test_reasoning_effort_rejects_an_unknown_level() -> None:

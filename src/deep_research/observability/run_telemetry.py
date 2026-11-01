@@ -179,6 +179,7 @@ class RunTelemetryCollector:
         self._reasoning_tokens = 0
         self._loop_lag_max = 0.0
         self._loop_lag_blocks: list[float] = []
+        self._models_returned: dict[str, int] = {}
         self._stages: dict[str, _StageAccumulator] = {}
 
     def note_call_starting(self, agent: str | None) -> None:
@@ -278,6 +279,7 @@ class RunTelemetryCollector:
         cached_input_tokens: int = 0,
         reasoning_tokens: int = 0,
         attempts: Sequence[CallAttemptTelemetry] = (),
+        model_returned: str | None = None,
     ) -> None:
         """Record one provider call that returned and reported its usage.
 
@@ -298,8 +300,13 @@ class RunTelemetryCollector:
 
         Each call is also kept as one ``CallRecordTelemetry`` on its stage:
         the operation name its caller bound
-        (``call_label``), when it started, how long it took and its output and
-        reasoning tokens.
+        (``call_label``), when it started, how long it took and its input,
+        cached-input, output and reasoning tokens.
+
+        ``model_returned`` is the model id the provider's response named: the
+        run counts the calls each id answered. A response that named none
+        passes ``None`` and is not counted, so the count never holds the
+        requested alias in place of what the API served.
         """
         stage_name = agent or UNATTRIBUTED_AGENT
         cap_key = cap_key_for(agent, operation)
@@ -309,6 +316,8 @@ class RunTelemetryCollector:
                 max(perf_counter() - seconds - self._started_at, 0.0), 1
             ),
             seconds=round(max(seconds, 0.0), 1),
+            input_tokens=max(input_tokens, 0),
+            cached_input_tokens=max(cached_input_tokens, 0),
             output_tokens=max(output_tokens, 0),
             reasoning_tokens=max(reasoning_tokens, 0),
         )
@@ -316,6 +325,10 @@ class RunTelemetryCollector:
             self._input_tokens += input_tokens
             self._cached_input_tokens += cached_input_tokens
             self._reasoning_tokens += reasoning_tokens
+            if model_returned:
+                self._models_returned[model_returned] = (
+                    self._models_returned.get(model_returned, 0) + 1
+                )
             stage = self._stages.get(stage_name)
             if stage is None:
                 stage = _StageAccumulator()
@@ -375,6 +388,7 @@ class RunTelemetryCollector:
                 loop_lag_blocks=tuple(
                     round(block, 1) for block in self._loop_lag_blocks
                 ),
+                models_returned=dict(sorted(self._models_returned.items())),
             )
 
 

@@ -2807,6 +2807,29 @@ async def test_last_model_returned_records_the_dated_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_each_call_reports_the_model_the_api_returned() -> None:
+    """The run's count holds what the API answered with, never the requested
+    alias: a response that names no model adds nothing."""
+    named = chat_response(text="first")
+    named.model = "DeepSeek-V4-Flash-0731"
+    completions = RecordingCompletions(named, chat_response(text="second"))
+    tracker = local_tracker()
+    collector = RunTelemetryCollector()
+    provider = DeepSeekChatProvider(
+        deepseek_config(),
+        tracker,
+        client=FakeDeepSeekClient(completions),
+        telemetry=collector,
+    )
+
+    async with tracker.session_span("session-1", "question"):
+        await provider.complete([ChatMessage(role="user", content="one")])
+        await provider.complete([ChatMessage(role="user", content="two")])
+
+    assert collector.snapshot().models_returned == {"DeepSeek-V4-Flash-0731": 1}
+
+
+@pytest.mark.asyncio
 async def test_deepseek_structured_public_cause_chain_hides_provider_output() -> None:
     completions = RecordingCompletions(
         chat_response(text="not-json"),

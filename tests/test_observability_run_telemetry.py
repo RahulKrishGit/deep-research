@@ -592,3 +592,68 @@ def test_each_call_keeps_its_own_record_with_its_label() -> None:
     first, second = stage.call_records
     assert 0.0 <= first.start_offset_s <= second.start_offset_s
     assert current_call_label() is None
+
+
+def _call(collector, *, agent="researcher", input_tokens=0, cached=0, model=None):
+    collector.record_call(
+        agent=agent,
+        operation="structured_output",
+        seconds=1.0,
+        output_tokens=10,
+        configured_cap=100,
+        truncated=False,
+        input_tokens=input_tokens,
+        cached_input_tokens=cached,
+        model_returned=model,
+    )
+
+
+def test_the_run_counts_the_models_the_provider_returned() -> None:
+    collector = RunTelemetryCollector()
+    for model in ("M", "M", None):
+        _call(collector, model=model)
+
+    assert collector.snapshot().models_returned == {"M": 2}
+
+
+def test_each_call_record_carries_its_input_and_cached_input_tokens() -> None:
+    collector = RunTelemetryCollector()
+    _call(collector, input_tokens=4_000, cached=3_000)
+
+    (record,) = collector.snapshot().stages[0].call_records
+
+    assert (record.input_tokens, record.cached_input_tokens) == (4_000, 3_000)
+
+
+def test_the_call_records_sum_to_the_run_totals() -> None:
+    collector = RunTelemetryCollector()
+    _call(collector, agent="researcher", input_tokens=4_000, cached=3_000)
+    _call(collector, agent="report_writer", input_tokens=6_000, cached=0)
+
+    telemetry = collector.snapshot()
+
+    records = [r for stage in telemetry.stages for r in stage.call_records]
+    assert sum(r.input_tokens for r in records) == telemetry.input_tokens == 10_000
+    assert (
+        sum(r.cached_input_tokens for r in records)
+        == telemetry.cached_input_tokens
+        == 3_000
+    )
+
+
+def test_a_telemetry_record_from_before_models_returned_still_loads() -> None:
+    """A checkpoint or ``quality.json`` written before this change has call
+    records without token figures and telemetry without ``models_returned``;
+    it must still validate, with zeros and an empty count."""
+    collector = RunTelemetryCollector()
+    _call(collector, input_tokens=5, model="M")
+    dumped = collector.snapshot().model_dump(mode="json")
+    del dumped["models_returned"]
+    for stage in dumped["stages"]:
+        for record in stage["call_records"]:
+            del record["input_tokens"], record["cached_input_tokens"]
+
+    loaded = RunTelemetry.model_validate(dumped)
+
+    assert loaded.models_returned == {}
+    assert loaded.stages[0].call_records[0].input_tokens == 0

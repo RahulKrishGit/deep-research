@@ -421,6 +421,7 @@ class OpenAIChatProvider:
         seconds: float,
         configured_cap: int,
         truncated: bool,
+        model_returned: str | None = None,
     ) -> None:
         """Record reported usage, and only for a response that arrived.
 
@@ -434,6 +435,11 @@ class OpenAIChatProvider:
         The same rule is what makes the per-call telemetry record honest: this call
         is the run's slowest, its operation's largest reply and its truncation
         count only when the response really carried the numbers.
+
+        ``model_returned`` is the model id the response itself named, ``None``
+        when it named none: never the requested-model fallback that
+        ``last_model_returned`` uses, so the run's count holds only what the
+        API answered with.
         """
         budget = self._request_budget
         if budget is not None:
@@ -449,6 +455,7 @@ class OpenAIChatProvider:
             output_tokens=usage.output_tokens,
             configured_cap=configured_cap,
             truncated=truncated,
+            model_returned=model_returned,
         )
 
     @property
@@ -565,6 +572,7 @@ class OpenAIChatProvider:
                     seconds=perf_counter() - started_at,
                     configured_cap=self._config.max_tokens,
                     truncated=_truncated_response(response),
+                    model_returned=getattr(response, "model", None),
                 )
                 output_text = getattr(response, "output_text", None)
                 if not isinstance(output_text, str):
@@ -655,6 +663,7 @@ class OpenAIChatProvider:
                 seconds=perf_counter() - started_at,
                 configured_cap=configured_max_tokens,
                 truncated=_truncated_response(response),
+                model_returned=getattr(response, "model", None),
             )
             _set_span_result(span, response, usage)
             parsed = getattr(response, "output_parsed", None)
@@ -783,6 +792,7 @@ class OpenAIChatProvider:
                     seconds=perf_counter() - started_at,
                     configured_cap=resolved_max_tokens,
                     truncated=truncated,
+                    model_returned=getattr(response, "model", None),
                 )
                 _set_span_result(span, response, usage)
                 tool_calls, final_answer, failure = _native_response_outcome(
