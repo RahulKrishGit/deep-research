@@ -1096,6 +1096,144 @@ def test_a_decision_packet_keeps_every_candidate_row_when_units_overflow_it() ->
     assert "candidate_id=candidate-1" in packet
 
 
+def _row(packet: str, candidate_id: str) -> str:
+    """The one packet line that renders ``candidate_id``."""
+    rows = [line for line in packet.splitlines() if f"candidate_id={candidate_id} " in line]
+    assert len(rows) == 1, rows
+    return rows[0]
+
+
+def _robots_state(*records: CandidateRecord) -> AcquisitionState:
+    return AcquisitionState(
+        target_id="topic-01",
+        remaining_calls=3,
+        candidate_urls=[record.url for record in records if record.status == "queued"],
+        candidate_records={record.url: record for record in records},
+    )
+
+
+def _robots_candidate(
+    candidate_id: str, url: str, *, status: str = "queued", read_id: str | None = None
+) -> CandidateRecord:
+    return CandidateRecord(
+        candidate_id=candidate_id,
+        url=url,
+        title=f"Title {candidate_id}",
+        discovered_via="search",
+        target_ids=["topic-01"],
+        status=status,
+        read_id=read_id,
+    )
+
+
+def _refuses_private(url: str) -> bool:
+    return "/private/" in url
+
+
+def test_a_queued_candidate_the_hosts_robots_refuses_is_marked_in_the_decision_packet() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert _row(packet, "c-private").endswith(" robots=disallowed")
+    assert not _row(packet, "c-public").endswith(" robots=disallowed")
+    assert _row(packet, "c-private") == _row(
+        build_acquisition_context(state, {}, {}, limit=24_000, for_decision=True),
+        "c-private",
+    ) + " robots=disallowed"
+
+
+def test_the_extraction_packet_never_carries_the_robots_marker() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=False,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-private " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_document_candidate_is_never_marked() -> None:
+    state = _robots_state(
+        _robots_candidate("c-document", "https://example.test/private/report.pdf"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-document " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_read_or_denied_candidate_is_never_marked() -> None:
+    state = _robots_state(
+        _robots_candidate(
+            "c-read", "https://example.test/private/read", status="read", read_id="read-1"
+        ),
+        _robots_candidate("c-denied", "https://example.test/private/denied", status="denied"),
+    )
+
+    packet = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=_refuses_private,
+    )
+
+    assert "candidate_id=c-read " in packet and "candidate_id=c-denied " in packet
+    assert "robots=disallowed" not in packet
+
+
+def test_a_packet_without_an_oracle_is_byte_identical() -> None:
+    state = _robots_state(
+        _robots_candidate("c-private", "https://example.test/private/report"),
+        _robots_candidate("c-public", "https://example.test/public/report"),
+    )
+
+    bare = build_acquisition_context(state, {}, {}, limit=24_000, for_decision=True)
+    none = build_acquisition_context(
+        state, {}, {}, limit=24_000, for_decision=True, robots_disallows=None
+    )
+    never = build_acquisition_context(
+        state,
+        {},
+        {},
+        limit=24_000,
+        for_decision=True,
+        robots_disallows=lambda url: False,
+    )
+
+    assert bare == none == never
+    assert "robots=disallowed" not in bare
+
+
 def _chunked_document_result(*chunks: str) -> ToolResult:
     """One document read laid out as the given page-1 chunks, in order."""
     url = "https://example.test/storage-monitor.pdf"

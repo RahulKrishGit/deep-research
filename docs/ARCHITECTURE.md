@@ -171,8 +171,11 @@ Pages are not read whole into a prompt. A read is admitted as exact,
 paragraph-bounded passages (`agents.read_admission_chars`), selected and ranked
 by relevance into an extraction packet (`agents.evidence_packet_chars`), and
 every ReAct decision sees only a small context packet
-(`agents.decision_context_chars`). Extraction is per page: a structured call
-starts as soon as a read is admitted, bounded by
+(`agents.decision_context_chars`). A queued candidate whose host's robots.txt,
+already fetched this run, refuses it is marked `robots=disallowed` in the
+decision packet; the mark is advisory, never set for a document URL
+(`document_reader` checks no robots), and the scraper still decides. Extraction
+is per page: a structured call starts as soon as a read is admitted, bounded by
 `agents.extraction_concurrency`, and passages a required target is still owed
 get a bounded re-ask. A read that yields nothing produces no `Finding`, so a
 source is never invented. Each finding carries the snippet it was extracted from,

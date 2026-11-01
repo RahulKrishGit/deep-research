@@ -1173,6 +1173,13 @@ class AcquisitionPolicy:
     do. A policy with none of its own gets one of its own, which is correct
     exactly when it is the only writer of its mapping.
     """
+    robots_disallows: Callable[[str], bool] | None = None
+    """Whether the run's robots rules, already fetched, refuse a URL.
+
+    Supplied by the caller from its scraper. It marks a queued candidate in
+    the decision packet only; it never fetches, never blocks a read, and a
+    policy with none marks nothing.
+    """
     _seen_queries: set[str] = field(default_factory=set, init=False)
     _last_search_failed: bool = field(default=False, init=False)
     _network_read_ids: set[str] = field(default_factory=set, init=False)
@@ -2319,6 +2326,7 @@ class AcquisitionPolicy:
             for_decision=for_decision,
             omitted_evidence_ids=omitted,
             read_ids=read_ids,
+            robots_disallows=self.robots_disallows,
         )
         if for_decision:
             # A decision turn's own packet never determines extraction
@@ -2358,15 +2366,37 @@ def _recorded_statement(finding: Finding) -> str:
     return summarize_text(statement, limit=_RECORDED_STATEMENT_CHARS)
 
 
-def _render_candidate(record: CandidateRecord) -> str:
+def candidate_robots_disallowed(
+    record: CandidateRecord, robots_disallows: Callable[[str], bool] | None
+) -> bool:
+    """Whether the decision packet marks ``record`` as refused by its host.
+
+    All of these hold: an oracle is set, the candidate is still queued (a read
+    or denied one is settled), its URL is not a document (``document_reader``
+    checks no robots, so its URL is never refused on that ground), and the
+    oracle says the host's rules, already fetched this run, refuse the URL.
+    The mark is advisory; the scraper still decides every read.
+    """
+    return (
+        robots_disallows is not None
+        and record.status == "queued"
+        and _required_reader(record.url) != "document_reader"
+        and robots_disallows(record.url)
+    )
+
+
+def _render_candidate(
+    record: CandidateRecord, *, robots_disallowed: bool = False
+) -> str:
     targets = ",".join(record.target_ids) or "-"
     title = record.title or "(untitled)"
-    return (
+    row = (
         f"candidate_id={record.candidate_id} url={record.url} title={title} "
         f"targets={targets} reason={record.selection_reason} "
         f"via={record.discovered_via} status={record.status} "
         f"read_id={record.read_id or '-'}"
     )
+    return f"{row} robots=disallowed" if robots_disallowed else row
 
 
 def _render_read(record: ReadRecord) -> str:
@@ -2406,6 +2436,7 @@ def build_acquisition_context(
     for_decision: bool = False,
     omitted_evidence_ids: list[str] | None = None,
     read_ids: Sequence[str] | None = None,
+    robots_disallows: Callable[[str], bool] | None = None,
 ) -> str:
     """Render complete acquisition records, with explicit continuation IDs.
 
@@ -2461,6 +2492,13 @@ def build_acquisition_context(
     affordable for owed re-extraction's handful of passages, not for a whole
     page's worth of units. ``None`` renders every read the other filters
     admit.
+
+    ``robots_disallows`` is the run's robots oracle: when it is given, a
+    queued candidate whose host's robots.txt (already fetched this run) refuses
+    it carries the suffix `` robots=disallowed`` in the decision packet only
+    (see :func:`candidate_robots_disallowed`). The extraction packet never
+    carries the mark, and with no oracle every row is byte-identical to the
+    one rendered without it.
     """
     if limit < 1:
         raise ValueError("limit must be at least 1")
@@ -2582,7 +2620,15 @@ def build_acquisition_context(
         # behind them in the greedy pack.
         for candidate in state.candidate_records.values():
             rows.append(
-                (f"candidate:{candidate.candidate_id}", _render_candidate(candidate))
+                (
+                    f"candidate:{candidate.candidate_id}",
+                    _render_candidate(
+                        candidate,
+                        robots_disallowed=candidate_robots_disallowed(
+                            candidate, robots_disallows
+                        ),
+                    ),
+                )
             )
         recorded_ids: set[str] = set()
         for finding in findings:
@@ -2742,6 +2788,7 @@ __all__ = [
     "allowed_acquisition_actions",
     "build_acquisition_context",
     "build_read_record_from_tool_result",
+    "candidate_robots_disallowed",
     "next_acquisition_action",
     "search_is_admissible",
     "select_passages_with_lede",

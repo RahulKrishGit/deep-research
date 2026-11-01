@@ -29,6 +29,7 @@ from deep_research.agents.acquisition import (
     AcquisitionPolicy,
     ManifestSequence,
     build_acquisition_context,
+    candidate_robots_disallowed,
 )
 from deep_research.agents.base import (
     AgentCompleter,
@@ -94,6 +95,7 @@ from deep_research.providers import (
 from deep_research.request_budget import RequestAttemptLimitError
 from deep_research.tools.base import BaseTool, ToolResult
 from deep_research.tools.passage_selection import _tokens
+from deep_research.tools.web_scraper import WebScraperTool
 from deep_research.utils.concurrency import gather_or_cancel
 from deep_research.utils.config import AgentRuntimeConfig, EffectiveModelConfig
 from deep_research.utils.types import (
@@ -2728,6 +2730,7 @@ def sub_topic_completed_event(
     target_obligation_completed: bool = False,
     elapsed_s: float = 0.0,
     timings: ExtractionTimings | None = None,
+    robots_disallowed_candidates: int = 0,
 ) -> ResearchEvent:
     """Report one sub-topic's stop reason, counts, and finding total.
 
@@ -2751,6 +2754,10 @@ def sub_topic_completed_event(
     target's obligation advanced: at least one registry-admitted finding was
     extracted for it. Whether the reader's report answers the target is judged
     later, on the report's own statements, and is not claimed here.
+
+    ``robots_disallowed_candidates`` counts the candidates still queued when the
+    loop ended whose host's robots.txt, fetched this run, refuses them: the
+    ones the decision packet marked ``robots=disallowed``. Always reported.
 
     ``timings`` is where the tail after the loop went:
     ``extraction_wait_s``, ``owed_round_s``, ``owed_calls`` and
@@ -2777,6 +2784,7 @@ def sub_topic_completed_event(
         "acquired_work_count": acquired_work_count,
         "target_obligation_completed": target_obligation_completed,
         "elapsed_s": elapsed_s,
+        "robots_disallowed_candidates": robots_disallowed_candidates,
     }
     if timings is not None:
         metadata.update(
@@ -3239,6 +3247,12 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             config=config,
             model_profile=model_profile,
         )
+        # The scraper's own robots cache, read-only, for the decision packet's
+        # advisory mark: a researcher built without a scraper marks nothing.
+        scraper = self.toolset.get("web_scraper")
+        self._robots_disallows = (
+            scraper.robots_disallows if isinstance(scraper, WebScraperTool) else None
+        )
         if max_sub_topics < 1:
             raise ValueError("max_sub_topics must be at least 1")
         if high_priority_threshold < 1:
@@ -3512,6 +3526,7 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             ),
             cache=self._run_cache,
             network_read_ids=self._run_network_read_ids,
+            robots_disallows=self._robots_disallows,
         )
 
     def sub_topic_task(
@@ -4875,6 +4890,10 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             target_obligation_completed=target_obligation_completed,
             elapsed_s=elapsed_s,
             timings=timings,
+            robots_disallowed_candidates=sum(
+                candidate_robots_disallowed(record, policy.robots_disallows)
+                for record in policy.state.candidate_records.values()
+            ),
         )
         publish_live(completed)
         events.append(completed)

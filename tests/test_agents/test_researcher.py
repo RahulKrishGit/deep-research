@@ -6278,6 +6278,87 @@ async def test_a_page_two_loops_request_at_once_is_downloaded_once_and_admitted_
     assert outcome.react.tool_calls == 3
 
 
+def _completed(outcome: AgentRun[ResearchFindings], coverage_id: str) -> ResearchEvent:
+    """The ``researcher.sub_topic.completed`` event of one sub-topic."""
+    (event,) = [
+        event
+        for event in outcome.state_update["events"]
+        if event.event_type == "researcher.sub_topic.completed"
+        and event.metadata["coverage_id"] == coverage_id
+    ]
+    return event
+
+
+@pytest.mark.asyncio
+async def test_a_loop_sees_a_robots_refusal_another_loop_learned(
+    tracker: Tracker,
+) -> None:
+    """Loop A's read fetches the host's robots.txt, which refuses ``/private/``;
+    loop B, still deciding, then sees its own queued private candidate marked,
+    and its completed event counts it. Loop A has no such candidate."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(
+                200, text="User-agent: *\nDisallow: /private/", request=request
+            )
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text=(
+                f"<html><head><title>{QEC_READ.title}</title></head>"
+                f"<body><p>{QEC_PASSAGE}</p></body></html>"
+            ),
+            request=request,
+        )
+
+    completer = TargetKeyedCompleter(
+        decisions={
+            "topic-01": _loop_decisions("topic-01", "Alpha"),
+            "topic-02": [
+                use_tool(
+                    "Search for Beta.",
+                    "web_search",
+                    json.dumps({"query": "Beta 2025"}),
+                ),
+                finish("Beta is covered.", "Beta answer."),
+            ],
+        },
+        outputs={
+            "Alpha": [SubTopicFindingsDraft(findings=[])],
+            "Beta": [SubTopicFindingsDraft(findings=[])],
+        },
+        # Alpha's read has fetched the host's robots.txt before Beta's first turn.
+        delays={"topic-02": 0.1},
+    )
+    agent = _researcher(
+        tracker,
+        completer,
+        tools=research_tools(
+            tracker,
+            search=_QuerySearchClient(
+                {
+                    "Alpha 2025": search_response(),
+                    "Beta 2025": search_response(
+                        url="https://example.test/private/report",
+                        title="Private report",
+                    ),
+                }
+            ),
+            http=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        ),
+        config=AgentRuntimeConfig(
+            max_iterations=4, tool_budget=4, sub_topic_concurrency=2
+        ),
+    )
+
+    async with tracker.session_span("session-1", "q"):
+        outcome = await agent.run(_two_topic_state())
+
+    assert " robots=disallowed" in completer.packets("topic-02")[-1]
+    assert _completed(outcome, "topic-02").metadata["robots_disallowed_candidates"] == 1
+    assert _completed(outcome, "topic-01").metadata["robots_disallowed_candidates"] == 0
+
 @pytest.mark.asyncio
 async def test_a_provider_failure_lets_running_loops_finish_and_skips_unstarted_ones(
     tracker: Tracker,

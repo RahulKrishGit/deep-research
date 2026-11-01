@@ -2116,3 +2116,39 @@ async def test_two_reads_of_one_host_at_once_share_one_robots_fetch(tracker) -> 
 
     assert hits == ["https://example.test/robots.txt"]
     assert all(result.success for result in results)
+
+
+@pytest.mark.asyncio
+async def test_robots_disallows_reports_only_a_cached_refusal(tracker) -> None:
+    """The oracle reads the cache the reads filled: it never fetches, and it
+    answers ``True`` only for a host whose rules were settled and refuse the URL."""
+    hits: list[str] = []
+    rules = httpx.Response(200, text="User-agent: *\nDisallow: /private/\n")
+    tool = WebScraperTool(tracker, client=_robots_client(rules, robots_hits=hits))
+    assert tool.robots_disallows("https://example.test/private/x") is False
+    assert hits == []
+    async with tracker.session_span("session-1", "question"):
+        await tool.execute(url="https://example.test/public/a")
+    assert tool.robots_disallows("https://example.test/private/x") is True
+    assert tool.robots_disallows("https://example.test/public/b") is False
+    assert tool.robots_disallows("http://[::1") is False
+    assert hits == ["https://example.test/robots.txt"]
+
+    missing_hits: list[str] = []
+    missing = WebScraperTool(
+        tracker, client=_robots_client(httpx.Response(404), robots_hits=missing_hits)
+    )
+    async with tracker.session_span("session-2", "question"):
+        await missing.execute(url="https://example.test/private/a")
+    assert missing.robots_disallows("https://example.test/private/x") is False
+
+    slow_hits: list[str] = []
+    slow = WebScraperTool(
+        tracker,
+        client=_robots_client(httpx.ReadTimeout("slow"), robots_hits=slow_hits),
+    )
+    async with tracker.session_span("session-3", "question"):
+        await slow.execute(url="https://example.test/private/a")
+        assert slow.robots_disallows("https://example.test/private/x") is False
+        await slow.execute(url="https://example.test/private/b")
+    assert len(slow_hits) == 2

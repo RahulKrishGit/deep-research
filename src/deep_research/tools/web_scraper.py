@@ -286,6 +286,22 @@ class WebScraperTool(BaseTool):
             )
         return True
 
+    def robots_disallows(self, url: str) -> bool:
+        """``True`` when this run already holds the host's rules and they refuse ``url``.
+
+        This reads the cache the reads fill and never fetches. A host no read
+        has reached yet, one that answered robots.txt with a client error, and
+        one whose fetch settled nothing all answer ``False``: there is nothing
+        known to refuse. It is advisory, so ``_check_robots`` still decides
+        every read.
+        """
+        try:
+            parts = urlsplit(url)
+        except ValueError:
+            return False
+        rules = self._robots.get(f"{parts.scheme}://{parts.netloc}")
+        return rules is not None and not rules.can_fetch(self._user_agent, url)
+
     async def _fetch_robots(
         self, client: AsyncHttpClient, robots_url: str
     ) -> RobotFileParser | None | object:
