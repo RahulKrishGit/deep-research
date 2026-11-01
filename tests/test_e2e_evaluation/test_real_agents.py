@@ -278,6 +278,71 @@ def test_owed_and_dissent_re_asks_are_not_page_extractions() -> None:
     assert _invariant_shared_page_extracted_once(_packets(sequence)) is None
 
 
+def _extra_pass_run(
+    part_statuses: dict[str, str], calls: list[str]
+) -> SimpleNamespace:
+    """The slice of a replay run the extra-pass carry checker reads.
+
+    Three topics, one required target each. The extra pass was bought for
+    ``topic-01-target-01``, so ``topic-01`` is the one part that gains evidence.
+    """
+    topics = [
+        SimpleNamespace(
+            coverage_id=f"topic-0{n}",
+            evidence_targets=[SimpleNamespace(target_id=f"topic-0{n}-target-01")],
+        )
+        for n in (1, 2, 3)
+    ]
+    return SimpleNamespace(
+        replay=SimpleNamespace(completer=SimpleNamespace(calls=calls)),
+        state=SimpleNamespace(
+            sub_topics=topics,
+            extra_pass_target_ids=["topic-01-target-01"],
+            composition=SimpleNamespace(
+                parts=[
+                    SimpleNamespace(coverage_id=coverage_id, status=status)
+                    for coverage_id, status in part_statuses.items()
+                ]
+            ),
+        ),
+    )
+
+
+_EXTRA_PASS_CALLS = [
+    "report_writer:SectionDraft",
+    "report_writer:SectionDraft",
+    "report_reviewer:ReportReviewDraft",
+    "report_writer:SectionDraft",
+    "report_reviewer:ScopedReportReviewDraft",
+]
+
+
+def test_extra_pass_carries_unchanged_parts_accepts_the_scoped_shape() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_extra_pass_carries_unchanged_parts,
+    )
+
+    run = _extra_pass_run(
+        {"topic-01": "written", "topic-02": "carried_over", "topic-03": "carried_over"},
+        _EXTRA_PASS_CALLS,
+    )
+
+    assert _invariant_extra_pass_carries_unchanged_parts(run) is None
+
+
+def test_a_part_redrafted_without_cause_breaks_extra_pass_carries_unchanged_parts() -> None:
+    from deep_research.e2e_evaluation.replay import (
+        _invariant_extra_pass_carries_unchanged_parts,
+    )
+
+    run = _extra_pass_run(
+        {"topic-01": "written", "topic-02": "written", "topic-03": "carried_over"},
+        _EXTRA_PASS_CALLS,
+    )
+
+    assert "topic-02" in (_invariant_extra_pass_carries_unchanged_parts(run) or "")
+
+
 def test_mirror_checker_reads_the_fact_rows_its_composition_recorded() -> None:
     """One body served twice is one fact row, however many hosts serve it.
 

@@ -3456,6 +3456,60 @@ def _invariant_shared_page_extracted_once(run: ReplayRun) -> str | None:
     return None
 
 
+def _invariant_extra_pass_carries_unchanged_parts(run: ReplayRun) -> str | None:
+    """An extra pass drafts only the part that gained evidence, then the review is scoped.
+
+    In this row the only part that gains evidence is the one owning the
+    extra-pass target. It is ``written``, every other part with a section is
+    ``carried_over``, and the writer was asked once per written part after the
+    first review: a part redrafted without cause costs a ``SectionDraft`` and
+    a Statement Check the pass was not bought for. The review of the carried
+    parts is one ``ScopedReportReviewDraft``, because the first
+    ``ReportReviewDraft`` already judged them. ``_invariant_scoped_review_used``
+    is specific to a redraft hop (it counts redrafts and demands a resolved
+    defect), so it cannot say this.
+    """
+    calls = run.replay.completer.calls
+    full_reviews = calls.count("report_reviewer:ReportReviewDraft")
+    scoped_reviews = calls.count("report_reviewer:ScopedReportReviewDraft")
+    if full_reviews != 1:
+        return f"expected exactly one full review, saw {full_reviews}"
+    if scoped_reviews != 1:
+        return f"expected exactly one scoped review after the extra pass, saw {scoped_reviews}"
+    target_ids = set(run.state.extra_pass_target_ids)
+    owning = {
+        topic.coverage_id
+        for topic in run.state.sub_topics
+        for target in topic.evidence_targets
+        if target.target_id in target_ids
+    }
+    if not owning:
+        return "the run took no extra pass"
+    composition = run.state.composition
+    if composition is None:
+        return "the run composed no report"
+    written = 0
+    for part in composition.parts:
+        if part.status == "empty":
+            continue
+        expected_status = "written" if part.coverage_id in owning else "carried_over"
+        if part.status != expected_status:
+            return (
+                f"part {part.coverage_id!r} has status {part.status!r}, expected "
+                f"{expected_status!r}"
+            )
+        written += part.status == "written"
+    redrafted = calls[calls.index("report_reviewer:ReportReviewDraft"):].count(
+        "report_writer:SectionDraft"
+    )
+    if redrafted != written:
+        return (
+            f"expected {written} SectionDraft calls after the first review (one "
+            f"per written part), saw {redrafted}"
+        )
+    return None
+
+
 _REPLAY_INVARIANTS: dict[str, Any] = {
     "relay_labelled_as_relay": _invariant_relay_labelled_as_relay,
     "maker_row_is_own": _invariant_maker_row_is_own,
@@ -3507,6 +3561,9 @@ _REPLAY_INVARIANTS: dict[str, Any] = {
         _invariant_extra_pass_redrafts_the_gaining_part
     ),
     "shared_page_extracted_once": _invariant_shared_page_extracted_once,
+    "extra_pass_carries_unchanged_parts": (
+        _invariant_extra_pass_carries_unchanged_parts
+    ),
 }
 
 

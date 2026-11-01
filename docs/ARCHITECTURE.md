@@ -290,10 +290,12 @@ with a `1e-9` allowance so float rounding cannot fail an exact 0.70) with
 no material defect. A truncated reply is asked once more at `high` effort; a
 provider failure gives `provider_failed` and missing dispositions give
 `incomplete`, and either way the report publishes as partial: an unscored review
-never fails the run. After a redraft the next review is scoped to the changed
-statements when at least one part is byte-identical to what the previous review
-judged, and an unusable scoped reply falls back to one fresh full review. Code,
-not the model, stamps `missing_required_target_ids` from the quality snapshot.
+never fails the run. After a redraft, or an extra pass that carried at least one
+part, the next review is scoped to the changed statements when at least one part
+is byte-identical to what the previous review judged, and an unusable scoped
+reply falls back to one fresh full review. A note pass is still reviewed in full.
+Code, not the model, stamps `missing_required_target_ids` from the quality
+snapshot.
 
 ## Orchestration
 
@@ -477,8 +479,9 @@ scripted completion asserts the packet it was asked, so a reply can never popula
 state the run did not produce.
 
 The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2, with
-`validated-cache-reuse` at 3) holds 35 rows. The suite runs each row three times
-under `offline_credentials()` and `network_denied()`, requires one identical
+`validated-cache-reuse` and `extra-pass-recovers-missing-target` at 3) holds 35
+rows. The suite runs each row three times under `offline_credentials()` and
+`network_denied()`, requires one identical
 outcome per row (exit code, terminal quality, answered targets, published report)
 that matches its declared result, and fails a suite whose runs attempted a
 connection. The API's replay mode (`api/replay.py`) serves the same harness behind

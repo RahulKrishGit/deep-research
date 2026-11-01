@@ -151,12 +151,13 @@ PINNED_PACKETS = {
     "planner:react": "a420821fa50ed937",
     "planner:ResearchPlanDraft": "1f7f8426a5be29de",
     "planner:PlanReviewDraft": "918178396a7380e5",
-    # The last review reads the report the writer drafted over the evidence a run
+    # The first review reads the report the writer drafted over the evidence a run
     # that never asks its forced last research turn leaves (see
-    # tests/test_graph/test_reader_notes_replay.py); no answer is involved. Its
-    # packet fingerprint covers the composition, so it moved when the extra pass
-    # began carrying the parts whose evidence did not change.
-    "report_reviewer:ReportReviewDraft": "b5cdae65b2fecd52",
+    # tests/test_graph/test_reader_notes_replay.py); no answer is involved. The
+    # extra pass's review is a ``report_reviewer:ScopedReportReviewDraft`` now that
+    # the pass carries the parts whose evidence did not change, so the last full
+    # review is this first one.
+    "report_reviewer:ReportReviewDraft": "778d42c9e215319b",
 }
 
 
