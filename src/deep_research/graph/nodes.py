@@ -179,8 +179,8 @@ class ReportReviewerLike(Protocol):
         self,
         scoped: ScopedReportReviewInput,
     ) -> ReportReview:
-        """Judge only a redraft's changed parts, carrying the
-        rest of the previous review forward."""
+        """Judge only the parts a redraft or a carrying extra pass changed,
+        carrying the rest of the previous review forward."""
         raise NotImplementedError
 
 
@@ -466,8 +466,9 @@ def _arrived_via_extra_pass(events: Sequence[ResearchEvent]) -> bool:
     return False
 
 
-# The loop markers after which the writer's next draft is not a redraft of the
-# previous one: the reviewer's extra pass and both of a reader note's loops.
+# The loop markers after which the writer's next draft is not the redraft hop:
+# the reviewer's extra pass (which carries unchanged parts under its own rule)
+# and both of a reader note's loops.
 _FRESH_DRAFT_MARKERS = frozenset(
     {
         "graph.extra_pass.started",

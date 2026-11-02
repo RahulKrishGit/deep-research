@@ -6548,6 +6548,33 @@ async def test_a_page_two_topics_admit_is_extracted_once_and_both_keep_its_findi
 
 
 @pytest.mark.asyncio
+async def test_an_import_that_binds_none_of_a_topics_targets_does_not_complete_its_obligation(
+    tracker: Tracker, web_tools: _WebTools
+) -> None:
+    """Topic-02 imports the owner's one finding, which binds no target. That
+    finding was extracted for topic-01's targets, so it says nothing about
+    whether topic-02's own obligation advanced."""
+    completer = _shared_page_completer(
+        {
+            "Alpha": [_draft_binding([]), _NO_FINDINGS, _NO_FINDINGS],
+            "Beta": [_NO_FINDINGS, _NO_FINDINGS],
+        }
+    )
+
+    outcome = await _run_two_topics(
+        tracker,
+        web_tools,
+        completer,
+        _targeted_two_topic_state(_alpha_qualitative(), _beta_qualitative()),
+    )
+
+    beta = _completed(outcome, "topic-02").metadata
+    assert beta["pages_reused"] == 1
+    assert beta["target_obligation_completed"] is False
+
+
+
+@pytest.mark.asyncio
 async def test_a_page_admitted_while_its_extraction_is_in_flight_waits_for_it(
     tracker: Tracker, web_tools: _WebTools
 ) -> None:

@@ -2385,7 +2385,8 @@ def remap_review_for_redraft(
     ``None`` when nothing carried over, or a carried-over part is not
     byte-identical to what ``previous_review`` judged: the caller must ask a
     full review instead. The graph's writer node calls this right after
-    composing a redraft, while both compositions are still local Python
+    composing a redraft or an extra pass that carried parts, while both
+    compositions are still local Python
     objects, so the reviewer node can later build a scoped packet without
     ever needing the prior composition itself.
     """
@@ -2451,7 +2452,7 @@ def build_scoped_report_review_input(
     *,
     previous_review: ReportReview,
 ) -> ScopedReportReviewInput | None:
-    """The scoped packet for a re-review after a redraft.
+    """The scoped packet for a re-review after a redraft or a carrying extra pass.
 
     ``previous_review`` must already be a carried-over review whose
     dispositions and defects were remapped onto the current composition's own

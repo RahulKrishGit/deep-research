@@ -9,6 +9,7 @@ from deep_research.memory.entries import (
     ScratchpadEntryKind,
     SourceReputation,
     StrategyRecord,
+    finding_entry_id,
     source_reputation_entry_id,
 )
 from deep_research.memory.errors import (
@@ -51,6 +52,7 @@ __all__ = [
     "Summarizer",
     "VectorCollection",
     "build_chroma_collection",
+    "finding_entry_id",
     "memory_operation",
     "source_reputation_entry_id",
 ]

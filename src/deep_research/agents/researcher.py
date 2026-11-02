@@ -4687,7 +4687,16 @@ class ResearcherAgent(BaseAgent[ResearchFindings]):
             # neither says anything about whether THIS topic's own
             # obligation advanced.
             bound = [finding for finding in findings if finding.target_ids]
-            completed = policy.target_id is not None and bool(admitted_keys)
+            # An imported finding was extracted for the owner's targets: it
+            # advances this topic's obligation only when it binds one of this
+            # topic's own targets.
+            reused_ids = {id(finding) for finding in reused}
+            own_evidence = any(
+                id(finding) not in reused_ids
+                or own_target_ids.intersection(finding.target_ids)
+                for finding in findings
+            )
+            completed = policy.target_id is not None and own_evidence
             if completed and own_target_ids and bound:
                 completed = any(
                     own_target_ids.intersection(finding.target_ids)

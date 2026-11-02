@@ -481,8 +481,8 @@ state the run did not produce.
 The versioned manifest (`REPLAY_CASE_MANIFEST`, version 8, case semantics 2, with
 `validated-cache-reuse` and `extra-pass-recovers-missing-target` at 3) holds 35
 rows. The suite runs each row three times under `offline_credentials()` and
-`network_denied()`, requires one identical
-outcome per row (exit code, terminal quality, answered targets, published report)
-that matches its declared result, and fails a suite whose runs attempted a
-connection. The API's replay mode (`api/replay.py`) serves the same harness behind
+`network_denied()`, requires one identical outcome per row (exit code, terminal
+quality, answered targets, published report) that matches its declared result,
+and fails a suite whose runs attempted a connection. The API's replay mode
+(`api/replay.py`) serves the same harness behind
 the HTTP interface with the same two guards held for the whole process.
