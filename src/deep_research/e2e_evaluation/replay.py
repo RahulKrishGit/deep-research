@@ -3423,10 +3423,13 @@ def _invariant_extra_pass_redrafts_the_gaining_part(run: ReplayRun) -> str | Non
 def _invariant_shared_page_extracted_once(run: ReplayRun) -> str | None:
     """A page goes to one page extraction per research pass.
 
-    Two loops that admit one read share a single call: the second waits for
-    it and imports its findings, so a read named by two page-extraction
-    packets of one pass is the defect, however slowly the second loop got
-    there. A page-extraction packet is a researcher request that carries
+    Two loops that admit one read with the same target list share a single
+    call: the second waits for it and imports its findings. A second call is
+    made only when the first could not be reused (it failed, was truncated,
+    or its packet left rows out), which the rows this invariant checks never
+    script, so here a read named by two page-extraction packets of one pass
+    is the defect, however slowly the second loop got there. A
+    page-extraction packet is a researcher request that carries
     retrieved evidence and is neither an owed re-ask nor a dissent re-ask:
     those ask about a page again on purpose. A review ends a pass, and the
     extra pass that follows asks about a page under its own target list, so
